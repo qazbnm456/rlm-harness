@@ -117,6 +117,17 @@ def configure(config: Optional[RLMConfig] = None) -> RLMConfig:
     """
     cfg = config or RLMConfig.from_env()
 
+    # litellm (dspy.LM's backend) defaults to an aiohttp transport whose pooled ClientSession is bound to
+    # the current asyncio loop. A driver that runs each task in its own short-lived `asyncio.run` loop
+    # (e.g. a server handling per-request runs) then leaves a dangling session when that loop closes, and
+    # aiohttp logs a noisy "Unclosed connector". Force litellm onto httpx — no aiohttp session is created,
+    # so nothing dangles. Set before the LMs are built (→ before the first LM call); best-effort.
+    try:
+        import litellm
+        litellm.disable_aiohttp_transport = True
+    except Exception:  # noqa: BLE001 — litellm not importable (unexpected under dspy); nothing to quiet
+        pass
+
     lm_kwargs = dict(api_key=cfg.api_key, base_url=cfg.base_url)
     if cfg.max_tokens is not None:
         lm_kwargs["max_tokens"] = cfg.max_tokens
