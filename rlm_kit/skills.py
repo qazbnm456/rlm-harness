@@ -2,9 +2,19 @@
 
 A "Skill" here follows the common convention of a folder containing a ``SKILL.md``
 (with optional YAML-ish frontmatter for ``name``/``description``), or a flat
-``<name>.md`` file. We surface two tools to the main LM so it can decide, inside
-the REPL, which skill to read — keeping control flow in the LM's hands (the run
-stays an RLM, and the decision lands in the trajectory).
+``<name>.md`` file. The main LM decides, inside the REPL, which skill to read —
+keeping control flow in the LM's hands (the run stays an RLM, and the decision
+lands in the trajectory).
+
+Two DISCOVERY models, per the ``discovery`` arg of :func:`load_skills_as_tools`
+(progressive disclosure, Anthropic Agent-Skills style):
+
+- ``"list"`` — surface a ``list_skills`` tool; the LM calls it to see the catalog
+  (a discovery round-trip that costs one tool turn). The default; backward-compatible.
+- ``"inject"`` — the caller injects the catalog into the system prompt once at
+  startup via :func:`render_skills_manifest`, so the LM always knows which skills
+  exist without a tool call; only ``read_skill`` (the just-in-time full-body pull)
+  is surfaced as a tool.
 
 Pure stdlib; no dspy import.
 """
@@ -84,12 +94,42 @@ def _safe_read(path: str) -> str:
         return ""
 
 
-def load_skills_as_tools(skill_dir: str) -> list[Callable]:
-    """Return two tools — ``list_skills`` and ``read_skill`` — over ``skill_dir``.
+def render_skills_manifest(skill_dir: str, *, header: Optional[str] = None) -> str:
+    """Render the skill catalog — one ``- name: description`` line per skill — for injection
+    into a system prompt. This is the DISCOVERY level of progressive disclosure (Anthropic
+    Agent Skills): surface every skill's metadata ONCE at startup so the model always knows
+    which skills exist, instead of spending a turn calling ``list_skills`` to find out. Pair it
+    with ``load_skills_as_tools(skill_dir, discovery="inject")``, which then omits ``list_skills``
+    and keeps only ``read_skill`` (the just-in-time full-body pull).
 
-    Both record a ``tool_call`` event so skill access shows up in the trajectory
-    and the RL dataset.
+    Returns ``""`` when the directory holds no skills (nothing to inject). ``header``, when
+    given, is prepended on its own line (e.g. an ``<available_skills>`` label).
     """
+    skills = discover_skills(skill_dir)
+    if not skills:
+        return ""
+    body = "\n".join(
+        f"- {s.name}: {s.description or '(no description)'}" for s in skills
+    )
+    return f"{header}\n{body}" if header else body
+
+
+def load_skills_as_tools(skill_dir: str, *, discovery: str = "list") -> list[Callable]:
+    """Return the skill tools over ``skill_dir``.
+
+    ``discovery`` selects HOW the model learns which skills exist:
+
+    - ``"list"`` (default): return ``[list_skills, read_skill]``. The model calls ``list_skills``
+      to see the catalog — a discovery round-trip that costs one tool turn. Backward-compatible.
+    - ``"inject"``: return ``[read_skill]`` ONLY. The caller injects the catalog into the system
+      prompt via :func:`render_skills_manifest` (skill metadata auto-surfaced at startup, no
+      discovery tool call). ``read_skill`` stays as the just-in-time activation path.
+
+    ``read_skill`` (and ``list_skills`` when present) records a ``tool_call`` event so skill
+    access shows up in the trajectory and the RL dataset.
+    """
+    if discovery not in ("list", "inject"):
+        raise ValueError(f"discovery must be 'list' or 'inject', got {discovery!r}")
     skills = {s.name: s for s in discover_skills(skill_dir)}
 
     def list_skills() -> str:
@@ -114,4 +154,4 @@ def load_skills_as_tools(skill_dir: str) -> list[Callable]:
                          preview=result[:_PREVIEW_CHARS])
         return result
 
-    return [list_skills, read_skill]
+    return [read_skill] if discovery == "inject" else [list_skills, read_skill]

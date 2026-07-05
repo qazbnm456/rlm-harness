@@ -24,7 +24,7 @@ from .config import RLMConfig
 from .dataset import export_actions, export_rl, export_sft_turns
 from .replay import RecordedToolProvider, load_timeline, reconstruct
 from .sandbox import SandboxSecurityError
-from .skills import discover_skills, load_skills_as_tools
+from .skills import discover_skills, load_skills_as_tools, render_skills_manifest
 from .sub_lm import SubLMValidationError, intercept_sub_lm, model_as_tool
 from .trace import (
     TraceRecorder,
@@ -46,6 +46,7 @@ __all__ = [
     "SubLMValidationError",
     "model_as_tool",
     "load_skills_as_tools",
+    "render_skills_manifest",
     "discover_skills",
     # tracing (Phase B)
     "TraceRecorder",
