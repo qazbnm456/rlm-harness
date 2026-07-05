@@ -46,8 +46,9 @@ async def main() -> None:
     cfg = configure(RLMConfig.from_env())
     print(f"main={cfg.main_model} sub={cfg.sub_model} interpreter={cfg.interpreter}")
 
-    # Keep the loop tiny/cheap.
-    task = Summarize(max_retries=2)
+    # A single RLM attempt (max_retries defaults to 1 — no whole-RLM re-run). The in-run REPL
+    # loop is bounded by max_iterations, not by max_retries.
+    task = Summarize()
 
     trace_path = "./traces/mini_run.jsonl"
     document = (

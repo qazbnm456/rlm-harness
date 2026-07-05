@@ -4,7 +4,8 @@ Wires every Phase A/B/C piece together (illustrative; needs real model creds and
 a sandbox, so it is NOT imported by the test suite):
 
 - a local/base model wrapped via intercept_sub_lm (validate + post-process),
-- a Skills directory exposed to the main LM as tools (LM-decided),
+- a Skills directory whose catalog is injected into the prompt (discovery="inject") with
+  read_skill for just-in-time bodies,
 - the whole run recorded to JSONL, then exported as an RL dataset.
 
 Run as a script after exporting RLM_* env vars and pointing SKILLS_DIR at a
@@ -29,6 +30,7 @@ from rlm_kit import (
     intercept_sub_lm,
     load_events,
     load_skills_as_tools,
+    render_skills_manifest,
 )
 
 
@@ -41,18 +43,31 @@ def _non_empty(text: str):
     return None if text.strip() else "empty response"
 
 
+_INSTRUCTIONS = (
+    "You are a research assistant. The <available_skills> catalog above lists the reference "
+    "notes; pull the relevant one with read_skill(name), then emit a Note JSON."
+)
+
+
 class Research(RLMTask):
     signature = "topic: str -> note: Note"
     output_field = "note"
     output_model = Note
-    instructions = (
-        "You are a research assistant. Use list_skills/read_skill to consult "
-        "reference notes, then emit a Note JSON."
-    )
+    instructions = _INSTRUCTIONS
 
     def __init__(self, skills_dir: str, **kw):
-        # Skills become RLM tools; the LM decides when to read them.
-        self.tools = load_skills_as_tools(skills_dir)
+        # discovery="inject": the skill CATALOG (name + description) is injected into the system
+        # prompt via render_skills_manifest, so the LM sees every skill at startup with NO
+        # `list_skills` discovery round-trip; `read_skill(name)` pulls a skill's full body JIT.
+        self.tools = load_skills_as_tools(skills_dir, discovery="inject")
+        self.instructions = (
+            render_skills_manifest(
+                skills_dir,
+                header="<available_skills> — reference notes; `read_skill(name)` loads one:",
+            )
+            + "\n\n"
+            + _INSTRUCTIONS
+        )
         super().__init__(**kw)
 
 
