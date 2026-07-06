@@ -4,6 +4,18 @@ All notable changes to `rlm-kit`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_kit/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [Unreleased]
+
+### Added
+
+- **`max_output_chars` is now configurable** (`RLMConfig.max_output_chars`, env
+  `RLM_MAX_OUTPUT_CHARS`, default `10000` — dspy's own default, so behaviour is
+  unchanged). dspy.RLM head+tail-truncates each REPL output to this many CHARACTERS
+  before it enters the planner prompt — the planner never sees the omitted middle.
+  Previously the knob was pinned at dspy's default; now it rides the same best-effort
+  passthrough as `max_iterations` / `max_llm_calls`. (Distinct from `max_tokens`,
+  which caps the model's own generation.)
+
 ## [0.2.0] — 2026-06-21
 
 Harness-engineering layer, plus the first round of hardening surfaced by

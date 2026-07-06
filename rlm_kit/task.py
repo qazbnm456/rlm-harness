@@ -157,9 +157,11 @@ class RLMTask:
 
         # Budget controls are passed best-effort: dspy's exact kwarg names have
         # shifted across releases, so tolerate their absence rather than crash.
+        # (All-or-nothing: one unknown kwarg drops the whole dict to dspy defaults.)
         budget = {
             "max_iterations": self._config.max_iterations,
             "max_llm_calls": self._config.max_llm_calls,
+            "max_output_chars": self._config.max_output_chars,
         }
         try:
             return dspy.RLM(signature, **kwargs, **budget)
