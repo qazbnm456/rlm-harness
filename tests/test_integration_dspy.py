@@ -51,6 +51,7 @@ def test_rlmtask_builds_real_dspy_rlm():
     # Budget kwargs were accepted by the real constructor (no TypeError fallback).
     assert rlm.max_iterations == 10
     assert rlm.max_llm_calls == 30
+    assert rlm.max_output_chars == 10_000
 
 
 def test_custom_output_type_resolves_without_frame_help():

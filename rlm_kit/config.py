@@ -97,6 +97,12 @@ class RLMConfig:
     max_iterations: int = 10
     max_llm_calls: int = 30
 
+    # Head+tail cap (in CHARACTERS — unrelated to ``max_tokens``) that dspy.RLM applies to each
+    # REPL output before it enters the planner prompt; the planner never sees the omitted middle.
+    # Default matches dspy's own. Raise it when the planner must read large printed results whole,
+    # but prefer slicing/summarising in REPL code — retained chars cost prompt tokens every turn.
+    max_output_chars: int = 10_000
+
     # Retry policy in _retry.py: how many times to run the WHOLE task (a full RLM trajectory) until
     # its output coerces into output_model. Default 1 = no retry, because a retry re-runs the entire
     # RLM from scratch — silently MULTIPLYING the max_iterations budget (3 retries ⇒ up to 3×
@@ -158,6 +164,8 @@ class RLMConfig:
         - ``RLM_ALLOW_INSECURE_SANDBOX`` (default ``false``).
         - ``RLM_MAX_ITERATIONS`` (default ``10``).
         - ``RLM_MAX_LLM_CALLS`` (default ``30``).
+        - ``RLM_MAX_OUTPUT_CHARS`` (default ``10000``) — head+tail character cap on REPL
+          output fed back to the planner (distinct from ``RLM_MAX_TOKENS``).
         - ``RLM_MAX_RETRIES`` (default ``3``).
         - ``RLM_OBSERVE`` (default ``false``).
         """
@@ -183,6 +191,7 @@ class RLMConfig:
             allow_insecure_sandbox=_env_bool("RLM_ALLOW_INSECURE_SANDBOX", False),
             max_iterations=_env_int("RLM_MAX_ITERATIONS", 10),
             max_llm_calls=_env_int("RLM_MAX_LLM_CALLS", 30),
+            max_output_chars=_env_int("RLM_MAX_OUTPUT_CHARS", 10_000),
             max_retries=_env_int("RLM_MAX_RETRIES", 1),
             observe=_env_bool("RLM_OBSERVE", False),
         )

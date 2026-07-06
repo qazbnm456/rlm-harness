@@ -17,6 +17,7 @@ ENV_VARS = [
     "RLM_ALLOW_INSECURE_SANDBOX",
     "RLM_MAX_ITERATIONS",
     "RLM_MAX_LLM_CALLS",
+    "RLM_MAX_OUTPUT_CHARS",
     "RLM_MAX_RETRIES",
     "RLM_OBSERVE",
 ]
@@ -40,6 +41,7 @@ def test_defaults():
     assert cfg.max_retries == 1   # default: no whole-RLM retry (it would multiply the iteration budget)
     assert cfg.max_iterations == 10
     assert cfg.max_llm_calls == 30
+    assert cfg.max_output_chars == 10_000  # matches dspy.RLM's own default
 
 
 def test_sub_model_defaults_to_main(monkeypatch):
@@ -104,6 +106,12 @@ def test_max_tokens_from_env(monkeypatch):
     assert RLMConfig.from_env().max_tokens == 8192       # unset → generous default
     monkeypatch.setenv("RLM_MAX_TOKENS", "4096")
     assert RLMConfig.from_env().max_tokens == 4096       # explicit override
+
+
+def test_max_output_chars_from_env(monkeypatch):
+    assert RLMConfig.from_env().max_output_chars == 10_000   # unset → dspy's default
+    monkeypatch.setenv("RLM_MAX_OUTPUT_CHARS", "50000")
+    assert RLMConfig.from_env().max_output_chars == 50_000   # explicit override
 
 
 def test_unknown_adapter_rejected():
