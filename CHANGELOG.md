@@ -6,6 +6,10 @@ All notable changes to `rlm-kit`. Format loosely follows
 
 ## [Unreleased]
 
+The next release (0.2.0) — **not yet published to PyPI**; the version number is the
+target, not a release. Harness-engineering layer, plus the first round of hardening
+surfaced by dogfooding a real downstream consumer.
+
 ### Added
 
 - **`max_output_chars` is now configurable** (`RLMConfig.max_output_chars`, env
@@ -15,14 +19,6 @@ All notable changes to `rlm-kit`. Format loosely follows
   Previously the knob was pinned at dspy's default; now it rides the same best-effort
   passthrough as `max_iterations` / `max_llm_calls`. (Distinct from `max_tokens`,
   which caps the model's own generation.)
-
-## [0.2.0] — 2026-06-21
-
-Harness-engineering layer, plus the first round of hardening surfaced by
-dogfooding a real downstream consumer.
-
-### Added
-
 - **MCP client — connect an external MCP server's tools to an RLM** (`rlm_kit.mcp.mcp_tools`,
   optional `rlm-kit[mcp]`). `with mcp_tools(server) as tools:` connects to someone else's
   [MCP](https://modelcontextprotocol.io) server (a local stdio command, or a remote streamable-HTTP
