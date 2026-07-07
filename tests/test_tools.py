@@ -4,7 +4,14 @@ import pytest
 from pydantic import BaseModel
 
 from rlm_kit.optimize import exact_field_metric, schema_valid_metric
-from rlm_kit.tools.fetch import is_safe_url, make_fetch_tool
+import rlm_kit.tools.fetch as fetch_mod
+from rlm_kit.tools.fetch import (
+    _ip_blocked,
+    is_safe_url,
+    make_fetch_tool,
+    parse_cidrs,
+    resolved_host_is_safe,
+)
 from rlm_kit.tools.model import ModelToolResult, make_model_tool
 from rlm_kit.tools.search import make_web_search_tool, normalise_search_results
 from rlm_kit.tools.validation import make_schema_validator
@@ -169,6 +176,46 @@ def test_safe_urls_allowed(url):
 )
 def test_unsafe_urls_blocked(url):
     assert is_safe_url(url) is False
+
+
+# ---- resolved-IP re-check (DNS-rebinding defence) + allow-list -----------
+
+def test_parse_cidrs_skips_bad_entries():
+    nets = parse_cidrs(("198.18.0.0/16", "garbage", "10.0.0.0/8"))
+    assert len(nets) == 2                                    # the bad entry is dropped, not fatal
+    assert parse_cidrs(()) == () and parse_cidrs(None) == ()
+
+
+def test_ip_blocked_default_allow_list_and_fail_closed():
+    assert _ip_blocked("8.8.8.8") is False                  # public → allowed
+    assert _ip_blocked("198.18.2.128") is True              # reserved (benchmarking) → blocked
+    assert _ip_blocked("not-an-ip") is True                 # unparseable → fail closed
+    nets = parse_cidrs(("198.18.0.0/16",))
+    assert _ip_blocked("198.18.2.128", nets) is False       # allow-listed proxy range → external
+    assert _ip_blocked("127.0.0.1", nets) is True           # loopback still blocked
+    assert _ip_blocked("169.254.169.254", nets) is True     # cloud metadata still blocked
+
+
+def test_resolved_host_is_safe_honors_allow_list(monkeypatch):
+    # A fake-IP proxy resolves every host into 198.18.x.x; refused by default, allowed when listed.
+    monkeypatch.setattr(fetch_mod.socket, "getaddrinfo",
+                        lambda host, port, *a, **k: [(2, 1, 6, "", ("198.18.2.128", port))])
+    assert resolved_host_is_safe("plugins.svn.example", 443) is False
+    assert resolved_host_is_safe("plugins.svn.example", 443,
+                                 allow_nets=parse_cidrs(("198.18.0.0/16",))) is True
+    # a host that resolves to a REAL public address is safe without any allow-list
+    monkeypatch.setattr(fetch_mod.socket, "getaddrinfo",
+                        lambda host, port, *a, **k: [(2, 1, 6, "", ("93.184.216.34", port))])
+    assert resolved_host_is_safe("example.com", 443) is True
+
+
+def test_resolved_host_is_safe_fails_closed_on_resolution_error(monkeypatch):
+    def boom(*a, **k):
+        raise OSError("no DNS")
+
+    monkeypatch.setattr(fetch_mod.socket, "getaddrinfo", boom)
+    assert resolved_host_is_safe("x", 443, allow_nets=parse_cidrs(("198.18.0.0/16",))) is False
+    assert resolved_host_is_safe("", 443) is False          # empty host → refused
 
 
 def test_fetch_tool_blocks_before_calling_fetcher():

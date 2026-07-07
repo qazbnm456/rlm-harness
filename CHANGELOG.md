@@ -12,6 +12,15 @@ surfaced by dogfooding a real downstream consumer.
 
 ### Added
 
+- **Reusable resolved-IP SSRF guard for the `direct`-fetch pattern** (`rlm_kit.tools.resolved_host_is_safe`
+  + `parse_cidrs`). `is_safe_url` is only syntactic; the DNS-rebinding re-check (re-resolve each hop,
+  refuse a private/reserved address) was left to each consumer's fetcher — and every consumer re-derived
+  it. `resolved_host_is_safe(host, port, *, allow_nets=())` now ships that check ONCE, with an
+  `allow_nets` carve-out (`parse_cidrs(["198.18.0.0/16"])`) for a host behind a fake-IP proxy / split-DNS
+  VPN (Clash/Mihomo/Surge map every public host into the reserved `198.18.0.0/16`, which the strict
+  re-check would refuse — starving the model of all fetched source). Empty `allow_nets` = unchanged
+  strictness (`is_safe_url` still refuses localhost/metadata regardless). Consumer-driven: surfaced by a
+  downstream `direct` fetcher refusing every host behind such a proxy.
 - **`max_output_chars` is now configurable** (`RLMConfig.max_output_chars`, env
   `RLM_MAX_OUTPUT_CHARS`, default `10000` — dspy's own default, so behaviour is
   unchanged). dspy.RLM head+tail-truncates each REPL output to this many CHARACTERS
