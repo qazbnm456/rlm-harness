@@ -127,9 +127,14 @@ class _MCPBridge:
     def _transport(self):
         srv = self._server
         if isinstance(srv, str) or (isinstance(srv, dict) and "url" in srv):
-            from mcp.client.streamable_http import streamablehttp_client
+            import mcp.client.streamable_http as _sh
 
-            return streamablehttp_client(srv if isinstance(srv, str) else srv["url"])
+            # The SDK renamed streamablehttp_client → streamable_http_client (the old name is now
+            # deprecated). Prefer the new name, fall back to the old so the mcp>=1.0 floor keeps
+            # working; both accept a bare url and yield the same (read, write, get_session_id)
+            # transport, so the call site is unchanged.
+            streamable_client = getattr(_sh, "streamable_http_client", None) or _sh.streamablehttp_client
+            return streamable_client(srv if isinstance(srv, str) else srv["url"])
         if not (isinstance(srv, dict) and srv.get("command")):
             raise ValueError(
                 "MCP server spec must be a URL string, {'url': ...}, or "
