@@ -152,7 +152,11 @@ surfaced by dogfooding a real downstream consumer.
   validate → post-process pipeline; `model_as_tool` exposes extra models for LM-decided
   multi-model routing. *(Renamed from `make_middleware_lm` — see Changed.)*
 - **Skills-as-tools** (`skills.py`): `load_skills_as_tools` surfaces a Skills
-  directory to the RLM as `list_skills` / `read_skill` tools.
+  directory to the RLM. Default `discovery="list"` gives the LM `list_skills` /
+  `read_skill` (discover-then-read). `discovery="inject"` returns `read_skill`
+  only, and the caller injects the catalog into the prompt itself via
+  `render_skills_manifest(dir)` (or reads it structurally with `discover_skills`) —
+  skipping the `list_skills` round-trip when the skill set is small and fixed.
 - **Unified trajectory recording** (`trace.py`): `TraceRecorder` writes an
   append-only JSONL stream — main steps (`Prediction.trajectory`), every sub-LM
   call, every tool call — keyed by `run_id` + `step_id`. Optional Langfuse mirror.
@@ -192,6 +196,16 @@ surfaced by dogfooding a real downstream consumer.
   REPL. *(trace.py, tools/)*
 - **GEPA harness skeleton** (`optimize.py`): metric templates now; `compile_task`
   is a documented Phase-2 stub.
+
+### Fixed
+
+- **No more "Unclosed connector" warning from litellm** (`runtime.py`). litellm
+  (dspy's LM backend) defaults to an aiohttp transport whose pooled `ClientSession`
+  is bound to the per-run `asyncio.run` loop; when that loop closes, aiohttp logs a
+  noisy "Unclosed connector" through the loop's exception handler. `RLMTask` now sets
+  `litellm.disable_aiohttp_transport = True` before the first LM call, forcing litellm
+  onto httpx so no aiohttp session is created and nothing dangles. Best-effort and
+  idempotent — a litellm-free install just no-ops.
 
 ### Changed / Hardened (surfaced by dogfooding a consumer)
 

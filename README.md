@@ -187,6 +187,13 @@ body. The list→read split is two-level **progressive disclosure**; and because
 these as tools inside the REPL, "which knowledge did I load" lands in the trajectory (and the
 RL dataset).
 
+For a larger catalog you can skip the discovery round-trip: `load_skills_as_tools(dir,
+discovery="inject")` returns **only** `read_skill`, and you inject the catalog into the system
+prompt yourself with `render_skills_manifest(dir)`. The LM then sees every skill's
+`name` + `description` at startup (no `list_skills` call) and still pulls a full body
+just-in-time with `read_skill`. The default `discovery="list"` keeps the `list_skills` tool
+instead. See `examples/harness_run.py`.
+
 Scope & caveats:
 - **Knowledge only.** `read_skill` returns the markdown text — it does NOT execute bundled
   scripts or expand linked files. A "just instructions" skill works fully; a skill that ships
@@ -360,8 +367,8 @@ tends to retry verbatim. Isolation is unchanged; `RLMTask` owns the teardown.
 All via env (`RLMConfig.from_env()`): `RLM_MAIN_MODEL` (or `AI_MODEL_NAME`),
 `RLM_SUB_MODEL` (or `SUB_AI_MODEL_NAME`), `RLM_API_KEY` (or `AI_API_KEY`),
 `RLM_BASE_URL` (or `AI_BASE_URL`), `RLM_INTERPRETER`, `RLM_ADAPTER`,
-`RLM_MAX_TOKENS`, `RLM_ALLOW_INSECURE_SANDBOX`, `RLM_MAX_ITERATIONS`,
-`RLM_MAX_LLM_CALLS`, `RLM_MAX_RETRIES`, `RLM_OBSERVE`.
+`RLM_MAX_TOKENS`, `RLM_MAX_OUTPUT_CHARS`, `RLM_ALLOW_INSECURE_SANDBOX`,
+`RLM_MAX_ITERATIONS`, `RLM_MAX_LLM_CALLS`, `RLM_MAX_RETRIES`, `RLM_OBSERVE`.
 
 The `AI_*` fallbacks let the kit drop into projects already keyed on those vars
 without re-keying env; the `RLM_*` form wins when both are set.
@@ -420,7 +427,8 @@ invariants when modifying the kit.
 
 ## Status
 
-**v0.2.0** — scaffold + harness-engineering layer (sub-LM hook, skills-as-tools,
+**v0.2.0** (in development — not yet tagged or published to PyPI; the version is the
+target) — scaffold + harness-engineering layer (sub-LM hook, skills-as-tools,
 trajectory recording, replay, dataset export). Hardened by dogfooding against a
 real downstream consumer; the changes that surfaced are in [`CHANGELOG.md`](https://github.com/qazbnm456/rlm-kit/blob/main/CHANGELOG.md).
 
