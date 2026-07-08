@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import os
 
-import dspy
 from pydantic import BaseModel, Field
 
 from rlm_kit import (
@@ -26,6 +25,7 @@ from rlm_kit import (
     TraceRecorder,
     configure,
     export_rl,
+    get_sub_lm,
     group_by_run,
     intercept_sub_lm,
     load_events,
@@ -72,10 +72,12 @@ class Research(RLMTask):
 
 
 async def main() -> None:
-    cfg = configure(RLMConfig.from_env())
+    configure(RLMConfig.from_env())
 
     # Intercept the configured sub-model: trace every escalation + validate/post-process.
-    base_sub = dspy.LM(cfg.sub_model, api_key=cfg.api_key, base_url=cfg.base_url)
+    # get_sub_lm() returns the sub-LM configure() built (with the right base_url/provider/
+    # max_tokens) — wrap THAT rather than reconstructing a dspy.LM that could drift from it.
+    base_sub = get_sub_lm()
     intercepted_sub = intercept_sub_lm(
         base_sub, validators=[_non_empty], postprocessors=[str.strip], name="local-sub"
     )
