@@ -166,7 +166,7 @@ class RLMConfig:
         - ``RLM_MAX_LLM_CALLS`` (default ``30``).
         - ``RLM_MAX_OUTPUT_CHARS`` (default ``10000``) — head+tail character cap on REPL
           output fed back to the planner (distinct from ``RLM_MAX_TOKENS``).
-        - ``RLM_MAX_RETRIES`` (default ``3``).
+        - ``RLM_MAX_RETRIES`` (default ``1``).
         - ``RLM_OBSERVE`` (default ``false``).
         """
         main_model = (

@@ -195,7 +195,7 @@ surfaced by dogfooding a real downstream consumer.
   the fetch / web_search bases, it picks no endpoint and templates no messages; the consuming
   project wraps it with its own `chat_fn` + validator + tool name/messages/tracing.
 - **`sub_call` events now capture the escalation input** (`sub_lm.py`): the
-  `MiddlewareLM` records the prompt the planner sent the sub-LM, not just its output —
+  the intercepted sub-LM records the prompt the planner sent the sub-LM, not just its output —
   needed for RL data on escalations.
 - **`trace.record_tool_call`** (surfaced by dogfooding a consumer): one helper that
   owns the `tool_call` emission — active-recorder lookup, `None`-guard, and the canonical

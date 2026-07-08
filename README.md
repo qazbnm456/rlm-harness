@@ -391,9 +391,9 @@ the pin routes everything via the OpenAI wire protocol to your `base_url`.) A pr
 `RLM_ADAPTER` (default `json`) picks how structured fields are coaxed out of the
 model:
 
-- **`json`** (default) — schema-guided structured output, end-to-end. The planner LM reports
-  `supports_response_schema=True` (so dspy sends the `json_schema` form schema-guided servers
-  accept — no `litellm.register_model` poke), and a brace-tolerant JSONAdapter absorbs guided
+- **`json`** (default) — schema-guided structured output, end-to-end. A lenient `JSONAdapter` always
+  sends the `json_schema` response format directly — bypassing dspy's `supports_response_schema`
+  gate, so no `litellm.register_model` poke is needed — and a brace-tolerant parse absorbs guided
   output that drops the outer `{ }`. Works on **any** structured-output endpoint — OpenAI-proper
   AND vLLM / NVIDIA NIM (which reject schema-less `json_object` but accept `json_schema`). The
   decoder enforces the schema, so it **yields valid output even from a weak / imperfectly-
