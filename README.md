@@ -82,11 +82,10 @@ Deno sandbox (`brew install deno`) — the logic and tests run without either.
 multi-sub-model or depth>1 recursion. The clean lever is to **wrap a `dspy.LM`**:
 
 ```python
-import dspy
-from rlm_kit import intercept_sub_lm, model_as_tool, TraceRecorder, RLMConfig, configure
+from rlm_kit import intercept_sub_lm, model_as_tool, get_sub_lm, TraceRecorder, RLMConfig, configure
 
-cfg = configure(RLMConfig.from_env())
-base = dspy.LM(cfg.sub_model, api_key=cfg.api_key)
+configure(RLMConfig.from_env())
+base = get_sub_lm()          # the configured base sub-LM — single source of truth
 # intercept_sub_lm traces every escalation; validators/postprocessors are optional
 # (deterministic only — agentic actions stay LM-decided tools):
 smart_sub = intercept_sub_lm(base, validators=[...], postprocessors=[str.strip])
@@ -96,7 +95,9 @@ with TraceRecorder("traces/run.jsonl", run_id="r1"):
 ```
 
 `intercept_sub_lm` records a `sub_call` for every escalation and, if you pass them,
-runs deterministic validate → post-process. External tools are exposed to the main
+runs deterministic validate → post-process. `get_sub_lm()` hands back the base sub-LM
+`configure` built — wrap THAT rather than reconstructing a `dspy.LM`, so it can't drift
+from the configured model. External tools are exposed to the main
 LM via `tools=` / `load_skills_as_tools` / `model_as_tool`, so the decision lands in
 the trajectory. `TraceRecorder` records main steps (`Prediction.trajectory`), every
 sub-LM call, and every tool call into one JSONL stream — replayable (`replay.py`) and
@@ -336,10 +337,11 @@ hook) is PROMOTED into rlm-kit via the base/wrap split — the generic half here
 the consumer. A consumer-specific VALUE (a model name, a schema, a validator, a path) stays in the
 consumer. Never special-case the consumer inside the kit; never fork the harness or re-implement
 tracing inside the consumer. If you need an internal seam the kit doesn't expose, ADD a public hook
-here (that is how `recorder_scope` / `bind_recorder_to_sub_lm` were born) rather than reaching into a
-`_private` name. The trace schema, the `EVENT_*` types, and the exporter record shapes are a FROZEN
-v1 wire format — `tests/test_contract.py` pins them; adding an optional field is fine, removing or
-re-typing one is a `v2` break.
+here (that is how `recorder_scope` / `bind_recorder_to_sub_lm` / `get_sub_lm` were born) rather than
+reaching into a `_private` name. The trace schema, the `EVENT_*` types, and the exporter record shapes
+are a FROZEN v1 wire format — `tests/test_contract.py` pins them; adding an optional field is fine,
+removing or re-typing one is a `v2` break. The `EVENT_*` type constants are exported from `rlm_kit`,
+so a trace reader matches on `rlm_kit.EVENT_RESULT` instead of hardcoding the wire string `"result"`.
 
 **The stage boundary** keeps the data honest. rlm-kit + your consumer are the ROLLOUT stage: they
 produce trajectories (the trace) and turn them into datasets, emitting raw LABELS / METRICS, never a

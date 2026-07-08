@@ -5,7 +5,7 @@ Public surface::
     from rlm_kit import RLMConfig, configure, RLMTask
     from rlm_kit.tools import make_schema_validator, make_fetch_tool, is_safe_url
     # Harness-engineering layer (Phase A/B/C):
-    from rlm_kit import intercept_sub_lm, model_as_tool            # sub-LM hook
+    from rlm_kit import intercept_sub_lm, model_as_tool, get_sub_lm  # sub-LM hook
     from rlm_kit import TraceRecorder, current_recorder, record_tool_call  # tracing
     from rlm_kit import load_skills_as_tools                       # skills-as-tools
     from rlm_kit import load_timeline, export_sft_turns, export_rl  # replay + dataset
@@ -27,6 +27,13 @@ from .sandbox import SandboxSecurityError
 from .skills import discover_skills, load_skills_as_tools, render_skills_manifest
 from .sub_lm import SubLMValidationError, intercept_sub_lm, model_as_tool
 from .trace import (
+    EVENT_FINAL,
+    EVENT_MAIN_STEP,
+    EVENT_RESULT,
+    EVENT_RUN_END,
+    EVENT_RUN_START,
+    EVENT_SUB_CALL,
+    EVENT_TOOL_CALL,
     TraceRecorder,
     current_recorder,
     group_by_run,
@@ -45,6 +52,7 @@ __all__ = [
     "intercept_sub_lm",
     "SubLMValidationError",
     "model_as_tool",
+    "get_sub_lm",
     "load_skills_as_tools",
     "render_skills_manifest",
     "discover_skills",
@@ -54,6 +62,14 @@ __all__ = [
     "record_tool_call",
     "load_events",
     "group_by_run",
+    # trace/v1 contract constants — read a trace without hardcoding the wire strings
+    "EVENT_RUN_START",
+    "EVENT_MAIN_STEP",
+    "EVENT_SUB_CALL",
+    "EVENT_TOOL_CALL",
+    "EVENT_FINAL",
+    "EVENT_RESULT",
+    "EVENT_RUN_END",
     # replay + dataset (Phase C)
     "load_timeline",
     "reconstruct",
@@ -77,6 +93,10 @@ def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import
         from .task import RLMTask
 
         return RLMTask
+    if name == "get_sub_lm":  # the configured base sub-LM, to wrap with intercept_sub_lm
+        from .runtime import get_sub_lm
+
+        return get_sub_lm
     if name == "mcp_tools":  # optional MCP client (imports dspy + mcp lazily)
         from .mcp import mcp_tools
 

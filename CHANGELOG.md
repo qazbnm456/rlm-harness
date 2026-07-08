@@ -12,6 +12,17 @@ surfaced by dogfooding a real downstream consumer.
 
 ### Added
 
+- **`get_sub_lm` promoted to the public surface** (`rlm_kit.get_sub_lm`; lazy re-export, keeps
+  `import rlm_kit` dspy-free). Returns the base sub-LM `configure` built — the instance a consumer
+  wraps with `intercept_sub_lm` before passing as `RLMTask(sub_lm=...)`. Consumer-driven: TWO
+  independent consumers were reaching into `rlm_kit.runtime.get_sub_lm` (a submodule internal) because
+  the kit exposed no public way to get the configured sub-LM; per the "add a named hook, don't reach
+  into a `_private` name" rule it is now that hook. Using it (vs reconstructing `dspy.LM(cfg.sub_model,
+  …)`) keeps a single source of truth so the wrapped model can't drift from `configure`.
+- **The trace/v1 `EVENT_*` type constants are now exported** (`rlm_kit.EVENT_RUN_START`,
+  `EVENT_MAIN_STEP`, `EVENT_SUB_CALL`, `EVENT_TOOL_CALL`, `EVENT_FINAL`, `EVENT_RESULT`,
+  `EVENT_RUN_END`). A trace reader matches on these instead of hardcoding wire strings like `"result"`.
+  Additive to `__all__`; the strings themselves are unchanged and still pinned by `test_contract.py`.
 - **Reusable resolved-IP SSRF guard for the `direct`-fetch pattern** (`rlm_kit.tools.resolved_host_is_safe`
   + `parse_cidrs`). `is_safe_url` is only syntactic; the DNS-rebinding re-check (re-resolve each hop,
   refuse a private/reserved address) was left to each consumer's fetcher — and every consumer re-derived
