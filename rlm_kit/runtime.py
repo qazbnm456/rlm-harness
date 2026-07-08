@@ -109,11 +109,22 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
         )
 
 
-def configure(config: Optional[RLMConfig] = None) -> RLMConfig:
+def configure(
+    config: Optional[RLMConfig] = None,
+    *,
+    main_lm: Optional["dspy.LM"] = None,
+    sub_lm: Optional["dspy.LM"] = None,
+) -> RLMConfig:
     """Initialise dspy (and observability if enabled) from ``config``.
 
     Idempotent-friendly: calling it again reconfigures cleanly. Returns the
     effective config so callers can log/inspect it.
+
+    Pass ``main_lm`` / ``sub_lm`` to use a PRE-BUILT LM verbatim instead of constructing
+    one from ``config`` — a ``dspy.utils.DummyLM`` in tests, or a cached / custom client in
+    production. Whichever you inject is stored and (for the sub-LM) handed back by
+    ``get_sub_lm``; an injected ``main_lm`` also becomes the dspy global. This is the public
+    seam for supplying a test double, so nothing needs to reach into the private runtime state.
     """
     cfg = config or RLMConfig.from_env()
 
@@ -142,8 +153,12 @@ def configure(config: Optional[RLMConfig] = None) -> RLMConfig:
         lm_kwargs["custom_llm_provider"] = "openai"
     # Both LMs are plain dspy.LM. In "json" mode it's _LenientJSONAdapter (not the LM) that
     # forces the json_schema response_format, so the LM needs no special capability flag.
-    main_lm = dspy.LM(cfg.main_model, **lm_kwargs)
-    sub_lm = dspy.LM(cfg.sub_model, **lm_kwargs)
+    # An injected main_lm/sub_lm is used verbatim (test double or pre-built client) — we build
+    # from config ONLY for the ones not supplied.
+    if main_lm is None:
+        main_lm = dspy.LM(cfg.main_model, **lm_kwargs)
+    if sub_lm is None:
+        sub_lm = dspy.LM(cfg.sub_model, **lm_kwargs)
     # Pass the adapter explicitly (None == dspy's stock default) so a re-configure
     # is clean. The "chat" default never emits response_format — see _build_adapter.
     #
@@ -233,6 +248,9 @@ def _require_configured() -> None:
 
 
 def get_config() -> RLMConfig:
+    """The effective ``RLMConfig`` that ``configure`` stored. PUBLIC accessor — re-exported as
+    ``rlm_kit.get_config``. Lets a consumer read back the active config (budgets, model names,
+    interpreter) without reaching into private runtime state. Requires ``configure`` to have run."""
     _require_configured()
     assert _STATE.config is not None
     return _STATE.config

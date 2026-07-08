@@ -19,6 +19,13 @@ surfaced by dogfooding a real downstream consumer.
   the kit exposed no public way to get the configured sub-LM; per the "add a named hook, don't reach
   into a `_private` name" rule it is now that hook. Using it (vs reconstructing `dspy.LM(cfg.sub_model,
   …)`) keeps a single source of truth so the wrapped model can't drift from `configure`.
+- **Public LM-injection seam + `get_config` accessor** (`configure(cfg, main_lm=…, sub_lm=…)`,
+  `rlm_kit.get_config`). `configure` now accepts a pre-built `main_lm` / `sub_lm` and uses it
+  verbatim instead of constructing one from config — a `dspy.utils.DummyLM` in tests, or a cached /
+  custom client in production. `get_config` (lazy re-export) reads the active `RLMConfig` back.
+  Consumer-driven: consumer test suites (and the kit's own) were poking private
+  `rlm_kit.runtime._STATE` to inject a fake LM because there was no public path; this closes that
+  reach-in. Backward-compatible (keyword-only, default `None`); no wire-format change.
 - **The trace/v1 `EVENT_*` type constants are now exported** (`rlm_kit.EVENT_RUN_START`,
   `EVENT_MAIN_STEP`, `EVENT_SUB_CALL`, `EVENT_TOOL_CALL`, `EVENT_FINAL`, `EVENT_RESULT`,
   `EVENT_RUN_END`). A trace reader matches on these instead of hardcoding wire strings like `"result"`.

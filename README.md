@@ -375,6 +375,11 @@ All via env (`RLMConfig.from_env()`): `RLM_MAIN_MODEL` (or `AI_MODEL_NAME`),
 The `AI_*` fallbacks let the kit drop into projects already keyed on those vars
 without re-keying env; the `RLM_*` form wins when both are set.
 
+**Injecting a pre-built LM.** `configure(cfg, main_lm=…, sub_lm=…)` uses a supplied LM
+verbatim instead of constructing one from `cfg` — a `dspy.utils.DummyLM` in tests, or a
+cached / custom client in production. It's the public seam for a test double, so nothing
+has to reach into private runtime state; read the active config back with `get_config()`.
+
 **Model names with a custom endpoint.** When `RLM_BASE_URL` is set, `configure` pins
 litellm's `custom_llm_provider="openai"`, so the model names are the **plain id your
 endpoint serves** — e.g. `qwen/qwen3-next`, not `openai/qwen/qwen3-next`. (dspy.LM runs on

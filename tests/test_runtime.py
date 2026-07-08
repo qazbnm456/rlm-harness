@@ -26,6 +26,19 @@ def test_configure_with_observe_calls_instrument(monkeypatch):
     assert called["instr"] is True
 
 
+def test_configure_accepts_injected_lms():
+    # The public seam for supplying a test double (or a pre-built client): pass main_lm/sub_lm and
+    # configure uses them verbatim instead of building from config — so nothing reaches into _STATE.
+    from dspy.utils.dummies import DummyLM
+
+    d_main, d_sub = DummyLM([{"a": "1"}]), DummyLM([{"b": "2"}])
+    rt.configure(
+        RLMConfig(main_model="x", sub_model="x", observe=False), main_lm=d_main, sub_lm=d_sub
+    )
+    assert rt.get_sub_lm() is d_sub     # injected sub stored + handed back by the public accessor
+    assert dspy.settings.lm is d_main   # injected main became the dspy global
+
+
 def test_configure_tolerates_a_second_thread(monkeypatch):
     # dspy.configure is owner-locked to the first thread/task; a long-lived driver that runs each task
     # in a fresh worker thread (e.g. a server handling per-request live runs) would crash on

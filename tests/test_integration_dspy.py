@@ -26,11 +26,8 @@ def _configure_with_dummy(interpreter="mock"):
     from dspy.utils.dummies import DummyLM
 
     dummy = DummyLM([{"reasoning": "r", "finding": "{}"}])
-    cfg = RLMConfig(main_model="x", sub_model="x", interpreter=interpreter)
-    rt._STATE.configured = True
-    rt._STATE.config = cfg
-    rt._STATE.sub_lm = dummy
-    dspy.configure(lm=dummy)
+    cfg = RLMConfig(main_model="x", sub_model="x", interpreter=interpreter, observe=False)
+    rt.configure(cfg, main_lm=dummy, sub_lm=dummy)   # public injection seam — no _STATE poking
     return dummy
 
 

@@ -47,6 +47,7 @@ __all__ = [
     "RLMTaskError",
     "SandboxSecurityError",
     "configure",
+    "get_config",
     "RLMTask",
     # sub-LM hook (Phase A)
     "intercept_sub_lm",
@@ -97,6 +98,10 @@ def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import
         from .runtime import get_sub_lm
 
         return get_sub_lm
+    if name == "get_config":  # the effective RLMConfig configure() stored
+        from .runtime import get_config
+
+        return get_config
     if name == "mcp_tools":  # optional MCP client (imports dspy + mcp lazily)
         from .mcp import mcp_tools
 
