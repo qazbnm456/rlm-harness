@@ -42,6 +42,11 @@ observe = [
 mcp = [
     "mcp>=1.0",
 ]
+# JSON-Schema validation (make_json_schema_validator): validate a parsed object against a
+# vendored, version-pinned upstream JSON schema. Opt-in — the core scaffold runs without it.
+jsonschema = [
+    "jsonschema>=4.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/qazbnm456/rlm-kit"

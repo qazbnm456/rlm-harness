@@ -14,7 +14,7 @@ from rlm_kit.tools.fetch import (
 )
 from rlm_kit.tools.model import ModelToolResult, make_model_tool
 from rlm_kit.tools.search import make_web_search_tool, normalise_search_results
-from rlm_kit.tools.validation import make_schema_validator
+from rlm_kit.tools.validation import make_json_schema_validator, make_schema_validator
 from rlm_kit.trace import EVENT_TOOL_CALL, TraceRecorder, load_events
 
 
@@ -142,6 +142,46 @@ def test_schema_validator_accepts_valid_json():
 def test_schema_validator_reports_failure():
     v = make_schema_validator(Finding)
     assert "failed" in v('{"title": "t"}').lower()
+
+
+# ---- JSON-schema validator (make_json_schema_validator) -------------------
+
+_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "severity": {"enum": ["info", "low", "medium", "high", "critical"]},
+    },
+    "required": ["id", "severity"],
+}
+
+
+def test_json_schema_validator_passes_a_valid_object():
+    v = make_json_schema_validator(_JSON_SCHEMA)
+    assert v({"id": "x", "severity": "high"}) == []          # [] == valid
+
+
+def test_json_schema_validator_reports_each_violation_with_a_path():
+    v = make_json_schema_validator(_JSON_SCHEMA)
+    errs = v({"severity": "spicy"})                          # missing id + bad enum
+    assert any("id" in e for e in errs)                      # required-field violation
+    assert any("severity" in e and "spicy" in e for e in errs)  # located on the bad field
+
+
+def test_json_schema_validator_loads_schema_from_a_path(tmp_path):
+    import json as _json
+    p = tmp_path / "schema.json"
+    p.write_text(_json.dumps(_JSON_SCHEMA))
+    v = make_json_schema_validator(str(p))
+    assert v({"id": "x", "severity": "high"}) == []
+    assert v({"id": 1, "severity": "high"})                  # id wrong type → non-empty
+
+
+def test_json_schema_validator_truncates_a_flood_of_errors():
+    schema = {"type": "object", "additionalProperties": {"type": "string"}}
+    v = make_json_schema_validator(schema, max_errors=3)
+    errs = v({f"k{i}": i for i in range(50)})                # 50 int values → 50 violations
+    assert len(errs) == 4 and "truncated" in errs[-1]        # 3 + the truncation marker
 
 
 # ---- SSRF guard ----------------------------------------------------------

@@ -67,7 +67,7 @@ Deno sandbox (`brew install deno`) — the logic and tests run without either.
 | `task.py` | `RLMTask` base class. |
 | `_retry.py` | Validation + retry engine (dspy-free, unit-tested). |
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
-| `tools/` | `make_schema_validator`, SSRF-guarded `make_fetch_tool`, provider-agnostic `make_web_search_tool`, and `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages). |
+| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-kit[jsonschema]`), SSRF-guarded `make_fetch_tool`, provider-agnostic `make_web_search_tool`, and `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages). |
 | `optimize.py` | GEPA harness — metric templates now, compile in Phase 2. |
 | `sub_lm.py` | `intercept_sub_lm` — wrap the RLM's sub-LM to trace every escalation as a `sub_call` (+ optional validate/post-process); `model_as_tool` for LM-decided multi-model routing. |
 | `skills.py` | `load_skills_as_tools` — expose a Skills directory to the RLM as tools. |

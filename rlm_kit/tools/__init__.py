@@ -8,10 +8,11 @@ from .fetch import (
 )
 from .model import ModelToolResult, make_model_tool
 from .search import make_web_search_tool, normalise_search_results
-from .validation import make_schema_validator
+from .validation import make_json_schema_validator, make_schema_validator
 
 __all__ = [
     "make_schema_validator",
+    "make_json_schema_validator",
     "is_safe_url",
     "resolved_host_is_safe",
     "parse_cidrs",

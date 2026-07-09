@@ -12,6 +12,16 @@ surfaced by dogfooding a real downstream consumer.
 
 ### Added
 
+- **`make_json_schema_validator` — validate a parsed object against a JSON Schema (draft 2020-12).**
+  The generic base for the "validate against an official, vendored, version-pinned upstream JSON
+  schema" pattern: a consumer vendors the schema file + a refresh script (the provider-specific half)
+  and layers its own bespoke checks on top; the kit owns only the validator wiring. Returns the
+  violation messages (`"<path>: <reason>"`, truncated at `max_errors` so a huge invalid doc can't
+  flood the trace) for a parsed dict — parsing stays the consumer's job, so it composes with any
+  extract/parse step. `jsonschema` is an OPTIONAL dependency (`rlm-kit[jsonschema]`), imported lazily
+  so `import rlm_kit` and the dspy-free `tools` package stay lean. Consumer-driven: a downstream
+  consumer was hand-rolling structural gates that drift from the real upstream format; this is the
+  reusable half of moving to authoritative schema validation.
 - **`get_sub_lm` promoted to the public surface** (`rlm_kit.get_sub_lm`; lazy re-export, keeps
   `import rlm_kit` dspy-free). Returns the base sub-LM `configure` built — the instance a consumer
   wraps with `intercept_sub_lm` before passing as `RLMTask(sub_lm=...)`. Consumer-driven: TWO
