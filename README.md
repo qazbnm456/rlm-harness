@@ -282,6 +282,16 @@ The fix: keep DETERMINISTIC facts out of the policy's output type entirely.
    the result is consumed: the live path, re-render, and the dataset exporters (`export_sft_turns` /
    `export_rl`), so the training labels read facts too.
 
+   *Caveat when the validator CANONICALIZES, not just verdicts.* If the validator only returns
+   pass/fail, verbatim re-sourcing is exactly right. But a validator that also REWRITES its input to a
+   canonical form (stamps a fixed provenance field, strips a fabricated token) makes the raw draft and
+   the canonical output DIVERGE — and re-sourcing the raw then ships the un-corrected bytes, so the
+   deliverable silently misses a fix the run already applied (the root LM saw the corrected version, but
+   the assembled artifact carries the raw one). Ship the validator's CANONICAL output as the artifact
+   and derive validity from those same bytes; the tool-call still records the model's raw draft, so the
+   trace stays faithful for RL while the deliverable stays canonical. Both are byte-identical no-ops when
+   there is nothing to correct, so this costs nothing in the common case.
+
 So the trace records the policy's real ACTION (its judgement), deterministic truth is COMPUTED (never
 stored as if the policy produced it), and a self-reported flag can never drift from the bytes it
 labels. Old traces heal on read: a pydantic `output_model` ignores the legacy artifact/validity keys
