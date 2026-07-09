@@ -3,7 +3,7 @@ import types
 import pytest
 from pydantic import BaseModel
 
-from rlm_kit._retry import RLMTaskError, coerce_output, run_with_retry
+from rlm_kit._retry import RLMTaskError, _short_error, coerce_output, run_with_retry
 
 
 class Finding(BaseModel):
@@ -98,3 +98,38 @@ async def test_no_model_returns_raw_field():
 
     out = await run_with_retry(runner, output_field="answer")
     assert out == "plain text"
+
+
+# ---- _short_error: bound the logged exception -----------------------------
+
+def test_short_error_leaves_a_small_message_intact():
+    assert _short_error(ValueError("nope")) == "ValueError: nope"
+
+
+def test_short_error_caps_a_huge_exception_and_keeps_head_and_tail():
+    # dspy's AdapterParseError embeds the ENTIRE raw LM completion; a degenerate model makes it
+    # thousands of lines. _short_error keeps the head (type + start) and tail, elides the middle.
+    huge = "HEAD-marker " + ("loop " * 5000) + "TAIL-marker"
+    out = _short_error(RuntimeError(huge))
+    assert len(out) < 700                                # bounded, not the ~25k-char original
+    assert out.startswith("RuntimeError: HEAD-marker")   # head kept
+    assert out.endswith("TAIL-marker")                   # tail kept
+    assert "chars elided" in out
+
+
+async def test_retry_log_does_not_flood_on_huge_exception(caplog):
+    # Regression: a failed attempt must not dump the full (possibly enormous) exception message —
+    # that is what floods the terminal when the root model degenerates into a repetition loop.
+    flood = "loop " * 5000
+    async def runner():
+        raise RuntimeError(f"Adapter failed. LM Response: {flood} end-of-error")
+
+    with caplog.at_level("WARNING", logger="rlm_kit._retry"):
+        with pytest.raises(RLMTaskError):
+            await run_with_retry(runner, output_field="finding", max_retries=1)
+
+    msg = caplog.records[-1].getMessage()
+    assert len(msg) < 800                    # bounded, not the ~25k-char flood
+    assert "Adapter failed" in msg           # head kept
+    assert "end-of-error" in msg             # tail kept
+    assert "chars elided" in msg

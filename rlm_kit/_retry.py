@@ -16,6 +16,25 @@ from pydantic import BaseModel
 
 _DEFAULT_LOG = logging.getLogger(__name__)
 
+_ERR_LOG_CAP = 600
+
+
+def _short_error(exc: BaseException, limit: int = _ERR_LOG_CAP) -> str:
+    """Render a caught exception for a single log line, keeping the head AND tail.
+
+    A failed attempt is logged with the exception's message, but some exceptions carry
+    an enormous message: dspy's ``AdapterParseError`` embeds the ENTIRE raw LM completion,
+    which for a degenerate/repetitive model is thousands of lines that then flood the
+    terminal. The useful diagnostics live at the ends (the exception type + adapter at the
+    head, the expected/actual field summary at the tail), so keep both and elide the middle.
+    The full completion is not lost for debugging: it is on the wire in the model call."""
+    text = f"{type(exc).__name__}: {exc}"
+    if len(text) <= limit:
+        return text
+    head = (limit * 2) // 3
+    tail = limit - head
+    return f"{text[:head]}... [{len(text) - limit} chars elided] ...{text[-tail:]}"
+
 
 class RLMTaskError(RuntimeError):
     """Raised when a task fails to produce a valid result within the retry budget."""
@@ -77,7 +96,7 @@ async def run_with_retry(
         except Exception as exc:  # noqa: BLE001 — we intentionally retry on anything
             last_error = exc
             log.warning(
-                "RLM attempt %d/%d failed: %s", attempt, max_retries, exc
+                "RLM attempt %d/%d failed: %s", attempt, max_retries, _short_error(exc)
             )
 
     raise RLMTaskError(

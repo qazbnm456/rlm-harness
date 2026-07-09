@@ -224,6 +224,15 @@ surfaced by dogfooding a real downstream consumer.
   `litellm.disable_aiohttp_transport = True` before the first LM call, forcing litellm
   onto httpx so no aiohttp session is created and nothing dangles. Best-effort and
   idempotent — a litellm-free install just no-ops.
+- **Retry logging no longer floods the terminal with a degenerate LM completion**
+  (`_retry.py`). A failed attempt was logged with the caught exception's full string, and
+  dspy's `AdapterParseError` embeds the ENTIRE raw LM completion in its message — so a root
+  model that degenerates into a repetition loop (never emitting the expected output fields)
+  dumped thousands of lines to stderr. `run_with_retry` now formats the logged exception
+  through `_short_error`: the exception type + head + tail are kept (the adapter name and the
+  expected/actual-fields summary survive), the middle is elided. Normal short errors still log
+  in full; only a pathologically large message is capped. Consumer-driven: surfaced by a
+  downstream studio whose general (non-fine-tuned) root model degenerated on a run.
 
 ### Changed / Hardened (surfaced by dogfooding a consumer)
 
