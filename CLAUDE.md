@@ -125,7 +125,7 @@ One companion rule ships under `.claude/rules/`:
 ## Consumer-driven hardening
 
 - This kit is driven by a real downstream consumer (a task that builds on the
-  scaffold via an editable path dep). That dogfooding is the design loop: when the consumer
+  scaffold, pinning the kit as a git dep — overlaid editable for local co-dev). That dogfooding is the design loop: when the consumer
   forces a workaround, log the **reusable** gap and fix it in the kit — do not special-case
   the consumer. Generic mechanics get promoted here via the base/wrap split (a generic base +
   syntactic guard + factory in the kit; the provider + tracing in the consumer); consumer-specific

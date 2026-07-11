@@ -6,8 +6,9 @@ name: Release
 #        owner = qazbnm456, repo = rlm-kit, workflow = release.yml, environment = pypi
 #   2. In this repo's settings, create an environment named `pypi`.
 # Then publishing a GitHub Release (from a `vX.Y.Z` tag) builds + uploads automatically.
-# Action majors (checkout@v4, setup-uv@v5, *-artifact@v4, pypi-publish@release/v1) are
-# current; bump if a newer major ships.
+# Supply-chain: the two third-party actions are SHA-pinned — setup-uv, and (highest blast radius, it
+# uploads to PyPI) pypi-publish. Bump a SHA and its trailing version comment together. GitHub-owned
+# checkout/*-artifact stay on major tags.
 
 on:
   release:
@@ -22,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
       - name: Build sdist + wheel
         run: uv build
       - uses: actions/upload-artifact@v4
@@ -42,4 +43,4 @@ jobs:
           name: dist
           path: dist/
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0

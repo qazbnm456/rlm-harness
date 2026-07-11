@@ -5,9 +5,18 @@ on:
     branches: [main]
   pull_request:
 
-# Action versions (checkout@v4, setup-uv@v5) are current majors; bump if a newer
-# major ships. CI needs no live model, no vLLM, no network, no Deno: the
-# dspy-bearing tests use a DummyLM or skip when dspy is absent.
+# Least privilege: this workflow only checks out code and runs tests/lint — it never writes. Specifying
+# `permissions:` also drops every unlisted scope to `none`, so a compromised dep/action on an untrusted
+# fork PR can't use the token to push, tag, or open issues. The third-party setup-uv action is SHA-pinned
+# (a repointed tag could inject code that runs with the token); GitHub-owned checkout stays on a major tag.
+# CI needs no live model, no vLLM, no network, no Deno: the dspy-bearing tests use a DummyLM or skip when
+# dspy is absent.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -20,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
@@ -34,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           enable-cache: true
       - name: Lint

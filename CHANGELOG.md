@@ -284,6 +284,15 @@ surfaced by dogfooding a real downstream consumer.
   (or `RLMConfig(max_tokens=None)`) to defer to the server. *(diagnosed by capturing per-call
   `finish_reason`/`reasoning_len`/`completion_tokens` on a telnet run; verified: 16 calls, 0 empty
   / 0 length-truncations at 16384 vs an empty at the 1000 cap.)*
+- **CI/release workflows hardened for the public-repo + PyPI-publish threat model** (`.github/workflows/`).
+  `ci.yml` now runs least-privilege (`permissions: contents: read` — it only checks out and tests/lints;
+  specifying `permissions:` drops every unlisted scope to `none`, so a compromised action on an untrusted
+  fork PR can't push, tag, or open issues) with `concurrency` cancel-in-progress. Both workflows now
+  SHA-pin their third-party actions — `astral-sh/setup-uv`, and (highest blast radius, it uploads to PyPI)
+  `pypa/gh-action-pypi-publish` — so a repointed tag can't inject code that runs with the token; GitHub-owned
+  `checkout`/`*-artifact` stay on major tags. `release.yml`'s OIDC Trusted Publishing (no API token,
+  `id-token: write` scoped to just the publish job) is untouched. *(Ported from the same hardening applied to
+  a downstream consumer, itself borrowed from a public awesome-list repo's CI posture.)*
 - **New `RLMConfig.adapter` (`RLM_ADAPTER`) selects the structured-output adapter; default
   `"json"` (schema-guided)** (`config.py`, `runtime.py`). Modes: `"json"` (default), `"chat"`,
   `"default"`.
