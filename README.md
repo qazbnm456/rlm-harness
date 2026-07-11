@@ -360,6 +360,15 @@ SEPARATE downstream project that installs the trainer. A prompt/policy rule that
 BETTER is in scope; a reward or penalty is not. Keep the trace clean training data and let the
 trainer score it.
 
+## Built with rlm-kit
+
+Real projects using rlm-kit as their RLM scaffold:
+
+- **[cve-reverser](https://github.com/qazbnm456/cve-reverser)**: reverses publicly disclosed CVEs from
+  their patches into local-lab PoCs and Nuclei detection templates. A traced, trainable RLM harness.
+
+Built something on rlm-kit? Open a PR to add it here.
+
 ## Security note — the sandbox is the boundary
 
 RLM executes model-written code. When that code processes untrusted scraped
@@ -454,4 +463,4 @@ GEPA-compile tasks (currently a documented stub).
 
 ## License
 
-MIT © [Boik Su](https://x.com/boik_su) ([@boik_su](https://x.com/boik_su)). See [`LICENSE`](https://github.com/qazbnm456/rlm-kit/blob/main/LICENSE).
+MIT © Boik Su ([@boik_su](https://x.com/boik_su)). See [`LICENSE`](https://github.com/qazbnm456/rlm-kit/blob/main/LICENSE).

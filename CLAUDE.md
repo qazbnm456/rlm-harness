@@ -115,7 +115,12 @@ One companion rule ships under `.claude/rules/`:
   refer to downstream consumers GENERICALLY ("a consumer", "a downstream UI") — never by a specific
   project name, and never reproducing a consumer's product domain. A consumer's own concrete values
   (model names, schemas, product terms, paths) live in the consumer, not here. This keeps the kit
-  decoupled from any one user and the published artifact free of third-party specifics.
+  decoupled from any one user and the published artifact free of third-party specifics. The ONE
+  exception is a single, clearly-delimited **"Built with rlm-kit"** adopters section in the README: it
+  MAY list real, PUBLIC downstream projects by name + link + a one-line description. That is an adopters
+  list, not design coupling — the kit's mechanics, examples, API docs, and commit messages still describe
+  consumers generically, and a consumer's domain specifics still never appear anywhere else. Only list a
+  consumer that is public and whose maintainer wants the association; never a private or internal one.
 
 ## Versioning
 

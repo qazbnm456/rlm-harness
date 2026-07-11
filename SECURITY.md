@@ -2,8 +2,7 @@
 
 ## Reporting a vulnerability
 
-Please do **not** open a public issue for a security vulnerability. Instead, email
-**boik.su@cycraft.com** with:
+Please do **not** open a public issue for a security vulnerability. Instead, DM **Boik Su ([@boik_su](https://x.com/boik_su))** on X with:
 
 - a description of the issue and its impact,
 - steps to reproduce (or a proof of concept), and
