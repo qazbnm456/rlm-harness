@@ -12,6 +12,12 @@ Policy:
   ``_build_sandboxed_interpreter``). Same isolation as dspy's own default. Safe
   for untrusted content.
 - ``mock`` → a no-op interpreter for tests.
+- ``container`` → the environment interpreter (``container_interpreter.py``,
+  opt-in): the REPL runs *inside* an isolated Docker container so model code can
+  spawn subprocesses natively. A STRONGER boundary than the WASM sandbox
+  (``--network=none``, LM creds host-side, caps dropped) and the OPPOSITE of
+  ``local`` — handled *before* the insecure-interpreter check below, never routed
+  through it. Needs the ``docker`` CLI (imported lazily; this module stays dspy-free).
 - ``local`` → executes model-written code directly on the host. This is
   effectively arbitrary code execution and is refused unless the caller has
   *explicitly* opted in. The opt-in cannot be reached by accident.
