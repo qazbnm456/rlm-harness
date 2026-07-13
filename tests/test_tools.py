@@ -4,6 +4,7 @@ import pytest
 from pydantic import BaseModel
 
 from rlm_kit.optimize import exact_field_metric, schema_valid_metric
+from rlm_kit.tools.command import CommandResult, make_command_tool
 import rlm_kit.tools.fetch as fetch_mod
 from rlm_kit.tools.fetch import (
     _ip_blocked,
@@ -384,6 +385,115 @@ def test_web_search_tool_catches_searcher_error_as_text(tmp_path):
     tc = [e for e in load_events(path) if e["type"] == EVENT_TOOL_CALL][0]
     assert tc["payload"]["ok"] is False
     assert "error: RuntimeError" in tc["payload"]["note"]
+
+
+# ---- run_command (isolated-runner command tool) --------------------------
+
+def _ok_runner(out="hello\n", err="", code=0, duration_ms=None):
+    return lambda command: CommandResult(exit_code=code, stdout=out, stderr=err,
+                                         duration_ms=duration_ms)
+
+
+def test_command_tool_is_sync_and_returns_dict():
+    # dspy.RLM invokes tools synchronously; an async tool would serialise to a coroutine
+    # repr and never run. The tool hands the model a dict (dspy JSON-bridges list/dict
+    # into a real REPL value; a dataclass would arrive only as its unsliceable repr).
+    tool = make_command_tool(_ok_runner(out="hi"))
+    assert not inspect.iscoroutinefunction(tool)
+    r = tool(["echo", "hi"])
+    assert isinstance(r, dict) and r["stdout"] == "hi" and r["exit_code"] == 0
+
+
+def test_command_tool_records_outcome_not_full_stdout(tmp_path):
+    # The full streams ride back in the CommandResult; the trace keeps only lengths + a
+    # stderr preview + timing (mirrors fetch recording size not body).
+    tool = make_command_tool(_ok_runner(out="x" * 5000, err="warn", duration_ms=12.5))
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r1"):
+        r = tool("echo hi")
+    assert len(r["stdout"]) == 5000                       # the model gets the full stream
+    tc = [e for e in load_events(path) if e["type"] == EVENT_TOOL_CALL][0]
+    p = tc["payload"]
+    assert p["ok"] is True and p["exit_code"] == 0
+    assert p["stdout_len"] == 5000 and "stdout" not in p  # length only, not the body
+    assert p["stderr_preview"] == "warn"
+    assert p["duration_ms"] == 12.5                       # the runner's own timing is kept
+    assert p["args"]["command"] == "echo hi"
+
+
+def test_command_tool_times_when_runner_leaves_duration_none(tmp_path):
+    tool = make_command_tool(_ok_runner(duration_ms=None))
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r1"):
+        tool("echo hi")
+    tc = [e for e in load_events(path) if e["type"] == EVENT_TOOL_CALL][0]
+    assert isinstance(tc["payload"]["duration_ms"], float)  # the base fills a wall-clock fallback
+
+
+def test_command_tool_nonzero_exit_is_ok_false_but_still_a_result(tmp_path):
+    tool = make_command_tool(_ok_runner(out="", err="boom", code=2))
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r1"):
+        r = tool(["false"])
+    assert isinstance(r, dict) and r["exit_code"] == 2         # a failed command is not an error
+    tc = [e for e in load_events(path) if e["type"] == EVENT_TOOL_CALL][0]
+    assert tc["payload"]["ok"] is False and tc["payload"]["exit_code"] == 2
+
+
+def test_command_tool_catches_runner_error_as_text(tmp_path):
+    def boom(command):
+        raise RuntimeError("docker daemon down")
+    tool = make_command_tool(boom)
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r1"):
+        out = tool(["echo", "hi"])                         # returns a string, does not raise
+    assert isinstance(out, str) and "Command error" in out and "RuntimeError" in out
+    tc = [e for e in load_events(path) if e["type"] == EVENT_TOOL_CALL][0]
+    assert tc["payload"]["ok"] is False
+    assert "error: RuntimeError" in tc["payload"]["note"]
+
+
+def test_command_tool_guard_short_circuits_before_runner(tmp_path):
+    called = {"n": 0}
+    def runner(command):
+        called["n"] += 1
+        return CommandResult(exit_code=0)
+    tool = make_command_tool(runner, guard=lambda command: "rejected by shape pre-flight")
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r1"):
+        out = tool(["rm", "-rf", "/"])
+    assert out == "Refused: rejected by shape pre-flight"
+    assert called["n"] == 0                                # the runner never ran
+    tc = [e for e in load_events(path) if e["type"] == EVENT_TOOL_CALL][0]
+    assert tc["payload"]["ok"] is False and "refused" in tc["payload"]["note"]
+
+
+def test_command_tool_guard_none_allows():
+    tool = make_command_tool(_ok_runner(out="ok"), guard=lambda command: None)
+    r = tool(["echo", "ok"])
+    assert isinstance(r, dict) and r["stdout"] == "ok"       # None reason = pass through
+
+
+def test_command_tool_guard_empty_string_still_refuses(tmp_path):
+    # The protocol is "None allows, ANY string refuses" — an empty-string reason must not
+    # silently fall through to the runner (that would run the command a guard meant to block).
+    called = {"n": 0}
+    def runner(command):
+        called["n"] += 1
+        return CommandResult(exit_code=0)
+    tool = make_command_tool(runner, guard=lambda command: "")
+    assert tool(["anything"]) == "Refused: "
+    assert called["n"] == 0
+
+
+def test_command_tool_stderr_preview_capped(tmp_path):
+    from rlm_kit.tools.command import _STDERR_PREVIEW
+    tool = make_command_tool(_ok_runner(out="", err="e" * (_STDERR_PREVIEW + 100)))
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r1"):
+        tool("noisy")
+    tc = [e for e in load_events(path) if e["type"] == EVENT_TOOL_CALL][0]
+    assert len(tc["payload"]["stderr_preview"]) == _STDERR_PREVIEW
 
 
 # ---- optimize metric templates ------------------------------------------

@@ -1,5 +1,6 @@
 """Reusable tools that RLM tasks can expose to the model inside the REPL."""
 
+from .command import CommandResult, make_command_tool
 from .fetch import (
     is_safe_url,
     make_fetch_tool,
@@ -21,4 +22,6 @@ __all__ = [
     "normalise_search_results",
     "make_model_tool",
     "ModelToolResult",
+    "make_command_tool",
+    "CommandResult",
 ]
