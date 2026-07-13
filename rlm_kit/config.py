@@ -11,14 +11,17 @@ importable and unit-testable.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 # Interpreters the scaffold knows how to build. "pyodide"/"deno" are the
 # sandboxed WASM/subprocess interpreters DSPy ships by default and are safe for
-# untrusted content. "mock" is for tests. "local" runs model-written code on the
-# host and is gated behind an explicit opt-in (see sandbox.py).
-KNOWN_INTERPRETERS = frozenset({"pyodide", "deno", "mock", "local"})
+# untrusted content. "mock" is for tests. "container" runs the REPL inside an
+# isolated Docker container so model code can spawn subprocesses natively (a
+# STRONGER boundary than the WASM sandbox for that case; see container_interpreter.py).
+# "local" runs model-written code on the host and is gated behind an explicit
+# opt-in (see sandbox.py).
+KNOWN_INTERPRETERS = frozenset({"pyodide", "deno", "mock", "container", "local"})
 
 # How the RLM coaxes structured output fields out of the model.
 #   "json"    — DEFAULT. Schema-guided structured output: a brace-tolerant JSONAdapter
@@ -60,6 +63,54 @@ def _env_int(name: str, default: int) -> int:
     return int(raw)
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return float(raw)
+
+
+@dataclass(frozen=True)
+class ContainerConfig:
+    """Options for the ``container`` interpreter (see ``container_interpreter.py``).
+
+    Safety-by-default: ``--network=none`` (no egress) + ``--memory`` + ``--pids-limit`` +
+    ``--cap-drop=ALL`` cap model-written code, and ``timeout_s`` bounds sandbox compute per
+    ``execute`` cell. ``cpus`` is unset (uncapped) by default so a CPU cap can't throttle a
+    build into the wall-clock timeout. ``read_only`` (opt-in) makes the rootfs read-only for an
+    inspect-only task (paired with a tmpfs ``/tmp`` the agent needs); ``workdir`` mounts a host
+    dir READ-ONLY at ``/workspace``. The default is capable: a disposable, no-egress container
+    the model can freely write inside (nothing persists to the host).
+    """
+
+    image: str = "python:3.11-slim"
+    network: str = "none"          # no egress: the stdio broker is the only channel in/out
+    memory: str = "512m"           # docker --memory (blast-radius cap on a memory balloon)
+    pids_limit: int = 256          # docker --pids-limit (cap on a fork bomb)
+    timeout_s: float = 120.0       # per-execute SANDBOX-COMPUTE budget (host tool time is not counted)
+    cpus: Optional[str] = None     # docker --cpus (unset = uncapped; capping can throttle a build)
+    cap_drop: bool = True          # docker --cap-drop=ALL (drop Linux caps; model code rarely needs any)
+    read_only: bool = False        # docker --read-only rootfs (+ a tmpfs /tmp); opt-in inspect mode
+    workdir: Optional[str] = None  # host dir mounted READ-ONLY at /workspace (absolute; must exist)
+
+    @classmethod
+    def from_env(cls) -> "ContainerConfig":
+        raw_workdir = os.getenv("RLM_CONTAINER_WORKDIR")
+        return cls(
+            image=os.getenv("RLM_CONTAINER_IMAGE", "python:3.11-slim"),
+            network=os.getenv("RLM_CONTAINER_NETWORK", "none"),
+            memory=os.getenv("RLM_CONTAINER_MEMORY", "512m"),
+            pids_limit=_env_int("RLM_CONTAINER_PIDS_LIMIT", 256),
+            timeout_s=_env_float("RLM_CONTAINER_TIMEOUT", 120.0),
+            cpus=(os.getenv("RLM_CONTAINER_CPUS") or "").strip() or None,
+            cap_drop=_env_bool("RLM_CONTAINER_CAP_DROP", True),
+            read_only=_env_bool("RLM_CONTAINER_READ_ONLY", False),
+            # Normalise to an absolute path so a bare relative name isn't silently read by docker as
+            # an (empty) named volume; a missing dir is caught at start() with a clear error.
+            workdir=os.path.abspath(os.path.expanduser(raw_workdir)) if raw_workdir else None,
+        )
+
+
 @dataclass(frozen=True)
 class RLMConfig:
     """Immutable runtime configuration for an RLM task.
@@ -76,6 +127,9 @@ class RLMConfig:
     # Sandbox / interpreter selection. Defaults to the secure WASM sandbox.
     interpreter: str = "pyodide"
     allow_insecure_sandbox: bool = False
+
+    # Options for the ``container`` interpreter; ignored by every other interpreter.
+    container: ContainerConfig = field(default_factory=ContainerConfig)
 
     # Structured-output adapter (see KNOWN_ADAPTERS). Defaults to "json" — schema-guided
     # structured output works on any endpoint that supports it (OpenAI-proper AND vLLM/NIM,
@@ -186,6 +240,7 @@ class RLMConfig:
             api_key=os.getenv("RLM_API_KEY") or os.getenv("AI_API_KEY"),
             base_url=os.getenv("RLM_BASE_URL") or os.getenv("AI_BASE_URL"),
             interpreter=os.getenv("RLM_INTERPRETER", "pyodide"),
+            container=ContainerConfig.from_env(),
             adapter=os.getenv("RLM_ADAPTER", "json"),
             max_tokens=int(_mt) if _mt and _mt.strip() else _DEFAULT_MAX_TOKENS,
             allow_insecure_sandbox=_env_bool("RLM_ALLOW_INSECURE_SANDBOX", False),

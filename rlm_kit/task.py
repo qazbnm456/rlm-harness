@@ -142,6 +142,7 @@ class RLMTask:
         interpreter = build_interpreter(
             self._config.interpreter,
             allow_insecure=self._config.allow_insecure_sandbox,
+            container=self._config.container,
         )
         # We now construct the deno/pyodide interpreter ourselves (to inject the
         # JSON-literal aliases), so its teardown is ours: dspy.RLM only shuts down

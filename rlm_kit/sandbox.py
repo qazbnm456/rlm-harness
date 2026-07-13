@@ -36,12 +36,15 @@ class SandboxSecurityError(RuntimeError):
     """Raised when an insecure interpreter is requested without explicit opt-in."""
 
 
-def build_interpreter(kind: str, *, allow_insecure: bool = False) -> Optional[Any]:
+def build_interpreter(
+    kind: str, *, allow_insecure: bool = False, container: Any = None
+) -> Optional[Any]:
     """Return a dspy ``CodeInterpreter`` for ``kind``, or ``None`` for the default.
 
     ``None`` means "let dspy.RLM construct its own default sandboxed interpreter",
-    which is the secure path. A non-None return is only produced for ``mock`` and
-    (when explicitly allowed) ``local``.
+    which is the secure path. A non-None return is produced for ``mock``, ``container``
+    (needs the ``container`` options + the ``docker`` CLI), and (when explicitly allowed)
+    ``local``.
     """
     normalized = (kind or "pyodide").lower()
 
@@ -55,6 +58,13 @@ def build_interpreter(kind: str, *, allow_insecure: bool = False) -> Optional[An
 
     if normalized == "mock":
         return _build_mock_interpreter()
+
+    if normalized == "container":
+        # The environment interpreter: the REPL runs inside an isolated container so model
+        # code can spawn subprocesses natively. NOT routed through INSECURE_INTERPRETERS — it
+        # is a STRONGER boundary than the WASM sandbox, the opposite of `local`. Lazily imported
+        # (it is dspy-bearing) so this module and ``import rlm_kit`` stay dspy-free.
+        return _build_container_interpreter(container)
 
     if normalized in INSECURE_INTERPRETERS:
         if not allow_insecure:
@@ -113,6 +123,15 @@ def _build_sandboxed_interpreter() -> Any:
         _sandboxed_interpreter_cls = _JsonLiteralInterpreter
 
     return _sandboxed_interpreter_cls()
+
+
+def _build_container_interpreter(container: Any) -> Any:
+    """Construct the container-backed environment interpreter. Lazily imported because
+    ``container_interpreter`` is dspy-bearing; ``sandbox.py`` itself stays dspy-free."""
+    from .config import ContainerConfig
+    from .container_interpreter import ContainerInterpreter
+
+    return ContainerInterpreter(container or ContainerConfig())
 
 
 def _build_mock_interpreter() -> Any:
