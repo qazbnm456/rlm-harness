@@ -128,6 +128,13 @@ surfaced by dogfooding a real downstream consumer.
   / `export_rl` record shapes + the public `__all__` — so a kit change that would silently break a
   downstream reader (a consumer's report + RL export, a consumer UI's replay) fails HERE in
   the kit's own suite, not opaquely in the consumer. (+7 tests → 148.)
+- **README "Built with rlm-kit" adopters section** (`README.md`, `CLAUDE.md`). A single,
+  clearly-delimited list of real, PUBLIC downstream projects built on the kit (currently
+  `cve-reverser`), plus a neutral maintainer-contact line. It is an adopters list, NOT design
+  coupling: the kit's mechanics, examples, API docs, and commit messages still describe consumers
+  GENERICALLY, and a consumer's domain specifics still never appear elsewhere. A matching CLAUDE.md
+  carve-out documents this as the ONE sanctioned exception to the vendor-neutral invariant — only a
+  public consumer whose maintainer wants the association may be listed.
 - **Fixed: batched lifeline escalations are now recorded** (`trace.recorder_scope` +
   `sub_lm.bind_recorder_to_sub_lm`, wired in `RLMTask.arun`; surfaced dogfooding a consumer's UI
   — a run that used `llm_query_batched` recorded ZERO `sub_call`s, so `lifeline_calls` under-counted).
