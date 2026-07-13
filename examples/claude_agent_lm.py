@@ -6,8 +6,9 @@
 stateless `query()` through the Claude Code CLI on YOUR OWN subscription login: the
 officially sanctioned path for individual subscribers, as opposed to the blocked
 OAuth-token-against-the-API routes. Every call is a pure completion — no agent loop, no
-tools, no filesystem access, no settings leakage (`tools=[]`, `max_turns=1`,
-`setting_sources=[]`) — so rlm-kit's sandbox stays the only place code runs.
+tools, no filesystem access, no settings leakage (`tools=[]`, `setting_sources=[]`) — so
+rlm-kit's sandbox stays the only place code runs. `max_turns` is 1 for a plain completion,
+8 when structured `output_format` needs the SDK's extra validation round.
 
 Setup:
   1. Install the Claude Code CLI and log in with your Pro/Max account (`claude` → `/login`),
