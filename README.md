@@ -529,6 +529,36 @@ A *live* run additionally needs real credentials and a Deno sandbox
 (`brew install deno`); `examples/mini_run.py` shows it. See `CLAUDE.md` for
 invariants when modifying the kit.
 
+### Testing the forward path offline (`rlm_kit.testing`)
+
+Construction tests (`task._build_rlm()`) catch signature/kwarg drift but never run the loop — where
+wiring bugs actually hide (a prompt naming a tool `foo` while it registered as `foo_tool` is a
+`NameError` no construction test sees). `rlm_kit.testing` drives the **real `dspy.RLM.aforward` loop
+offline** — no model, no Deno, no network:
+
+```python
+from rlm_kit import RLMConfig, RLMTask, configure
+from rlm_kit.testing import ScriptedInterpreter, call, scripted_lm, submit
+
+configure(RLMConfig(main_model="x", sub_model="x", interpreter="mock"),
+          main_lm=scripted_lm([                         # the planner's canned turns
+              {"reasoning": "call the tool", "code": "print(my_tool(x=1))"},
+              {"reasoning": "submit", "code": "SUBMIT(answer={'x': 5})"}]),
+          sub_lm=scripted_lm([{"reasoning": "r", "answer": "{}"}]))
+
+task = MyTask(interpreter=ScriptedInterpreter([          # one step per planner turn
+    call("my_tool", x=1),                                # dispatch the REAL injected tool (traces a tool_call)
+    submit({"answer": {"x": 5}})]))                      # SUBMIT — terminates the loop, coerces the result
+result = await task.arun(q="…")                          # the whole planner→tools→result chain, offline
+```
+
+`dspy.RLM` injects the run's real tools onto the scripted interpreter's `.tools`, so a `call(...)` step
+runs the actual tool (its tracing records a genuine `tool_call`); a `dict`/`submit(...)` step SUBMITs.
+The `interpreter=` kwarg is an injection seam (like `sub_lm=`): an explicit interpreter OBJECT overrides
+`config.interpreter` and — like an injected `DummyLM` — bypasses `build_interpreter` and its guard, so it
+is a test/advanced seam; the default string path keeps the guard. `rlm_kit.testing` imports dspy lazily,
+so it doesn't affect `import rlm_kit`.
+
 ## Status
 
 **v0.2.0** (in development — not yet tagged or published to PyPI; the version is the

@@ -108,6 +108,7 @@ class RLMTask:
         config: Optional[RLMConfig] = None,
         sub_lm: Optional["dspy.LM"] = None,
         max_retries: Optional[int] = None,
+        interpreter: Optional[Any] = None,
     ) -> None:
         if not self.signature:
             raise ValueError(f"{type(self).__name__} must define `signature`")
@@ -119,6 +120,13 @@ class RLMTask:
         self._max_retries = (
             max_retries if max_retries is not None else self._config.max_retries
         )
+        # An explicit interpreter OBJECT overrides `config.interpreter` (the string that
+        # `sandbox.build_interpreter` maps to a sandbox). This is a TEST/advanced seam — mainly
+        # `rlm_kit.testing.ScriptedInterpreter`, to drive the forward path offline — and it bypasses
+        # `build_interpreter` (and its insecure-interpreter guard) exactly like an injected `sub_lm`
+        # bypasses the real model: the caller supplies and owns the double. The default (None) keeps the
+        # string path and the guard.
+        self._interpreter = interpreter
 
     def _build_rlm(self) -> "dspy.RLM":
         # Resolve a custom output type (e.g. "-> finding: Finding") explicitly via
@@ -139,7 +147,7 @@ class RLMTask:
         signature = dspy.Signature(
             self.signature, instructions=instructions, **sig_kwargs
         )
-        interpreter = build_interpreter(
+        interpreter = self._interpreter if self._interpreter is not None else build_interpreter(
             self._config.interpreter,
             allow_insecure=self._config.allow_insecure_sandbox,
             container=self._config.container,

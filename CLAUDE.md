@@ -33,14 +33,20 @@ One companion rule ships under `.claude/rules/`:
   inside an isolated Docker container so model code can spawn subprocesses — a *stronger* boundary
   than pyodide for that case (`--network=none` = no egress, LM creds stay host-side, caps dropped),
   the OPPOSITE of `local`; it is handled BEFORE the `INSECURE_INTERPRETERS` check and never routed
-  through it. Keep it that way, and keep the default `pyodide`.
+  through it. Keep it that way, and keep the default `pyodide`. The `RLMTask(interpreter=…)` kwarg is a
+  TEST/advanced INJECTION seam (mainly `rlm_kit.testing.ScriptedInterpreter`, to drive the forward path
+  offline): an explicit interpreter OBJECT overrides `config.interpreter` and bypasses `build_interpreter`
+  — NOT a guard hole and NOT a weakening of the `local` refusal, but the exact analogue of an injected
+  `sub_lm`/`main_lm` `DummyLM` bypassing the real model (the caller supplies and owns the double). The
+  default (string → `build_interpreter`) keeps the guard; don't route the string path around it.
 - **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`,
   `tools/`, `trace.py`, `skills.py`, `replay.py`, `dataset.py` must NOT import
   `dspy` at module top — that keeps their logic testable without dspy. Only
-  `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`, and
-  `container_interpreter.py` touch dspy — the last two live outside the dspy-free set
+  `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`, `container_interpreter.py`, and
+  `testing.py` touch dspy — the last three live outside the dspy-free set
   and are lazily imported (by `__getattr__` / by `sandbox.build_interpreter`'s
-  `"container"` branch), so `sandbox.py`'s module top and `import rlm_kit` stay dspy-free.
+  `"container"` branch / inside `testing.py`'s functions), so `sandbox.py`'s module top and
+  `import rlm_kit` stay dspy-free.
 - **`import rlm_kit` must not import dspy.** `RLMTask` and `configure` are lazy
   re-exports in `__init__.py` (PEP 562). Don't make them eager.
 - **Resolve custom output types via `output_model`.** `RLMTask._build_rlm` passes

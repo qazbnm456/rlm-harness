@@ -12,6 +12,24 @@ surfaced by dogfooding a real downstream consumer.
 
 ### Added
 
+- **`rlm_kit.testing` — drive the RLM forward path OFFLINE (`ScriptedInterpreter` + `scripted_lm`), plus
+  a `RLMTask(interpreter=…)` injection seam.** `dspy.RLM` runs the model's Python in a sandboxed
+  interpreter, so the *forward* loop (planner turn → tool call → SUBMIT → validated result) normally needs
+  a paid model + a Deno subprocess — which is why the kit's own tests and every consumer stop at
+  `_build_rlm()` (construction) and never exercise the loop, exactly where wiring bugs hide (a prompt that
+  names a tool `foo` while it registered as `foo_tool` is a `NameError` no construction test can see).
+  `ScriptedInterpreter` is a `dspy` `CodeInterpreter` double that runs a fixed SCRIPT instead of executing
+  model code: `dspy.RLM` injects the REAL tools onto its `.tools`, and each `execute()` runs the next
+  STEP — dispatch a real tool (so its tracing runs) or SUBMIT a final result. Paired with `scripted_lm`
+  (a `DummyLM` whose canned turns parse under the kit's JSON adapter) and injected via
+  `RLMTask(interpreter=…)`, it drives the whole `planner → tools → result` chain with **no model, no
+  Deno, no network**. `rlm_kit.testing` imports dspy LAZILY, so `import rlm_kit` / the dspy-free modules
+  are untouched. It is a TEST seam: an injected interpreter OBJECT overrides `config.interpreter` and
+  bypasses `sandbox.build_interpreter` (and its insecure-interpreter guard) exactly like an injected
+  `DummyLM` bypasses the real model — the caller supplies the double explicitly. The default string path
+  (`RLMConfig(interpreter=…)` → `build_interpreter`) is unchanged and keeps the guard. Surfaced by a
+  downstream consumer whose test-strategy work found a real forward-only bug (a tool-name/prompt drift)
+  that no construction test could catch — promoted here per the consumer-driven-hardening rule.
 - **`interpreter="container"` — the environment interpreter: the RLM REPL runs inside an isolated
   Docker container.** The default `pyodide`/`deno` sandbox is WASM Python and cannot spawn a
   subprocess; the container interpreter runs the REPL inside a real container so the model's own
