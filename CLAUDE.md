@@ -25,11 +25,18 @@ One companion rule ships under `.claude/rules/`:
 - **The sandbox is the security boundary.** Default interpreter is the sandboxed
   `pyodide`/`deno`. The `local` interpreter is host RCE and must stay **refused**
   unless `allow_insecure_sandbox=True` is explicitly set. Never weaken the guard
-  in `sandbox.py`.
+  in `sandbox.py`. The opt-in `container` interpreter (`container_interpreter.py`) runs the REPL
+  inside an isolated Docker container so model code can spawn subprocesses — a *stronger* boundary
+  than pyodide for that case (`--network=none` = no egress, LM creds stay host-side, caps dropped),
+  the OPPOSITE of `local`; it is handled BEFORE the `INSECURE_INTERPRETERS` check and never routed
+  through it. Keep it that way, and keep the default `pyodide`.
 - **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`,
   `tools/`, `trace.py`, `skills.py`, `replay.py`, `dataset.py` must NOT import
   `dspy` at module top — that keeps their logic testable without dspy. Only
-  `task.py`, `runtime.py`, and `sub_lm.py` (lazily) touch dspy.
+  `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`, and
+  `container_interpreter.py` touch dspy — the last two live outside the dspy-free set
+  and are lazily imported (by `__getattr__` / by `sandbox.build_interpreter`'s
+  `"container"` branch), so `sandbox.py`'s module top and `import rlm_kit` stay dspy-free.
 - **`import rlm_kit` must not import dspy.** `RLMTask` and `configure` are lazy
   re-exports in `__init__.py` (PEP 562). Don't make them eager.
 - **Resolve custom output types via `output_model`.** `RLMTask._build_rlm` passes

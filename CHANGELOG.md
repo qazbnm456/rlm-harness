@@ -12,6 +12,48 @@ surfaced by dogfooding a real downstream consumer.
 
 ### Added
 
+- **`interpreter="container"` — the environment interpreter: the RLM REPL runs inside an isolated
+  Docker container.** The default `pyodide`/`deno` sandbox is WASM Python and cannot spawn a
+  subprocess; the container interpreter runs the REPL inside a real container so the model's own
+  Python can `subprocess.run(...)` natively and hold filesystem/process state across a run (one
+  persistent container per run, torn down at run end) — the "environment" model of the original
+  `dspy.RLM`, realized over a host↔container JSON-RPC broker (`container_interpreter.py` +
+  the stdlib-only in-container `_sandbox_agent.py`, delivered via `python -c`). It is a **stronger**
+  boundary than pyodide for the subprocess case, not a weaker one, and the OPPOSITE of the refused
+  `local` interpreter: `--network=none` makes the stdio broker the only channel in/out (no egress),
+  LM credentials never enter the container (`llm_query`/tool callbacks run host-side, only results
+  cross the pipe), Linux caps are dropped, and memory/pids are capped — all from the first run. A
+  per-cell watchdog bounds only *sandbox* compute (host tool time is not counted) and kills+respawns
+  on a hang. Opt-in and configurable via `RLMConfig(interpreter="container", container=ContainerConfig(…))`
+  / `RLM_INTERPRETER=container` + `RLM_CONTAINER_*` (image, timeout, memory, pids_limit, cpus,
+  cap_drop, read_only, workdir, network); **the default stays `pyodide`**. Needs the `docker` CLI (a
+  runtime check, not a Python dep — `import rlm_kit` stays dspy-free AND docker-free via a lazy import
+  in `sandbox.build_interpreter`'s `"container"` branch). No trace-schema change: the broker runs
+  host-side, so `tool_call`/`main_step` recording is unchanged. The `local` refusal is untouched.
+- **`make_command_tool` — a traced, sync `run_command` tool over a consumer-supplied ISOLATED
+  runner.** The reusable half of letting an agent run local commands the way a coding agent does:
+  the kit enforces the sync contract, converts a runner failure to text the RLM reacts to, and
+  records ONE `tool_call` carrying the outcome (`ok` / `exit_code` / `stdout_len` / `stderr_preview`
+  / `duration_ms`) — additive payload on the existing `tool_call` event, no schema change. On success
+  the model receives a `{"exit_code", "stdout", "stderr"}` dict (dspy JSON-bridges a dict into a real
+  REPL value; the runner returns the typed `CommandResult`, the tool converts it — a dataclass would
+  reach the model only as its unsliceable `repr`); the trace keeps only lengths + a preview, like
+  `fetch_url` records size not body. The kit ships NO executor and
+  picks NO isolation: `runner` is a REQUIRED injection, because a `run_command` tool executes
+  model-CHOSEN commands HOST-SIDE (outside the sandbox) — a naive `subprocess.run` is the same class
+  of host RCE as the refused `local` interpreter, so untrusted input demands a disposable,
+  network-restricted container / VM / OS-sandbox. No allowlist primitive ships (a shell allowlist is
+  routinely bypassed — `make`/`npm run` script edits, `find -exec`, `git -c`, `$(...)`, env
+  injection); the optional `guard` is a shape-only pre-flight, never a security claim. The tool is
+  one-shot and holds no shell state — session semantics (cwd/env/filesystem persistence) are the
+  runner's contract, so a STATEFUL runner (a closure over a long-lived sandbox — `docker exec`, E2B /
+  Modal / Daytona, a SWE-ReX `BashSession`) fits the same seam with no API change; a `session_id`
+  payload field is the additive hook to add if a consumer ever needs model-managed sessions.
+  `examples/command_runner.py` is a reference stateless *inspect* runner (fresh `--rm --network=none`
+  container per call, read-only mount, in-container `timeout`, memory/pids caps).
+  `make_command_tool` / `CommandResult` export from `rlm_kit.tools`. (Necessary shape, not premature:
+  `dspy.RLM`'s pyodide/deno interpreter is WASM Python and cannot spawn a subprocess — verified — so
+  shell execution can only come from a host-side tool.)
 - **`make_json_schema_validator` — validate a parsed object against a JSON Schema (draft 2020-12).**
   The generic base for the "validate against an official, vendored, version-pinned upstream JSON
   schema" pattern: a consumer vendors the schema file + a refresh script (the provider-specific half)

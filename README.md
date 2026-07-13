@@ -67,7 +67,7 @@ Deno sandbox (`brew install deno`) — the logic and tests run without either.
 | `task.py` | `RLMTask` base class. |
 | `_retry.py` | Validation + retry engine (dspy-free, unit-tested). |
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
-| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-kit[jsonschema]`), SSRF-guarded `make_fetch_tool`, provider-agnostic `make_web_search_tool`, and `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages). |
+| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-kit[jsonschema]`), SSRF-guarded `make_fetch_tool`, provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor), and `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages). |
 | `optimize.py` | GEPA harness — metric templates now, compile in Phase 2. |
 | `sub_lm.py` | `intercept_sub_lm` — wrap the RLM's sub-LM to trace every escalation as a `sub_call` (+ optional validate/post-process); `model_as_tool` for LM-decided multi-model routing. |
 | `skills.py` | `load_skills_as_tools` — expose a Skills directory to the RLM as tools. |
@@ -228,6 +228,84 @@ Needs the extra: `pip install "rlm-kit[mcp]"`.
 - **Security: MCP tools run HOST-SIDE**, outside the sandbox — a stdio server is a subprocess this
   process spawns. Treat an MCP server as a **trusted dependency**, and its output as a
   **prompt-injection surface** (untrusted LM context), exactly like fetched web content.
+
+## Running local commands (an isolated runner)
+
+`make_command_tool(runner)` gives an `RLMTask` a `run_command` tool — the reusable half of
+letting the model run a local command (a build, a test, a git op) the way a coding agent does.
+It enforces the sync contract, turns a failure into text the RLM reacts to, and records one
+`tool_call` in the canonical shape. The kit ships **no** executor and picks **no** isolation: you
+supply the `runner`.
+
+```python
+from rlm_kit.tools import make_command_tool
+
+run_command = make_command_tool(my_isolated_runner)     # your runner; the kit ships none
+finding = MyTask(tools=[run_command]).run(...)
+```
+
+**The runner's isolation IS the security boundary.** `run_command` executes model-CHOSEN commands
+HOST-SIDE — outside the pyodide/deno sandbox that isolates the RLM's own REPL code (same as the
+fetch/search providers and MCP servers). A naive `subprocess.run` runner is arbitrary code
+execution steered by the model — the same class of danger as the refused `local` interpreter. For
+anything processing untrusted input the runner MUST execute inside a disposable, network-restricted
+container / VM / OS-sandbox; `examples/command_runner.py` is a reference Docker runner (`--rm
+--network=none`, workspace mounted read-only). A command **allowlist is not a substitute** — a shell
+allowlist is routinely bypassed (`make`/`npm run` script edits, `find -exec`, `git -c`, `$(...)`,
+env-var injection), so the kit ships no allowlist primitive; the optional `guard` hook is a
+shape-only pre-flight, never a security claim.
+
+- On success the model receives a `{"exit_code", "stdout", "stderr"}` dict (dspy JSON-bridges a
+  `dict` into a real REPL value it reads — `run_command("ls")["stdout"]`; a dataclass would arrive
+  only as its unsliceable `repr`, so the tool returns a dict and the runner returns the typed
+  `CommandResult`). The trace keeps only `exit_code` + lengths + a stderr preview + `duration_ms`,
+  like `fetch_url` records size not body.
+- Sync, like every RLM tool — wrap an async container/sandbox client into a sync call yourself.
+
+**One-shot vs stateful — the runner decides.** `run_command` returns a single command's result and
+holds no shell state; whether cwd, env, filesystem writes, and background processes persist across
+calls is the *runner's* contract. The reference example is a fresh container per call — a stateless
+**inspect** surface (read-only mount). An edit-build-test loop needs a **stateful** runner: a closure
+over a long-lived sandbox — `docker create` + `docker exec`, an [E2B](https://e2b.dev) /
+[Modal](https://modal.com/docs/guide/sandbox) / [Daytona](https://www.daytona.io) sandbox handle, or
+a [SWE-ReX](https://github.com/SWE-agent/SWE-ReX) `BashSession` — which fits the same seam with no API
+change. Interactive tools and tmux-style sessions are out of scope for a one-shot result; if a
+consumer later needs model-managed sessions, that's the moment to add an additive `session_id` to the
+payload, not before. (`dspy.RLM`'s own pyodide/deno interpreter is WASM Python and **cannot** spawn a
+subprocess, so shell execution has to come from a host-side tool like this — there is no in-sandbox
+alternative.)
+
+## Environment interpreter (`interpreter="container"`)
+
+The default `pyodide`/`deno` interpreter is WASM Python — it **cannot spawn a subprocess** (emscripten
+has no processes). When a task needs the model to run real commands as part of its own reasoning — a
+build, a test, `git`, a compiler — set `RLM_INTERPRETER=container` (or `RLMConfig(interpreter="container")`).
+The RLM's REPL then runs **inside an isolated Docker container**, so the model's own Python can
+`subprocess.run(...)` natively and hold real filesystem/process state.
+
+```bash
+docker pull python:3.11-slim
+export RLM_INTERPRETER=container         # default stays pyodide; this is opt-in per run
+```
+
+- **One persistent container per run.** State persists across REPL turns within a run (the model can
+  write a file in one cell and run it in the next), and the container is torn down at run end. This is
+  the *environment* model — distinct from the [`run_command`](#running-local-commands-an-isolated-runner)
+  tool, which is a model-*chosen* command per call against a runner you supply (and whose reference
+  example is a fresh container per call). Use the container interpreter when the REPL itself needs a
+  real environment; use `run_command` when commands are occasional, tool-like actions.
+- **A stronger boundary than pyodide for this case, not a weaker one.** `--network=none` makes the
+  host↔container stdio broker the only channel in or out (no egress); the LM credentials never enter
+  the container — `llm_query` and tool callbacks execute **host-side**, only results cross the pipe;
+  Linux capabilities are dropped (`--cap-drop=ALL`) and memory/pid are capped. It is the *opposite* of
+  the refused `local` interpreter (host RCE), not a relaxation of it.
+- **Config** (`RLM_CONTAINER_*`, all optional): `IMAGE` (default `python:3.11-slim`), `TIMEOUT`
+  (per-cell sandbox-compute budget, s, default 120 — host tool time is not counted), `MEMORY`
+  (`512m`), `PIDS_LIMIT` (`256`), `NETWORK` (`none`), `CPUS` (unset = uncapped), `CAP_DROP` (`true`),
+  `READ_ONLY` (`false`; opt-in read-only rootfs for an inspect-only task, paired with a tmpfs `/tmp`),
+  `WORKDIR` (a host dir mounted **read-only** at `/workspace`).
+- **Needs the `docker` CLI** (checked at start; `import rlm_kit` stays docker-free). The `WORKDIR`
+  mount resolves on the *daemon's* filesystem, so it won't work with a remote `DOCKER_HOST`.
 
 ## Grounded completeness — the sufficiency-critic recipe
 
