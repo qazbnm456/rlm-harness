@@ -14,11 +14,15 @@ One companion rule ships under `.claude/rules/`:
 
 ## Verify
 
-- `uv run pytest` — the full suite. No live LLM, network, or Deno needed: the
-  dspy-bearing tests use `DummyLM` or are skipped if dspy is absent.
+- Run what CI gates on — BOTH jobs — before pushing:
+  - `uvx ruff check .` — lint (ruff defaults, line-length 110). CI fails the build on any
+    violation; it is NOT part of the pytest suite, so a green `pytest` is not enough on its own.
+  - `uv run --group dev --extra mcp python -m pytest -q` — the full suite (CI runs it on
+    3.11/3.12/3.13). `--extra mcp` so the MCP-client tests run instead of skipping. No live LLM,
+    network, or Deno needed: the dspy-bearing tests use `DummyLM` or are skipped if dspy is absent.
 - A *live* `dspy.RLM` run needs real model credentials **and** a Deno sandbox
   (`brew install deno`). Don't run it in CI; it costs money. `examples/` show it.
-- Before claiming done, actually run the suite and paste the output.
+- Before claiming done, actually run BOTH commands and paste the output.
 
 ## Invariants — do not break
 
