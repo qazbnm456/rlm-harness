@@ -124,7 +124,8 @@ def _register(params):
 def _run_code(compiled):
     """exec() in the persistent namespace with fds 1/2 captured to a temp file."""
     tmp = tempfile.TemporaryFile()
-    sys.stdout.flush(); sys.stderr.flush()
+    sys.stdout.flush()
+    sys.stderr.flush()
     saved1, saved2 = os.dup(1), os.dup(2)
     os.dup2(tmp.fileno(), 1)
     os.dup2(tmp.fileno(), 2)
@@ -135,9 +136,12 @@ def _run_code(compiled):
         except _SubmitCalled as s:
             final = s.output
     finally:
-        sys.stdout.flush(); sys.stderr.flush()
-        os.dup2(saved1, 1); os.dup2(saved2, 2)
-        os.close(saved1); os.close(saved2)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(saved1, 1)
+        os.dup2(saved2, 2)
+        os.close(saved1)
+        os.close(saved2)
         tmp.seek(0)
         captured = tmp.read().decode("utf-8", "replace")
         tmp.close()
