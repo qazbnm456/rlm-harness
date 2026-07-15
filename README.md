@@ -445,6 +445,9 @@ Real projects using rlm-kit as their RLM scaffold:
 
 - **[cve-reverser](https://github.com/qazbnm456/cve-reverser)**: reverses publicly disclosed CVEs from
   their patches into local-lab PoCs and Nuclei detection templates. A traced, trainable RLM harness.
+- **[diff-sentry](https://github.com/qazbnm456/diff-sentry)**: classifies GitHub changes (PRs, issues,
+  pushes) for malicious intent — the diff is read as untrusted data in the sandboxed REPL, emitting
+  evidence-backed benign / suspicious / malicious verdicts into a SIEM.
 
 Built something on rlm-kit? Open a PR to add it here.
 
