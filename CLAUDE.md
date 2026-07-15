@@ -43,11 +43,13 @@ One companion rule ships under `.claude/rules/`:
 - **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`,
   `tools/`, `trace.py`, `skills.py`, `replay.py`, `dataset.py` must NOT import
   `dspy` at module top — that keeps their logic testable without dspy. Only
-  `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`, `container_interpreter.py`, and
-  `testing.py` touch dspy — the last three live outside the dspy-free set
-  and are lazily imported (by `__getattr__` / by `sandbox.build_interpreter`'s
+  `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`, `container_interpreter.py`,
+  `testing.py`, and `claude_agent_lm.py` touch dspy — the last four live outside the dspy-free
+  set and are lazily imported (by `__getattr__` / by `sandbox.build_interpreter`'s
   `"container"` branch / inside `testing.py`'s functions), so `sandbox.py`'s module top and
-  `import rlm_kit` stay dspy-free.
+  `import rlm_kit` stay dspy-free. `claude_agent_lm.py` (optional `rlm-kit[subscription]`)
+  additionally keeps its `claude-agent-sdk` import out of module top — deferred to instance
+  construction — so `rlm_kit.ClaudeAgentLM` is gettable without the extra, like `mcp_tools`.
 - **`import rlm_kit` must not import dspy.** `RLMTask` and `configure` are lazy
   re-exports in `__init__.py` (PEP 562). Don't make them eager.
 - **Resolve custom output types via `output_model`.** `RLMTask._build_rlm` passes

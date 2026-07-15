@@ -54,7 +54,9 @@ uv add "git+https://github.com/qazbnm456/rlm-kit"
 ```
 
 Once the first release is published, `pip install rlm-kit` will work too. `rlm-kit` needs Python ≥ 3.11
-and pulls in `dspy` + `pydantic`; observability extras are opt-in (`pip install "rlm-kit[observe]"`). A
+and pulls in `dspy` + `pydantic`; extras are opt-in — observability (`pip install "rlm-kit[observe]"`)
+and running on a Claude Pro/Max subscription instead of an API key
+(`pip install "rlm-kit[subscription]"` → `rlm_kit.ClaudeAgentLM`, injected via `configure(main_lm=…)`). A
 *live* `dspy.RLM` run additionally needs model credentials (see the guide's
 [Configuration](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md#configuration)) and a
 Deno sandbox (`brew install deno`) — the logic and tests run without either.

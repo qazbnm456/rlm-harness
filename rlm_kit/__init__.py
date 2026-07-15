@@ -80,6 +80,8 @@ __all__ = [
     "export_actions",
     # MCP client (optional: rlm-kit[mcp])
     "mcp_tools",
+    # Claude subscription LM (optional: rlm-kit[subscription])
+    "ClaudeAgentLM",
 ]
 
 __version__ = "0.2.0"
@@ -106,4 +108,8 @@ def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import
         from .mcp import mcp_tools
 
         return mcp_tools
+    if name == "ClaudeAgentLM":  # optional Claude subscription LM (imports dspy now, the SDK on use)
+        from .claude_agent_lm import ClaudeAgentLM
+
+        return ClaudeAgentLM
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

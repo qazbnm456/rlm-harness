@@ -47,6 +47,12 @@ mcp = [
 jsonschema = [
     "jsonschema>=4.0",
 ]
+# Claude Pro/Max SUBSCRIPTION LM (ClaudeAgentLM): run the planner and/or sub-LM on your own
+# Claude login via the official Claude Agent SDK, injected through configure(main_lm=/sub_lm=).
+# Opt-in — a plain API-key install never pulls the (heavy) SDK wheel.
+subscription = [
+    "claude-agent-sdk>=0.1.60",
+]
 
 [project.urls]
 Homepage = "https://github.com/qazbnm456/rlm-kit"

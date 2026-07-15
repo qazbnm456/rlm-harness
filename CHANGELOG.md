@@ -291,17 +291,21 @@ surfaced by dogfooding a real downstream consumer.
   REPL. *(trace.py, tools/)*
 - **GEPA harness skeleton** (`optimize.py`): metric templates now; `compile_task`
   is a documented Phase-2 stub.
-- **`examples/claude_agent_lm.py` — run rlm-kit on a Claude Pro/Max subscription.** A
-  self-contained `dspy.BaseLM` adapter over the official Claude Agent SDK (the sanctioned
-  path for individual subscribers), injected through the existing
-  `configure(main_lm=…, sub_lm=…)` seam — zero kit changes. Every call is a pure completion
-  (`tools=[]`, `setting_sources=[]`, no agent loop), the async SDK is bridged to dspy's
-  sync/async seats via a background event loop (the `mcp.py` pattern), concurrency is capped
-  at 2 with a single rate-limit backoff (politeness: ordinary individual use, not batch
-  rollouts), the kit's default `json` adapter's `response_format` is translated to the SDK's
-  native schema-validated `output_format` (with `max_turns` headroom for its validation step),
-  and a leftover `ANTHROPIC_API_KEY` fails fast so a subscription run can't silently bill API
-  credit.
+- **`ClaudeAgentLM` — run rlm-kit on a Claude Pro/Max SUBSCRIPTION (no API key), now shipped in
+  the kit.** `from rlm_kit import ClaudeAgentLM` behind the opt-in extra
+  `pip install "rlm-kit[subscription]"`: a `dspy.BaseLM` adapter over the official Claude Agent SDK
+  (the sanctioned path for individual subscribers), injected through the existing
+  `configure(main_lm=…, sub_lm=…)` seam — zero kit-core changes. Every call is a pure completion
+  (`tools=[]`, `setting_sources=[]`, no agent loop), the async SDK is bridged to dspy's sync/async
+  seats via a background event loop (the `mcp.py` pattern), concurrency is capped at 2 with a single
+  rate-limit backoff (politeness: ordinary individual use, not batch rollouts), the kit's default
+  `json` adapter's `response_format` is translated to the SDK's native schema-validated
+  `output_format` (with `max_turns` headroom for its validation step), and a leftover
+  `ANTHROPIC_API_KEY` fails fast so a subscription run can't silently bill API credit. Lazily
+  exported (PEP 562) with the `claude-agent-sdk` import deferred to construction, so `import rlm_kit`
+  stays dspy/SDK-free (the `mcp_tools` pattern). Previously lived only under `examples/` (not in the
+  wheel), which forced every downstream consumer to vendor a byte-identical copy;
+  `examples/claude_agent_lm.py` now shrinks to the runnable demo.
 
 ### Fixed
 

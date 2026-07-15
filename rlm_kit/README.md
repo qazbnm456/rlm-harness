@@ -22,8 +22,9 @@ pitch, the quickstart, and installation — start at the
 | `trace.py` | `TraceRecorder` — unified append-only JSONL trajectory (main steps + sub-LM + tool calls). |
 | `replay.py` | Reconstruct/replay a recorded run using recorded tool outputs. |
 | `dataset.py` | `export_sft_turns` / `export_rl` / `export_actions` — turn traces into training datasets (`export_sft_turns` = per-root-turn SFT, the RLM recipe of arXiv 2512.24601). |
+| `claude_agent_lm.py` | `ClaudeAgentLM` — run rlm-kit on a Claude Pro/Max subscription: a `dspy.BaseLM` over the official Claude Agent SDK, injected via `configure(main_lm=…, sub_lm=…)`. Opt-in `rlm-kit[subscription]`; pure completions (no tools), lazily exported so `import rlm_kit` stays dspy/SDK-free. |
 | `examples/mini_run.py` | Minimal end-to-end live run — config + a tiny `RLMTask` through a real `dspy.RLM`, with the trajectory recorded and summarised. |
-| `examples/claude_agent_lm.py` | Run rlm-kit on a Claude Pro/Max subscription: a `dspy.BaseLM` adapter over the official Claude Agent SDK, injected via `configure(main_lm=…, sub_lm=…)` — personal use, pure completions (no tools), kit unchanged. |
+| `examples/claude_agent_lm.py` | Runnable demo of `ClaudeAgentLM` — a tiny `RLMTask` through a real `dspy.RLM` on a subscription login. |
 
 ## RLM as Harness Engineering (sub-LM hook + tracing)
 
