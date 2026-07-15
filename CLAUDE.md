@@ -4,7 +4,8 @@
 for building tasks (of any kind). A task is a *declaration* — a `RLMTask` subclass with
 a `signature`, `output_field`, optional `output_model`, `instructions`, and
 `tools`; retry/validation, sandbox selection, budget caps, and observability are
-inherited. See `README.md` for the full layout and usage.
+inherited. See `README.md` for the overview; the full layout and usage live in
+`rlm_kit/README.md` — "the guide".
 
 One companion rule ships under `.claude/rules/`:
 
@@ -86,7 +87,7 @@ One companion rule ships under `.claude/rules/`:
   another model to grade the output) into the sub-LM intercept — that is an agentic
   decision and must be a tool. `intercept_sub_lm` is THE sub-LM interception hook (the
   only point dspy exposes); don't try to recompose it from `make_model_tool`, which is
-  tool-side. Full consumer-facing explanation: README "Sub-LM vs. tool".
+  tool-side. Full consumer-facing explanation: the guide (`rlm_kit/README.md`) "Sub-LM vs. tool".
 - **The JSONL trace is the source of truth** for replay and RL datasets. Langfuse
   is an optional mirror only; never make `dataset.py` depend on Langfuse export.
   `TraceRecorder.record` is **lock-guarded** — dspy.RLM's `llm_query_batched` fans the
@@ -100,7 +101,7 @@ One companion rule ships under `.claude/rules/`:
   convention. `read_skill` returns markdown TEXT only; it must NOT execute bundled scripts
   or expand linked files (don't add silent exec — the sandbox is the only place code runs).
   Third-party skills are usable but their text becomes LM context: treat untrusted skills as
-  a prompt-injection surface. See README "Skills (progressive disclosure)".
+  a prompt-injection surface. See the guide (`rlm_kit/README.md`) "Skills (progressive disclosure)".
 - **The trace is a VERSIONED wire format — additive-only within v1.** `SCHEMA =
   "rlm-kit/trace/v1"` + the seven `EVENT_*` type strings + the `{schema, run_id, step_id, ts, type,
   payload}` envelope + the dataset-exporter record shapes are a CONTRACT that offline readers build
@@ -127,7 +128,7 @@ One companion rule ships under `.claude/rules/`:
   internal seam the kit doesn't expose, ADD a named, documented hook here (how `recorder_scope` in
   `trace.py` + `bind_recorder_to_sub_lm` in `sub_lm.py` were born — the cross-thread sub-LM recording
   fix; both are importable public functions, though not in the top-level `__all__`) — do not reach
-  into a `_private` name. Full walkthrough: README "Building a consumer".
+  into a `_private` name. Full walkthrough: the guide (`rlm_kit/README.md`) "Building a consumer".
 - **Keep the public surface vendor-neutral.** rlm-kit's package, source, docs, and commit messages
   refer to downstream consumers GENERICALLY ("a consumer", "a downstream UI") — never by a specific
   project name, and never reproducing a consumer's product domain. A consumer's own concrete values

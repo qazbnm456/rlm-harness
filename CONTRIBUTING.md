@@ -3,7 +3,7 @@
 Thanks for helping improve `rlm-kit` — a small, reusable scaffold over `dspy.RLM`
 (Recursive Language Models) for building tasks of any kind. This guide is the short
 version; the deep design rules live in [`CLAUDE.md`](./CLAUDE.md) and the
-extension contract in the README's [**Building a consumer**](./README.md#building-a-consumer).
+extension contract in the guide's [**Building a consumer**](./rlm_kit/README.md#building-a-consumer).
 
 ## Development setup
 

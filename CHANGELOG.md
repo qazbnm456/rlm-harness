@@ -459,6 +459,17 @@ surfaced by dogfooding a real downstream consumer.
   the earlier `max_tokens`-truncation empty-content failure mode (that one truncates mid-thought;
   this one routes the whole answer to the wrong channel). *(runtime.py)*
 
+### Docs
+
+- **README split — the front page vs. the guide.** The top-level `README.md` now carries only what a
+  first-time reader needs: the pitch (what/why + the declaration example), installation, a capability
+  overview with a docs index, the adopters section, the security note, and develop/status. The deep
+  documentation — layout, the harness-engineering layer, the tool surfaces, the rollout conventions,
+  "Building a consumer", full configuration, and the offline forward-path harness — moved verbatim to
+  **`rlm_kit/README.md` ("the guide")**, which GitHub renders when browsing the package folder and
+  hatchling ships inside the wheel. Cross-references in `CLAUDE.md` / `CONTRIBUTING.md` now point at
+  the guide; external deep links into the old top-README sections need re-pointing.
+
 ## [0.1.0]
 
 - Initial scaffold: `RLMConfig` + `configure`, `RLMTask`, the retry/validation
