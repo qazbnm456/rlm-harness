@@ -2,6 +2,7 @@
 stdio MCP server (a tiny FastMCP echo) as a subprocess and drive it through ``mcp_tools``. Skips
 when the optional ``mcp`` extra (or dspy) is absent, like the other dspy-bearing tests."""
 
+import contextlib
 import sys
 
 import pytest
@@ -9,8 +10,24 @@ import pytest
 pytest.importorskip("mcp")
 pytest.importorskip("dspy")
 
-from rlm_kit.mcp import McpCatalog, McpConnection, _args_from_schema, mcp_tools, result_text  # noqa: E402
+from rlm_kit.mcp import (  # noqa: E402
+    _CLOSE_GRACE,
+    McpCatalog,
+    McpConnection,
+    _args_from_schema,
+    mcp_tools,
+    result_text,
+)
 from rlm_kit.trace import TraceRecorder, load_events  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _force_direct_connection(monkeypatch):
+    # httpx's trust_env picks up an OS/system proxy (e.g. macOS's system-config fallback) even with NO
+    # proxy env vars set, which would route loopback MCP-over-HTTP through a proxy and make the tarpit /
+    # connection-refused tests measure the PROXY, not httpx. Force a direct connection everywhere.
+    monkeypatch.setenv("NO_PROXY", "*")
+    monkeypatch.setenv("no_proxy", "*")
 
 # A minimal stdio MCP server: one `echo` tool. Written to a temp file and spawned per test.
 _ECHO_SERVER = '''
@@ -146,6 +163,29 @@ def _wait_port(port: int, timeout: float = 20.0) -> None:
     raise TimeoutError(f"HTTP MCP server did not start on :{port}")
 
 
+@contextlib.contextmanager
+def _running_http_server(tmp_path):
+    """Spin up the streamable-HTTP echo server as a subprocess; yield its /mcp URL; tear it down."""
+    import subprocess
+
+    port = _free_port()
+    server = tmp_path / "http_server.py"
+    server.write_text(_HTTP_SERVER)
+    proc = subprocess.Popen(
+        [sys.executable, str(server), str(port)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        _wait_port(port)
+        yield f"http://127.0.0.1:{port}/mcp"
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except Exception:  # noqa: BLE001
+            proc.kill()
+
+
 def test_mcp_tools_streamable_http(tmp_path):
     import subprocess
 
@@ -231,14 +271,31 @@ def test_mcp_catalog_progressive_surface(tmp_path):
         cat.close()
 
 
-def test_mcp_catalog_lazy_defers_connect(tmp_path):
-    cat = McpCatalog([_named(tmp_path, "echo")], connect="lazy", timeout=30)
+def test_mcp_catalog_lazy_is_per_transport(tmp_path):
+    # connect="lazy" is PER-TRANSPORT: a stdio server still connects EAGERLY in __init__ (a local
+    # subprocess spawn stays pre-run), while a URL (streamable-HTTP) server DEFERS to first load().
+    specs = [
+        _named(tmp_path, "echo"),                                        # stdio → eager even under lazy
+        {"name": "remote", "description": "d", "url": "http://127.0.0.1:1/mcp"},  # url → deferred
+    ]
+    cat = McpCatalog(specs, connect="lazy", timeout=5)
     try:
-        assert cat.tools("echo") == []                    # not connected yet under lazy
-        cat.load("echo")
-        assert cat.tool_names("echo") == ["echo"]         # connected on demand
+        assert cat.tool_names("echo") == ["echo"]   # stdio connected in __init__ despite lazy
+        assert cat.tools("remote") == []            # url deferred — never connected, no attempt made
     finally:
         cat.close()
+
+
+def test_mcp_catalog_lazy_http_connects_on_load(tmp_path):
+    with _running_http_server(tmp_path) as url:
+        cat = McpCatalog([{"name": "echo", "url": url}], connect="lazy", timeout=20)
+        try:
+            assert cat.tools("echo") == []                              # deferred until load()
+            cat.load("echo")
+            assert cat.tool_names("echo") == ["echo"]                   # connected on demand
+            assert cat.call("echo", "echo", {"text": "hi"}) == "echo: hi"
+        finally:
+            cat.close()
 
 
 def test_mcp_catalog_records_nothing(tmp_path):
@@ -277,3 +334,130 @@ def test_mcp_catalog_partial_eager_failure_cleans_up(tmp_path):
         McpCatalog(specs, timeout=5)
     # the good server connected first, then 'bad' failed — the partial connect was torn down, no leak.
     assert "rlm-kit-mcp" not in ({t.name for t in threading.enumerate()} - before)
+
+
+# ---- lazy-connect safety: a wedged connect is BOUNDED and REAPED, not a hang+leak ----------
+
+def test_mcp_catalog_lazy_refused_connect_raises_fast(tmp_path):
+    import time
+
+    # A closed port: a lazy load() must RAISE quickly (well under timeout), not hang. NO_PROXY=* (the
+    # autouse fixture) keeps this a real connection-refused, not a proxy 502.
+    cat = McpCatalog([{"name": "dead", "url": "http://127.0.0.1:1/mcp"}], connect="lazy", timeout=10)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(Exception):  # noqa: B017 — connection refused surfaces out of load()
+            cat.load("dead")
+        assert time.monotonic() - t0 < 10   # refused fast — did not burn the whole timeout
+    finally:
+        cat.close()
+
+
+def test_mcp_catalog_lazy_wedged_http_connect_is_bounded_and_reaped():
+    import socket
+    import threading
+    import time
+
+    # A TARPIT: accepts the TCP connection but never answers the MCP handshake. A lazy load() against
+    # it must (a) stay BOUNDED (raise, not wedge the caller forever) and (b) leave no leaked thread —
+    # close()'s phase-2 cancel unwinds the httpx stream and reaps the background thread.
+    tarpit = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    tarpit.bind(("127.0.0.1", 0))
+    tarpit.listen(8)
+    port = tarpit.getsockname()[1]
+    held: list = []
+    stop = threading.Event()
+
+    def _accept():
+        tarpit.settimeout(0.25)
+        while not stop.is_set():
+            try:
+                held.append(tarpit.accept()[0])   # hold the connection open, never respond
+            except OSError:
+                pass
+
+    accepter = threading.Thread(target=_accept, daemon=True)
+    accepter.start()
+    try:
+        before = {t.name for t in threading.enumerate()}
+        cat = McpCatalog([{"name": "tarpit", "url": f"http://127.0.0.1:{port}/mcp"}],
+                         connect="lazy", timeout=2.0)
+        outcome: dict = {}
+
+        def _load():
+            try:
+                cat.load("tarpit")
+            except Exception as exc:  # noqa: BLE001
+                outcome["error"] = type(exc).__name__
+
+        worker = threading.Thread(target=_load, daemon=True)
+        t0 = time.monotonic()
+        worker.start()
+        worker.join(2.0 + 2 * _CLOSE_GRACE + 10)     # generous watchdog: a REGRESSION wedges, not fails
+        assert not worker.is_alive(), "load() on a tarpit wedged — not bounded"
+        assert "error" in outcome                    # it RAISED (timeout / connect error), didn't hang
+        assert time.monotonic() - t0 < 2.0 + 2 * 2.0 + 8   # grace = min(_CLOSE_GRACE, timeout=2) = 2
+        cat.close()
+        deadline = time.monotonic() + _CLOSE_GRACE + 3    # poll for the reap (grace-edge timing)
+        while ("rlm-kit-mcp" in ({t.name for t in threading.enumerate()} - before)
+               and time.monotonic() < deadline):
+            time.sleep(0.1)
+        assert "rlm-kit-mcp" not in ({t.name for t in threading.enumerate()} - before)
+    finally:
+        stop.set()
+        tarpit.close()
+        for conn in held:
+            with contextlib.suppress(OSError):
+                conn.close()
+
+
+def test_mcp_connection_wedged_stdio_child_is_reaped(tmp_path):
+    import os
+    import time
+
+    # A stdio "server" that NEVER speaks MCP: record its pid, then sleep. start() times out on the
+    # handshake; close()'s phase-2 cancel must unwind stdio_client's __aexit__ and TERMINATE the child
+    # (this also covers today's eager-path child leak). timeout=3 gives the stdio unwind headroom.
+    pidfile = tmp_path / "child.pid"
+    silent = tmp_path / "silent_server.py"
+    silent.write_text(
+        "import os, time\n"
+        f"open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+        "time.sleep(3600)\n"
+    )
+    conn = McpConnection({"command": sys.executable, "args": [str(silent)]}, timeout=3.0)
+    with pytest.raises(Exception):  # noqa: B017 — start() times out (the child never initializes)
+        conn.start()
+    conn.close()
+
+    deadline = time.monotonic() + _CLOSE_GRACE + 8
+    pid = None
+    while pid is None and time.monotonic() < deadline:
+        try:
+            pid = int(pidfile.read_text())
+        except (OSError, ValueError):
+            time.sleep(0.05)
+    assert pid is not None, "the stdio child never spawned"
+    reaped = False
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)          # 0 == existence probe; raises when the child is gone
+            time.sleep(0.1)
+        except (ProcessLookupError, PermissionError):
+            reaped = True
+            break
+    assert reaped, f"stdio child {pid} was not reaped by close()"
+
+
+def test_mcp_connection_healthy_close_is_fast_and_uncancelled(tmp_path):
+    import time
+
+    # A HEALTHY connection is awaiting _stop, so close()'s phase 1 exits the thread in ms — phase 2
+    # (cancel) must NOT fire (it would add a whole grace window and cancel the serve task).
+    conn = McpConnection(_server(tmp_path), timeout=30)
+    conn.start()
+    assert [t.name for t in conn.tools] == ["echo"]
+    t0 = time.monotonic()
+    conn.close()
+    assert time.monotonic() - t0 < 2.0                                   # phase-1 join returned fast
+    assert not (conn._serve_task is not None and conn._serve_task.cancelled())  # phase 2 never fired

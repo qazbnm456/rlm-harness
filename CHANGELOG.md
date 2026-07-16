@@ -363,6 +363,21 @@ surfaced by dogfooding a real downstream consumer.
 
 ### Changed / Hardened (surfaced by dogfooding a consumer)
 
+- **`McpConnection.close` now reaps a WEDGED connect (two-phase close), and `McpCatalog(connect="lazy")`
+  is per-transport** (`mcp.py`, surfaced by a consumer's large-toolspace path). A connect that wedged — a
+  tarpit that accepts TCP but never completes the MCP handshake — left `close()`'s `_stop.set()` a no-op
+  (nothing awaited it yet), so `close()` burned a SECOND full `timeout` and then LEAKED the background
+  thread plus its socket / stdio child forever (this hit the *eager* path too, e.g. a bad server at
+  startup). `close()` is now two-phase: a graceful stop bounded by a short grace, then — if still alive —
+  it cancels the serve task to unwind the session/transport `__aexit__` (closing the httpx stream /
+  terminating the stdio child) and reap the thread. Separately, `connect="lazy"` is now PER-TRANSPORT:
+  URL (streamable-HTTP) servers defer to first `load()` (safe mid-run — the handshake runs on the
+  connection's own thread+loop, the caller's wait is `timeout`-bounded, and a wedged connect is
+  cancelled+reaped), while stdio servers still connect eagerly (deferring a local spawn buys nothing). The
+  prior blanket "a subprocess spawn inside the loop can hang asyncio" framing was an overstatement — every
+  caller wait was already bounded; the real defect was the un-reaped wedged close. Opt-in `"lazy"` stays
+  experimental. HTTP-transport tests force a direct connection (`NO_PROXY=*`) so a machine's system proxy
+  can't mask a tarpit/refused as a proxy response.
 - **`export_actions` reads a tool's output via a `raw → result → results → preview` fallback**
   (`dataset.py`, surfaced by dogfooding a consumer). A `tool_call` action's `outcome.output` read ONLY
   `payload["raw"]`, but `record_tool_call` pins no single output key and the kit's own tools disagree:

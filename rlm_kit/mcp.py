@@ -46,6 +46,10 @@ from .trace import record_tool_call
 # the trace keeps only a preview, not the full (possibly bulk) output that goes to the RLM's REPL.
 _PREVIEW = 700
 
+# Grace window for each phase of McpConnection.close (graceful stop, then cancel). Capped by the
+# connection's own timeout so a small timeout doesn't inflate teardown.
+_CLOSE_GRACE = 5.0
+
 # A server spec: a bare URL string, {"url": ...} (streamable-HTTP), or
 # {"command": ..., "args": [...], "env": {...}} (stdio subprocess).
 ServerSpec = Union[str, dict]
@@ -111,6 +115,7 @@ class McpConnection:
         self._ready = threading.Event()
         self._error: Optional[BaseException] = None
         self._stop: Optional[asyncio.Event] = None
+        self._serve_task: Any = None  # the _serve() Task; close() cancels it to unwind a WEDGED connect
         self._session: Any = None
         self.tools: list = []
 
@@ -118,7 +123,10 @@ class McpConnection:
     def _run(self) -> None:
         asyncio.set_event_loop(self._loop)
         try:
-            self._loop.run_until_complete(self._serve())
+            self._serve_task = self._loop.create_task(self._serve())  # legal before run_until_complete
+            self._loop.run_until_complete(self._serve_task)
+        except asyncio.CancelledError:
+            pass  # close() cancelled the serve task — a clean shutdown, not an _error
         except BaseException as exc:  # noqa: BLE001 — surfaced to start()
             self._error = exc
             self._ready.set()
@@ -189,10 +197,30 @@ class McpConnection:
             raise TimeoutError(f"MCP tool {name!r} timed out after {self._timeout}s") from None
 
     def close(self) -> None:
+        # Phase 1 — graceful: ask _serve to return (it unwinds the session + transport cleanly). A
+        # HEALTHY connection is awaiting `self._stop.wait()`, so this exits the thread in milliseconds.
         if self._stop is not None and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._stop.set)
-        if self._thread.ident is not None:   # started at least once — a public close() may be called
-            self._thread.join(self._timeout)  # before start(); joining an unstarted thread would raise
+            with contextlib.suppress(RuntimeError):  # loop may close between the check and the call
+                self._loop.call_soon_threadsafe(self._stop.set)
+        if self._thread.ident is None:
+            return  # never started — join would raise (a public close() may precede start())
+        grace = min(_CLOSE_GRACE, self._timeout)
+        self._thread.join(grace)
+        # Phase 2 — cancel: a WEDGED connect (e.g. a tarpit server) never reached `await
+        # self._stop.wait()`, so setting _stop was a no-op and the thread is still alive. Cancel the
+        # serve task to unwind through the session/transport __aexit__ (close the httpx stream /
+        # terminate the stdio child) and reap the thread — instead of leaking it plus the child/socket.
+        if self._thread.is_alive() and self._serve_task is not None and self._loop.is_running():
+            with contextlib.suppress(RuntimeError):
+                self._loop.call_soon_threadsafe(self._serve_task.cancel)
+            self._thread.join(grace)
+
+
+def _defers(spec: dict) -> bool:
+    """Whether ``connect="lazy"`` defers this server's connect to its first ``load()``. Mirrors
+    :meth:`McpConnection._transport`'s precedence (a ``url`` wins over a ``command``): only URL
+    (streamable-HTTP) servers defer — a stdio server's local subprocess spawn stays eager (pre-run)."""
+    return "url" in spec
 
 
 class McpCatalog:
@@ -206,10 +234,12 @@ class McpCatalog:
     ``specs`` is a list of dicts, each ``{"name", "description", ...connection...}`` where the
     connection is ``"url"`` (streamable-HTTP) or ``"command"``/``"args"``/``"env"`` (stdio) — the
     same fields :class:`McpConnection` accepts. ``connect="eager"`` (default) connects every server
-    host-side up front and tears down a partial connect on failure — a subprocess spawn INSIDE an
-    async tool loop can hang asyncio, so connecting BEFORE the loop is the hang-safe default;
-    ``connect="lazy"`` defers each server's connect to its first :meth:`load` (opt-in). Needs
-    ``rlm-kit[mcp]``."""
+    host-side up front and tears down a partial connect on failure. ``connect="lazy"`` defers each
+    **URL (streamable-HTTP)** server's connect to its first :meth:`load` — safe mid-run: the handshake
+    runs on the connection's OWN background thread + loop (the caller's wait is ``timeout``-bounded,
+    and a wedged connect is cancelled and reaped by :meth:`close`); **stdio** servers still connect
+    eagerly in ``__init__`` (deferring a local subprocess spawn buys nothing, and keeps the spawn out
+    of the loop). ``connect="lazy"`` is opt-in/experimental. Needs ``rlm-kit[mcp]``."""
 
     def __init__(self, specs: list[dict], *, connect: str = "eager", timeout: float = 60.0) -> None:
         _require_mcp()
@@ -222,16 +252,20 @@ class McpCatalog:
             self._specs[str(s["name"])] = s
         self._timeout = timeout
         self._conns: dict[str, McpConnection] = {}
-        if connect == "eager":
-            try:
-                for name in self._specs:
+        # eager: connect every server up front. lazy: connect only the servers that DON'T defer
+        # (stdio — a local spawn stays pre-run) up front, and leave the URL servers for their first
+        # load(). A spec with neither url nor command classifies as non-deferring and fails fast in
+        # _transport, same as under eager.
+        try:
+            for name, spec in self._specs.items():
+                if connect == "eager" or not _defers(spec):
                     self._connect(name)
-            except Exception:
-                # A later server's connect failed — the servers already connected are live threads +
-                # subprocesses with no object left for the caller to close(). Tear them down before
-                # propagating, so a partial eager connect never leaks.
-                self.close()
-                raise
+        except Exception:
+            # A server's connect failed — the servers already connected are live threads +
+            # subprocesses with no object left for the caller to close(). Tear them down before
+            # propagating, so a partial connect never leaks.
+            self.close()
+            raise
 
     def _connect(self, server: str) -> McpConnection:
         if server in self._conns:
