@@ -328,6 +328,14 @@ surfaced by dogfooding a real downstream consumer.
 
 ### Changed / Hardened (surfaced by dogfooding a consumer)
 
+- **`export_actions` reads a tool's output via a `raw → result → results → preview` fallback**
+  (`dataset.py`, surfaced by dogfooding a consumer). A `tool_call` action's `outcome.output` read ONLY
+  `payload["raw"]`, but `record_tool_call` pins no single output key and the kit's own tools disagree:
+  `model_as_tool`/`list_skills` record under `result`, `read_skill` and the MCP tools under `preview`,
+  `web_search` under `results`, while the `make_model_tool` consumer convention is `raw`. So an action
+  record silently DROPPED the output of every tool that didn't happen to use `raw`. `export_actions` now
+  reads the first present of `raw → result → results → preview` (`raw` still wins first, so existing
+  traces export identically). Read-side and additive — no trace-schema change.
 - **`RLMConfig.max_retries` now defaults to `1` (was `3`) — no whole-RLM retry by default** (`config.py`;
   breaking). `run_with_retry` re-runs the ENTIRE RLM on any output-coercion failure, so the old default
   of 3 silently MULTIPLIED `max_iterations` (up to 3× the turns) and re-did every fetch/search/tool

@@ -40,3 +40,25 @@ def test_export_actions_state_accumulates():
 def test_export_actions_reward_none_when_unset():
     recs = export_actions(_run())
     assert all(r["reward"] is None for r in recs)
+
+
+def test_export_actions_tool_output_fallback():
+    # A tool_call payload may carry its output under raw / result / preview (record_tool_call pins
+    # none). The exporter reads a fallback so no tool's output is dropped, with "raw" winning first
+    # for back-compat with existing traces.
+    runs = {
+        "r": [
+            {"type": "tool_call", "step_id": 1,
+             "payload": {"tool": "kit_tool", "result": "R", "ok": True}},   # model_as_tool/list_skills
+            {"type": "tool_call", "step_id": 2,
+             "payload": {"tool": "mcp", "preview": "P", "ok": True}},       # read_skill / MCP
+            {"type": "tool_call", "step_id": 3,
+             "payload": {"tool": "search", "results": ["a", "b"], "ok": True}},  # web_search
+            {"type": "tool_call", "step_id": 4,
+             "payload": {"tool": "gen", "raw": "RAW", "result": "R2", "ok": True}},  # raw wins
+            {"type": "tool_call", "step_id": 5,
+             "payload": {"tool": "quiet", "ok": True}},                     # no output key -> None
+        ]
+    }
+    outputs = [r["outcome"]["output"] for r in export_actions(runs)]
+    assert outputs == ["R", "P", ["a", "b"], "RAW", None]

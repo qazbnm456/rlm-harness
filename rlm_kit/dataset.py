@@ -51,11 +51,19 @@ def _action_record(event: dict) -> dict:
             "outcome": p.get("output"),
         }
     if t == EVENT_TOOL_CALL:
+        # A tool_call payload may carry its output under any of several keys — record_tool_call pins
+        # none, and the kit's tools disagree: model_as_tool/list_skills use "result", read_skill/MCP
+        # use "preview", web_search uses "results", and the make_model_tool consumer convention is
+        # "raw". Read a fallback so an action record doesn't silently drop a tool's output; "raw" wins
+        # first for back-compat with existing traces.
+        output = next(
+            (p[k] for k in ("raw", "result", "results", "preview") if p.get(k) is not None), None
+        )
         return {
             "kind": "tool",
             "tool": p.get("tool"),
             "action": {"input": p.get("args"), "reasoning": p.get("reasoning")},
-            "outcome": {"ok": p.get("ok"), "output": p.get("raw"), "errors": p.get("errors")},
+            "outcome": {"ok": p.get("ok"), "output": output, "errors": p.get("errors")},
         }
     # EVENT_SUB_CALL (escalation to the expensive sub-LM, e.g. gpt-5.5)
     return {
