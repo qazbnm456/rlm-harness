@@ -331,6 +331,19 @@ surfaced by dogfooding a real downstream consumer.
 
 ### Fixed
 
+- **The co-dev editable overlay no longer shadows a consumer's namespace `tests/`** (dropped
+  `tests/__init__.py`; guard test in `tests/test_packaging.py`). A consumer co-develops rlm-kit by
+  overlaying an editable install (`uv pip install -e ../rlm-kit`), whose bare-path `.pth` puts the repo
+  ROOT on the consumer's `sys.path`. Because rlm-kit shipped `tests/__init__.py` (a REGULAR package), a
+  consumer's `import tests` bound to rlm-kit's `tests/` and SHADOWED the consumer's own namespace
+  `tests/` — regardless of `sys.path` order (PEP 420: a regular package at any later entry beats an
+  earlier namespace portion) — breaking its `from tests.conftest import ...` collection. rlm-kit's
+  `tests/` is now a namespace dir (the `__init__.py` was empty; the suite is unchanged), so `rlm_kit`
+  is the only regular package in the repo and the shadow is gone; a guard test keeps it that way. Wheel
+  users were never affected (the wheel ships `rlm_kit` only). Note: rlm-kit and a consumer may share a
+  test basename (e.g. `tests/test_config.py`) — harmless under pytest (namespace-dir tests import by
+  file, not package path), but an explicit `import tests.test_config` in consumer code could resolve to
+  rlm-kit's copy under the overlay; keep test basenames project-unique if that ever matters.
 - **No more "Unclosed connector" warning from litellm** (`runtime.py`). litellm
   (dspy's LM backend) defaults to an aiohttp transport whose pooled `ClientSession`
   is bound to the per-run `asyncio.run` loop; when that loop closes, aiohttp logs a
