@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("mcp")
 pytest.importorskip("dspy")
 
-from rlm_kit.mcp import _args_from_schema, _result_text, mcp_tools  # noqa: E402
+from rlm_kit.mcp import McpCatalog, McpConnection, _args_from_schema, mcp_tools, result_text  # noqa: E402
 from rlm_kit.trace import TraceRecorder, load_events  # noqa: E402
 
 # A minimal stdio MCP server: one `echo` tool. Written to a temp file and spawned per test.
@@ -51,11 +51,11 @@ def test_result_text_joins_text_blocks_and_flags_errors():
 
     block = types.SimpleNamespace(text="hello")
     ok = types.SimpleNamespace(content=[block], structuredContent=None, isError=False)
-    assert _result_text(ok) == "hello"
+    assert result_text(ok) == "hello"
     err = types.SimpleNamespace(content=[block], structuredContent=None, isError=True)
-    assert _result_text(err).startswith("[tool reported an error]")
+    assert result_text(err).startswith("[tool reported an error]")
     structured = types.SimpleNamespace(content=[], structuredContent={"n": 1}, isError=False)
-    assert '"n": 1' in _result_text(structured)
+    assert '"n": 1' in result_text(structured)
 
 
 # ---- the bridge: real stdio server, sync call, teardown ------------------
@@ -209,3 +209,71 @@ def test_hung_tool_times_out_and_session_survives(tmp_path):
         assert "timed out" in out.lower()              # surfaced as a reactable string
         # the cancel kept the session usable — a fast call still works afterwards.
         assert by_name["echo"](text="ok") == "echo: ok"
+
+
+# ---- McpCatalog: multi-server progressive transport ----------------------
+
+def _named(tmp_path, name):
+    return {"name": name, "description": f"{name} server", **_server(tmp_path)}
+
+
+def test_mcp_catalog_progressive_surface(tmp_path):
+    cat = McpCatalog([_named(tmp_path, "echo")], timeout=30)
+    try:
+        assert cat.servers() == [("echo", "echo server")]
+        assert cat.has_server("echo") and not cat.has_server("nope")
+        cat.load("echo")                                  # no-op under eager
+        assert cat.tool_names("echo") == ["echo"]
+        tool = cat.tools("echo")[0]                       # RAW mcp Tool object, not a dspy.Tool
+        assert tool.name == "echo" and hasattr(tool, "inputSchema")
+        assert cat.call("echo", "echo", {"text": "hi"}) == "echo: hi"   # flattened result TEXT
+    finally:
+        cat.close()
+
+
+def test_mcp_catalog_lazy_defers_connect(tmp_path):
+    cat = McpCatalog([_named(tmp_path, "echo")], connect="lazy", timeout=30)
+    try:
+        assert cat.tools("echo") == []                    # not connected yet under lazy
+        cat.load("echo")
+        assert cat.tool_names("echo") == ["echo"]         # connected on demand
+    finally:
+        cat.close()
+
+
+def test_mcp_catalog_records_nothing(tmp_path):
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r"):
+        cat = McpCatalog([_named(tmp_path, "echo")], timeout=30)
+        try:
+            cat.call("echo", "echo", {"text": "hi"})
+        finally:
+            cat.close()
+    # a pure transport — the CONSUMER's meta-tool owns the tool_call event, not the catalog.
+    assert [e for e in load_events(str(p), "r") if e["type"] == "tool_call"] == []
+
+
+def test_mcp_catalog_bad_spec_raises():
+    with pytest.raises(ValueError, match="'name'"):
+        McpCatalog([{"description": "no name", "url": "http://x"}])
+
+
+def test_mcp_catalog_rejects_unknown_connect(tmp_path):
+    with pytest.raises(ValueError, match="eager"):
+        McpCatalog([_named(tmp_path, "echo")], connect="bogus")   # rejected before any connect
+
+
+def test_mcp_connection_close_before_start_is_safe():
+    # McpConnection is public: closing one that was never started must not raise (join would).
+    McpConnection({"url": "http://127.0.0.1:1/mcp"}).close()
+
+
+def test_mcp_catalog_partial_eager_failure_cleans_up(tmp_path):
+    import threading
+
+    before = {t.name for t in threading.enumerate()}
+    specs = [_named(tmp_path, "echo"), {"name": "bad", "command": "/nonexistent-cmd-xyz"}]
+    with pytest.raises(Exception):  # noqa: B017 — the 'bad' server fails eager connect
+        McpCatalog(specs, timeout=5)
+    # the good server connected first, then 'bad' failed — the partial connect was torn down, no leak.
+    assert "rlm-kit-mcp" not in ({t.name for t in threading.enumerate()} - before)

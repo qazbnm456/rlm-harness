@@ -315,6 +315,19 @@ surfaced by dogfooding a real downstream consumer.
   REFUSED surface name (rlm-kit produces trajectories, never reward — the trainer composes reward from
   these labels plus its own credit assignment). Consumer-driven: promoted from a downstream consumer's
   per-run labelling so every consumer shares one bundle shape.
+- **Public multi-server MCP catalog: `McpConnection` + `McpCatalog` + `result_text`** (`mcp.py`,
+  optional `rlm-kit[mcp]`). Alongside the single-server `mcp_tools(...)` convenience (one server's tools
+  as self-tracing `dspy.Tool`s), the kit now exposes a MULTI-server, queryable transport for a consumer
+  building a PROGRESSIVE tool surface: list servers → `load` one on demand → read its RAW MCP `Tool`s →
+  `call`. `McpCatalog(specs)` manages one `McpConnection` per server — the now-public single-server bridge
+  (a background-thread `ClientSession`, its async API sync-bridged), which `mcp_tools` is also refactored
+  onto (behaviour unchanged). It connects eager by default (a subprocess spawn inside an async tool loop
+  can hang asyncio) with `connect="lazy"` opt-in, and tears down a partial connect on failure. It returns
+  RAW MCP objects (not `dspy.Tool`s) and records NOTHING — the consumer maps tools to its own shape and
+  its own tool wrapper owns the `tool_call` — so it stays dspy-free. `result_text` flattens a
+  `CallToolResult` to text. Consumer-driven: a downstream consumer had hand-copied the private
+  single-server bridge to build a many-server catalog; this promotes the generalization so consumers drop
+  the copy.
 
 ### Fixed
 

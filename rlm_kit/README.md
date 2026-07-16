@@ -179,6 +179,37 @@ Needs the extra: `pip install "rlm-kit[mcp]"`.
   process spawns. Treat an MCP server as a **trusted dependency**, and its output as a
   **prompt-injection surface** (untrusted LM context), exactly like fetched web content.
 
+### Many servers, progressively — `McpCatalog` + `McpConnection`
+
+`mcp_tools` is the single-server convenience: it materializes one server's tools as self-tracing
+`dspy.Tool`s up front. For a consumer building its OWN progressive tool surface over **several** servers
+— list servers, `load` one on demand, read its tools, `call` — use `McpCatalog`:
+
+```python
+from rlm_kit import McpCatalog
+
+cat = McpCatalog([{"name": "docs", "url": "https://mcp.example.com/mcp"},
+                  {"name": "shell", "command": "npx", "args": ["-y", "some-mcp"]}])
+try:
+    cat.servers()                      # [(name, description), ...] — every declared server
+    cat.load("docs")                   # connect one on demand (a no-op under the eager default)
+    for tool in cat.tools("docs"):     # RAW mcp Tool objects (name / description / inputSchema)
+        ...                            # map them onto YOUR own tool shape
+    text = cat.call("docs", "search", {"q": "..."})   # flattened result text
+finally:
+    cat.close()
+```
+
+- **Raw, and records nothing.** `McpCatalog` returns the server's RAW MCP `Tool`s (not `dspy.Tool`s) and
+  emits no trace events — the consumer maps each tool to its own shape, and its own tool wrapper owns the
+  `tool_call`. That keeps the catalog dspy-free and leaves tracing where the consumer wants it.
+- **`McpConnection`** is the public single-server bridge `McpCatalog` manages one of per server (and that
+  `mcp_tools` is built on); **`result_text`** flattens a `CallToolResult` to text. Both are exported for a
+  consumer driving a connection directly.
+- **Eager by default** (connect host-side, before the run) — a subprocess spawn inside an async tool loop
+  can hang asyncio; `connect="lazy"` defers each server's connect to its first `load` (opt-in). The same
+  HOST-SIDE execution and prompt-injection notes as `mcp_tools` apply.
+
 ## Running local commands (an isolated runner)
 
 `make_command_tool(runner)` gives an `RLMTask` a `run_command` tool — the reusable half of

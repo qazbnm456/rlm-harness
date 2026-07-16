@@ -18,6 +18,16 @@ SECURITY: MCP tools execute HOST-SIDE — *outside* the sandbox. A stdio server 
 process spawns; an HTTP server is a remote you trust. Treat an MCP server as a trusted dependency,
 and its tool OUTPUT as untrusted LM context (a prompt-injection surface, like fetched web content).
 
+Two public surfaces:
+
+- ``mcp_tools(server)`` — the SINGLE-server convenience: one server's tools as ``dspy.Tool``s for
+  ``RLMTask(tools=…)``, materialized up front, each call self-recording a ``tool_call``.
+- ``McpCatalog(specs)`` + ``McpConnection`` — a MULTI-server, queryable transport for a consumer
+  building a PROGRESSIVE tool surface (list servers → load one on demand → read its tools → call).
+  It returns RAW MCP objects (not ``dspy.Tool``s) and records NOTHING — the consumer's own tool
+  wrapper owns any ``tool_call`` — so it stays dspy-free and the consumer maps tools to its shape.
+  ``result_text`` flattens a ``CallToolResult`` to text.
+
 Optional: needs ``pip install "rlm-kit[mcp]"``.
 """
 
@@ -50,7 +60,7 @@ def _require_mcp() -> None:
         ) from exc
 
 
-def _result_text(result: Any) -> str:
+def result_text(result: Any) -> str:
     """Flatten a ``CallToolResult`` to text: join the ``TextContent`` blocks; fall back to
     ``structuredContent`` (as JSON) when there is no text; prefix an error marker if ``isError``."""
     parts = [
@@ -81,12 +91,19 @@ def _args_from_schema(input_schema: Any) -> dict:
     return {}
 
 
-class _MCPBridge:
-    """An MCP ``ClientSession`` driven from a background thread + event loop, kept alive until
-    :meth:`close`. The session API is async; RLM tools are sync, so sync callers bridge a coroutine
-    across the thread boundary via ``run_coroutine_threadsafe(...).result(timeout)``."""
+class McpConnection:
+    """A live connection to ONE external MCP server: a ``ClientSession`` driven from a dedicated
+    background thread + event loop, kept alive until :meth:`close`. The SDK's session API is async;
+    callers here are sync, so each sync call bridges one coroutine across the thread boundary via
+    ``run_coroutine_threadsafe(...).result(timeout)``. PUBLIC — a consumer building its own tool
+    surface can drive a connection directly; :class:`McpCatalog` manages many of these.
 
-    def __init__(self, server: ServerSpec, *, timeout: float) -> None:
+    ``server`` is a bare URL string, ``{"url": ...}`` (streamable-HTTP), or
+    ``{"command": ..., "args": [...], "env": {...}}`` (stdio subprocess). After :meth:`start`,
+    ``tools`` holds the server's listed MCP ``Tool`` objects; :meth:`call` returns the raw
+    ``CallToolResult`` (flatten it with :func:`result_text`). Needs ``rlm-kit[mcp]``."""
+
+    def __init__(self, server: ServerSpec, *, timeout: float = 30.0) -> None:
         self._server = server
         self._timeout = timeout
         self._loop = asyncio.new_event_loop()
@@ -174,10 +191,97 @@ class _MCPBridge:
     def close(self) -> None:
         if self._stop is not None and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._stop.set)
-        self._thread.join(self._timeout)
+        if self._thread.ident is not None:   # started at least once — a public close() may be called
+            self._thread.join(self._timeout)  # before start(); joining an unstarted thread would raise
 
 
-def _make_tool(dspy_mod: Any, bridge: _MCPBridge, mcp_tool: Any, prefix: str):
+class McpCatalog:
+    """A queryable, long-lived transport over SEVERAL external MCP servers — for a consumer building a
+    PROGRESSIVE tool surface (list servers → load one on demand → read its tools → call one). Each
+    server runs behind its own :class:`McpConnection` (a background-thread session). The catalog
+    records NOTHING (the consumer's own tool wrapper owns any ``tool_call``) and returns RAW MCP
+    ``Tool`` objects (name / description / ``inputSchema``), not ``dspy.Tool``s — so it stays
+    dspy-free and the consumer maps tools to its own shape.
+
+    ``specs`` is a list of dicts, each ``{"name", "description", ...connection...}`` where the
+    connection is ``"url"`` (streamable-HTTP) or ``"command"``/``"args"``/``"env"`` (stdio) — the
+    same fields :class:`McpConnection` accepts. ``connect="eager"`` (default) connects every server
+    host-side up front and tears down a partial connect on failure — a subprocess spawn INSIDE an
+    async tool loop can hang asyncio, so connecting BEFORE the loop is the hang-safe default;
+    ``connect="lazy"`` defers each server's connect to its first :meth:`load` (opt-in). Needs
+    ``rlm-kit[mcp]``."""
+
+    def __init__(self, specs: list[dict], *, connect: str = "eager", timeout: float = 60.0) -> None:
+        _require_mcp()
+        if connect not in ("eager", "lazy"):
+            raise ValueError(f"connect must be 'eager' or 'lazy', got {connect!r}")
+        self._specs: dict[str, dict] = {}
+        for s in specs:
+            if not isinstance(s, dict) or not s.get("name"):
+                raise ValueError("each MCP catalog spec must be a dict with a 'name'")
+            self._specs[str(s["name"])] = s
+        self._timeout = timeout
+        self._conns: dict[str, McpConnection] = {}
+        if connect == "eager":
+            try:
+                for name in self._specs:
+                    self._connect(name)
+            except Exception:
+                # A later server's connect failed — the servers already connected are live threads +
+                # subprocesses with no object left for the caller to close(). Tear them down before
+                # propagating, so a partial eager connect never leaks.
+                self.close()
+                raise
+
+    def _connect(self, server: str) -> McpConnection:
+        if server in self._conns:
+            return self._conns[server]
+        if server not in self._specs:
+            raise KeyError(server)
+        conn = McpConnection(self._specs[server], timeout=self._timeout)
+        try:
+            conn.start()
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.close()  # a failed start still spawned a thread/subprocess — don't leak it
+            raise
+        self._conns[server] = conn
+        return conn
+
+    def servers(self) -> list[tuple[str, str]]:
+        """``[(name, description)]`` for every DECLARED server (connected or not)."""
+        return [(name, str(spec.get("description", ""))) for name, spec in self._specs.items()]
+
+    def has_server(self, server: str) -> bool:
+        return server in self._specs
+
+    def load(self, server: str) -> None:
+        """Connect ``server`` (no-op if already connected; the on-demand path under ``connect='lazy'``)."""
+        self._connect(server)
+
+    def tools(self, server: str) -> list:
+        """The raw MCP ``Tool`` objects of a CONNECTED server (``[]`` if not yet loaded)."""
+        conn = self._conns.get(server)
+        return list(conn.tools) if conn is not None else []
+
+    def tool_names(self, server: str) -> list[str]:
+        return [t.name for t in self.tools(server)]
+
+    def call(self, server: str, tool: str, args: Optional[dict] = None) -> str:
+        """Call ``tool`` on a CONNECTED ``server`` and return the flattened result TEXT."""
+        conn = self._conns.get(server)
+        if conn is None:
+            raise RuntimeError(f"MCP server {server!r} is not connected (load it first)")
+        return result_text(conn.call(tool, args or {}))
+
+    def close(self) -> None:
+        for conn in self._conns.values():
+            with contextlib.suppress(Exception):
+                conn.close()
+        self._conns.clear()
+
+
+def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str):
     name = f"{prefix}{mcp_tool.name}"
     desc = mcp_tool.description or f"MCP tool {name}"
 
@@ -187,7 +291,7 @@ def _make_tool(dspy_mod: Any, bridge: _MCPBridge, mcp_tool: Any, prefix: str):
         except Exception as exc:  # noqa: BLE001 — surface as text so the RLM can react
             record_tool_call(name, args=kwargs, ok=False, note=f"error: {type(exc).__name__}")
             return f"MCP tool {name!r} error: {type(exc).__name__}: {str(exc)[:200]}"
-        text = _result_text(result)
+        text = result_text(result)
         ok = not getattr(result, "isError", False)
         record_tool_call(
             name, args=kwargs, ok=ok, preview=text[:_PREVIEW],
@@ -221,7 +325,7 @@ def mcp_tools(server: ServerSpec, *, timeout: float = 30.0, prefix: str = "") ->
     _require_mcp()
     import dspy
 
-    bridge = _MCPBridge(server, timeout=timeout)
+    bridge = McpConnection(server, timeout=timeout)
     try:
         # start() inside the try so a start failure (timeout / a server that errors on init) still
         # runs close() — otherwise the background thread + any spawned stdio subprocess would leak.

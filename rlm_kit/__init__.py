@@ -81,6 +81,9 @@ __all__ = [
     "run_label_bundle",
     # MCP client (optional: rlm-kit[mcp])
     "mcp_tools",
+    "McpConnection",
+    "McpCatalog",
+    "result_text",
     # Claude subscription LM (optional: rlm-kit[subscription])
     "ClaudeAgentLM",
 ]
@@ -105,10 +108,11 @@ def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import
         from .runtime import get_config
 
         return get_config
-    if name == "mcp_tools":  # optional MCP client (imports dspy + mcp lazily)
-        from .mcp import mcp_tools
+    if name in ("mcp_tools", "McpConnection", "McpCatalog", "result_text"):
+        # optional MCP client (rlm-kit[mcp]); mcp.py's module top is dspy/mcp-free, the SDK loads on use
+        from . import mcp as _mcp
 
-        return mcp_tools
+        return getattr(_mcp, name)
     if name == "ClaudeAgentLM":  # optional Claude subscription LM (imports dspy now, the SDK on use)
         from .claude_agent_lm import ClaudeAgentLM
 
