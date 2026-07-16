@@ -6,7 +6,7 @@ clue why.
 Three frozen things (see CLAUDE.md "The trace is a VERSIONED wire format"):
   1. the trace SCHEMA + the seven EVENT_* type strings,
   2. the recorded-event ENVELOPE shape,
-  3. the dataset-exporter RECORD shapes (export_actions / export_sft_turns / export_rl),
+  3. the dataset-exporter RECORD shapes (export_actions / export_sft_turns / export_rl / run_label_bundle),
 plus the public ``__all__`` surface a consumer imports. ADDITIVE change is fine (a new optional
 payload field, a new ``__all__`` entry); removing / renaming / re-typing any of these is a v1 break —
 bump SCHEMA to ``rlm-kit/trace/v2`` with a migration instead of editing this test to be green.
@@ -14,7 +14,7 @@ bump SCHEMA to ``rlm-kit/trace/v2`` with a migration instead of editing this tes
 
 import rlm_kit
 from rlm_kit import trace as T
-from rlm_kit.dataset import export_actions, export_rl, export_sft_turns
+from rlm_kit.dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
 
 
 def test_schema_id_is_frozen_at_v1():
@@ -95,6 +95,13 @@ def test_export_rl_record_shape():
     assert r["reward"] is None                                       # reward-free
 
 
+def test_run_label_bundle_shape():
+    # per-run LABEL surfaces a trainer reads BESIDE the reward-free records: {surface: {run_id: dict}}.
+    # ADDITIVE to v1: a consumer's trainer keys on this exact bundle shape, so pin it.
+    bundle = run_label_bundle(_synthetic_run(), labels=lambda ev: {"n": len(ev)})
+    assert bundle == {"labels": {"r": {"n": 4}}}
+
+
 def test_public_surface_includes_the_consumer_contract():
     # the load-bearing names a consumer imports — a representative subset, not the whole list (which
     # may GROW). Removing any breaks a downstream consumer / its UI / the trainer.
@@ -102,7 +109,7 @@ def test_public_surface_includes_the_consumer_contract():
         "RLMTask", "RLMConfig", "configure", "get_config", "RLMTaskError",
         "intercept_sub_lm", "model_as_tool", "get_sub_lm", "load_skills_as_tools",
         "TraceRecorder", "current_recorder", "record_tool_call", "load_events", "group_by_run",
-        "export_sft_turns", "export_rl", "export_actions",
+        "export_sft_turns", "export_rl", "export_actions", "run_label_bundle",
         # trace/v1 contract constants — a consumer reads a trace against these, not raw strings
         "EVENT_RUN_START", "EVENT_MAIN_STEP", "EVENT_SUB_CALL", "EVENT_TOOL_CALL",
         "EVENT_FINAL", "EVENT_RESULT", "EVENT_RUN_END",

@@ -306,6 +306,15 @@ surfaced by dogfooding a real downstream consumer.
   stays dspy/SDK-free (the `mcp_tools` pattern). Previously lived only under `examples/` (not in the
   wheel), which forced every downstream consumer to vendor a byte-identical copy;
   `examples/claude_agent_lm.py` now shrinks to the runnable demo.
+- **`run_label_bundle(runs, /, **label_fns)` — reward-free per-run LABEL surfaces** (`dataset.py`,
+  public + contract-pinned). A companion MAPPER to the exporters: `{surface: {run_id: fn(events)}}`,
+  where each keyword is a consumer-supplied fn turning one run's events into a dict of intrinsic labels
+  (validity flags, objective metrics, a rubric's deterministic per-criterion facts) that ride BESIDE the
+  trajectory records — so a downstream trainer reads ONE canonical bundle shape instead of each consumer
+  re-deriving it. `runs` is positional-only so a label surface may itself be named `runs`; `reward` is a
+  REFUSED surface name (rlm-kit produces trajectories, never reward — the trainer composes reward from
+  these labels plus its own credit assignment). Consumer-driven: promoted from a downstream consumer's
+  per-run labelling so every consumer shares one bundle shape.
 
 ### Fixed
 

@@ -11,6 +11,10 @@ records, in three shapes:
   escalation) as a first-class, `kind`-tagged record, so a trainer can split them
   (fine-tune the generator on `kind=="tool"`, the orchestrator on `kind=="planner"`).
 
+``run_label_bundle`` is a companion MAPPER — ``{surface: {run_id: fn(events)}}`` — for per-run
+intrinsic LABEL surfaces (validity flags, objective metrics, a rubric's per-criterion facts) that
+ride BESIDE the reward-free records; it refuses a ``reward`` surface (the trainer attaches reward).
+
 ``reward`` is a pluggable callable scoring a whole run; its value is attached to
 every record of that run (credit assignment is left to the trainer).
 
@@ -32,6 +36,9 @@ from .trace import (
 
 # A reward function scores one run's events -> float.
 RewardFn = Callable[[list[dict]], float]
+
+# A label function maps one run's events -> a dict of intrinsic FACTS/LABELS (never a score).
+LabelFn = Callable[[list[dict]], dict]
 
 # The three action event types, in the order they should be sequenced (by step_id).
 _ACTION_TYPES = (EVENT_MAIN_STEP, EVENT_TOOL_CALL, EVENT_SUB_CALL)
@@ -104,6 +111,34 @@ def export_actions(
             )
             history.append({"kind": rec["kind"], "outcome": rec["outcome"]})
     return records
+
+
+def run_label_bundle(
+    runs: dict[str, list[dict]], /, **label_fns: LabelFn
+) -> dict[str, dict[str, dict]]:
+    """Map named per-run LABEL surfaces over a set of runs: ``{surface: {run_id: fn(events)}}``.
+
+    A companion to the reward-free exporters: each ``label_fns`` entry is a consumer-supplied function
+    turning one run's events into a dict of intrinsic labels — validity flags, objective metrics, or a
+    rubric's deterministic per-criterion facts (where a criterion is just a dict with ``name`` /
+    ``description`` / ``weight`` and an OPAQUE ``category`` string the kit never interprets). These ride
+    BESIDE the trajectory records so a downstream trainer reads ONE canonical bundle shape instead of
+    each consumer re-deriving it::
+
+        run_label_bundle(runs, labels=run_labels, metrics=run_metrics)
+        # -> {"labels": {run_id: {...}}, "metrics": {run_id: {...}}}
+
+    ``reward`` is a REFUSED surface name: rlm-kit produces trajectories, never reward — the trainer
+    composes reward from these labels (plus its own credit assignment), so a label fn must emit FACTS,
+    not a score. The kit can only refuse the NAME; that a fn returns facts and not a hidden score is the
+    same convention-not-enforcement trust model as ``reward=`` on the exporters.
+    """
+    if "reward" in label_fns:
+        raise ValueError(
+            "'reward' is not a label surface — rlm-kit exports trajectories, never reward; attach "
+            "reward in the trainer, and emit facts (not scores) as labels here."
+        )
+    return {name: {rid: fn(ev) for rid, ev in runs.items()} for name, fn in label_fns.items()}
 
 
 def _run_meta(events: list[dict]) -> dict:

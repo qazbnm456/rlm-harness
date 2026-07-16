@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from ._retry import RLMTaskError
 from .config import RLMConfig
-from .dataset import export_actions, export_rl, export_sft_turns
+from .dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
 from .replay import RecordedToolProvider, load_timeline, reconstruct
 from .sandbox import SandboxSecurityError
 from .skills import discover_skills, load_skills_as_tools, render_skills_manifest
@@ -78,6 +78,7 @@ __all__ = [
     "export_sft_turns",
     "export_rl",
     "export_actions",
+    "run_label_bundle",
     # MCP client (optional: rlm-kit[mcp])
     "mcp_tools",
     # Claude subscription LM (optional: rlm-kit[subscription])
