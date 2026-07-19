@@ -3,6 +3,7 @@ stdio MCP server (a tiny FastMCP echo) as a subprocess and drive it through ``mc
 when the optional ``mcp`` extra (or dspy) is absent, like the other dspy-bearing tests."""
 
 import contextlib
+import inspect
 import sys
 
 import pytest
@@ -10,11 +11,14 @@ import pytest
 pytest.importorskip("mcp")
 pytest.importorskip("dspy")
 
+import dspy  # noqa: E402
+
 from rlm_kit.mcp import (  # noqa: E402
     _CLOSE_GRACE,
     McpCatalog,
     McpConnection,
     _args_from_schema,
+    _make_tool,
     mcp_tools,
     result_text,
 )
@@ -73,6 +77,115 @@ def test_result_text_joins_text_blocks_and_flags_errors():
     assert result_text(err).startswith("[tool reported an error]")
     structured = types.SimpleNamespace(content=[], structuredContent={"n": 1}, isError=False)
     assert '"n": 1' in result_text(structured)
+
+
+# ---- _make_tool: the REPL sandbox proxy exposes the schema's param NAMES --
+#
+# dspy.RLM injects `tool.func` into its PythonInterpreter, which builds the sandbox tool proxy from
+# ``inspect.signature(func)`` — NOT ``dspy.Tool.args``. A bare ``**kwargs`` wrapper registers a single
+# param literally named "kwargs", so the model calls e.g. ``get_vulnerability(kwargs=...)`` and the
+# server rejects the unexpected property. These pin the fix WITHOUT a live server or Deno.
+
+class _FakeBridge:
+    """Records the (name, arguments) it is called with; returns a benign ok result."""
+
+    def __init__(self):
+        self.received = None
+
+    def call(self, name, arguments):
+        import types
+        self.received = (name, arguments)
+        return types.SimpleNamespace(
+            content=[types.SimpleNamespace(text="ok")], structuredContent=None, isError=False
+        )
+
+
+def _fake_tool(schema, *, name="get_vulnerability"):
+    import types
+    return types.SimpleNamespace(name=name, description="d", inputSchema=schema)
+
+
+def _dspy_params(fn):
+    """dspy's own tool-proxy param extraction — the exact contract the sandbox registers against."""
+    from dspy.primitives.python_interpreter import PythonInterpreter
+    return PythonInterpreter._extract_parameters(None, fn)  # self is unused by the method
+
+
+def _sandbox_stub_compiles(tool_name, parameters):
+    """Mirror of dspy runner.js ``makeToolWrapper`` — the def it generates must be valid Python.
+    An optional (defaulted) param BEFORE a required (no-default) one is a SyntaxError that aborts the
+    whole sandbox registration; this reproduces that check with no Deno."""
+    sig = ", ".join(
+        p["name"] + (" = None" if "default" in p else "") for p in parameters
+    )
+    compile(f"def {tool_name}({sig}):\n    return None\n", "<stub>", "exec")
+
+
+def test_make_tool_stamps_real_param_names_for_the_repl():
+    tool = _make_tool(dspy, _FakeBridge(), _fake_tool(
+        {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}), "sc_")
+    params = inspect.signature(tool.func).parameters
+    assert list(params) == ["id"]                                  # NOT ["kwargs"]
+    assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in params.values())
+    assert _dspy_params(tool.func) == [{"name": "id"}]             # what dspy actually registers
+    assert tool.args == {"id": {"type": "string"}}                # dspy.Tool.args unchanged
+
+
+def test_make_tool_orders_required_first_so_the_sandbox_stub_compiles():
+    # properties list the OPTIONAL param first — the ordering landmine. Keyword-only hides it host-side,
+    # so the fix must reorder required-first for the Deno stub to compile.
+    tool = _make_tool(dspy, _FakeBridge(), _fake_tool(
+        {"type": "object",
+         "properties": {"limit": {"type": "integer"}, "query": {"type": "string"}},
+         "required": ["query"]}), "sc_")
+    assert list(inspect.signature(tool.func).parameters) == ["query", "limit"]  # required-first
+    params = _dspy_params(tool.func)
+    # defaults must be a contiguous tail (the compile-safety invariant) …
+    seen_default = False
+    for p in params:
+        if "default" in p:
+            seen_default = True
+        else:
+            assert not seen_default, "a no-default param followed a defaulted one → SyntaxError"
+    _sandbox_stub_compiles("sc_get_vulnerability", params)         # … and the generated def compiles
+
+
+def test_make_tool_forwards_by_name_and_drops_unset_optionals():
+    bridge = _FakeBridge()
+    tool = _make_tool(dspy, bridge, _fake_tool(
+        {"type": "object",
+         "properties": {"id": {"type": "string"}, "note": {"type": "string"}},
+         "required": ["id"]}), "sc_")
+    tool.func(id="CVE-2026-63030", note=None)                      # model omitted `note` → stub sends None
+    assert bridge.received == ("get_vulnerability", {"id": "CVE-2026-63030"})  # UNprefixed name; None dropped
+
+
+def test_make_tool_zero_arg_tool_is_callable():
+    bridge = _FakeBridge()
+    tool = _make_tool(dspy, bridge, _fake_tool({"type": "object", "properties": {}}), "sc_")
+    assert list(inspect.signature(tool.func).parameters) == []    # NOT a required "kwargs" positional
+    tool.func()
+    assert bridge.received == ("get_vulnerability", {})
+
+
+def test_make_tool_bad_param_name_degrades_without_crashing():
+    # a property named like a Python keyword can't be an inspect.Parameter → fall back to **kwargs,
+    # never raise out of _make_tool (which would sink the whole tool-load).
+    tool = _make_tool(dspy, _FakeBridge(), _fake_tool(
+        {"type": "object", "properties": {"from": {"type": "string"}}, "required": ["from"]}), "sc_")
+    assert list(inspect.signature(tool.func).parameters) == ["kwargs"]  # fell back, no exception
+
+
+def test_make_tool_tolerates_malformed_schema_fields():
+    # A non-conformant server must not sink the WHOLE tool-load (_make_tool runs in a comprehension
+    # over every tool). A non-list `required` is ignored (all props optional); a non-dict inputSchema
+    # leaves an untyped **kwargs proxy.
+    bad_required = _make_tool(dspy, _FakeBridge(), _fake_tool(
+        {"type": "object", "properties": {"id": {"type": "string"}}, "required": "id"}), "sc_")
+    params = inspect.signature(bad_required.func).parameters
+    assert list(params) == ["id"] and params["id"].default is None       # required treated as empty
+    non_dict = _make_tool(dspy, _FakeBridge(), _fake_tool(None), "sc_")   # inputSchema not a dict
+    assert list(inspect.signature(non_dict.func).parameters) == ["kwargs"]  # schemaless → **kwargs
 
 
 # ---- the bridge: real stdio server, sync call, teardown ------------------

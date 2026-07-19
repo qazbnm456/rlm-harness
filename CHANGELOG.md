@@ -12,6 +12,12 @@ surfaced by dogfooding a real downstream consumer.
 
 ### Added
 
+- **`rlm_kit.testing.assert_repl_safe(tool)` — enforce the "REPL tools expose explicit params" invariant.**
+  Any callable injected into the RLM REPL has its sandbox proxy built from `inspect.signature(func)` (both
+  backends), so a `*args`/`**kwargs` param — or a required param after a defaulted one — silently breaks
+  the model's ability to call it (the `_make_tool` kwargs bug). This convention was documented but never
+  tested; the helper asserts it and `tests/test_repl_safety.py` sweeps every shipped factory. A consumer
+  exposing its own tools should assert the same. New CLAUDE.md invariant records the rule.
 - **`rlm_kit.testing` — drive the RLM forward path OFFLINE (`ScriptedInterpreter` + `scripted_lm`), plus
   a `RLMTask(interpreter=…)` injection seam.** `dspy.RLM` runs the model's Python in a sandboxed
   interpreter, so the *forward* loop (planner turn → tool call → SUBMIT → validated result) normally needs
@@ -331,6 +337,18 @@ surfaced by dogfooding a real downstream consumer.
 
 ### Fixed
 
+- **`mcp._make_tool` now exposes each MCP tool's REAL param names to the RLM REPL (was: a single
+  `kwargs`).** dspy.RLM builds the in-sandbox tool proxy from `inspect.signature(tool.func)` — NOT
+  `dspy.Tool.args` — so the old `def call(**kwargs)` wrapper registered a proxy whose only param was
+  literally named `kwargs`. The model then called e.g. `get_vulnerability(kwargs="CVE-…")` and a strict
+  server (`additionalProperties:false`, expecting `id`) rejected it as an unexpected property — EVERY
+  in-REPL MCP tool call was broken (only a HOST-side call, which passes `tool(id=…)` directly, worked).
+  `_make_tool` now stamps `call.__signature__` from the tool's `inputSchema` (properties → KEYWORD_ONLY
+  params, REQUIRED-FIRST so the generated Deno `def` compiles, zero-arg tools included, malformed-schema
+  fields tolerated), and drops `None`-valued args so an omitted optional isn't posted as JSON null. The
+  fix is on the wrapped func, so it protects BOTH the Deno and container backends (each reads the func
+  signature). Regression tests in `tests/test_mcp.py`; the class is now guarded kit-wide by
+  `assert_repl_safe` (see Added).
 - **The co-dev editable overlay no longer shadows a consumer's namespace `tests/`** (dropped
   `tests/__init__.py`; guard test in `tests/test_packaging.py`). A consumer co-develops rlm-kit by
   overlaying an editable install (`uv pip install -e ../rlm-kit`), whose bare-path `.pth` puts the repo

@@ -24,6 +24,7 @@ keeps the guard.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Callable, Optional, Sequence, Union
 
 # A step is one execute() worth of behaviour. It is one of:
@@ -32,6 +33,44 @@ from typing import Any, Callable, Optional, Sequence, Union
 #   - a ``callable`` -> called ``step(tools, variables)``; its return is interpreted by the SAME rules
 #                       (dict -> submit, str -> output), or a dspy ``FinalOutput`` is passed through.
 Step = Union[dict, str, Callable[[dict, dict], Any]]
+
+
+def assert_repl_safe(tool: Any) -> None:
+    """Assert ``tool`` is safe to inject into the RLM's REPL (``RLMTask(tools=[...])``).
+
+    dspy.RLM builds the in-sandbox tool proxy from ``inspect.signature(tool.func)`` — NOT from
+    ``dspy.Tool.args`` — and this holds for BOTH the Deno ``PythonInterpreter`` and rlm-kit's
+    ``ContainerInterpreter`` (each reads the wrapped func's signature). Two consequences no
+    CONSTRUCTION test can see, only a real REPL call:
+
+    * a ``*args``/``**kwargs`` param is flattened into a single proxy param literally named
+      ``args``/``kwargs`` — the model can only pass the value under that meaningless name, which a
+      strict MCP server rejects and a plain tool mis-binds (this is the ``_make_tool`` kwargs bug);
+    * a required (no-default) param placed AFTER a defaulted one makes the generated Deno ``def`` a
+      ``SyntaxError`` that aborts the ENTIRE tool registration.
+
+    Call this on every callable a consumer exposes to the planner — it turns the
+    "explicit-params-only" convention (documented but historically un-tested) into an enforced
+    invariant, so a future factory can't silently reintroduce the hazard. Accepts a ``dspy.Tool``
+    (checks its ``.func``) or a bare callable.
+    """
+    fn = getattr(tool, "func", tool)
+    label = getattr(fn, "__name__", repr(fn))
+    seen_default = False
+    for pname, p in inspect.signature(fn).parameters.items():
+        if p.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL):
+            raise AssertionError(
+                f"REPL tool {label!r} exposes a {p.kind.name} param {pname!r}: dspy flattens it into a "
+                f"proxy param literally named {pname!r}, so the model cannot call it correctly. "
+                f"Give the tool EXPLICIT named params."
+            )
+        if p.default is not inspect.Parameter.empty:
+            seen_default = True
+        elif seen_default:
+            raise AssertionError(
+                f"REPL tool {label!r}: required param {pname!r} follows a defaulted one, so the "
+                f"generated Deno `def {label}(…)` is a SyntaxError. Order required params first."
+            )
 
 
 class ScriptedInterpreter:

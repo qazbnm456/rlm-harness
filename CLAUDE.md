@@ -65,6 +65,18 @@ One companion rule ships under `.claude/rules/`:
   `"<coroutine object …>"`. So `tools/` factories (`make_fetch_tool`,
   `make_web_search_tool`, …) and their `fetcher`/`searcher` inputs are sync. Don't make
   a tool `async`; wrap an async client into a sync call yourself.
+- **A tool injected into the REPL MUST expose EXPLICIT params — never `*args`/`**kwargs`.** dspy.RLM
+  builds the in-sandbox tool proxy from `inspect.signature(tool.func)` (NOT `dspy.Tool.args`), and this
+  holds for BOTH backends — dspy's Deno `PythonInterpreter._extract_parameters` AND rlm-kit's
+  `ContainerInterpreter._extract_parameters` read the wrapped func's signature. So a `**kwargs`/`*args`
+  param is flattened into a single proxy param literally named `kwargs`/`args` (the model can only pass
+  the value under that meaningless name — a strict MCP server rejects it, a plain tool mis-binds), and a
+  required param placed AFTER a defaulted one makes the generated Deno `def` a SyntaxError that aborts the
+  whole registration. When a wrapper must be `def call(**kwargs)` (e.g. `mcp._make_tool`, whose params
+  come from a runtime JSON Schema), stamp `call.__signature__` from the schema — required-first,
+  KEYWORD_ONLY — so the proxy exposes real names. Enforce it in a test with
+  `rlm_kit.testing.assert_repl_safe(tool)` (see `tests/test_repl_safety.py`, which sweeps every shipped
+  factory); a consumer exposing its own tools should assert the same.
 - **MCP is CLIENT-ONLY, and its async SDK is bridged to sync (`mcp.py`, optional `rlm-kit[mcp]`).**
   `mcp_tools(server)` connects to an EXTERNAL MCP server (rlm-kit never IS a server, never bundles
   one — you point it at someone else's) and exposes that server's tools to `RLMTask`. The MCP SDK is

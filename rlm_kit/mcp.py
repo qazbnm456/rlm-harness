@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import inspect
 import json
 import threading
 from typing import Any, Iterator, Optional, Union
@@ -318,24 +319,55 @@ class McpCatalog:
 def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str):
     name = f"{prefix}{mcp_tool.name}"
     desc = mcp_tool.description or f"MCP tool {name}"
+    schema = mcp_tool.inputSchema if isinstance(mcp_tool.inputSchema, dict) else None
+    props = _args_from_schema(schema)
+    req = schema.get("required") if schema else None
+    required = set(req) if isinstance(req, list) else set()  # a non-list `required` must not sink tool-load
 
     def call(**kwargs: Any) -> str:
+        # The REPL sandbox proxy forwards EVERY declared param — incl. a defaulted optional the model
+        # omitted, sent as None. Drop None so an unset optional isn't posted as JSON null into a strict
+        # (additionalProperties:false / typed) server schema.
+        args = {k: v for k, v in kwargs.items() if v is not None}
         try:
-            result = bridge.call(mcp_tool.name, kwargs)
+            result = bridge.call(mcp_tool.name, args)
         except Exception as exc:  # noqa: BLE001 — surface as text so the RLM can react
-            record_tool_call(name, args=kwargs, ok=False, note=f"error: {type(exc).__name__}")
+            record_tool_call(name, args=args, ok=False, note=f"error: {type(exc).__name__}")
             return f"MCP tool {name!r} error: {type(exc).__name__}: {str(exc)[:200]}"
         text = result_text(result)
         ok = not getattr(result, "isError", False)
         record_tool_call(
-            name, args=kwargs, ok=ok, preview=text[:_PREVIEW],
+            name, args=args, ok=ok, preview=text[:_PREVIEW],
             note="ok" if ok else "tool reported an error",
         )
         return text
 
     call.__name__ = name
     call.__doc__ = desc
-    return dspy_mod.Tool(call, name=name, desc=desc, args=_args_from_schema(mcp_tool.inputSchema))
+    # dspy.RLM injects `tool.func` (this `call`) into its PythonInterpreter, which builds the sandbox
+    # tool proxy from ``inspect.signature(func)`` — NOT from ``dspy.Tool.args``. A bare ``**kwargs``
+    # wrapper therefore registers a single param literally named "kwargs", so the model calls e.g.
+    # ``get_vulnerability(kwargs=...)`` and the server rejects the unexpected property. Stamp a real
+    # signature from the schema so the proxy exposes the true argument names. REQUIRED-FIRST: the Deno
+    # stub emits ``def f(<params>)`` in this order, and a no-default param after a defaulted one is a
+    # SyntaxError that aborts the ENTIRE sandbox registration — keyword-only hides that host-side, so we
+    # emit required (no default) before optional (default None). Stamp even the zero-arg case, so a
+    # no-param tool isn't left with the broken ``**kwargs`` proxy. A non-identifier / keyword property
+    # name can't be an ``inspect.Parameter``; fall back to the untyped ``**kwargs`` proxy for that tool.
+    if schema is not None:
+        try:
+            ordered = [n for n in props if n in required] + [n for n in props if n not in required]
+            params = [
+                inspect.Parameter(
+                    n, inspect.Parameter.KEYWORD_ONLY,
+                    default=(inspect.Parameter.empty if n in required else None),
+                )
+                for n in ordered
+            ]
+            call.__signature__ = inspect.Signature(params)
+        except (ValueError, TypeError):
+            pass  # bad property name → keep the untyped **kwargs proxy for this tool
+    return dspy_mod.Tool(call, name=name, desc=desc, args=props)
 
 
 @contextlib.contextmanager
