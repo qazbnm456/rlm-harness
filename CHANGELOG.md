@@ -42,6 +42,11 @@ surfaced by dogfooding a real downstream consumer.
   dead/slow/looping child degrades (`endpoint_error`/`circuit_broken`), never sinking the parent run.
   Exports: `make_harness_tool`, `harness_from_endpoint`, `HarnessInvoke`, `HarnessInvocation`,
   `HarnessToolResult`. dspy-free; anticipatory (no consumer wired in the kit yet). 11 offline tests.
+- **Consumer guide: document the studio paired-extras convention.** "Building a consumer" now
+  states that an in-repo `studio/` workspace member must define BOTH `live = ["<consumer>"]` and a
+  forwarding `subscription = ["<consumer>[subscription]"]`, so a studio-scoped
+  `uv run --package <consumer>-studio --extra live --extra subscription …` is portable across every
+  downstream (a studio-scoped uv command resolves extras against the member, not the root).
 - **`rlm_kit.testing.assert_repl_safe(tool)` — enforce the "REPL tools expose explicit params" invariant.**
   Any callable injected into the RLM REPL has its sandbox proxy built from `inspect.signature(func)` (both
   backends), so a `*args`/`**kwargs` param — or a required param after a defaulted one — silently breaks

@@ -417,6 +417,18 @@ RL export together. Five steps:
      NO file — `python -m rlm_kit.harness_serve <pkg.module>:run` uses the duck-typed default. Copy
      `examples/harness_serve.py`.
 
+**If you ship an in-repo `studio/` (or any workspace member that drives live runs), forward the
+subscription extra.** A consumer's visual console is a uv workspace MEMBER with its own
+`pyproject.toml`, kept behind a `live` optional extra so a replay-only deploy stays web-free. A
+studio-scoped `uv` command (`uv run --package <consumer>-studio …`) resolves `--extra` against the
+MEMBER, not the root — so the member must define BOTH `live = ["<consumer>"]` AND a forwarding
+`subscription = ["<consumer>[subscription]"]`. Without the forward, `--extra subscription` is rejected on
+the member and any sync that omits it prunes the Claude Agent SDK back out, so a subscription studio run
+dies with `ImportError: ClaudeAgentLM requires the optional dependency`. The portable, cwd-independent
+launch is therefore `uv run --package <consumer>-studio --extra live --extra subscription uvicorn
+<consumer>_studio.app:app`. Every downstream studio carries this SAME pair, so one command is portable
+across them.
+
 **The promotion rule** keeps the boundary clean. When the consumer forces a workaround, ask "is this
 GENERIC?" A reusable mechanic (the model-tool + retry + validate core, a new sandbox seam, a trace
 hook) is PROMOTED into rlm-kit via the base/wrap split — the generic half here, the specific half in
