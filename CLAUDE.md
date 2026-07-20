@@ -137,12 +137,27 @@ One companion rule ships under `.claude/rules/`:
   or module internal (`trace._active`, `_retry`) is private and may change without notice. A consumer
   extends three ways and only these: subclass `RLMTask` (declaration), add a tool the **base/wrap**
   way (generic base + syntactic guard + factory HERE, provider + tracing in the consumer — as
-  `make_model_tool` / `make_fetch_tool` / `make_web_search_tool` do), and read results through the
-  trace + exporters. It must NEVER fork the harness or re-implement tracing. If a consumer needs an
+  `make_model_tool` / `make_fetch_tool` / `make_web_search_tool` / `make_harness_tool` do), and read
+  results through the trace + exporters. It must NEVER fork the harness or re-implement tracing. If a consumer needs an
   internal seam the kit doesn't expose, ADD a named, documented hook here (how `recorder_scope` in
   `trace.py` + `bind_recorder_to_sub_lm` in `sub_lm.py` were born — the cross-thread sub-LM recording
   fix; both are importable public functions, though not in the top-level `__all__`) — do not reach
   into a `_private` name. Full walkthrough: the guide (`rlm_kit/README.md`) "Building a consumer".
+- **`make_harness_tool` delegates a sub-task to ANOTHER rlm-kit harness — long text IS the contract.**
+  The promoted "wrap a downstream harness as a tool" shape (`tools/harness.py`), a THIN reuse of
+  `make_model_tool`'s retry/validate/circuit-break core plus a child-rollout LINK. Its reason to exist is
+  the RLM framework's native advantage: an input field holds near-unbounded text that dspy injects as the
+  Root LM's REPL ENVIRONMENT. So a `HarnessInvoke` takes ONE long-text arg and nothing else (the contract
+  enforced by SHAPE), and `harness_from_endpoint` binds that WHOLE context to the downstream harness's
+  long-text input field — the child then runs a FULL RLM loop (REPL + its own MCP / skills / fetch) over
+  it, not a one-shot completion. TRAJECTORY SEPARATION is load-bearing: the parent records ONE leaf
+  tool_call + a `child_run_id` / `child_trace` link (additive within trace/v1), while the child owns its
+  OWN trace/rollout, exported separately (both reward-free). The kit ships NO transport and NAMES no
+  harness — the consumer injects `call_endpoint` (subprocess / in-process / HTTP) and the harness's
+  identity lives only in the consumer's runtime config, exactly as `make_command_tool` takes an injected
+  `Runner`. A dead / slow / looping child degrades (`endpoint_error` / `circuit_broken`), never sinking
+  the parent run. Anticipatory by design: written for a FUTURE downstream harness, no consumer yet in the
+  kit.
 - **Keep the public surface vendor-neutral.** rlm-kit's package, source, docs, and commit messages
   refer to downstream consumers GENERICALLY ("a consumer", "a downstream UI") — never by a specific
   project name, and never reproducing a consumer's product domain. A consumer's own concrete values

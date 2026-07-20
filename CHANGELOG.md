@@ -12,6 +12,21 @@ surfaced by dogfooding a real downstream consumer.
 
 ### Added
 
+- **`make_harness_tool` — delegate a sub-task to ANOTHER rlm-kit harness, wrapped as a tool
+  (`rlm_kit/tools/harness.py`).** The promoted, generic "wrap a downstream harness as a tool" shape
+  (the base/wrap sibling of `make_model_tool`, which it thinly REUSES for retry/validate/circuit-break),
+  adding only a child-rollout LINK. Its reason to exist is the RLM framework's native advantage: an
+  input field holds near-unbounded text that dspy injects as the Root LM's REPL environment — so a
+  `HarnessInvoke` takes ONE long-text arg and nothing else (contract enforced by shape), and
+  `harness_from_endpoint(call_endpoint, *, read_output)` binds that whole context to the downstream
+  harness's long-text input, which runs a FULL RLM loop (REPL + its own MCP/skills/fetch) over it. The
+  parent records ONE leaf tool_call + a `child_run_id`/`child_trace` link (additive within trace/v1);
+  the child owns its own trace/rollout (both reward-free). The kit ships NO transport and NAMES no
+  harness — the consumer injects `call_endpoint` (subprocess / in-process / HTTP), so the harness's
+  identity lives only in the consumer's runtime config (like `make_command_tool`'s injected `Runner`). A
+  dead/slow/looping child degrades (`endpoint_error`/`circuit_broken`), never sinking the parent run.
+  Exports: `make_harness_tool`, `harness_from_endpoint`, `HarnessInvoke`, `HarnessInvocation`,
+  `HarnessToolResult`. dspy-free; anticipatory (no consumer wired in the kit yet). 11 offline tests.
 - **`rlm_kit.testing.assert_repl_safe(tool)` — enforce the "REPL tools expose explicit params" invariant.**
   Any callable injected into the RLM REPL has its sandbox proxy built from `inspect.signature(func)` (both
   backends), so a `*args`/`**kwargs` param — or a required param after a defaulted one — silently breaks

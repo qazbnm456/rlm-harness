@@ -7,6 +7,13 @@ from .fetch import (
     parse_cidrs,
     resolved_host_is_safe,
 )
+from .harness import (
+    HarnessInvocation,
+    HarnessInvoke,
+    HarnessToolResult,
+    harness_from_endpoint,
+    make_harness_tool,
+)
 from .model import ModelToolResult, make_model_tool
 from .search import make_web_search_tool, normalise_search_results
 from .validation import make_json_schema_validator, make_schema_validator
@@ -24,4 +31,9 @@ __all__ = [
     "ModelToolResult",
     "make_command_tool",
     "CommandResult",
+    "make_harness_tool",
+    "harness_from_endpoint",
+    "HarnessInvoke",
+    "HarnessInvocation",
+    "HarnessToolResult",
 ]
