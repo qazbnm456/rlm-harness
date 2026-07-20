@@ -24,7 +24,9 @@ surfaced by dogfooding a real downstream consumer.
   mapping its result into a `HarnessPointer` (`to_pointer`) — or, for a flat result, uses the duck-typed
   `python -m rlm_kit.harness_serve <module:run>` with zero files. The operator points the client endpoint
   straight at the harness, no intermediate project. Exports: `serve_harness`, `HarnessPointer`. dspy-free;
-  vendor-neutral (the kit names no harness). 10 offline tests.
+  vendor-neutral (the kit names no harness). 10 offline tests. Discoverability: a copyable worked
+  example (`examples/harness_serve.py`) + step 6 ("Delegate to another harness — or be one", covering
+  BOTH the client and server sides) in the consumer guide (`rlm_kit/README.md`).
 - **`make_harness_tool` — delegate a sub-task to ANOTHER rlm-kit harness, wrapped as a tool
   (`rlm_kit/tools/harness.py`).** The promoted, generic "wrap a downstream harness as a tool" shape
   (the base/wrap sibling of `make_model_tool`, which it thinly REUSES for retry/validate/circuit-break),

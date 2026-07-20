@@ -156,7 +156,8 @@ One companion rule ships under `.claude/rules/`:
   harness — the consumer injects `call_endpoint` (subprocess / in-process / HTTP) and the harness's
   identity lives only in the consumer's runtime config, exactly as `make_command_tool` takes an injected
   `Runner`. A dead / slow / looping child degrades (`endpoint_error` / `circuit_broken`), never sinking
-  the parent run.
+  the parent run. (The CLIENT side; its SERVER-side mirror is `serve_harness` below. Both sides are the
+  consumer guide's step 6, `rlm_kit/README.md`.)
 - **`serve_harness` is the SERVER-side mirror of `make_harness_tool` — so connecting a harness needs no
   bespoke glue.** `make_harness_tool` is the CLIENT (the parent wraps a harness as a tool via an injected
   `call_endpoint`); `serving.py`'s `serve_harness(run, to_pointer, …)` + the `python -m
@@ -167,7 +168,9 @@ One companion rule ships under `.claude/rules/`:
   ITS result object into a `HarnessPointer` (`to_pointer`) — in a ~5-line `serve` module in its OWN repo;
   the operator then points the client endpoint straight at `-m <harness>.serve`, no intermediate project.
   `HarnessPointer.to_json_line` flattens `meta` to top level so the wire is what the client's `read_output`
-  parses. dspy-free. Anticipatory: written for a FUTURE downstream harness; the kit names none.
+  parses. dspy-free. Anticipatory: written for a FUTURE downstream harness; the kit names none. **Worked
+  example to copy: `examples/harness_serve.py`; both sides are step 6 ("Delegate to another harness — or
+  be one") of the consumer guide (`rlm_kit/README.md`).**
 - **Keep the public surface vendor-neutral.** rlm-kit's package, source, docs, and commit messages
   refer to downstream consumers GENERICALLY ("a consumer", "a downstream UI") — never by a specific
   project name, and never reproducing a consumer's product domain. A consumer's own concrete values

@@ -399,6 +399,23 @@ RL export together. Five steps:
 5. **Export trajectories; score elsewhere.** `export_sft_turns` / `export_rl` / `export_actions`
    turn traces into training datasets. They are REWARD-FREE: each carries a `reward=` HOOK the
    trainer fills — rlm-kit never computes a reward.
+6. **Delegate to another harness — or be one.** When a sub-task is better handled by a more
+   specialized rlm-kit harness, delegate to it as a TOOL rather than reimplementing it. Two symmetric
+   sides, both base/wrap, and NEITHER names the other harness in code — the identity lives only in the
+   operator's runtime endpoint config:
+   - **Client (you call another harness):** `make_harness_tool(invoke_fn, validate)` +
+     `harness_from_endpoint(call_endpoint, read_output=…)`. The kit owns retry/validate/circuit-break +
+     the child-rollout link; you own the transport (`call_endpoint` — a subprocess command / HTTP URL)
+     and `read_output` (parse the child's reply). The single long-text arg becomes the child's RLM
+     environment; the parent records ONE `tool_call` + a `child_run_id`/`child_trace` link while the
+     child owns its own separate rollout (exported independently).
+   - **Server (another harness calls YOU):** add a ~5-line `<pkg>/serve.py` that calls
+     `serve_harness(run, to_pointer)`. The kit owns stdin→env, run_id, CWD isolation, the JSON-pointer
+     wire, exit codes (0=ran / 1=infra→caller retries), and keeping your logs + tracebacks OFF stdout;
+     you own only `to_pointer` — the mapping from YOUR result object into a `HarnessPointer`. The
+     operator points the client at `python -m <pkg>.serve`. A FLAT result (`.artifact`/`.run_id`) needs
+     NO file — `python -m rlm_kit.harness_serve <pkg.module>:run` uses the duck-typed default. Copy
+     `examples/harness_serve.py`.
 
 **The promotion rule** keeps the boundary clean. When the consumer forces a workaround, ask "is this
 GENERIC?" A reusable mechanic (the model-tool + retry + validate core, a new sandbox seam, a trace
