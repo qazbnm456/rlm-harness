@@ -24,6 +24,7 @@ from .config import RLMConfig
 from .dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
 from .replay import RecordedToolProvider, load_timeline, reconstruct
 from .sandbox import SandboxSecurityError
+from .serving import HarnessPointer, serve_harness
 from .skills import discover_skills, load_skills_as_tools, render_skills_manifest
 from .sub_lm import SubLMValidationError, intercept_sub_lm, model_as_tool
 from .trace import (
@@ -79,6 +80,9 @@ __all__ = [
     "export_rl",
     "export_actions",
     "run_label_bundle",
+    # serving a downstream harness over the make_harness_tool delegation contract (server-side mirror)
+    "serve_harness",
+    "HarnessPointer",
     # MCP client (optional: rlm-kit[mcp])
     "mcp_tools",
     "McpConnection",

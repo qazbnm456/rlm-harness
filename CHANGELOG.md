@@ -12,6 +12,19 @@ surfaced by dogfooding a real downstream consumer.
 
 ### Added
 
+- **`serve_harness` — the SERVER-side mirror of `make_harness_tool`, so connecting a downstream harness
+  needs no bespoke glue (`rlm_kit/serving.py` + `python -m rlm_kit.harness_serve`).** `make_harness_tool`
+  is the CLIENT (a parent RLM wraps a harness as a tool via an injected `call_endpoint`); `serve_harness`
+  is the SERVER — it turns any RLMTask harness into a process that speaks the delegation contract: reads
+  the caller's long text from stdin (→ the child's RLM environment), runs the harness, and prints ONE
+  `HarnessPointer` JSON line on stdout (artifact + `run_id`/`trace_path` link to the child's own rollout),
+  with exit codes 0=ran / 1=infra so the caller can retry an infra failure. The kit owns all generic
+  plumbing (stdin, run_id, CWD isolation, the wire schema, exit codes, keeping the harness's identity +
+  tracebacks OFF stdout); the consuming harness supplies only a ~5-line `serve` module in its OWN repo
+  mapping its result into a `HarnessPointer` (`to_pointer`) — or, for a flat result, uses the duck-typed
+  `python -m rlm_kit.harness_serve <module:run>` with zero files. The operator points the client endpoint
+  straight at the harness, no intermediate project. Exports: `serve_harness`, `HarnessPointer`. dspy-free;
+  vendor-neutral (the kit names no harness). 10 offline tests.
 - **`make_harness_tool` — delegate a sub-task to ANOTHER rlm-kit harness, wrapped as a tool
   (`rlm_kit/tools/harness.py`).** The promoted, generic "wrap a downstream harness as a tool" shape
   (the base/wrap sibling of `make_model_tool`, which it thinly REUSES for retry/validate/circuit-break),

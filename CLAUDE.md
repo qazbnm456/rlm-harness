@@ -41,8 +41,8 @@ One companion rule ships under `.claude/rules/`:
   `sub_lm`/`main_lm` `DummyLM` bypassing the real model (the caller supplies and owns the double). The
   default (string → `build_interpreter`) keeps the guard; don't route the string path around it.
 - **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`,
-  `tools/`, `trace.py`, `skills.py`, `replay.py`, `dataset.py` must NOT import
-  `dspy` at module top — that keeps their logic testable without dspy. Only
+  `tools/`, `trace.py`, `skills.py`, `replay.py`, `dataset.py`, `serving.py`, `harness_serve.py`
+  must NOT import `dspy` at module top — that keeps their logic testable without dspy. Only
   `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`, `container_interpreter.py`,
   `testing.py`, and `claude_agent_lm.py` touch dspy — the last four live outside the dspy-free
   set and are lazily imported (by `__getattr__` / by `sandbox.build_interpreter`'s
@@ -156,8 +156,18 @@ One companion rule ships under `.claude/rules/`:
   harness — the consumer injects `call_endpoint` (subprocess / in-process / HTTP) and the harness's
   identity lives only in the consumer's runtime config, exactly as `make_command_tool` takes an injected
   `Runner`. A dead / slow / looping child degrades (`endpoint_error` / `circuit_broken`), never sinking
-  the parent run. Anticipatory by design: written for a FUTURE downstream harness, no consumer yet in the
-  kit.
+  the parent run.
+- **`serve_harness` is the SERVER-side mirror of `make_harness_tool` — so connecting a harness needs no
+  bespoke glue.** `make_harness_tool` is the CLIENT (the parent wraps a harness as a tool via an injected
+  `call_endpoint`); `serving.py`'s `serve_harness(run, to_pointer, …)` + the `python -m
+  rlm_kit.harness_serve <module:run>` entry are the SERVER — they turn any RLMTask harness into a process
+  that speaks the contract. The kit owns ALL generic plumbing (read stdin → the child's RLM env, run_id,
+  CWD isolation, the `HarnessPointer` wire, exit codes: 0=ran / 1=infra, keep the harness's identity +
+  tracebacks OFF stdout). The consuming HARNESS supplies only the one thing the kit can't know — mapping
+  ITS result object into a `HarnessPointer` (`to_pointer`) — in a ~5-line `serve` module in its OWN repo;
+  the operator then points the client endpoint straight at `-m <harness>.serve`, no intermediate project.
+  `HarnessPointer.to_json_line` flattens `meta` to top level so the wire is what the client's `read_output`
+  parses. dspy-free. Anticipatory: written for a FUTURE downstream harness; the kit names none.
 - **Keep the public surface vendor-neutral.** rlm-kit's package, source, docs, and commit messages
   refer to downstream consumers GENERICALLY ("a consumer", "a downstream UI") — never by a specific
   project name, and never reproducing a consumer's product domain. A consumer's own concrete values
