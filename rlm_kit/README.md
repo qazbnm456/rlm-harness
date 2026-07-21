@@ -21,7 +21,8 @@ pitch, the quickstart, and installation — start at the
 | `skills.py` | `load_skills_as_tools` — expose a Skills directory to the RLM as tools. |
 | `trace.py` | `TraceRecorder` — unified append-only JSONL trajectory (main steps + sub-LM + tool calls). |
 | `replay.py` | Reconstruct/replay a recorded run using recorded tool outputs. |
-| `dataset.py` | `export_sft_turns` / `export_rl` / `export_actions` — turn traces into training datasets (`export_sft_turns` = per-root-turn SFT, the RLM recipe of arXiv 2512.24601). |
+| `dataset.py` | `export_sft_turns` / `export_rl` / `export_actions` — turn traces into training datasets (`export_sft_turns` = per-root-turn SFT, the RLM recipe of arXiv 2512.24601); `run_label_bundle` — carry per-run LABEL surfaces beside the trajectory. |
+| `rubric.py` | Reward-free rubric primitives: the `Criterion`/`RubricCriteria`/`CriterionFact` types, `rubric_to_meta`/`rubric_from_meta`, `validate_rubric`, and a pure `criteria_facts(criteria, facts, lens)`. `category` is an OPAQUE caller-defined label — the kit imposes no taxonomy. See "Building a consumer". |
 | `claude_agent_lm.py` | `ClaudeAgentLM` — run rlm-kit on a Claude Pro/Max subscription: a `dspy.BaseLM` over the official Claude Agent SDK, injected via `configure(main_lm=…, sub_lm=…)`. Opt-in `rlm-kit[subscription]`; pure completions (no tools), lazily exported so `import rlm_kit` stays dspy/SDK-free. |
 | `examples/mini_run.py` | Minimal end-to-end live run — config + a tiny `RLMTask` through a real `dspy.RLM`, with the trajectory recorded and summarised. |
 | `examples/claude_agent_lm.py` | Runnable demo of `ClaudeAgentLM` — a tiny `RLMTask` through a real `dspy.RLM` on a subscription login. |
@@ -416,6 +417,25 @@ RL export together. Five steps:
      operator points the client at `python -m <pkg>.serve`. A FLAT result (`.artifact`/`.run_id`) needs
      NO file — `python -m rlm_kit.harness_serve <pkg.module>:run` uses the duck-typed default. Copy
      `examples/harness_serve.py`.
+
+**Score your own rubric (optional).** To decompose "did this run succeed?" into observable per-run
+LABELS, `rlm_kit.rubric` gives you the reward-free substrate — the `Criterion`/`RubricCriteria`/
+`CriterionFact` types, `rubric_to_meta`/`rubric_from_meta` (carry the rubric in the `run_start` meta),
+`validate_rubric`, and a pure `criteria_facts(criteria, facts, lens)`. `category` is an OPAQUE label YOU
+define — the kit imposes no taxonomy. The pattern (all consumer-side except the primitives):
+- define your own category set + a fixed (or per-task) criterion skeleton (`default_rubric`);
+- write a `trace -> facts` function — reuse your OWN run labels/metrics so a criterion's facts can never
+  drift from the export bundle — and a `category -> keys` lens choosing which facts each category surfaces;
+- `criteria_facts(rubric_from_meta(events).criteria or default_rubric().criteria, trace_facts(events),
+  LENS)` → per-criterion facts, reward-free. Emit them beside the trajectory via
+  `run_label_bundle(runs, rubric=lambda ev: {...})`; a downstream trainer turns facts into a score.
+
+An OPTIONAL model-graded EVAL is the same base/wrap shape — rlm-kit ships NO eval, only the pieces to
+build one: wrap `make_model_tool` with YOUR judge prompt (100% your domain), a strict parser reading a
+per-category 0–10 score dict, and a per-category means aggregation. Keep the prompt, the taskset, and the
+category MEANINGS in your repo; the categories stay OPAQUE to the kit. This is a reference PATTERN, not a
+shipped module — the valuable part of an eval is the domain prompt, which cannot be made generic without
+emptying it.
 
 **If you ship an in-repo `studio/` (or any workspace member that drives live runs), forward the
 subscription extra.** A consumer's visual console is a uv workspace MEMBER with its own
