@@ -12,6 +12,16 @@ surfaced by dogfooding a real downstream consumer.
 
 ### Added
 
+- **`rlm_kit.rubric` — reward-free rubric primitives (consumer-driven promotion).** The pydantic types
+  `Criterion` / `RubricCriteria` / `CriterionFact`, plus `rubric_to_meta` / `rubric_from_meta` /
+  `validate_rubric` and a pure `criteria_facts(criteria, facts, lens)` assembly loop, lifted from the
+  byte-identical rubric substrate several downstream consumers had each copied (and had begun to drift).
+  In core (pure pydantic, dspy-free, eager-exported) like `run_label_bundle`. **`category` is an OPAQUE,
+  caller-defined label** — the kit hardcodes no taxonomy and carries no domain vocabulary; a consumer
+  supplies its own category set, criterion descriptions, `trace -> facts` function, and `category -> keys`
+  lens, and re-exports the types so its call sites stay unchanged. Scoring stays downstream
+  (trajectories-never-reward). The `run_start` meta `rubric` wire shape is unchanged, so existing traces
+  re-render/re-export as before.
 - **`serve_harness` — the SERVER-side mirror of `make_harness_tool`, so connecting a downstream harness
   needs no bespoke glue (`rlm_kit/serving.py` + `python -m rlm_kit.harness_serve`).** `make_harness_tool`
   is the CLIENT (a parent RLM wraps a harness as a tool via an injected `call_endpoint`); `serve_harness`

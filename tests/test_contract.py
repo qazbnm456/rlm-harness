@@ -110,6 +110,9 @@ def test_public_surface_includes_the_consumer_contract():
         "intercept_sub_lm", "model_as_tool", "get_sub_lm", "load_skills_as_tools",
         "TraceRecorder", "current_recorder", "record_tool_call", "load_events", "group_by_run",
         "export_sft_turns", "export_rl", "export_actions", "run_label_bundle",
+        # reward-free rubric primitives (opaque category)
+        "Criterion", "RubricCriteria", "CriterionFact",
+        "rubric_to_meta", "rubric_from_meta", "validate_rubric", "criteria_facts",
         # trace/v1 contract constants — a consumer reads a trace against these, not raw strings
         "EVENT_RUN_START", "EVENT_MAIN_STEP", "EVENT_SUB_CALL", "EVENT_TOOL_CALL",
         "EVENT_FINAL", "EVENT_RESULT", "EVENT_RUN_END",

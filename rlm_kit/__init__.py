@@ -23,6 +23,15 @@ from ._retry import RLMTaskError
 from .config import RLMConfig
 from .dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
 from .replay import RecordedToolProvider, load_timeline, reconstruct
+from .rubric import (
+    Criterion,
+    CriterionFact,
+    RubricCriteria,
+    criteria_facts,
+    rubric_from_meta,
+    rubric_to_meta,
+    validate_rubric,
+)
 from .sandbox import SandboxSecurityError
 from .serving import HarnessPointer, serve_harness
 from .skills import discover_skills, load_skills_as_tools, render_skills_manifest
@@ -80,6 +89,14 @@ __all__ = [
     "export_rl",
     "export_actions",
     "run_label_bundle",
+    # reward-free rubric primitives (category is an OPAQUE caller-defined label; no taxonomy in the kit)
+    "Criterion",
+    "RubricCriteria",
+    "CriterionFact",
+    "rubric_to_meta",
+    "rubric_from_meta",
+    "validate_rubric",
+    "criteria_facts",
     # serving a downstream harness over the make_harness_tool delegation contract (server-side mirror)
     "serve_harness",
     "HarnessPointer",
