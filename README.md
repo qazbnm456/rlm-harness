@@ -104,6 +104,9 @@ Real projects using rlm-kit as their RLM scaffold:
 - **[diff-sentry](https://github.com/qazbnm456/diff-sentry)**: classifies GitHub changes (PRs, issues,
   pushes) for malicious intent — the diff is read as untrusted data in the sandboxed REPL, emitting
   evidence-backed benign / suspicious / malicious verdicts into a SIEM.
+- **[toolscout](https://github.com/qazbnm456/toolscout)**: an ATLAS-style rollout harness — a small
+  planner progressively discovers a large MCP toolspace and computes over tool results as code, emitting
+  reward-free trajectories + per-criterion facts for a downstream trainer.
 
 Built something on rlm-kit? Open a PR to add it here.
 
