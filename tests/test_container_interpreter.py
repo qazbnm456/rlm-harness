@@ -13,10 +13,10 @@ import pytest
 
 pytest.importorskip("dspy.primitives.code_interpreter")
 
-from dspy.primitives.code_interpreter import CodeInterpreterError, FinalOutput  # noqa: E402
+from dspy.primitives.code_interpreter import CodeInterpreterError, FinalOutput
 
-from rlm_kit.config import ContainerConfig  # noqa: E402
-from rlm_kit.container_interpreter import ContainerInterpreter, _spawn_subprocess  # noqa: E402
+from rlm_kit.config import ContainerConfig
+from rlm_kit.container_interpreter import ContainerInterpreter, _spawn_subprocess
 
 
 def _interp(**cfg_kw) -> ContainerInterpreter:

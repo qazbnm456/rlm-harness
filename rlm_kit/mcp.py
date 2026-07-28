@@ -39,7 +39,8 @@ import contextlib
 import inspect
 import json
 import threading
-from typing import Any, Iterator, Optional, Union
+from collections.abc import Iterator
+from typing import Any
 
 from .trace import record_tool_call
 
@@ -53,7 +54,7 @@ _CLOSE_GRACE = 5.0
 
 # A server spec: a bare URL string, {"url": ...} (streamable-HTTP), or
 # {"command": ..., "args": [...], "env": {...}} (stdio subprocess).
-ServerSpec = Union[str, dict]
+ServerSpec = str | dict
 
 
 def _require_mcp() -> None:
@@ -79,7 +80,7 @@ def result_text(result: Any) -> str:
         if structured is not None:
             try:
                 out = json.dumps(structured, ensure_ascii=False, default=str)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 out = str(structured)
     if getattr(result, "isError", False):
         out = f"[tool reported an error] {out}".strip()
@@ -114,8 +115,8 @@ class McpConnection:
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run, name="rlm-kit-mcp", daemon=True)
         self._ready = threading.Event()
-        self._error: Optional[BaseException] = None
-        self._stop: Optional[asyncio.Event] = None
+        self._error: BaseException | None = None
+        self._stop: asyncio.Event | None = None
         self._serve_task: Any = None  # the _serve() Task; close() cancels it to unwind a WEDGED connect
         self._session: Any = None
         self.tools: list = []
@@ -128,7 +129,7 @@ class McpConnection:
             self._loop.run_until_complete(self._serve_task)
         except asyncio.CancelledError:
             pass  # close() cancelled the serve task — a clean shutdown, not an _error
-        except BaseException as exc:  # noqa: BLE001 — surfaced to start()
+        except BaseException as exc:
             self._error = exc
             self._ready.set()
         finally:
@@ -302,7 +303,7 @@ class McpCatalog:
     def tool_names(self, server: str) -> list[str]:
         return [t.name for t in self.tools(server)]
 
-    def call(self, server: str, tool: str, args: Optional[dict] = None) -> str:
+    def call(self, server: str, tool: str, args: dict | None = None) -> str:
         """Call ``tool`` on a CONNECTED ``server`` and return the flattened result TEXT."""
         conn = self._conns.get(server)
         if conn is None:
@@ -331,7 +332,7 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str)
         args = {k: v for k, v in kwargs.items() if v is not None}
         try:
             result = bridge.call(mcp_tool.name, args)
-        except Exception as exc:  # noqa: BLE001 — surface as text so the RLM can react
+        except Exception as exc:
             record_tool_call(name, args=args, ok=False, note=f"error: {type(exc).__name__}")
             return f"MCP tool {name!r} error: {type(exc).__name__}: {str(exc)[:200]}"
         text = result_text(result)

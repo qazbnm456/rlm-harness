@@ -33,7 +33,6 @@ import asyncio
 import os
 import subprocess
 import time
-from typing import Union
 
 from rlm_kit import RLMConfig, RLMTask, TraceRecorder, configure
 from rlm_kit.tools import CommandResult, make_command_tool
@@ -46,7 +45,7 @@ def make_docker_runner(
     container with ``workdir`` mounted read-only at ``/work``. Returns a
     ``CommandResult`` — matching ``make_command_tool``'s ``runner`` contract."""
 
-    def run(command: Union[list, str]) -> CommandResult:
+    def run(command: list | str) -> CommandResult:
         # A shell string runs via `sh -c`; an argv list is passed through literally. `timeout`
         # runs INSIDE the container so a runaway command is killed daemon-side — a subprocess
         # timeout would only SIGKILL the `docker run` client and leave the container running.
@@ -65,7 +64,8 @@ def make_docker_runner(
         ]
         started = time.monotonic()
         # Outer timeout is a backstop above the in-container one (container startup + kill grace).
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout + 15)
+        # check=False: a non-zero exit is the RESULT being reported, not an error to raise.
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout + 15, check=False)
         return CommandResult(
             exit_code=proc.returncode,
             stdout=proc.stdout,

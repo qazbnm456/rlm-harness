@@ -16,8 +16,9 @@ What is deferred to Phase 2 (needs a labelled trainset you provide):
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Sequence, Type
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -40,7 +41,7 @@ def exact_field_metric(field: str) -> Metric:
     return metric
 
 
-def schema_valid_metric(model: Type[BaseModel], field: str) -> Metric:
+def schema_valid_metric(model: type[BaseModel], field: str) -> Metric:
     """Metric: 1.0 when ``prediction.field`` validates against ``model``."""
 
     def metric(example: Any, prediction: Any, *args: Any, **kwargs: Any) -> float:
@@ -64,7 +65,7 @@ def schema_valid_metric(model: Type[BaseModel], field: str) -> Metric:
 @dataclass
 class CompileResult:
     program: Any
-    score: Optional[float] = None
+    score: float | None = None
 
 
 def compile_task(

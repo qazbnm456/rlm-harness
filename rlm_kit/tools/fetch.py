@@ -24,7 +24,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import socket
-from typing import Callable
+from collections.abc import Callable
 from urllib.parse import urlparse
 
 from ..trace import record_tool_call
@@ -127,12 +127,9 @@ def is_safe_url(url: str) -> bool:
         return False
     if hostname in _BLOCKED_HOSTNAMES:
         return False
-    if hostname.endswith(".local") or hostname.endswith(".internal"):
+    if hostname.endswith((".local", ".internal")):
         return False
-    if _hostname_is_blocked_literal_ip(hostname):
-        return False
-
-    return True
+    return not _hostname_is_blocked_literal_ip(hostname)
 
 
 # A fetcher maps a URL to its text content. SYNC: dspy.RLM calls tools synchronously
@@ -165,7 +162,7 @@ def make_fetch_tool(fetcher: Fetcher) -> Callable[[str], str]:
             return f"Refused: {url!r} is not a permitted external http(s) URL."
         try:
             result = fetcher(url)
-        except Exception as exc:  # noqa: BLE001 — surface as text so the RLM can react
+        except Exception as exc:
             record_tool_call(
                 "fetch_url", args={"url": url}, ok=False,
                 note=f"error: {type(exc).__name__}",

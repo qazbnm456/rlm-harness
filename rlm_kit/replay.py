@@ -11,7 +11,7 @@ Pure stdlib; no dspy import.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from .trace import (
     EVENT_MAIN_STEP,
@@ -72,7 +72,7 @@ class RecordedToolProvider:
     timeline: Timeline
     _cursor: dict[str, int] = field(default_factory=dict)
 
-    def replay(self, tool: str, args: Optional[dict] = None) -> Any:
+    def replay(self, tool: str, args: dict | None = None) -> Any:
         calls = [e for e in self.timeline.tool_calls if e["payload"].get("tool") == tool]
         idx = self._cursor.get(tool, 0)
         if idx >= len(calls):

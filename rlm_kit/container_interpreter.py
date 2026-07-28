@@ -27,8 +27,9 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Self
 
 from .config import ContainerConfig
 
@@ -40,7 +41,7 @@ _MAX_SKIP_LINES = 100
 _STARTUP_MIN_BUDGET = 180.0  # generous first-run budget so an image pull isn't clipped by the timeout
 
 
-def _jsonrpc(method: str, params: Optional[dict], id: Any = None) -> str:
+def _jsonrpc(method: str, params: dict | None, id: Any = None) -> str:
     msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
     if params is not None:
         msg["params"] = params
@@ -55,7 +56,7 @@ class _Sandbox:
     future E2B/Modal transport swaps in behind the same surface. The broker logic in
     ``ContainerInterpreter`` is transport-agnostic."""
 
-    def __init__(self, proc: "subprocess.Popen", kill_fn: Callable[["subprocess.Popen"], None]):
+    def __init__(self, proc: subprocess.Popen, kill_fn: Callable[[subprocess.Popen], None]):
         self._proc = proc
         self._kill_fn = kill_fn
 
@@ -66,7 +67,7 @@ class _Sandbox:
     def recv(self) -> str:
         return self._proc.stdout.readline()
 
-    def poll(self) -> Optional[int]:
+    def poll(self) -> int | None:
         return self._proc.poll()
 
     def stderr_tail(self, n: int = 2000) -> str:
@@ -146,10 +147,12 @@ def _spawn_docker(agent_src: str, config: ContainerConfig) -> _Sandbox:
         text=True, encoding="utf-8",
     )
 
-    def _kill(p: "subprocess.Popen") -> None:
+    def _kill(p: subprocess.Popen) -> None:
         # --rm reaps the container when the client exits, but force-remove by name in case the
         # client was killed before the container stopped (e.g. a watchdog timeout).
-        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+        # check=False: a best-effort reap. The container is usually already gone via --rm, and a
+        # non-zero exit here means exactly that — not a failure worth raising out of a killer.
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
         try:
             p.kill()
         except Exception:
@@ -158,7 +161,7 @@ def _spawn_docker(agent_src: str, config: ContainerConfig) -> _Sandbox:
     return _Sandbox(proc, _kill)
 
 
-def _spawn_subprocess(agent_src: str, config: Optional[ContainerConfig] = None) -> _Sandbox:
+def _spawn_subprocess(agent_src: str, config: ContainerConfig | None = None) -> _Sandbox:
     """Test/CI transport: run the (stdlib-only) agent as a bare child process — NO isolation.
     Exercises the full broker without Docker so CI stays green. Never a production runner."""
     proc = subprocess.Popen(
@@ -167,7 +170,7 @@ def _spawn_subprocess(agent_src: str, config: Optional[ContainerConfig] = None) 
         text=True, encoding="utf-8",
     )
 
-    def _kill(p: "subprocess.Popen") -> None:
+    def _kill(p: subprocess.Popen) -> None:
         try:
             p.kill()
         except Exception:
@@ -181,17 +184,17 @@ class ContainerInterpreter:
 
     def __init__(
         self,
-        config: Optional[ContainerConfig] = None,
+        config: ContainerConfig | None = None,
         *,
-        tools: Optional[dict[str, Callable[..., Any]]] = None,
+        tools: dict[str, Callable[..., Any]] | None = None,
         spawn: Callable[[str, ContainerConfig], _Sandbox] = _spawn_docker,
     ):
         self._config = config or ContainerConfig()
         self.tools: dict[str, Callable[..., Any]] = dict(tools) if tools else {}  # RLM mutates in place
-        self.output_fields: Optional[list[dict]] = None                            # RLM sets per forward()
+        self.output_fields: list[dict] | None = None                            # RLM sets per forward()
         self._tools_registered = False                                             # RLM resets per forward()
         self._spawn = spawn
-        self._sandbox: Optional[_Sandbox] = None
+        self._sandbox: _Sandbox | None = None
         self._request_id = 0
 
     # ---- lifecycle -----------------------------------------------------------
@@ -215,10 +218,10 @@ class ContainerInterpreter:
             pass
         sb.kill()
 
-    def __enter__(self) -> "ContainerInterpreter":
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *_exc: Any) -> None:
+    def __exit__(self, *_exc: object) -> None:
         self.shutdown()
 
     def _teardown_dead(self) -> None:
@@ -402,7 +405,7 @@ class ContainerInterpreter:
                 "value": json.dumps(result) if is_json else (str(result) if result is not None else ""),
                 "type": "json" if is_json else "string",
             }}
-        except Exception as exc:  # noqa: BLE001 — the TOOL failed; report it back to the sandbox
+        except Exception as exc:
             reply = {"jsonrpc": "2.0", "id": rid,
                      "error": {"code": -32007, "message": str(exc), "data": {"type": type(exc).__name__}}}
         # Sending the reply is separate: a send failure means the sandbox died (e.g. a watchdog kill
@@ -444,7 +447,7 @@ class ContainerInterpreter:
 
     # ---- the CodeInterpreter entry point -------------------------------------
 
-    def execute(self, code: str, variables: Optional[dict[str, Any]] = None) -> Any:
+    def execute(self, code: str, variables: dict[str, Any] | None = None) -> Any:
         from dspy.primitives.code_interpreter import CodeInterpreterError, FinalOutput
 
         code = self._inject_variables(code, variables or {})
@@ -491,5 +494,5 @@ class ContainerInterpreter:
 
         raise CodeInterpreterError("too many non-JSON lines during execution")
 
-    def __call__(self, code: str, variables: Optional[dict[str, Any]] = None) -> Any:
+    def __call__(self, code: str, variables: dict[str, Any] | None = None) -> Any:
         return self.execute(code, variables)

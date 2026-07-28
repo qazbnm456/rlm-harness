@@ -47,7 +47,7 @@ import json
 import os
 import re
 import threading
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import dspy
 import litellm
@@ -98,7 +98,7 @@ class _Bridge:
         self.loop.run_forever()
 
 
-_BRIDGE: Optional[_Bridge] = None
+_BRIDGE: _Bridge | None = None
 _BRIDGE_LOCK = threading.Lock()
 
 
@@ -114,8 +114,8 @@ def _bridge() -> _Bridge:
 
 
 def _split_messages(
-    prompt: Optional[str], messages: Optional[list[dict[str, Any]]]
-) -> tuple[Optional[str], str]:
+    prompt: str | None, messages: list[dict[str, Any]] | None
+) -> tuple[str | None, str]:
     """Map dspy's stateless message list onto the SDK's (system_prompt, prompt) pair.
 
     dspy.RLM sends system + ONE packed user message per call; the sub-LM seat sends a bare
@@ -137,7 +137,7 @@ def _split_messages(
     return ("\n\n".join(str(m.get("content", "")) for m in system) or None, user_prompt)
 
 
-def _translate_response_format(response_format: Any) -> Optional[dict[str, Any]]:
+def _translate_response_format(response_format: Any) -> dict[str, Any] | None:
     """Translate dspy's `response_format` into the SDK's native `output_format`.
 
     The kit's default `json` adapter (`_LenientJSONAdapter`) injects a pydantic model CLASS —
@@ -176,7 +176,7 @@ class ClaudeAgentLM(dspy.BaseLM):
         *,
         timeout_s: float = 600.0,
         allow_api_key: bool = False,
-        cwd: Optional[str] = None,
+        cwd: str | None = None,
         **kwargs: Any,
     ) -> None:
         # Fail fast at construction (with the install hint) rather than deep inside a call.
@@ -215,8 +215,8 @@ class ClaudeAgentLM(dspy.BaseLM):
     # -- runs ON the bridge loop --------------------------------------------
 
     async def _acomplete(
-        self, prompt: Optional[str], messages: Optional[list[dict[str, Any]]], kwargs: dict[str, Any]
-    ) -> "litellm.ModelResponse":
+        self, prompt: str | None, messages: list[dict[str, Any]] | None, kwargs: dict[str, Any]
+    ) -> litellm.ModelResponse:
         sdk = _require_claude_agent_sdk()
         system_prompt, user_prompt = _split_messages(prompt, messages)
         output_format = _translate_response_format(kwargs.get("response_format"))
@@ -242,7 +242,7 @@ class ClaudeAgentLM(dspy.BaseLM):
         async with _bridge().semaphore:
             try:
                 result, text = await self._query_once(user_prompt, options)
-            except Exception as exc:  # noqa: BLE001 — retry once iff rate-limit-shaped
+            except Exception as exc:
                 if not _looks_rate_limited(str(exc)):
                     raise
                 await asyncio.sleep(_BACKOFF_S)
@@ -266,10 +266,10 @@ class ClaudeAgentLM(dspy.BaseLM):
         return response
 
     async def _query_once(
-        self, user_prompt: str, options: "ClaudeAgentOptions"
-    ) -> tuple["ResultMessage", str]:
+        self, user_prompt: str, options: ClaudeAgentOptions
+    ) -> tuple[ResultMessage, str]:
         sdk = _require_claude_agent_sdk()
-        result: Optional[ResultMessage] = None
+        result: ResultMessage | None = None
         async for message in sdk.query(prompt=user_prompt, options=options):
             if isinstance(message, sdk.ResultMessage):
                 result = message

@@ -30,7 +30,7 @@ full dspy install.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ class SandboxSecurityError(RuntimeError):
 
 def build_interpreter(
     kind: str, *, allow_insecure: bool = False, container: Any = None
-) -> Optional[Any]:
+) -> Any | None:
     """Return a dspy ``CodeInterpreter`` for ``kind``, or ``None`` for the default.
 
     ``None`` means "let dspy.RLM construct its own default sandboxed interpreter",
@@ -100,7 +100,7 @@ _JSON_LITERAL_ALIASES = {"true": True, "false": False, "null": None}
 
 # Built once, lazily — the class can only be defined after dspy is importable, and
 # this module deliberately stays dspy-free at import time (see module docstring).
-_sandboxed_interpreter_cls: Optional[type] = None
+_sandboxed_interpreter_cls: type | None = None
 
 
 def _build_sandboxed_interpreter() -> Any:
@@ -120,7 +120,7 @@ def _build_sandboxed_interpreter() -> Any:
         class _JsonLiteralInterpreter(PythonInterpreter):
             _JSON_ALIASES = _JSON_LITERAL_ALIASES
 
-            def execute(self, code: str, variables: Optional[dict] = None) -> Any:
+            def execute(self, code: str, variables: dict | None = None) -> Any:
                 # Caller variables win on a name clash (never expected for these).
                 return super().execute(
                     code, {**self._JSON_ALIASES, **(variables or {})}
@@ -147,7 +147,7 @@ def _build_mock_interpreter() -> Any:
     """
 
     class _MockInterpreter:  # minimal CodeInterpreter surface
-        def execute(self, code: str, variables: Optional[dict] = None) -> str:
+        def execute(self, code: str, variables: dict | None = None) -> str:
             return ""
 
         def shutdown(self) -> None:

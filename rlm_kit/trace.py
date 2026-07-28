@@ -26,8 +26,9 @@ import json
 import os
 import threading
 import time
+from collections.abc import Callable, Iterable, Iterator
 from contextvars import ContextVar, Token
-from typing import Any, Callable, Iterable, Iterator, Optional
+from typing import Any, Self
 
 SCHEMA = "rlm-kit/trace/v1"
 
@@ -40,16 +41,16 @@ EVENT_FINAL = "final"
 EVENT_RESULT = "result"
 EVENT_RUN_END = "run_end"
 
-_active: ContextVar[Optional["TraceRecorder"]] = ContextVar("rlm_kit_recorder", default=None)
+_active: ContextVar[TraceRecorder | None] = ContextVar("rlm_kit_recorder", default=None)
 
 
-def current_recorder() -> Optional["TraceRecorder"]:
+def current_recorder() -> TraceRecorder | None:
     """Return the recorder active in the current context, or ``None``."""
     return _active.get()
 
 
 @contextlib.contextmanager
-def recorder_scope(recorder: Optional["TraceRecorder"]) -> Iterator[None]:
+def recorder_scope(recorder: TraceRecorder | None) -> Iterator[None]:
     """Make ``recorder`` the active recorder for the CURRENT context (thread), restoring on exit.
 
     A ``ContextVar`` is NOT inherited by threads a ``ThreadPoolExecutor`` spawns, so when
@@ -65,8 +66,8 @@ def recorder_scope(recorder: Optional["TraceRecorder"]) -> Iterator[None]:
 
 
 def record_tool_call(
-    tool: str, *, args: Optional[dict] = None, **fields: Any
-) -> Optional[dict]:
+    tool: str, *, args: dict | None = None, **fields: Any
+) -> dict | None:
     """Record a ``tool_call`` event on the active recorder; return it, or ``None``.
 
     Every tool wrapper otherwise repeats the same three lines — look up the active
@@ -108,9 +109,9 @@ class TraceRecorder:
         run_id: str,
         *,
         langfuse: Any = None,
-        meta: Optional[dict] = None,
+        meta: dict | None = None,
         clock=time.time,
-        on_event: Optional[Callable[[dict], None]] = None,
+        on_event: Callable[[dict], None] | None = None,
     ) -> None:
         self.path = path
         self.run_id = run_id
@@ -123,7 +124,7 @@ class TraceRecorder:
         # on_tool callback never sees them, but the recorder does). Never mutates the persisted trace.
         self._on_event = on_event
         self._step = 0
-        self._token: Optional[Token] = None
+        self._token: Token | None = None
         self._fh = None
         # LIVE per-turn timestamps for the main LM's REPL turns. dspy.RLM only exposes its trajectory
         # on the FINAL Prediction, so record_main_trajectory() would otherwise stamp every main_step
@@ -140,7 +141,7 @@ class TraceRecorder:
 
     # -- lifecycle ---------------------------------------------------------
 
-    def __enter__(self) -> "TraceRecorder":
+    def __enter__(self) -> Self:
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         self._fh = open(self.path, "a", encoding="utf-8")
         self._token = _active.set(self)
@@ -163,7 +164,7 @@ class TraceRecorder:
 
     # -- recording ---------------------------------------------------------
 
-    def record(self, event_type: str, payload: dict, *, ts: Optional[float] = None) -> dict:
+    def record(self, event_type: str, payload: dict, *, ts: float | None = None) -> dict:
         """Append one event and return it. Steps are assigned monotonically.
 
         ``ts`` overrides the event timestamp; default ``None`` stamps ``clock()`` (now). The override
@@ -193,7 +194,7 @@ class TraceRecorder:
         if self._on_event is not None:
             try:
                 self._on_event(event)   # live observer (best-effort, outside the lock)
-            except Exception:  # noqa: BLE001 — an observer error must never break the source-of-truth trace
+            except Exception:
                 pass
         return event
 
@@ -208,7 +209,7 @@ class TraceRecorder:
         with self._lock:
             self._main_ts = []
 
-    def note_main_step(self, reasoning: Any, ts: Optional[float] = None) -> None:
+    def note_main_step(self, reasoning: Any, ts: float | None = None) -> None:
         """Buffer that a ROOT planner turn was parsed LIVE at ``ts`` (default: now).
 
         Matched back to the post-hoc trajectory (by ``reasoning``) in ``record_main_trajectory`` to
@@ -242,7 +243,7 @@ class TraceRecorder:
             live = list(self._main_ts)
         used = [False] * len(live)
 
-        def _match_ts(reasoning: Any) -> Optional[float]:
+        def _match_ts(reasoning: Any) -> float | None:
             for i, (r, t) in enumerate(live):
                 if not used[i] and r == reasoning:
                     used[i] = True
@@ -293,7 +294,7 @@ class TraceRecorder:
             pass
 
 
-def load_events(path: str, run_id: Optional[str] = None) -> list[dict]:
+def load_events(path: str, run_id: str | None = None) -> list[dict]:
     """Read a JSONL trace file, optionally filtering to one ``run_id``.
 
     Events are returned in file order (which is also step order per run).

@@ -12,10 +12,9 @@ import pytest
 
 pytest.importorskip("dspy")
 
-import dspy  # noqa: E402
+import dspy
 
-from rlm_kit.testing import assert_repl_safe  # noqa: E402
-
+from rlm_kit.testing import assert_repl_safe
 
 # ---- assert_repl_safe itself ---------------------------------------------
 

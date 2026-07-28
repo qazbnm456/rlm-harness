@@ -31,8 +31,9 @@ import os
 import re
 import sys
 import uuid
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Optional, Sequence, TextIO
+from typing import Any, TextIO
 
 
 @dataclass
@@ -43,10 +44,10 @@ class HarnessPointer:
     read domain flags (e.g. ``valid``/``complete``) as plain top-level keys."""
 
     artifact: str                         # the harness's final artifact TEXT (what the caller validates)
-    run_id: Optional[str] = None          # the child rollout's own run_id (the parent→child link)
-    trace_path: Optional[str] = None      # path to the child's OWN trace (never inlined)
-    reasoning: Optional[str] = None        # the child's thinking, if the harness surfaces it
-    meta: Optional[dict] = None           # generic extras, flattened top-level: {"valid":…, "complete":…}
+    run_id: str | None = None          # the child rollout's own run_id (the parent→child link)
+    trace_path: str | None = None      # path to the child's OWN trace (never inlined)
+    reasoning: str | None = None        # the child's thinking, if the harness surfaces it
+    meta: dict | None = None           # generic extras, flattened top-level: {"valid":…, "complete":…}
 
     def to_json_line(self) -> str:
         # meta is flattened to TOP level (the caller reads its domain flags as plain keys) — but the
@@ -170,7 +171,7 @@ def parse_artifact_bundle(text: str) -> dict[str, str]:
         return {}
     header = _header_re(mark)
     files: dict[str, str] = {}
-    name: Optional[str] = None
+    name: str | None = None
     buf: list[str] = []
     for line in lines:
         found = header.fullmatch(line)
@@ -229,11 +230,11 @@ def serve_harness(
     run: Callable[..., Any],
     to_pointer: ToPointer = _default_to_pointer,
     *,
-    stdin: Optional[TextIO] = None,
-    stdout: Optional[TextIO] = None,
-    stderr: Optional[TextIO] = None,
-    run_id: Optional[str] = None,
-    run_kwargs: Optional[dict] = None,
+    stdin: TextIO | None = None,
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+    run_id: str | None = None,
+    run_kwargs: dict | None = None,
     workdir_base: str = "harness-runs",
     isolate_cwd: bool = True,
     env_files: Sequence[str] = (),
@@ -274,7 +275,7 @@ def serve_harness(
         with contextlib.redirect_stdout(stderr):
             result = run(source, run_id=rid, **(run_kwargs or {}))
         line = to_pointer(result).to_json_line()
-    except Exception as exc:  # noqa: BLE001 — could not produce a pointer → exit 1 so the caller retries.
+    except Exception as exc:
         # Generic reason + traceback to STDERR only; never to stdout, never the harness's identity.
         print(f"[serve_harness] harness run failed: {type(exc).__name__}: {exc}", file=stderr)
         import traceback

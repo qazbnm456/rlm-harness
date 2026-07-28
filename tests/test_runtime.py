@@ -7,8 +7,8 @@ import pytest
 
 dspy = pytest.importorskip("dspy")
 
-import rlm_kit.runtime as rt  # noqa: E402
-from rlm_kit import RLMConfig  # noqa: E402
+import rlm_kit.runtime as rt
+from rlm_kit import RLMConfig
 
 
 def test_configure_without_observe_skips_instrumentation(monkeypatch):
@@ -53,7 +53,7 @@ def test_configure_tolerates_a_second_thread(monkeypatch):
     def worker():
         try:
             rt.configure(RLMConfig(main_model="x", sub_model="x", observe=False))  # a DIFFERENT thread
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             err["exc"] = exc
 
     t = threading.Thread(target=worker)

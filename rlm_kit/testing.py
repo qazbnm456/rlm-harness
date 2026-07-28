@@ -25,14 +25,15 @@ keeps the guard.
 from __future__ import annotations
 
 import inspect
-from typing import Any, Callable, Optional, Sequence, Union
+from collections.abc import Callable, Sequence
+from typing import Any
 
 # A step is one execute() worth of behaviour. It is one of:
 #   - a ``dict``     -> SUBMIT it as the run's final output (``{output_field: value}``); ends the loop.
 #   - a ``str``      -> the REPL output for that turn (non-terminal — the next planner turn sees it).
 #   - a ``callable`` -> called ``step(tools, variables)``; its return is interpreted by the SAME rules
 #                       (dict -> submit, str -> output), or a dspy ``FinalOutput`` is passed through.
-Step = Union[dict, str, Callable[[dict, dict], Any]]
+Step = dict | str | Callable[[dict, dict], Any]
 
 
 def assert_repl_safe(tool: Any) -> None:
@@ -91,7 +92,7 @@ class ScriptedInterpreter:
         self.calls: list[str] = []
         self._i = 0
 
-    def execute(self, code: str, variables: Optional[dict] = None) -> Any:
+    def execute(self, code: str, variables: dict | None = None) -> Any:
         self.calls.append(code)
         step: Step = self.steps[self._i] if self._i < len(self.steps) else ""
         self._i += 1

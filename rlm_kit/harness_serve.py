@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import importlib
 import sys
-from typing import Optional
 
 from .serving import ToPointer, serve_harness
 
@@ -33,7 +32,7 @@ def _resolve(spec: str):
     return getattr(mod, attr), mod
 
 
-def main(argv: Optional[list] = None) -> int:
+def main(argv: list | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         raise SystemExit(
@@ -42,7 +41,7 @@ def main(argv: Optional[list] = None) -> int:
         )
     run, mod = _resolve(args[0])
     workdir_base = args[1] if len(args) > 1 else "harness-runs"
-    to_pointer: Optional[ToPointer] = getattr(mod, "to_pointer", None) or getattr(mod, "TO_POINTER", None)
+    to_pointer: ToPointer | None = getattr(mod, "to_pointer", None) or getattr(mod, "TO_POINTER", None)
     run_kwargs = getattr(mod, "SERVE_RUN_KWARGS", None)
     env_files = getattr(mod, "SERVE_ENV_FILES", ())
     kwargs = {"workdir_base": workdir_base, "run_kwargs": run_kwargs, "env_files": env_files}

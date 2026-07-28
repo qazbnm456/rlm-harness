@@ -26,7 +26,8 @@ logic stays unit-testable) without a full dspy install.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Optional, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from .trace import current_recorder, record_tool_call, recorder_scope
 
@@ -57,7 +58,7 @@ def bind_recorder_to_sub_lm(sub_lm: Any, recorder: Any) -> Any:
 logger = logging.getLogger(__name__)
 
 # A validator returns None/"" when the text is acceptable, or an error string.
-Validator = Callable[[str], Optional[str]]
+Validator = Callable[[str], str | None]
 # A post-processor maps the validated text to its final form.
 PostProcessor = Callable[[str], str]
 
@@ -116,7 +117,7 @@ def intercept_sub_lm(
         # dspy.LM is callable as lm(prompt=..., messages=...) -> list[str].
         def __call__(self, *args: Any, **kwargs: Any):
             recorder = current_recorder()
-            last_error: Optional[str] = None
+            last_error: str | None = None
             # Capture the call input (the escalation prompt) for the trace / RL data.
             prompt = kwargs.get("prompt")
             if prompt is None:
@@ -168,7 +169,7 @@ def intercept_sub_lm(
                 f"after {self._max_retries} attempts: {last_error}"
             )
 
-        def _run_pipeline(self, text: str) -> tuple[str, Optional[str]]:
+        def _run_pipeline(self, text: str) -> tuple[str, str | None]:
             for validate in self._validators:
                 err = validate(text)
                 if err:

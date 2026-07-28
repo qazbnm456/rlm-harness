@@ -11,9 +11,9 @@ import pytest
 pytest.importorskip("mcp")
 pytest.importorskip("dspy")
 
-import dspy  # noqa: E402
+import dspy
 
-from rlm_kit.mcp import (  # noqa: E402
+from rlm_kit.mcp import (
     _CLOSE_GRACE,
     McpCatalog,
     McpConnection,
@@ -22,7 +22,7 @@ from rlm_kit.mcp import (  # noqa: E402
     mcp_tools,
     result_text,
 )
-from rlm_kit.trace import TraceRecorder, load_events  # noqa: E402
+from rlm_kit.trace import TraceRecorder, load_events
 
 
 @pytest.fixture(autouse=True)
@@ -202,9 +202,8 @@ def test_mcp_tools_discovers_and_calls_sync(tmp_path):
 
 def test_mcp_tool_call_is_traced(tmp_path):
     p = tmp_path / "t.jsonl"
-    with TraceRecorder(str(p), run_id="r"):
-        with mcp_tools(_server(tmp_path), timeout=30) as tools:
-            tools[0](text="hi")
+    with TraceRecorder(str(p), run_id="r"), mcp_tools(_server(tmp_path), timeout=30) as tools:
+        tools[0](text="hi")
     calls = [e for e in load_events(str(p), "r")
              if e["type"] == "tool_call" and e["payload"]["tool"] == "echo"]
     assert calls and calls[0]["payload"]["ok"] is True
@@ -226,9 +225,8 @@ def test_bad_server_spec_raises_and_cleans_up():
     import threading
 
     before = {t.name for t in threading.enumerate()}
-    with pytest.raises(ValueError):
-        with mcp_tools({"nonsense": 1}, timeout=5):
-            pass
+    with pytest.raises(ValueError), mcp_tools({"nonsense": 1}, timeout=5):
+        pass
     # start() failed, but mcp_tools' finally still closed the bridge — no leaked background thread.
     assert "rlm-kit-mcp" not in ({t.name for t in threading.enumerate()} - before)
 
@@ -295,7 +293,7 @@ def _running_http_server(tmp_path):
         proc.terminate()
         try:
             proc.wait(timeout=10)
-        except Exception:  # noqa: BLE001
+        except Exception:
             proc.kill()
 
 
@@ -319,7 +317,7 @@ def test_mcp_tools_streamable_http(tmp_path):
         proc.terminate()
         try:
             proc.wait(timeout=10)
-        except Exception:  # noqa: BLE001
+        except Exception:
             proc.kill()
 
 
@@ -443,7 +441,7 @@ def test_mcp_catalog_partial_eager_failure_cleans_up(tmp_path):
 
     before = {t.name for t in threading.enumerate()}
     specs = [_named(tmp_path, "echo"), {"name": "bad", "command": "/nonexistent-cmd-xyz"}]
-    with pytest.raises(Exception):  # noqa: B017 — the 'bad' server fails eager connect
+    with pytest.raises(Exception):
         McpCatalog(specs, timeout=5)
     # the good server connected first, then 'bad' failed — the partial connect was torn down, no leak.
     assert "rlm-kit-mcp" not in ({t.name for t in threading.enumerate()} - before)
@@ -459,7 +457,7 @@ def test_mcp_catalog_lazy_refused_connect_raises_fast(tmp_path):
     cat = McpCatalog([{"name": "dead", "url": "http://127.0.0.1:1/mcp"}], connect="lazy", timeout=10)
     try:
         t0 = time.monotonic()
-        with pytest.raises(Exception):  # noqa: B017 — connection refused surfaces out of load()
+        with pytest.raises(Exception):
             cat.load("dead")
         assert time.monotonic() - t0 < 10   # refused fast — did not burn the whole timeout
     finally:
@@ -500,7 +498,7 @@ def test_mcp_catalog_lazy_wedged_http_connect_is_bounded_and_reaped():
         def _load():
             try:
                 cat.load("tarpit")
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 outcome["error"] = type(exc).__name__
 
         worker = threading.Thread(target=_load, daemon=True)
@@ -539,7 +537,7 @@ def test_mcp_connection_wedged_stdio_child_is_reaped(tmp_path):
         "time.sleep(3600)\n"
     )
     conn = McpConnection({"command": sys.executable, "args": [str(silent)]}, timeout=3.0)
-    with pytest.raises(Exception):  # noqa: B017 — start() times out (the child never initializes)
+    with pytest.raises(Exception):
         conn.start()
     conn.close()
 

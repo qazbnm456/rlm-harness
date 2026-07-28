@@ -8,7 +8,6 @@ sub-LM via :func:`get_config` / :func:`get_sub_lm`.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import dspy
 
@@ -19,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 class _Runtime:
     configured: bool = False
-    config: Optional[RLMConfig] = None
-    main_lm: Optional["dspy.LM"] = None
-    sub_lm: Optional["dspy.LM"] = None
+    config: RLMConfig | None = None
+    main_lm: dspy.LM | None = None
+    sub_lm: dspy.LM | None = None
 
 
 _STATE = _Runtime()
@@ -110,10 +109,10 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
 
 
 def configure(
-    config: Optional[RLMConfig] = None,
+    config: RLMConfig | None = None,
     *,
-    main_lm: Optional["dspy.LM"] = None,
-    sub_lm: Optional["dspy.LM"] = None,
+    main_lm: dspy.LM | None = None,
+    sub_lm: dspy.LM | None = None,
 ) -> RLMConfig:
     """Initialise dspy (and observability if enabled) from ``config``.
 
@@ -136,10 +135,10 @@ def configure(
     try:
         import litellm
         litellm.disable_aiohttp_transport = True
-    except Exception:  # noqa: BLE001 — litellm not importable (unexpected under dspy); nothing to quiet
+    except Exception:
         pass
 
-    lm_kwargs = dict(api_key=cfg.api_key, base_url=cfg.base_url)
+    lm_kwargs = {"api_key": cfg.api_key, "base_url": cfg.base_url}
     if cfg.max_tokens is not None:
         lm_kwargs["max_tokens"] = cfg.max_tokens
     if cfg.base_url:
@@ -194,7 +193,7 @@ def configure(
     return cfg
 
 
-def _build_adapter(name: str) -> Optional["dspy.Adapter"]:
+def _build_adapter(name: str) -> dspy.Adapter | None:
     """Map the configured adapter name to a dspy adapter instance (or None).
 
     ``"chat"`` builds a ``ChatAdapter`` with ``use_json_adapter_fallback=False`` — the
@@ -221,7 +220,7 @@ def _try_instrument() -> None:
 
         DSPyInstrumentor().instrument()
         logger.info("DSPy instrumentation enabled.")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "Observability requested but instrumentation failed (%s); "
             "install the 'observe' extra. Continuing without it.",
@@ -235,7 +234,7 @@ def _try_instrument() -> None:
 
         get_client()
         logger.info("Langfuse client initialized.")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Langfuse client not initialized (%s); continuing.", exc)
 
 
@@ -256,7 +255,7 @@ def get_config() -> RLMConfig:
     return _STATE.config
 
 
-def get_sub_lm() -> "dspy.LM":
+def get_sub_lm() -> dspy.LM:
     """The configured base sub-LM (the recursion seat). PUBLIC accessor — re-exported as
     ``rlm_kit.get_sub_lm``. A consumer that wants a validated / post-processed sub-LM wraps
     THIS with ``intercept_sub_lm`` and passes the result as ``RLMTask(sub_lm=...)``; using the

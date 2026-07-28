@@ -3,9 +3,9 @@ import inspect
 import pytest
 from pydantic import BaseModel
 
+import rlm_kit.tools.fetch as fetch_mod
 from rlm_kit.optimize import exact_field_metric, schema_valid_metric
 from rlm_kit.tools.command import CommandResult, make_command_tool
-import rlm_kit.tools.fetch as fetch_mod
 from rlm_kit.tools.fetch import (
     _ip_blocked,
     is_safe_url,
@@ -17,7 +17,6 @@ from rlm_kit.tools.model import ModelToolResult, make_model_tool
 from rlm_kit.tools.search import make_web_search_tool, normalise_search_results
 from rlm_kit.tools.validation import make_json_schema_validator, make_schema_validator
 from rlm_kit.trace import EVENT_TOOL_CALL, TraceRecorder, load_events
-
 
 # ---- make_model_tool (generic model-call + retry + validate core) --------
 
