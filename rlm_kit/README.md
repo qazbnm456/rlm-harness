@@ -433,12 +433,14 @@ RL export together. Five steps:
      ONE string, but plenty of harnesses produce a FOLDER (a write-up + a PoC + a diff; a Dockerfile +
      a compose file + notes). `bundle_artifact({name: content})` packs it as `===== <name> =====`
      sections — escalating the marker when a file's own content contains one, so a report that QUOTES
-     a bundle cannot truncate itself — and `parse_artifact_bundle` reads it back. Use them: a packing
-     format invented per harness/client pair is a silent-failure generator, because the two sides
-     agree until they don't and the mismatch then degrades into "the child returned junk" instead of
-     surfacing as the wiring bug it is. A client that just wants the whole deliverable as CONTEXT
-     needs no parser at all — the text is meant to be read as-is, by a Root LM and by a human
-     debugging the wire.
+     a bundle cannot truncate itself — and `parse_artifact_bundle` reads it back. Line endings are
+     normalised to `\n` at pack time (both halves must agree on what a LINE is, or a header hides from
+     escalation and still acts as a section break), and a filename that cannot round-trip raises
+     rather than vanishing. Use them: a packing format invented per harness/client pair is a
+     silent-failure generator, because the two sides agree until they don't and the mismatch then
+     degrades into "the child returned junk" instead of surfacing as the wiring bug it is. A client
+     that just wants the whole deliverable as CONTEXT needs no parser at all — the text is meant to be
+     read as-is, by a Root LM and by a human debugging the wire.
 
 **Score your own rubric (optional).** To decompose "did this run succeed?" into observable per-run
 LABELS, `rlm_kit.rubric` gives you the reward-free substrate — the `Criterion`/`RubricCriteria`/

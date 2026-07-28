@@ -24,7 +24,18 @@ surfaced by dogfooding a real downstream consumer.
   a Root LM in a REPL and its second is a human debugging the wire; a client that just wants the whole
   deliverable as CONTEXT needs no parser at all. The marker ESCALATES (`======`, `=======`, …) when a
   file's own content already contains a header line, so a report that QUOTES a bundle cannot truncate
-  itself at its own quotation. Round-trips exactly, modulo leading/trailing blank lines within a file.
+  itself at its own quotation. Round-trips modulo two normalisations applied at PACK time and stated
+  in the docstring: line endings become `\n`, and leading/trailing blank lines within a file are not
+  significant. A filename that cannot round-trip — empty, or holding a line separator — RAISES rather
+  than vanishing silently; names come from whatever the harness authored, often an LM.
+  Both halves split lines with one shared helper, deliberately. An earlier cut of this scanned for
+  embedded headers with a `re.MULTILINE` regex while parsing with `str.splitlines()` — MULTILINE
+  breaks on `\n`/`\r\n`, `splitlines()` on ELEVEN separators — so a header inside CRLF text (a PoC
+  quoting an HTTP exchange, a Windows-authored file) escaped escalation and was then honoured as a
+  real section break. The quoting file truncated at its own quotation and its tail was absorbed into
+  a phantom section, while the key count, the names and the order all still looked correct, so
+  nothing downstream could notice. Found by an independent adversarial audit; pinned by a test over
+  every one of the eleven separators.
 - **`rlm_kit/README.md`, "Delegate to another harness — or be one"** gains three rules dogfooding
   surfaced: use `bundle_artifact` rather than a private format; adapt in `serve.py` when your `run`
   does not already match `run(source: str, run_id=…)` (resolve the caller's text through your own
