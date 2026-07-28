@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
 
 # Interpreters the scaffold knows how to build. "pyodide"/"deno" are the
 # sandboxed WASM/subprocess interpreters DSPy ships by default and are safe for
@@ -88,13 +87,13 @@ class ContainerConfig:
     memory: str = "512m"           # docker --memory (blast-radius cap on a memory balloon)
     pids_limit: int = 256          # docker --pids-limit (cap on a fork bomb)
     timeout_s: float = 120.0       # per-execute SANDBOX-COMPUTE budget (host tool time is not counted)
-    cpus: Optional[str] = None     # docker --cpus (unset = uncapped; capping can throttle a build)
+    cpus: str | None = None     # docker --cpus (unset = uncapped; capping can throttle a build)
     cap_drop: bool = True          # docker --cap-drop=ALL (drop Linux caps; model code rarely needs any)
     read_only: bool = False        # docker --read-only rootfs (+ a tmpfs /tmp); opt-in inspect mode
-    workdir: Optional[str] = None  # host dir mounted READ-ONLY at /workspace (absolute; must exist)
+    workdir: str | None = None  # host dir mounted READ-ONLY at /workspace (absolute; must exist)
 
     @classmethod
-    def from_env(cls) -> "ContainerConfig":
+    def from_env(cls) -> ContainerConfig:
         raw_workdir = os.getenv("RLM_CONTAINER_WORKDIR")
         return cls(
             image=os.getenv("RLM_CONTAINER_IMAGE", "python:3.11-slim"),
@@ -121,8 +120,8 @@ class RLMConfig:
 
     main_model: str
     sub_model: str
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
+    api_key: str | None = None
+    base_url: str | None = None
 
     # Sandbox / interpreter selection. Defaults to the secure WASM sandbox.
     interpreter: str = "pyodide"
@@ -145,7 +144,7 @@ class RLMConfig:
     # answer (``content``), so a turn whose reasoning exceeds that small cap is truncated
     # mid-thought and ``content`` comes back EMPTY → "empty or null response". Sending a generous
     # cap leaves room for reasoning + answer on any endpoint. Set ``None`` to defer to the server.
-    max_tokens: Optional[int] = _DEFAULT_MAX_TOKENS
+    max_tokens: int | None = _DEFAULT_MAX_TOKENS
 
     # Budget controls — passed best-effort to dspy.RLM.
     max_iterations: int = 10
@@ -184,7 +183,7 @@ class RLMConfig:
             raise ValueError("max_retries must be >= 1")
 
     @classmethod
-    def from_env(cls) -> "RLMConfig":
+    def from_env(cls) -> RLMConfig:
         """Build configuration from environment variables.
 
         Recognised variables (all optional except where a sane default is shown):

@@ -21,7 +21,8 @@ drop internal-looking result URLs before they reach the model.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from ..trace import record_tool_call
 from .fetch import is_safe_url
@@ -82,7 +83,7 @@ def make_web_search_tool(
             results = normalise_search_results(
                 searcher(q), max_results=max_results, drop_unsafe_urls=drop_unsafe_urls
             )
-        except Exception as exc:  # noqa: BLE001 — surface as text so the RLM can react
+        except Exception as exc:
             record_tool_call(
                 "web_search", args={"query": q}, ok=False,
                 note=f"error: {type(exc).__name__}",

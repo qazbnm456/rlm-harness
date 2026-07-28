@@ -37,8 +37,8 @@ runner if you need them (and add an additive ``session_id`` to the payload at th
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional, Union
 
 from ..trace import record_tool_call
 
@@ -48,7 +48,7 @@ from ..trace import record_tool_call
 _STDERR_PREVIEW = 500
 
 # A command is either an argv list (preferred — no shell parsing) or a shell string.
-Command = Union[list, str]
+Command = list | str
 
 
 @dataclass
@@ -64,7 +64,7 @@ class CommandResult:
     exit_code: int
     stdout: str = ""
     stderr: str = ""
-    duration_ms: Optional[float] = None  # the runner's real spawn→exit window, if it timed the call
+    duration_ms: float | None = None  # the runner's real spawn→exit window, if it timed the call
 
 
 # A runner executes a command in ISOLATION and returns its CommandResult. SYNC —
@@ -78,12 +78,12 @@ Runner = Callable[[Command], "CommandResult"]
 # A guard is an optional SHAPE-only pre-flight: return None to allow, or a short reason
 # string to refuse. NOT a security boundary (see the module docstring) — use it for argv
 # normalisation / size caps, never as an allowlist you trust.
-Guard = Callable[[Command], Optional[str]]
+Guard = Callable[[Command], str | None]
 
 
 def make_command_tool(
-    runner: Runner, *, guard: Optional[Guard] = None
-) -> Callable[[Command], Union[dict, str]]:
+    runner: Runner, *, guard: Guard | None = None
+) -> Callable[[Command], dict | str]:
     """Wrap an ISOLATED, caller-supplied (SYNC) ``runner`` into a sync ``run_command``
     tool for ``RLMTask(tools=…)``.
 
@@ -104,7 +104,7 @@ def make_command_tool(
     module docstring — never pass an un-sandboxed host executor for untrusted input.
     """
 
-    def run_command(command: Command) -> Union[dict, str]:
+    def run_command(command: Command) -> dict | str:
         """Run a local command via an isolated runner. Returns a
         ``{"exit_code", "stdout", "stderr"}`` dict — e.g. ``run_command("ls")["stdout"]`` —
         or a short error/refusal string. Execution isolation is the caller's runner; this
@@ -120,7 +120,7 @@ def make_command_tool(
         started = time.monotonic()
         try:
             result = runner(command)
-        except Exception as exc:  # noqa: BLE001 — surface as text so the RLM can react
+        except Exception as exc:
             record_tool_call(
                 "run_command", args={"command": command}, ok=False,
                 note=f"error: {type(exc).__name__}",

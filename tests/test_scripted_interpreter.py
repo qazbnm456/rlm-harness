@@ -12,12 +12,12 @@ import pytest
 
 dspy = pytest.importorskip("dspy")
 
-from pydantic import BaseModel  # noqa: E402
+from pydantic import BaseModel
 
-import rlm_kit.runtime as rt  # noqa: E402
-from rlm_kit import RLMConfig, RLMTask  # noqa: E402
-from rlm_kit.testing import ScriptedInterpreter, call, scripted_lm, submit  # noqa: E402
-from rlm_kit.trace import (  # noqa: E402
+import rlm_kit.runtime as rt
+from rlm_kit import RLMConfig, RLMTask
+from rlm_kit.testing import ScriptedInterpreter, call, scripted_lm, submit
+from rlm_kit.trace import (
     EVENT_RESULT,
     EVENT_TOOL_CALL,
     TraceRecorder,

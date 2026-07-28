@@ -13,8 +13,8 @@ import pytest
 
 pytest.importorskip("dspy")
 
-import rlm_kit  # noqa: E402
-from rlm_kit.claude_agent_lm import (  # noqa: E402
+import rlm_kit
+from rlm_kit.claude_agent_lm import (
     _looks_rate_limited,
     _require_claude_agent_sdk,
     _split_messages,

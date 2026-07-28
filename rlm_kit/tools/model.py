@@ -15,8 +15,9 @@ returned ``ModelToolResult`` — its own tool name, result-message wording, and 
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, Tuple
+from typing import Any
 
 # A chat function maps a spec to the model's output. It may return:
 #   - a plain string (the answer), or
@@ -36,14 +37,14 @@ class ModelToolResult:
 
     ok: bool                              # the validator's verdict (False on endpoint error)
     raw: str                              # the model's raw output ("" on endpoint error / circuit break)
-    reasoning: Optional[str] = None       # thinking-mode reasoning, if the chat_fn surfaced it
+    reasoning: str | None = None       # thinking-mode reasoning, if the chat_fn surfaced it
     errors: list[str] = field(default_factory=list)  # validator errors (or the endpoint error)
     validated: Any = None                 # the full object the validator returned
-    endpoint_error: Optional[str] = None  # set (ok=False) iff the model call failed after retries
+    endpoint_error: str | None = None  # set (ok=False) iff the model call failed after retries
     circuit_broken: bool = False          # True (ok=False, no model call) iff the breaker short-circuited
 
 
-def _split(out: Any) -> Tuple[str, Optional[str]]:
+def _split(out: Any) -> tuple[str, str | None]:
     """Normalise a chat_fn return into ``(content, reasoning)``."""
     if isinstance(out, str):
         return out, None
@@ -57,7 +58,7 @@ def make_model_tool(
     validate: Validate,
     *,
     transient_retries: int = 1,
-    max_consecutive_invalid: Optional[int] = None,
+    max_consecutive_invalid: int | None = None,
 ) -> Callable[[str], ModelToolResult]:
     """Build the generic call: chat (retrying transient errors) → validate → ModelToolResult.
 
@@ -96,7 +97,7 @@ def make_model_tool(
             try:
                 raw, reasoning = _split(chat_fn(spec))
                 break
-            except Exception as exc:  # noqa: BLE001 — transient endpoint error → retry then surface
+            except Exception as exc:
                 if attempt >= retries:
                     # endpoint error: infra flakiness, NOT a content decline → does not trip the breaker
                     return ModelToolResult(

@@ -47,4 +47,8 @@ jobs:
         with:
           enable-cache: true
       - name: Lint
-        run: uvx ruff check .
+        # PINNED on purpose. `uvx ruff` resolves the latest release at run time, and ruff's DEFAULT
+        # rule set is not a stable contract — 0.16 expanded it far past the pycodestyle/pyflakes
+        # baseline and turned this job red overnight with no code change. Bump it deliberately, with
+        # the resulting fixes in the same commit, rather than letting a release do it for you.
+        run: uvx ruff@0.16.0 check .

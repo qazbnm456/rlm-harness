@@ -10,11 +10,11 @@ import pytest
 
 dspy = pytest.importorskip("dspy")
 
-from pydantic import BaseModel  # noqa: E402
+from pydantic import BaseModel
 
-from rlm_kit import RLMConfig, RLMTask  # noqa: E402
-import rlm_kit.runtime as rt  # noqa: E402
-from rlm_kit.tools import make_schema_validator  # noqa: E402
+import rlm_kit.runtime as rt
+from rlm_kit import RLMConfig, RLMTask
+from rlm_kit.tools import make_schema_validator
 
 
 class Finding(BaseModel):
@@ -178,9 +178,8 @@ def test_arun_records_trajectory_on_failure(tmp_path):
     task = _task_with_fake_rlm(pred)
 
     path = str(tmp_path / "trace.jsonl")
-    with TraceRecorder(path, run_id="r1"):
-        with pytest.raises(RLMTaskError):
-            asyncio.run(task.arun(q="hi"))
+    with TraceRecorder(path, run_id="r1"), pytest.raises(RLMTaskError):
+        asyncio.run(task.arun(q="hi"))
 
     ev = load_events(path)
     assert any(e["type"] == EVENT_MAIN_STEP for e in ev)    # the failed run's turns ARE recorded now
@@ -293,7 +292,7 @@ def test_lenient_json_adapter_never_falls_back_to_bare_json_object():
             super().__init__("openai/x")
             self.seen = []
 
-        async def acall(self, messages=None, **kw):  # noqa: ANN001
+        async def acall(self, messages=None, **kw):
             self.seen.append(kw.get("response_format"))
             raise ConnectionError("simulated upstream 502")
 

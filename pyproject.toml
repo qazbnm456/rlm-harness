@@ -81,3 +81,38 @@ packages = ["rlm_kit"]
 [tool.ruff]
 line-length = 110
 target-version = "py311"
+
+# Ruff's DEFAULT rule set is NOT a stable contract. 0.16 expanded it far past the pycodestyle/
+# pyflakes baseline this project was written against, so `uvx ruff check .` — unpinned, in CI —
+# went from green to 256 errors with nobody touching the code. The fix is in two halves: CI pins
+# the ruff VERSION (so the rule set only moves when someone bumps it deliberately), and the
+# handful of default rules that fight this project's design are ignored BY NAME below.
+#
+# Deliberately NOT adding a `select` list. Curating one is a real policy decision, and a first
+# attempt at it immediately fired 107 PLC0415 "import not at top-level" — against the ~107 LAZY
+# imports that are load-bearing here (keeping modules dspy-free, deferring optional extras). A
+# lint policy that argues with an invariant is worse than no policy.
+[tool.ruff.lint]
+ignore = [
+    # This project's whole job is running model-authored code and DEGRADING rather than dying.
+    # A blind `except Exception` around a sandbox boundary, a trace write, or a fetch is the
+    # design, not an oversight: the caller must get a result object, never a propagated crash.
+    "BLE001",
+    # Same stance, one level down — a best-effort cleanup (killing a container, closing a trace)
+    # must not raise out of a teardown path and mask the real error.
+    "S110",
+    # `__all__` here is grouped by comment-delimited SECTION (core / tools / rubric / serving /
+    # MCP / subscription), which is more useful to a reader than alphabetical order.
+    "RUF022",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Delivered to a bare `python:*-slim` container as SOURCE TEXT (`python -u -c <this file>`) and
+# constrained to the stdlib. `exec` is the product, the fd-capture temp file deliberately outlives
+# a `with` block because fds 1/2 are dup2'd around it, and `%`-formatting keeps the file free of
+# anything that could differ across the interpreter versions it may land on.
+"rlm_kit/_sandbox_agent.py" = ["S102", "SIM115", "UP031"]
+# Test idiom: `[x for x in xs if p(x)][0]` states "the one matching event" far more clearly than
+# `next(iter(...))`, `pytest.raises(Exception)` is sometimes exactly the assertion, and a mutable
+# class attribute on a throwaway fixture needs no `ClassVar` ceremony.
+"tests/**" = ["RUF015", "B017", "RUF012", "S101"]

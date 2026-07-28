@@ -30,8 +30,9 @@ consumer's runtime config. dspy-free (it only reuses ``make_model_tool``).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any
 
 from .model import ModelToolResult, Validate, make_model_tool
 
@@ -52,10 +53,10 @@ class HarnessInvocation:
     turns."""
 
     content: str                          # the child harness's final artifact TEXT (what the validator sees)
-    reasoning: Optional[str] = None       # the child's thinking, if the transport surfaced it
-    child_run_id: Optional[str] = None    # the child rollout's own run_id
-    child_trace: Optional[str] = None     # path / URI to the child's OWN trace (never inlined here)
-    child_meta: Optional[dict] = None     # generic, e.g. {"elapsed_s": …, "child_steps": …}
+    reasoning: str | None = None       # the child's thinking, if the transport surfaced it
+    child_run_id: str | None = None    # the child rollout's own run_id
+    child_trace: str | None = None     # path / URI to the child's OWN trace (never inlined here)
+    child_meta: dict | None = None     # generic, e.g. {"elapsed_s": …, "child_steps": …}
 
 
 @dataclass
@@ -65,9 +66,9 @@ class HarnessToolResult(ModelToolResult):
     without re-parsing (or inlining) the child's trace. On endpoint error / circuit break no child
     ran, so the ``child_*`` fields are ``None``."""
 
-    child_run_id: Optional[str] = None
-    child_trace: Optional[str] = None
-    child_meta: Optional[dict] = None
+    child_run_id: str | None = None
+    child_trace: str | None = None
+    child_meta: dict | None = None
 
 
 def make_harness_tool(
@@ -75,7 +76,7 @@ def make_harness_tool(
     validate: Validate,
     *,
     transient_retries: int = 1,
-    max_consecutive_invalid: Optional[int] = None,
+    max_consecutive_invalid: int | None = None,
 ) -> Callable[[str], HarnessToolResult]:
     """Build the generic delegation call: invoke the child harness on one long text (retrying transient
     transport errors) → validate its artifact → circuit-break → :class:`HarnessToolResult`.

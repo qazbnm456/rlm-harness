@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Callable, Type, Union
+from collections.abc import Callable
 
 from pydantic import BaseModel
 
 
 def make_json_schema_validator(
-    schema: Union[dict, str, os.PathLike],
+    schema: dict | str | os.PathLike,
     *,
     max_errors: int = 20,
 ) -> Callable[[object], list[str]]:
@@ -68,7 +68,7 @@ def make_json_schema_validator(
     return validate
 
 
-def make_schema_validator(model: Type[BaseModel]) -> Callable[[str], str]:
+def make_schema_validator(model: type[BaseModel]) -> Callable[[str], str]:
     """Return a tool that validates a JSON string against ``model``.
 
     The returned function's name and docstring are set so DSPy surfaces it to the
@@ -81,7 +81,7 @@ def make_schema_validator(model: Type[BaseModel]) -> Callable[[str], str]:
         try:
             model.model_validate_json(data_json_str)
             return "Validation successful. You may now output this JSON string."
-        except Exception as exc:  # noqa: BLE001 — surfaced back to the model as text
+        except Exception as exc:
             return f"Validation failed: {exc}"
 
     validate.__name__ = f"validate_{model.__name__.lower()}"

@@ -124,9 +124,8 @@ async def test_retry_log_does_not_flood_on_huge_exception(caplog):
     async def runner():
         raise RuntimeError(f"Adapter failed. LM Response: {flood} end-of-error")
 
-    with caplog.at_level("WARNING", logger="rlm_kit._retry"):
-        with pytest.raises(RLMTaskError):
-            await run_with_retry(runner, output_field="finding", max_retries=1)
+    with caplog.at_level("WARNING", logger="rlm_kit._retry"), pytest.raises(RLMTaskError):
+        await run_with_retry(runner, output_field="finding", max_retries=1)
 
     msg = caplog.records[-1].getMessage()
     assert len(msg) < 800                    # bounded, not the ~25k-char flood

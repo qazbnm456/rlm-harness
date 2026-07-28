@@ -10,7 +10,8 @@ objects and exercises the real logic we ship.
 from __future__ import annotations
 
 import logging
-from typing import Any, Awaitable, Callable, Optional, Type
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -40,7 +41,7 @@ class RLMTaskError(RuntimeError):
     """Raised when a task fails to produce a valid result within the retry budget."""
 
 
-def coerce_output(value: Any, model: Optional[Type[BaseModel]]) -> Any:
+def coerce_output(value: Any, model: type[BaseModel] | None) -> Any:
     """Coerce a raw RLM output field into a validated pydantic model.
 
     Accepts a model instance (returned as-is), a ``dict`` (validated), or a JSON
@@ -68,9 +69,9 @@ async def run_with_retry(
     runner: Callable[[], Awaitable[Any]],
     *,
     output_field: str,
-    output_model: Optional[Type[BaseModel]] = None,
+    output_model: type[BaseModel] | None = None,
     max_retries: int = 3,
-    logger: Optional[logging.Logger] = None,
+    logger: logging.Logger | None = None,
 ) -> Any:
     """Run ``runner`` until it yields a valid output or the budget is exhausted.
 
@@ -83,7 +84,7 @@ async def run_with_retry(
     if max_retries < 1:
         raise ValueError("max_retries must be >= 1")
 
-    last_error: Optional[BaseException] = None
+    last_error: BaseException | None = None
     for attempt in range(1, max_retries + 1):
         try:
             prediction = await runner()
@@ -93,7 +94,7 @@ async def run_with_retry(
                 )
             raw = getattr(prediction, output_field)
             return coerce_output(raw, output_model)
-        except Exception as exc:  # noqa: BLE001 — we intentionally retry on anything
+        except Exception as exc:
             last_error = exc
             log.warning(
                 "RLM attempt %d/%d failed: %s", attempt, max_retries, _short_error(exc)

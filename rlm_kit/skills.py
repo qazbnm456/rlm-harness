@@ -22,8 +22,8 @@ Pure stdlib; no dspy import.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 from .trace import record_tool_call
 
@@ -94,7 +94,7 @@ def _safe_read(path: str) -> str:
         return ""
 
 
-def render_skills_manifest(skill_dir: str, *, header: Optional[str] = None) -> str:
+def render_skills_manifest(skill_dir: str, *, header: str | None = None) -> str:
     """Render the skill catalog — one ``- name: description`` line per skill — for injection
     into a system prompt. This is the DISCOVERY level of progressive disclosure (Anthropic
     Agent Skills): surface every skill's metadata ONCE at startup so the model always knows
@@ -146,7 +146,7 @@ def load_skills_as_tools(skill_dir: str, *, discovery: str = "list") -> list[Cal
 
     def read_skill(name: str) -> str:
         """Read the full content of a named skill. Use list_skills first to see names."""
-        skill: Optional[Skill] = skills.get(name)
+        skill: Skill | None = skills.get(name)
         result = skill.read() if skill else f"No such skill: {name!r}."
         # `preview` (a head of the content) is for inspection — a trace reader / replay UI can show
         # WHAT was read, not just how long it was. `result_len` keeps the full size.

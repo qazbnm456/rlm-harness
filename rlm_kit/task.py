@@ -20,7 +20,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from typing import Any, Callable, ClassVar, Optional, Sequence, Type
+from collections.abc import Callable, Sequence
+from typing import Any, ClassVar
 
 import dspy
 from pydantic import BaseModel
@@ -36,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from dspy.utils.callback import BaseCallback
-except Exception:  # noqa: BLE001 — dspy internals moved; live main-step timing degrades to post-hoc ts
+except Exception:
     BaseCallback = object  # type: ignore
 
 
@@ -55,7 +56,7 @@ class _MainStepTimer(BaseCallback):  # type: ignore[misc, valid-type]
     def __init__(self, recorder: Any) -> None:
         self._recorder = recorder
 
-    def on_adapter_parse_end(self, call_id, outputs, exception=None):  # noqa: ANN001
+    def on_adapter_parse_end(self, call_id, outputs, exception=None):
         if isinstance(outputs, dict) and "reasoning" in outputs and "code" in outputs:
             self._recorder.note_main_step(outputs.get("reasoning"))
 
@@ -75,7 +76,7 @@ def _live_main_timing(recorder: Any):
         existing = list(dspy.settings.get("callbacks") or [])
         cm = dspy.context(callbacks=existing + [_MainStepTimer(recorder)])
         cm.__enter__()
-    except Exception:  # noqa: BLE001 — instrumentation must never break the run
+    except Exception:
         logger.debug("live main-step timing unavailable; main_step ts stays post-hoc", exc_info=True)
         yield
         return
@@ -84,7 +85,7 @@ def _live_main_timing(recorder: Any):
     finally:
         try:
             cm.__exit__(None, None, None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("main-step timing context exit failed", exc_info=True)
 
 
@@ -96,7 +97,7 @@ class RLMTask:
     #: Name of the output field in the signature (the part after "->").
     output_field: ClassVar[str] = ""
     #: Optional pydantic model the output is validated/coerced into.
-    output_model: ClassVar[Optional[Type[BaseModel]]] = None
+    output_model: ClassVar[type[BaseModel] | None] = None
     #: Natural-language instructions attached to the signature.
     instructions: ClassVar[str] = ""
     #: Tools (plain callables) the RLM may invoke inside the REPL.
@@ -105,10 +106,10 @@ class RLMTask:
     def __init__(
         self,
         *,
-        config: Optional[RLMConfig] = None,
-        sub_lm: Optional["dspy.LM"] = None,
-        max_retries: Optional[int] = None,
-        interpreter: Optional[Any] = None,
+        config: RLMConfig | None = None,
+        sub_lm: dspy.LM | None = None,
+        max_retries: int | None = None,
+        interpreter: Any | None = None,
     ) -> None:
         if not self.signature:
             raise ValueError(f"{type(self).__name__} must define `signature`")
@@ -128,7 +129,7 @@ class RLMTask:
         # string path and the guard.
         self._interpreter = interpreter
 
-    def _build_rlm(self) -> "dspy.RLM":
+    def _build_rlm(self) -> dspy.RLM:
         # Resolve a custom output type (e.g. "-> finding: Finding") explicitly via
         # dspy's custom_types. Otherwise dspy.Signature resolves the type *name* by
         # walking the call stack's globals/locals — which works only while a caller
@@ -254,7 +255,7 @@ class RLMTask:
         if callable(shutdown):
             try:
                 shutdown()
-            except Exception:  # noqa: BLE001 — teardown must not mask the result
+            except Exception:
                 logger.debug("interpreter shutdown raised; ignoring", exc_info=True)
 
     def run(self, **inputs: Any) -> Any:

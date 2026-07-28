@@ -24,7 +24,8 @@ responsibility (the deferred Unknown from the plan).
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, Optional
+from collections.abc import Callable, Iterable
+from typing import Any
 
 from .trace import (
     EVENT_MAIN_STEP,
@@ -84,7 +85,7 @@ def _action_record(event: dict) -> dict:
 def export_actions(
     runs: dict[str, list[dict]],
     *,
-    reward: Optional[RewardFn] = None,
+    reward: RewardFn | None = None,
 ) -> list[dict]:
     """Every action in a run as a first-class RL record, in step order.
 
@@ -191,7 +192,7 @@ def export_sft_turns(runs: dict[str, list[dict]]) -> list[dict]:
 def export_rl(
     runs: dict[str, list[dict]],
     *,
-    reward: Optional[RewardFn] = None,
+    reward: RewardFn | None = None,
 ) -> list[dict]:
     """Produce per-step ``(state, action, outcome, reward)`` records for RL.
 
