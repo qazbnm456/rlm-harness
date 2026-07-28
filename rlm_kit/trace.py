@@ -91,10 +91,21 @@ def payload_cause(payload: dict) -> str:
     ``ok``. The endpoint string is looked up under BOTH ``endpoint_error`` and ``error`` because the
     consumer convention has used each; the ``ok`` key is often ABSENT on an endpoint payload, and
     ``payload.get("ok")`` returning ``None`` is exactly how it silently reads as a decline.
+
+    **The endpoint keys are tested for PRESENCE, not truthiness**, which is what makes this an actual
+    mirror of :attr:`rlm_kit.tools.ModelToolResult.cause` rather than a near-copy that disagrees on
+    one case. The write side has always been ``self.endpoint_error is not None``; this side shipped
+    as ``payload.get("endpoint_error") or ...``, and the two differ on the EMPTY STRING — which is
+    not a corner case but the COMMON one, because the field is filled with ``str(exc)`` and that is
+    ``''`` for ``httpx.ConnectTimeout`` / ``ReadTimeout`` / ``ConnectError``, ``TimeoutError``,
+    ``OSError`` and ``http.client.RemoteDisconnected``. Under truthiness every one of those fell
+    through to ``CAUSE_INVALID``: a dropped connection labelled a content decline, which is exactly
+    the misclassification this function exists to prevent. Found by a downstream consumer that
+    declined to adopt this function for that reason and pinned the divergence in its own tests.
     """
     if payload.get("circuit_broken"):
         return CAUSE_CIRCUIT_BROKEN
-    if payload.get("endpoint_error") or payload.get("error"):
+    if payload.get("endpoint_error") is not None or payload.get("error") is not None:
         return CAUSE_ENDPOINT
     return CAUSE_OK if payload.get("ok") else CAUSE_INVALID
 
