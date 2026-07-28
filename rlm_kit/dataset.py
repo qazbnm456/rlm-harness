@@ -33,6 +33,7 @@ from .trace import (
     EVENT_RUN_START,
     EVENT_SUB_CALL,
     EVENT_TOOL_CALL,
+    payload_cause,
 )
 
 # A reward function scores one run's events -> float.
@@ -71,7 +72,20 @@ def _action_record(event: dict) -> dict:
             "kind": "tool",
             "tool": p.get("tool"),
             "action": {"input": p.get("args"), "reasoning": p.get("reasoning")},
-            "outcome": {"ok": p.get("ok"), "output": output, "errors": p.get("errors")},
+            "outcome": {
+                "ok": p.get("ok"),
+                "output": output,
+                "errors": p.get("errors"),
+                # WHY it is not ok. `ok` alone cannot tell a validator rejection from an endpoint
+                # failure or a circuit break, and this record is what reaches a TRAINER — a dataset
+                # that labels infrastructure failures as content declines teaches exactly that. The
+                # endpoint string rode nowhere at all before this: it is recorded under `error` (or
+                # `endpoint_error`) by consumer convention, and neither was carried, so a downstream
+                # reader could not even reconstruct the split by hand. For a tool with no validator
+                # this is simply `ok`/`invalid`, which is what `ok` already said.
+                "cause": p.get("cause") or payload_cause(p),
+                "error": p.get("endpoint_error") or p.get("error"),
+            },
         }
     # EVENT_SUB_CALL (escalation to the expensive sub-LM, e.g. gpt-5.5)
     return {
