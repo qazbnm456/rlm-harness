@@ -150,9 +150,20 @@ def make_model_tool(
             except Exception as exc:
                 if attempt >= retries:
                     # endpoint error: infra flakiness, NOT a content decline → does not trip the breaker
+                    #
+                    # `str(exc) or type(exc).__name__`, because `str(exc)` is the EMPTY STRING for
+                    # `httpx.ConnectTimeout` / `ReadTimeout` / `ConnectError`, `TimeoutError`,
+                    # `OSError` and `http.client.RemoteDisconnected` — six of the most ordinary
+                    # transport failures there are, and precisely the ones where a reader most needs
+                    # to be told WHAT happened. Recording `''` gave every consumer an empty message
+                    # to render ("endpoint failed: ") and made the field's own truthiness a lie
+                    # about whether an endpoint error occurred, which is how `payload_cause` came to
+                    # misread six failure modes as content declines. The class name is always
+                    # available and always says something.
+                    detail = str(exc) or type(exc).__name__
                     return ModelToolResult(
                         ok=False, raw="", reasoning=None,
-                        errors=[str(exc)], validated=None, endpoint_error=str(exc),
+                        errors=[detail], validated=None, endpoint_error=detail,
                     )
         validated = validate(raw)
         ok = bool(getattr(validated, "ok", False))

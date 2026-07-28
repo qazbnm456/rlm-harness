@@ -620,3 +620,49 @@ def test_the_harness_result_inherits_the_same_distinction():
     assert HarnessToolResult(ok=False, raw="", endpoint_error="conn reset").cause == CAUSE_ENDPOINT
     assert HarnessToolResult(ok=False, raw="bad artifact").cause == CAUSE_INVALID
     assert HarnessToolResult(ok=True, raw="fine").validator_ran is True
+
+def test_an_endpoint_failure_whose_str_is_EMPTY_records_the_exception_TYPE():
+    """`str(exc)` is `''` for the six most ordinary transport failures there are, and that is exactly
+    when a reader most needs telling what happened.
+
+    Recording `''` had two costs, both measured downstream. A human-facing surface rendered
+    "endpoint failed: " with nothing after the colon; and the field's own TRUTHINESS became a lie
+    about whether an endpoint error had occurred, which is how `payload_cause` came to read six
+    failure modes as content declines. The class name is always available.
+
+    `endpoint_error` and `errors[0]` must carry the SAME detail — consumers read whichever is nearer,
+    and a split between them is a difference no test elsewhere would notice.
+    """
+    import http.client
+
+    import httpx
+
+    for exc in (
+        httpx.ConnectTimeout(""), httpx.ReadTimeout(""), httpx.ConnectError(""),
+        TimeoutError(), OSError(), http.client.RemoteDisconnected(),
+    ):
+        assert str(exc) == "", f"{type(exc).__name__} is assumed to stringify empty"
+
+        def boom(_spec, _exc=exc):
+            raise _exc
+
+        tool = make_model_tool(boom, lambda raw: _V(ok=True, parsed=raw), transient_retries=0)
+        result = tool("x")
+
+        assert result.ok is False
+        assert result.endpoint_error == type(exc).__name__, type(exc).__name__
+        assert result.errors == [type(exc).__name__], "the two must not drift apart"
+        assert result.cause == CAUSE_ENDPOINT
+
+
+def test_a_normal_exception_still_records_its_MESSAGE_not_its_type():
+    """The fallback must not swallow a real message — it applies only when there is none."""
+
+    def boom(_spec):
+        raise RuntimeError("502 Bad Gateway")
+
+    tool = make_model_tool(boom, lambda raw: _V(ok=True, parsed=raw), transient_retries=0)
+    result = tool("x")
+
+    assert result.endpoint_error == "502 Bad Gateway"
+    assert result.errors == ["502 Bad Gateway"]
