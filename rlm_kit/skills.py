@@ -145,13 +145,26 @@ def load_skills_as_tools(skill_dir: str, *, discovery: str = "list") -> list[Cal
         return result
 
     def read_skill(name: str) -> str:
-        """Read the full content of a named skill. Use list_skills first to see names."""
+        """Read the full content of a named skill, by name."""
         skill: Skill | None = skills.get(name)
-        result = skill.read() if skill else f"No such skill: {name!r}."
+        # Name the alternatives on a miss. Under discovery="inject" there is no `list_skills` to
+        # fall back to, so an error that only says "no such skill" leaves the model with no move.
+        known = ", ".join(sorted(skills)) or "(none)"
+        result = skill.read() if skill else f"No such skill: {name!r}. Available: {known}."
         # `preview` (a head of the content) is for inspection — a trace reader / replay UI can show
         # WHAT was read, not just how long it was. `result_len` keeps the full size.
         record_tool_call("read_skill", args={"name": name}, result_len=len(result),
                          preview=result[:_PREVIEW_CHARS])
         return result
 
-    return [read_skill] if discovery == "inject" else [list_skills, read_skill]
+    # The docstring IS the tool description the model reads, and where the NAMES come from differs
+    # by mode — so it is set per mode rather than written once at `def` time. Under "inject" there
+    # is no `list_skills` tool to point at; naming it anyway would be a dead instruction, and a
+    # NameError if the model took it literally in the REPL. (`read_skill` is a fresh closure per
+    # call, so assigning `__doc__` here cannot leak into another caller's tool.)
+    if discovery == "inject":
+        read_skill.__doc__ = ("Read the full content of a named skill. Names are the ones listed "
+                              "in the skills manifest in your instructions.")
+        return [read_skill]
+    read_skill.__doc__ = "Read the full content of a named skill. Call list_skills first for names."
+    return [list_skills, read_skill]
