@@ -415,6 +415,15 @@ surfaced by dogfooding a real downstream consumer.
 
 ### Fixed
 
+- **`discovery="inject"` no longer points `read_skill` at a `list_skills` tool it never registers.**
+  A tool's docstring IS the description the planner reads, and `read_skill`'s said "Use list_skills
+  first to see names" unconditionally — but under `inject` the catalog comes from the caller's
+  injected manifest and `list_skills` is deliberately NOT returned. So the one mode built for
+  progressive disclosure shipped an instruction naming a symbol that raises `NameError` in the REPL.
+  The description is now set per mode, and an unknown skill name reports the available ones inline
+  (under `inject` there is no `list_skills` to recover with, so the miss has to carry them). Found
+  by dogfooding `inject` in a downstream consumer.
+
 - **`mcp._make_tool` now exposes each MCP tool's REAL param names to the RLM REPL (was: a single
   `kwargs`).** dspy.RLM builds the in-sandbox tool proxy from `inspect.signature(tool.func)` — NOT
   `dspy.Tool.args` — so the old `def call(**kwargs)` wrapper registered a proxy whose only param was
