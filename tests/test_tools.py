@@ -13,7 +13,14 @@ from rlm_kit.tools.fetch import (
     parse_cidrs,
     resolved_host_is_safe,
 )
-from rlm_kit.tools.model import ModelToolResult, make_model_tool
+from rlm_kit.tools.model import (
+    CAUSE_CIRCUIT_BROKEN,
+    CAUSE_ENDPOINT,
+    CAUSE_INVALID,
+    CAUSE_OK,
+    ModelToolResult,
+    make_model_tool,
+)
 from rlm_kit.tools.search import make_web_search_tool, normalise_search_results
 from rlm_kit.tools.validation import make_json_schema_validator, make_schema_validator
 from rlm_kit.trace import EVENT_TOOL_CALL, TraceRecorder, load_events
@@ -515,3 +522,101 @@ def test_schema_valid_metric():
     assert metric(None, _ns(finding={"title": "t", "severity": "x"})) == 1.0
     assert metric(None, _ns(finding={"title": "t"})) == 0.0
     assert metric(None, _ns(finding=None)) == 0.0
+
+
+# ---- cause / validator_ran: `ok=False` has THREE causes and they are not interchangeable ----
+#
+# These exist because collapsing them is a bug that has shipped downstream more than once, in more
+# than one consumer, reaching both training labels and user-facing text. The information was always
+# present on the result; it had no NAME, so every consumer re-derived it and several silently did
+# not. Each case below is driven through the REAL factory rather than by constructing a result, so
+# the mapping is pinned against how the outcomes are actually produced.
+
+# `_V` is the module's own validator-result stub, defined at the top of this file.
+
+
+def test_cause_ok_when_the_validator_accepts():
+    result = make_model_tool(lambda spec: "out", lambda raw: _V(True))("spec")
+
+    assert (result.cause, result.validator_ran, result.ok) == (CAUSE_OK, True, True)
+
+
+def test_cause_invalid_when_the_validator_ran_and_rejected():
+    result = make_model_tool(lambda spec: "out", lambda raw: _V(False, ["nope"]))("spec")
+
+    assert (result.cause, result.validator_ran, result.ok) == (CAUSE_INVALID, True, False)
+
+
+def test_cause_endpoint_when_the_call_failed_and_the_validator_never_ran():
+    """The mislabel this is for: a consumer reading only `ok` reports "failed validation" here,
+    and the validator was never invoked."""
+    seen = []
+
+    def boom(spec):
+        raise RuntimeError("502 bad gateway")
+
+    def validate(raw):
+        seen.append(raw)
+        return _V(True)
+
+    result = make_model_tool(boom, validate, transient_retries=0)("spec")
+
+    assert result.cause == CAUSE_ENDPOINT
+    assert result.validator_ran is False
+    assert seen == [], "the validator must not have run"
+
+
+def test_cause_circuit_broken_when_the_breaker_short_circuited():
+    """No model call AND no validator call — the furthest thing from "the output was rejected"."""
+    calls, checks = [], []
+
+    def chat(spec):
+        calls.append(spec)
+        return "out"
+
+    def validate(raw):
+        checks.append(raw)
+        return _V(False, ["nope"])
+
+    call = make_model_tool(chat, validate, max_consecutive_invalid=2)
+    call("a")
+    call("b")
+    before = (len(calls), len(checks))
+    result = call("c")
+
+    assert result.cause == CAUSE_CIRCUIT_BROKEN
+    assert result.validator_ran is False
+    assert (len(calls), len(checks)) == before, "a short-circuit calls neither the model nor validate"
+
+
+def test_every_not_ok_cause_is_distinguishable_from_the_others():
+    """The property a consumer actually needs: `ok is False` alone cannot tell these apart, and
+    `cause` can. Without this the three tests above could all pass with `cause` hardcoded."""
+    causes = {
+        make_model_tool(lambda s: "o", lambda r: _V(False, ["x"]))("s").cause,
+        make_model_tool(_raise, lambda r: _V(True), transient_retries=0)("s").cause,
+        _broken_call().cause,
+    }
+
+    assert causes == {CAUSE_INVALID, CAUSE_ENDPOINT, CAUSE_CIRCUIT_BROKEN}
+    assert len(causes) == 3
+
+
+def _raise(spec):
+    raise RuntimeError("down")
+
+
+def _broken_call():
+    call = make_model_tool(lambda s: "o", lambda r: _V(False, ["x"]), max_consecutive_invalid=1)
+    call("first")
+    return call("second")
+
+
+def test_the_harness_result_inherits_the_same_distinction():
+    """`HarnessToolResult` subclasses `ModelToolResult`, so a delegation client gets `cause` for
+    free — and needs it for the same reason: a transport failure is not a content decline."""
+    from rlm_kit.tools.harness import HarnessToolResult
+
+    assert HarnessToolResult(ok=False, raw="", endpoint_error="conn reset").cause == CAUSE_ENDPOINT
+    assert HarnessToolResult(ok=False, raw="bad artifact").cause == CAUSE_INVALID
+    assert HarnessToolResult(ok=True, raw="fine").validator_ran is True

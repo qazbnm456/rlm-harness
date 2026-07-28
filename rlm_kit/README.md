@@ -125,6 +125,27 @@ after N consecutive validator declines the next call SHORT-CIRCUITS (no model ca
 finalize). It resets on any ok; an endpoint error doesn't count. The factory only flags the break —
 the consumer owns the message — and builds one tool per run so the breaker state resets naturally.
 
+**`ok=False` has THREE causes; read `result.cause` before naming one.** The validator rejected the
+output (`"invalid"`), the endpoint failed after retries (`"endpoint"`), or the breaker
+short-circuited without calling the model at all (`"circuit_broken"`). In the last two the validator
+NEVER RAN, so a consumer that reads only `ok` and writes "failed validation" is blaming the model
+for infrastructure. That has shipped in more than one consumer, in both directions that matter — a
+per-run training label named `*_rejects` whose docstring said "the validator rejected" incrementing
+on a 502, and a reviewer-facing string reading "failed its format check" shown for an endpoint
+timeout. `result.validator_ran` is the direct form of the question:
+
+```python
+result = call(spec)
+if not result.ok:
+    reason = ("the output failed validation" if result.validator_ran
+              else f"no output to validate ({result.cause})")
+```
+
+Two counting notes that follow from it, both observed downstream: a circuit-broken call carries
+`ok=False` **too**, so a `sum(1 for r in calls if not r.ok)` metric silently includes every break —
+filter on `cause == "invalid"` if you mean rejections. And an endpoint error deliberately does not
+trip the breaker, so `circuit_broken` counts and endpoint counts never overlap with each other.
+
 ## Skills (progressive disclosure)
 
 `load_skills_as_tools(dir)` exposes a directory of knowledge as two tools, so the main LM
