@@ -318,6 +318,60 @@ def test_the_endpoint_string_is_read_under_either_conventional_key():
     assert payload_cause({"ok": False, "endpoint_error": "conn reset"}) == CAUSE_ENDPOINT
 
 
+def test_an_endpoint_error_that_STRINGIFIED_TO_NOTHING_is_still_an_endpoint_failure():
+    """The empty string is the COMMON case, not a corner one, and this function shipped getting it
+    wrong for a while.
+
+    `endpoint_error` is filled with `str(exc)`, and that is `''` for `httpx.ConnectTimeout` /
+    `ReadTimeout` / `ConnectError`, `TimeoutError`, `OSError` and `RemoteDisconnected` — six of the
+    most ordinary transport failures there are. The original `payload.get("endpoint_error") or ...`
+    sent every one of them down the `CAUSE_INVALID` branch: a dropped connection recorded as a
+    content decline, which is the exact misclassification this function exists to prevent.
+
+    The write side (`ModelToolResult.cause`) has always used `is not None`. A read-side "mirror"
+    that disagrees with the thing it mirrors is worse than no mirror, because both look right in
+    isolation. Reported by a downstream consumer that pinned the divergence rather than adopting it.
+    """
+    import http.client
+
+    import httpx
+
+    for exc in (
+        httpx.ConnectTimeout(""), httpx.ReadTimeout(""), httpx.ConnectError(""),
+        TimeoutError(), OSError(), http.client.RemoteDisconnected(),
+    ):
+        assert str(exc) == "", f"{type(exc).__name__} is assumed to stringify empty"
+        assert payload_cause({"ok": False, "endpoint_error": str(exc)}) == CAUSE_ENDPOINT
+        assert payload_cause({"ok": False, "error": str(exc)}) == CAUSE_ENDPOINT
+
+    # And the reading it must NOT break: an absent key, and an explicit null on the success path.
+    assert payload_cause({"ok": True}) == CAUSE_OK
+    assert payload_cause({"ok": True, "endpoint_error": None}) == CAUSE_OK
+    assert payload_cause({"ok": False, "endpoint_error": None, "errors": ["schema"]}) == CAUSE_INVALID
+
+
+def test_payload_cause_agrees_with_ModelToolResult_cause_on_every_shape():
+    """The two must not be able to drift: one is documented as the other's read-side mirror, and the
+    divergence above existed precisely because nothing compared them."""
+    from rlm_kit.tools import ModelToolResult
+
+    for kwargs in (
+        {"ok": True, "raw": "x"},
+        {"ok": False, "errors": ["schema"]},
+        {"ok": False, "endpoint_error": "502"},
+        {"ok": False, "endpoint_error": ""},          # the case that used to disagree
+        {"ok": False, "circuit_broken": True},
+        {"ok": False, "circuit_broken": True, "endpoint_error": "502"},
+    ):
+        live = ModelToolResult(raw=kwargs.pop("raw", ""), **kwargs)
+        recorded = {
+            "ok": live.ok,
+            "endpoint_error": live.endpoint_error,
+            "circuit_broken": live.circuit_broken,
+        }
+        assert payload_cause(recorded) == live.cause, kwargs
+
+
 def test_the_four_causes_are_distinguishable_from_recorded_payloads():
     causes = [
         payload_cause({"ok": True, "raw": "yaml"}),

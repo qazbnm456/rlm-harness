@@ -62,3 +62,29 @@ def test_export_actions_tool_output_fallback():
     }
     outputs = [r["outcome"]["output"] for r in export_actions(runs)]
     assert outputs == ["R", "P", ["a", "b"], "RAW", None]
+
+
+def test_an_endpoint_failure_that_stringified_to_nothing_still_carries_its_cause_and_error():
+    """A trainer reading this record must not see `cause: endpoint` beside `error: null`.
+
+    `endpoint_error` is `str(exc)`, which is `''` for the six most ordinary transport failures
+    (`httpx.ConnectTimeout`/`ReadTimeout`/`ConnectError`, `TimeoutError`, `OSError`,
+    `RemoteDisconnected`). Both fields used to lose it: `cause` because `payload_cause` tested the
+    key for TRUTHINESS rather than presence, and `error` because `a or b` skips a present-but-empty
+    `a` and falls through to an absent `b`. Presence, not truthiness, in both places.
+    """
+    runs = {
+        "r1": [
+            {"type": "tool_call", "step_id": 0, "payload": {
+                "tool": "gen", "ok": False, "endpoint_error": "", "raw": ""}},
+            {"type": "tool_call", "step_id": 1, "payload": {
+                "tool": "gen", "ok": False, "error": "", "raw": ""}},
+            {"type": "tool_call", "step_id": 2, "payload": {
+                "tool": "gen", "ok": False, "errors": ["schema"], "raw": "bad"}},
+        ]
+    }
+    outcomes = [r["outcome"] for r in export_actions(runs)]
+
+    assert [o["cause"] for o in outcomes] == ["endpoint", "endpoint", "invalid"]
+    assert outcomes[0]["error"] == "" and outcomes[1]["error"] == ""
+    assert outcomes[2]["error"] is None, "a validator rejection carries no endpoint string"
