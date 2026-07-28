@@ -33,7 +33,7 @@ from .rubric import (
     validate_rubric,
 )
 from .sandbox import SandboxSecurityError
-from .serving import HarnessPointer, serve_harness
+from .serving import HarnessPointer, bundle_artifact, parse_artifact_bundle, serve_harness
 from .skills import discover_skills, load_skills_as_tools, render_skills_manifest
 from .sub_lm import SubLMValidationError, intercept_sub_lm, model_as_tool
 from .trace import (
@@ -100,6 +100,8 @@ __all__ = [
     # serving a downstream harness over the make_harness_tool delegation contract (server-side mirror)
     "serve_harness",
     "HarnessPointer",
+    "bundle_artifact",
+    "parse_artifact_bundle",
     # MCP client (optional: rlm-kit[mcp])
     "mcp_tools",
     "McpConnection",

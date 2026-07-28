@@ -417,6 +417,28 @@ RL export together. Five steps:
      operator points the client at `python -m <pkg>.serve`. A FLAT result (`.artifact`/`.run_id`) needs
      NO file — `python -m rlm_kit.harness_serve <pkg.module>:run` uses the duck-typed default. Copy
      `examples/harness_serve.py`.
+   - **Give the operator an ABSOLUTE `workdir_base`.** `serve_harness` isolates each run's CWD under
+     it, and the default is RELATIVE — a child inherits the PARENT's working directory, so its run
+     folders materialise inside the caller's project. Document an absolute path in your serve module
+     (`python -m <pkg>.serve /var/tmp/<pkg>-harness-runs`), and have callers ignore `harness-runs/`.
+   - **Your `run` must match the contract's shape, or adapt to it in `serve.py`.** `serve_harness`
+     calls `run(source: str, run_id=…)`. A harness whose entry takes a domain object (a resolved lead,
+     a parsed spec) or derives its own id needs a small adapter there: resolve the caller's text into
+     that object through whatever PUBLIC seam the harness already exposes, and absorb the kit's
+     `run_id` when the harness has a more meaningful one of its own — report the real id back through
+     `to_pointer` so the parent's child-link still resolves. RAISE from the adapter when the text
+     resolves to nothing: that is exit 1, which the caller retries then degrades. Returning an empty
+     artifact instead is exit 0, and buys the caller a full run over nothing.
+   - **A multi-file deliverable: use `bundle_artifact`, never a format of your own.** `artifact` is
+     ONE string, but plenty of harnesses produce a FOLDER (a write-up + a PoC + a diff; a Dockerfile +
+     a compose file + notes). `bundle_artifact({name: content})` packs it as `===== <name> =====`
+     sections — escalating the marker when a file's own content contains one, so a report that QUOTES
+     a bundle cannot truncate itself — and `parse_artifact_bundle` reads it back. Use them: a packing
+     format invented per harness/client pair is a silent-failure generator, because the two sides
+     agree until they don't and the mismatch then degrades into "the child returned junk" instead of
+     surfacing as the wiring bug it is. A client that just wants the whole deliverable as CONTEXT
+     needs no parser at all — the text is meant to be read as-is, by a Root LM and by a human
+     debugging the wire.
 
 **Score your own rubric (optional).** To decompose "did this run succeed?" into observable per-run
 LABELS, `rlm_kit.rubric` gives you the reward-free substrate — the `Criterion`/`RubricCriteria`/

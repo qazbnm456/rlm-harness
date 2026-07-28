@@ -12,6 +12,28 @@ surfaced by dogfooding a real downstream consumer.
 
 ### Added
 
+- **`bundle_artifact` / `parse_artifact_bundle` — one shared convention for a MULTI-FILE harness
+  deliverable.** `HarnessPointer.artifact` is a single string, which fits a harness whose output is one
+  file (a template, a patch, a document). Plenty produce a FOLDER instead — a write-up plus a PoC plus a
+  diff; a Dockerfile plus a compose file plus notes — and until now every harness/client pair had to
+  invent its own packing format. That is a silent-failure generator: the two sides agree until they
+  don't, and the mismatch degrades into "the child returned junk" rather than surfacing as the wiring
+  bug it is (a downstream consumer had already shipped exactly that class of bug against invented wire
+  keys). The kit already owns the wire schema, so it owns this too.
+  Sections are `===== <name> =====` — deliberately plain text, because the artifact's primary reader is
+  a Root LM in a REPL and its second is a human debugging the wire; a client that just wants the whole
+  deliverable as CONTEXT needs no parser at all. The marker ESCALATES (`======`, `=======`, …) when a
+  file's own content already contains a header line, so a report that QUOTES a bundle cannot truncate
+  itself at its own quotation. Round-trips exactly, modulo leading/trailing blank lines within a file.
+- **`rlm_kit/README.md`, "Delegate to another harness — or be one"** gains three rules dogfooding
+  surfaced: use `bundle_artifact` rather than a private format; adapt in `serve.py` when your `run`
+  does not already match `run(source: str, run_id=…)` (resolve the caller's text through your own
+  public seam, absorb the kit's `run_id` when you have a more meaningful one, and RAISE rather than
+  return an empty artifact when the text resolves to nothing — a raise is exit 1, which the caller
+  retries then degrades, while an empty artifact is exit 0 and buys the caller a full run over
+  nothing); and give the operator an ABSOLUTE `workdir_base`, because the default is relative and a
+  child inherits the PARENT's CWD, materialising its run folders inside the caller's project.
+
 - **`rlm_kit.rubric` — reward-free rubric primitives (consumer-driven promotion).** The pydantic types
   `Criterion` / `RubricCriteria` / `CriterionFact`, plus `rubric_to_meta` / `rubric_from_meta` /
   `validate_rubric` and a pure `criteria_facts(criteria, facts, lens)` assembly loop, lifted from the

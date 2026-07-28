@@ -10,7 +10,7 @@ import types
 import pytest
 
 from rlm_kit import HarnessPointer, serve_harness
-from rlm_kit.serving import _default_to_pointer
+from rlm_kit.serving import _default_to_pointer, bundle_artifact, parse_artifact_bundle
 
 
 @pytest.fixture(autouse=True)
@@ -251,3 +251,67 @@ def test_harness_serve_entry_uses_a_module_to_pointer_and_run_kwargs(tmp_path, m
     assert rc == 0 and seen["outdir"] == "."                  # SERVE_RUN_KWARGS applied
     obj = json.loads(capsys.readouterr().out.strip())
     assert obj == {"artifact": "NESTED", "run_id": "n1"}      # module to_pointer used, not the default
+
+
+# -- multi-file artifacts: bundle_artifact / parse_artifact_bundle -----------------------------------
+
+
+def test_a_bundle_round_trips_and_reads_cleanly():
+    files = {"README.md": "# Title\n\nprose", "poc.md": "curl http://x/", "changes.diff": "-bad\n+good"}
+    bundled = bundle_artifact(files)
+
+    assert bundled.startswith("===== README.md =====\n")
+    assert "===== changes.diff =====" in bundled
+    assert parse_artifact_bundle(bundled) == files
+
+
+def test_insertion_order_is_preserved():
+    files = {"z.md": "z", "a.md": "a", "m.md": "m"}
+    assert list(parse_artifact_bundle(bundle_artifact(files))) == ["z.md", "a.md", "m.md"]
+
+
+def test_an_empty_mapping_bundles_to_an_empty_artifact():
+    # A harness that produced nothing returns an empty artifact and exit 0 — emptiness is the
+    # CALLER's judgement to make, not a serving failure.
+    assert bundle_artifact({}) == ""
+    assert parse_artifact_bundle("") == {}
+
+
+def test_a_markdown_underline_is_content_not_a_section_break():
+    # `=====` alone is a setext heading underline, extremely common in real READMEs. It has no name
+    # between the markers, so it is not a header and must not split anything.
+    files = {"README.md": "Title\n=====\n\nbody", "x.md": "x"}
+    assert parse_artifact_bundle(bundle_artifact(files)) == files
+
+
+def test_a_file_quoting_a_header_line_escalates_the_marker():
+    """The collision case that silently corrupts a bundle if unhandled: a file whose CONTENT holds a
+    well-formed header line — a report echoing a child harness's reply, say. Without escalation the
+    section would truncate at its own quotation and a phantom file would appear."""
+    files = {"report.md": "child said:\n===== poc.md =====\ncurl http://evil/\ndone", "poc.md": "real"}
+    bundled = bundle_artifact(files)
+
+    assert bundled.startswith("====== report.md ======\n")   # escalated past the embedded marker
+    assert parse_artifact_bundle(bundled) == files           # both files byte-intact
+    assert sorted(parse_artifact_bundle(bundled)) == ["poc.md", "report.md"]   # no phantom section
+
+
+def test_escalation_repeats_until_unambiguous():
+    files = {"a.md": "x\n===== q =====\ny\n====== r ======\nz", "b.md": "plain"}
+    bundled = bundle_artifact(files)
+
+    assert bundled.startswith("======= a.md =======\n")
+    assert parse_artifact_bundle(bundled) == files
+
+
+def test_text_that_is_not_a_bundle_parses_to_empty():
+    # A single-file artifact is the common case and is NOT an error — it simply is not a bundle, and
+    # a client that wants the whole thing as context should use the artifact string as-is.
+    assert parse_artifact_bundle("just a nuclei template\nid: CVE-2021-1\n") == {}
+
+
+def test_a_bundle_survives_the_wire():
+    files = {"README.md": "# CVE-2021-41773", "changes.diff": "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b"}
+    line = HarnessPointer(artifact=bundle_artifact(files), run_id="c1").to_json_line()
+
+    assert parse_artifact_bundle(json.loads(line)["artifact"]) == files
