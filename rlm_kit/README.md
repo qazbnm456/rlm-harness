@@ -146,6 +146,27 @@ Two counting notes that follow from it, both observed downstream: a circuit-brok
 filter on `cause == "invalid"` if you mean rejections. And an endpoint error deliberately does not
 trip the breaker, so `circuit_broken` counts and endpoint counts never overlap with each other.
 
+**Across the trace boundary the same distinction is `trace.payload_cause(payload)`**, reading the
+same four words off a recorded `tool_call`. It exists because `ok` is often ABSENT on an endpoint
+payload (consumers record `error=` alone there), so `payload.get("ok")` returns `None` — falsy —
+and every `not payload.get("ok")` counter downstream absorbs infrastructure failures as content
+declines without a word of warning. In the worst measured case that put 113 endpoint failures into
+a metric named `generator_declines`, fed it to a scored rubric criterion about the planner's spec
+quality, and printed "113 partial/retry" in a delivered report — for a run whose validator ran zero
+times, and whose planner had correctly concluded the endpoint was unreachable.
+
+`export_actions` now carries `outcome.cause` and `outcome.error` for exactly this reason: that
+record is what reaches a trainer, and it previously carried neither, so the split could not be
+reconstructed downstream even by hand.
+
+Two write-side hazards worth stating, both observed:
+
+- **Record the outcome ONCE, AFTER the branch.** A consumer that emits its event before checking
+  `endpoint_error` destroys the distinction at write time, and no read-side fix recovers it.
+- **Do not omit `ok` on the endpoint path.** Recording only `error=` is what makes
+  `payload.get("ok")` return `None`. Passing `cause=result.cause` explicitly is the cheapest
+  insurance: the derivation is then done once, by the code that knows.
+
 ## Skills (progressive disclosure)
 
 `load_skills_as_tools(dir)` exposes a directory of knowledge as two tools, so the main LM

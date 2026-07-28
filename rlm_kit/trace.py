@@ -65,6 +65,40 @@ def recorder_scope(recorder: TraceRecorder | None) -> Iterator[None]:
         _active.reset(token)
 
 
+#: What produced a model-backed tool's outcome. `ok=False` means THREE different things and they
+#: are not interchangeable — see `payload_cause`. Defined HERE, in the lowest layer, because the
+#: same four names have to mean the same thing for a live `ModelToolResult` (which re-exports them)
+#: and for a recorded payload a dataset/replay reader gets back off disk. Two vocabularies for one
+#: distinction is how it gets collapsed again.
+CAUSE_OK = "ok"                          # the validator ran and accepted
+CAUSE_INVALID = "invalid"                # the validator ran and rejected
+CAUSE_ENDPOINT = "endpoint"              # the model call failed after retries; the validator never ran
+CAUSE_CIRCUIT_BROKEN = "circuit_broken"  # short-circuited; no model call, no validator
+
+
+def payload_cause(payload: dict) -> str:
+    """Which of the four outcomes a recorded ``tool_call`` payload is — the read-side mirror of
+    :attr:`rlm_kit.tools.ModelToolResult.cause`.
+
+    A consumer reading a trace has only the payload, and ``ok`` alone cannot tell a validator
+    rejection from an endpoint failure or a circuit break. Reading it as one thing has shipped in
+    four separate consumers, into training labels, a scored rubric criterion, and delivered report
+    text — in the worst measured case a run whose validator ran ZERO times was reported as 113
+    format-quality failures, and scored against the planner's spec quality for them.
+
+    Reads three keys, in the order that cannot disagree with itself: ``circuit_broken`` (nothing was
+    called), then the endpoint string (the model call failed, so nothing was validated), then
+    ``ok``. The endpoint string is looked up under BOTH ``endpoint_error`` and ``error`` because the
+    consumer convention has used each; the ``ok`` key is often ABSENT on an endpoint payload, and
+    ``payload.get("ok")`` returning ``None`` is exactly how it silently reads as a decline.
+    """
+    if payload.get("circuit_broken"):
+        return CAUSE_CIRCUIT_BROKEN
+    if payload.get("endpoint_error") or payload.get("error"):
+        return CAUSE_ENDPOINT
+    return CAUSE_OK if payload.get("ok") else CAUSE_INVALID
+
+
 def record_tool_call(
     tool: str, *, args: dict | None = None, **fields: Any
 ) -> dict | None:
@@ -82,6 +116,22 @@ def record_tool_call(
     verbatim, so a caller stays free to attach tool-specific fields (``note``,
     ``bytes``, ``results``, ``template_id`` …). No-ops and returns ``None`` when no
     recorder is active, so a tool can call it unconditionally.
+
+    **For a model-backed tool, record the outcome ONCE, AFTER the branch, and record all three
+    fields.** ``ok=False`` has three causes (see :func:`payload_cause`) and a reader can only split
+    them if the payload carries ``circuit_broken`` and the endpoint string alongside ``ok``. Two
+    hazards, both observed in shipped consumers:
+
+    - Recording BEFORE the endpoint check destroys the distinction at write time, and no read-side
+      fix can recover it. One consumer emits its delegation event with a bare ``ok=`` and then
+      raises on the endpoint error two lines later; 226 events in its corpus are indistinguishable
+      between "the harness was unreachable" and "the harness returned nothing usable".
+    - Omitting ``ok`` on the endpoint path (recording only ``error=``) is worse than it looks:
+      ``payload.get("ok")`` then returns ``None``, which is falsy, so every ``not payload.get("ok")``
+      counter downstream silently absorbs infrastructure failures as content declines.
+
+    Passing ``cause=result.cause`` explicitly is the cheapest way to be sure — the derivation is
+    then done once, by the code that knows, rather than re-derived by every reader.
     """
     recorder = current_recorder()
     if recorder is None:

@@ -48,6 +48,7 @@ from .trace import (
     current_recorder,
     group_by_run,
     load_events,
+    payload_cause,
     record_tool_call,
 )
 
@@ -69,6 +70,7 @@ __all__ = [
     "discover_skills",
     # tracing (Phase B)
     "TraceRecorder",
+    "payload_cause",
     "current_recorder",
     "record_tool_call",
     "load_events",
