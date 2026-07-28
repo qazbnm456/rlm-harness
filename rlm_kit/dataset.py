@@ -84,7 +84,15 @@ def _action_record(event: dict) -> dict:
                 # reader could not even reconstruct the split by hand. For a tool with no validator
                 # this is simply `ok`/`invalid`, which is what `ok` already said.
                 "cause": p.get("cause") or payload_cause(p),
-                "error": p.get("endpoint_error") or p.get("error"),
+                # PRESENCE, not truthiness — the same empty-string trap `payload_cause` carries
+                # a note about. `str(exc)` is `''` for the common transport failures, so `or` would
+                # skip a present-but-empty `endpoint_error`, fall through to an absent `error`, and
+                # emit `null` for a call that really did fail at the endpoint. The record would then
+                # say `cause: endpoint` beside `error: null`, which reads as a contradiction to
+                # whoever is reading the dataset.
+                "error": next(
+                    (p[k] for k in ("endpoint_error", "error") if p.get(k) is not None), None
+                ),
             },
         }
     # EVENT_SUB_CALL (escalation to the expensive sub-LM, e.g. gpt-5.5)
