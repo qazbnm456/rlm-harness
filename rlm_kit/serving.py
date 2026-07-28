@@ -87,11 +87,27 @@ _BUNDLE_HEADER_RE = re.compile(r"^(={5,}) (.+?) \1$")
 
 
 def _header_re(mark: str) -> re.Pattern:
-    # MULTILINE is load-bearing, not decoration: the collision scan below `search`es a whole file's
-    # text for an embedded header line. Without it `^`/`$` anchor to the string's own ends, every
-    # embedded header goes undetected, the marker is never escalated, and a file that QUOTES a bundle
-    # (a report echoing a child's reply, say) silently truncates itself at its own quotation.
-    return re.compile(rf"^{re.escape(mark)} (.+?) {re.escape(mark)}$", re.MULTILINE)
+    return re.compile(rf"{re.escape(mark)} (.+?) {re.escape(mark)}")
+
+
+def _lines(text: str) -> list[str]:
+    """The ONE definition of "a line" both halves of this format use.
+
+    Load-bearing, and the reason it is a named helper rather than an inline `splitlines()`. An
+    earlier version scanned for embedded headers with a `re.MULTILINE` regex while the parser split
+    with `str.splitlines()` — and those disagree: MULTILINE breaks only on `\\n` and `\\r\\n`, while
+    `splitlines()` breaks on ELEVEN separators (`\\r`, `\\x0b`, `\\x0c`, `\\x1c`, `\\x1d`, `\\x1e`,
+    `\\x85`, `\\u2028`, `\\u2029` besides). So a header embedded in CRLF text — a PoC quoting an HTTP
+    exchange, a Windows-authored file — escaped escalation and was then honoured as a real section
+    break on parse: the quoting file truncated at its own quotation and its tail was absorbed into a
+    phantom section. The key COUNT, the names and the order all still looked right, so nothing
+    downstream could notice. Both sides now split with this function, so they cannot drift again.
+    """
+    return (text or "").splitlines()
+
+
+def _has_header_line(mark: str, text: str) -> bool:
+    return any(_header_re(mark).fullmatch(line) for line in _lines(text))
 
 
 def bundle_artifact(files: Mapping[str, str]) -> str:
@@ -105,17 +121,33 @@ def bundle_artifact(files: Mapping[str, str]) -> str:
     Insertion order is preserved, and an empty mapping bundles to ``""`` (a harness that produced
     nothing returns an empty artifact and exit 0 — the CALLER judges emptiness, per the contract).
 
-    Round-trips through :func:`parse_artifact_bundle` exactly, except that leading/trailing blank
-    lines within a file are not significant.
+    Round-trips through :func:`parse_artifact_bundle` modulo exactly two documented normalisations,
+    both applied HERE so the bundled text and the parsed text always agree:
+
+    * line endings are normalised to ``\\n``. `splitlines()` is the shared notion of a line, and it
+      breaks on eleven separators (CRLF, CR, ``\\x0b``, ``\\x0c``, ``\\u2028``, …), so preserving the
+      originals would make the two halves disagree about where a header can hide. Normalising at pack
+      time is what keeps the format honest; it is stated rather than left to be discovered.
+    * leading and trailing blank lines within a file are not significant.
+
+    RAISES ``ValueError`` on a filename that cannot round-trip — one that is empty, or that contains
+    a line separator. Such a name would break its own header line and the file would vanish (or
+    reappear under a name nobody chose) with no error at all. Names in this API routinely come from
+    an LM, so this fails loudly at pack time instead.
     """
     if not files:
         return ""
+    for name in files:
+        if not name or _lines(name) != [name]:
+            raise ValueError(
+                f"bundle_artifact: unusable filename {name!r} — a name must be non-empty and hold no "
+                "line separator, or its section header cannot be parsed back."
+            )
+    normalised = {name: "\n".join(_lines(content)).strip("\n") for name, content in files.items()}
     mark = _BUNDLE_MARK
-    while any(_header_re(mark).search(content or "") for content in files.values()):
+    while any(_has_header_line(mark, content) for content in normalised.values()):
         mark += "="
-    return "\n".join(
-        f"{mark} {name} {mark}\n{(content or '').strip(chr(10))}\n" for name, content in files.items()
-    )
+    return "\n".join(f"{mark} {name} {mark}\n{content}\n" for name, content in normalised.items())
 
 
 def parse_artifact_bundle(text: str) -> dict[str, str]:
@@ -132,8 +164,8 @@ def parse_artifact_bundle(text: str) -> dict[str, str]:
     """
     if not text or not text.strip():
         return {}
-    lines = text.splitlines()
-    mark = next((m.group(1) for m in map(_BUNDLE_HEADER_RE.match, lines) if m), None)
+    lines = _lines(text)
+    mark = next((m.group(1) for m in map(_BUNDLE_HEADER_RE.fullmatch, lines) if m), None)
     if mark is None:
         return {}
     header = _header_re(mark)
@@ -141,7 +173,7 @@ def parse_artifact_bundle(text: str) -> dict[str, str]:
     name: Optional[str] = None
     buf: list[str] = []
     for line in lines:
-        found = header.match(line)
+        found = header.fullmatch(line)
         if found:
             if name is not None:
                 files[name] = "\n".join(buf).strip("\n")

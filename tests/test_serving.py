@@ -315,3 +315,63 @@ def test_a_bundle_survives_the_wire():
     line = HarnessPointer(artifact=bundle_artifact(files), run_id="c1").to_json_line()
 
     assert parse_artifact_bundle(json.loads(line)["artifact"]) == files
+
+
+# -- the pack/parse line-boundary agreement (a silent data-loss bug, fixed) ---------------------
+
+#: Every separator `str.splitlines()` breaks on. `re.MULTILINE` breaks on only the first three, and
+#: an earlier version used MULTILINE to hunt for embedded headers while parsing with `splitlines()`.
+#: The disagreement let a header hide from escalation and then act as a real section break.
+_ALL_LINE_SEPARATORS = ["\n", "\r\n", "\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e",
+                        "\x85", " ", " "]
+
+
+@pytest.mark.parametrize("sep", _ALL_LINE_SEPARATORS, ids=lambda s: repr(s))
+def test_an_embedded_header_on_any_line_separator_cannot_smuggle_a_section(sep):
+    """The regression this pins: with CRLF the trailing `\\r` stopped MULTILINE's `$` from matching,
+    so the marker never escalated — yet `splitlines()` stripped the `\\r` and handed the parser a
+    perfectly well-formed header. The quoting file truncated at its own quotation and its tail was
+    absorbed into a phantom section, while the key count, names and order all still looked right."""
+    files = {"a.md": f"head{sep}===== evil.md ====={sep}tail", "b.md": "B"}
+
+    unpacked = parse_artifact_bundle(bundle_artifact(files))
+
+    assert sorted(unpacked) == ["a.md", "b.md"]      # no phantom section
+    assert "tail" in unpacked["a.md"]                # nothing truncated away
+    assert unpacked["b.md"] == "B"                   # the real file is not clobbered
+
+
+def test_the_crlf_case_that_looked_correct_while_losing_data():
+    """The worst shape: a PoC quoting a CRLF HTTP exchange that echoes a child's bundle, beside a
+    real file of the same name. It used to round-trip to the right two keys in the right order with
+    the second file intact — and the first silently truncated. Nothing downstream could see it."""
+    files = {"poc.md": "Request:\r\nGET / HTTP/1.1\r\n===== notes.md =====\r\nroot:x:0:0\r\n",
+             "notes.md": "REAL NOTES"}
+
+    unpacked = parse_artifact_bundle(bundle_artifact(files))
+
+    assert unpacked["notes.md"] == "REAL NOTES"
+    assert unpacked["poc.md"] == "Request:\nGET / HTTP/1.1\n===== notes.md =====\nroot:x:0:0"
+
+
+@pytest.mark.parametrize("name", ["", "a\nb.md", "a\rb.md", "a b.md"])
+def test_a_filename_that_cannot_round_trip_raises_instead_of_vanishing(name):
+    """Filenames come from whatever the harness authored, often an LM. A name holding a separator
+    breaks its own header line, so the file used to disappear — or reappear under a name nobody
+    chose — with no error at all."""
+    with pytest.raises(ValueError, match="unusable filename"):
+        bundle_artifact({name: "content"})
+
+
+def test_exotic_but_usable_filenames_still_work():
+    """The validation must reject only what genuinely cannot round-trip. Markers, regex
+    metacharacters, unicode and surrounding spaces in a name are all fine."""
+    files = {"a ===== b.md": "1", "a.*b[]^$(){}|+?\\": "2", "文件 名.md": "3", " lead.md ": "4"}
+    assert parse_artifact_bundle(bundle_artifact(files)) == files
+
+
+def test_line_endings_are_normalised_at_pack_time_and_that_is_documented():
+    """Not an accident of `splitlines()`: normalising here is what keeps the two halves agreeing
+    about where a header can hide. Stated in the docstring rather than left to be discovered."""
+    unpacked = parse_artifact_bundle(bundle_artifact({"a.md": "one\r\ntwo\rthree\x0cfour"}))
+    assert unpacked["a.md"] == "one\ntwo\nthree\nfour"
