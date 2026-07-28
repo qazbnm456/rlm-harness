@@ -14,7 +14,14 @@ from .harness import (
     harness_from_endpoint,
     make_harness_tool,
 )
-from .model import ModelToolResult, make_model_tool
+from .model import (
+    CAUSE_CIRCUIT_BROKEN,
+    CAUSE_ENDPOINT,
+    CAUSE_INVALID,
+    CAUSE_OK,
+    ModelToolResult,
+    make_model_tool,
+)
 from .search import make_web_search_tool, normalise_search_results
 from .validation import make_json_schema_validator, make_schema_validator
 
@@ -23,6 +30,10 @@ __all__ = [
     "HarnessInvocation",
     "HarnessInvoke",
     "HarnessToolResult",
+    "CAUSE_CIRCUIT_BROKEN",
+    "CAUSE_ENDPOINT",
+    "CAUSE_INVALID",
+    "CAUSE_OK",
     "ModelToolResult",
     "harness_from_endpoint",
     "is_safe_url",
