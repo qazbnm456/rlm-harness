@@ -10,6 +10,41 @@ The next release (0.2.0) — **not yet published to PyPI**; the version number i
 target, not a release. Harness-engineering layer, plus the first round of hardening
 surfaced by dogfooding a real downstream consumer.
 
+### Added — `trace.payload_cause` + `export_actions` carries the cause: the same distinction, across the trace boundary
+
+`ModelToolResult.cause` (below) fixes the LIVE side. A consumer reading a trace back has only the
+payload, and an audit of four downstream repos found the read side is where this actually bites:
+
+- The endpoint path is conventionally recorded as `error=<str>` **with no `ok` key at all**. So
+  `payload.get("ok")` returns `None` — falsy — and every `not payload.get("ok")` counter silently
+  absorbs infrastructure failures as content declines. Two of the four repos do this; two split it
+  correctly, so the information was always on the wire.
+- Measured in one real corpus: 113 of 116 `generator_declines` were endpoint failures, in a run
+  whose validator ran **zero** times. That number feeds a scored PA rubric criterion whose own
+  description attributes it to the planner's spec quality, rides the `metrics` surface into any
+  trainer, and is printed in a delivered report as "113 partial/retry" — 113 times over. The
+  planner itself had it right; only the deterministic fact layer was wrong.
+- `_action_record` carried `{ok, output, errors}` and **dropped `error` entirely**, so the endpoint
+  string reached no consumer's `actions`/`sft_turns` at all — the split could not be reconstructed
+  downstream even by hand. That was a kit-level gap, not a consumer one.
+
+`payload_cause(payload)` is the read-side mirror, reading `circuit_broken` → the endpoint string
+(under `endpoint_error` OR `error`, since both conventions are in use) → `ok`, in the order that
+cannot disagree with itself. It is safe on any tool_call: with no breaker and no endpoint string it
+degrades to exactly the `ok` boolean. `export_actions` now emits `outcome.cause` and
+`outcome.error`, preferring an explicitly recorded `cause=` over the derivation — the write side is
+the code that knows.
+
+The four `CAUSE_*` constants moved to `rlm_kit.trace`, which owns them, and are re-exported from
+`rlm_kit.tools` unchanged: a live result and a recorded payload must answer this question with the
+same four words, or the distinction gets collapsed again at the trace boundary.
+
+`record_tool_call`'s docstring now states the two write-side hazards, both observed in shipped
+consumers: recording the event BEFORE the endpoint check destroys the distinction irrecoverably
+(226 events in one corpus are indistinguishable between "the harness was unreachable" and "the
+harness returned nothing usable"), and omitting `ok` on the endpoint path is what creates the falsy
+`None` in the first place.
+
 ### Added — `ModelToolResult.cause` / `.validator_ran`: `ok=False` has three causes, and now they have a name
 
 The information was always on the result — `circuit_broken`, `endpoint_error`, and their absence —

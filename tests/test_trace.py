@@ -3,6 +3,10 @@ import threading
 import types
 
 from rlm_kit.trace import (
+    CAUSE_CIRCUIT_BROKEN,
+    CAUSE_ENDPOINT,
+    CAUSE_INVALID,
+    CAUSE_OK,
     EVENT_FINAL,
     EVENT_MAIN_STEP,
     EVENT_RESULT,
@@ -13,6 +17,7 @@ from rlm_kit.trace import (
     current_recorder,
     group_by_run,
     load_events,
+    payload_cause,
     record_tool_call,
 )
 
@@ -283,3 +288,108 @@ def test_recorder_scope_reestablishes_recorder_in_a_worker_thread(tmp_path):
     assert saw_none["before"] is True   # confirms the ContextVar did NOT propagate
     sub = [e for e in load_events(path) if e["type"] == "sub_call"]
     assert len(sub) == 1                # …and recorder_scope fixed it
+
+
+# ---- payload_cause: the READ side of the same distinction --------------------------------
+#
+# A consumer reading a trace has only the payload, and `ok` alone cannot tell a validator
+# rejection from an endpoint failure or a circuit break. Reading it as one thing has shipped in
+# four separate consumers — into training labels, a scored rubric criterion, and delivered report
+# text. The shapes below are taken from real recorded traces, not invented.
+
+
+def test_an_endpoint_payload_has_NO_ok_key_and_that_is_the_whole_trap():
+    """The exact shape a real consumer records on the endpoint path: `error=` only. `ok` is ABSENT,
+    so `payload.get("ok")` is None — falsy — and every `not payload.get("ok")` counter downstream
+    silently absorbs infrastructure failures as content declines. In one measured corpus that was
+    113 of 116 'declines' in a run whose validator ran zero times."""
+    payload = {"tool": "generate_nuclei_template", "error": "harness exited 1"}
+
+    assert "ok" not in payload
+    assert not payload.get("ok"), "this is why the naive counter is wrong"
+    assert payload_cause(payload) == CAUSE_ENDPOINT
+
+
+def test_the_endpoint_string_is_read_under_either_conventional_key():
+    """Consumers have used both `error=` and `endpoint_error=`. Reading only one would leave the
+    other silently reading as a validator rejection."""
+    assert payload_cause({"error": "conn reset"}) == CAUSE_ENDPOINT
+    assert payload_cause({"endpoint_error": "conn reset"}) == CAUSE_ENDPOINT
+    assert payload_cause({"ok": False, "endpoint_error": "conn reset"}) == CAUSE_ENDPOINT
+
+
+def test_the_four_causes_are_distinguishable_from_recorded_payloads():
+    causes = [
+        payload_cause({"ok": True, "raw": "yaml"}),
+        payload_cause({"ok": False, "errors": ["schema"]}),
+        payload_cause({"error": "502"}),
+        payload_cause({"ok": False, "circuit_broken": True, "errors": ["breaker"]}),
+    ]
+
+    assert causes == [CAUSE_OK, CAUSE_INVALID, CAUSE_ENDPOINT, CAUSE_CIRCUIT_BROKEN]
+    assert len(set(causes)) == 4, "without this the assertion above could pass with one hardcoded"
+
+
+def test_a_circuit_break_outranks_an_endpoint_string():
+    """Order matters and must not be able to disagree with itself: a short-circuit called neither
+    the model nor the validator, so it is the strongest statement available about the call."""
+    assert payload_cause({"ok": False, "circuit_broken": True,
+                          "error": "stale"}) == CAUSE_CIRCUIT_BROKEN
+
+
+def test_a_non_model_tool_reads_as_ok_or_invalid_which_is_what_ok_already_said():
+    """`payload_cause` is safe to apply to any tool_call: with no breaker and no endpoint string it
+    degrades to exactly the `ok` boolean, so a caller need not branch on tool identity first."""
+    assert payload_cause({"tool": "read_skill", "result_len": 900}) == CAUSE_INVALID
+    assert payload_cause({"tool": "read_skill", "ok": True}) == CAUSE_OK
+
+
+def test_the_live_result_and_the_recorded_payload_agree():
+    """One vocabulary, checked rather than asserted in prose — the constants really are the same
+    objects, and the two derivations really do return the same word for the same outcome."""
+    from rlm_kit.tools.model import CAUSE_ENDPOINT as LIVE_ENDPOINT
+    from rlm_kit.tools.model import ModelToolResult
+
+    assert LIVE_ENDPOINT is CAUSE_ENDPOINT
+    for result, payload in (
+        (ModelToolResult(ok=True, raw="y"), {"ok": True}),
+        (ModelToolResult(ok=False, raw="y"), {"ok": False}),
+        (ModelToolResult(ok=False, raw="", endpoint_error="502"), {"error": "502"}),
+        (ModelToolResult(ok=False, raw="", circuit_broken=True), {"circuit_broken": True}),
+    ):
+        assert result.cause == payload_cause(payload), (result, payload)
+
+
+def test_export_actions_carries_the_cause_and_the_endpoint_string(tmp_path):
+    """The record that reaches a TRAINER. The endpoint string rode nowhere at all before this: it
+    is recorded under `error`, and `_action_record` carried only ok/output/errors — so a downstream
+    reader could not reconstruct the split even by hand."""
+    from rlm_kit.dataset import export_actions
+
+    path = tmp_path / "t.jsonl"
+    with TraceRecorder(str(path), run_id="r"):
+        record_tool_call("gen", args={"spec": "s"}, ok=False, errors=["schema"], raw="bad")
+        record_tool_call("gen", args={"spec": "s"}, error="harness exited 1")
+        record_tool_call("gen", args={"spec": "s"}, ok=False, circuit_broken=True, errors=["brk"])
+
+    actions = export_actions({"r": load_events(str(path), "r")})
+    outcomes = [a["outcome"] for a in actions if a["kind"] == "tool"]
+
+    assert [o["cause"] for o in outcomes] == [CAUSE_INVALID, CAUSE_ENDPOINT, CAUSE_CIRCUIT_BROKEN]
+    assert outcomes[1]["error"] == "harness exited 1"
+    assert outcomes[0]["error"] is None and outcomes[2]["error"] is None
+
+
+def test_an_explicitly_recorded_cause_wins_over_the_derivation(tmp_path):
+    """The write side is allowed to be authoritative — it is the code that knows. Only the fallback
+    is a derivation, so a tool whose outcome the three keys cannot express can still say so."""
+    from rlm_kit.dataset import export_actions
+
+    path = tmp_path / "t.jsonl"
+    with TraceRecorder(str(path), run_id="r"):
+        record_tool_call("gen", ok=False, cause=CAUSE_ENDPOINT, errors=["looks like a reject"])
+
+    (outcome,) = [a["outcome"] for a in export_actions({"r": load_events(str(path), "r")})
+                  if a["kind"] == "tool"]
+
+    assert outcome["cause"] == CAUSE_ENDPOINT
