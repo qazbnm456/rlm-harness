@@ -28,10 +28,11 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import sys
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Sequence, TextIO
+from typing import Any, Callable, Mapping, Optional, Sequence, TextIO
 
 
 @dataclass
@@ -63,6 +64,94 @@ class HarnessPointer:
 
 # The one harness-specific hook: map the harness's concrete result object into a HarnessPointer.
 ToPointer = Callable[[Any], HarnessPointer]
+
+
+# -- multi-file artifacts: one shared convention, so the two sides cannot drift -------------------
+#
+# ``HarnessPointer.artifact`` is ONE string, which fits a harness whose deliverable is one file (a
+# template, a patch, a document). Plenty of harnesses produce a FOLDER instead — a write-up plus a
+# PoC plus a diff, or a Dockerfile plus a compose file plus notes — and every such harness/client
+# pair otherwise invents its own packing format. That is a silent-failure generator: the two sides
+# agree until they don't, and a mismatch degrades into "the child returned junk" rather than
+# surfacing as the wiring bug it is. The kit already owns the wire schema; it should own this too.
+#
+# The format is deliberately plain text, not JSON: the artifact's primary consumer is a Root LM
+# reading it in a REPL, and a human debugging the wire is the second. Both read
+# ``===== poc.md =====`` far better than an escaped JSON blob — and a text-consuming client (one
+# that wants the whole deliverable as context) needs no parser at all.
+
+#: The default section marker. Five ``=`` reads clearly and is rare in prose or code.
+_BUNDLE_MARK = "====="
+#: Matches ANY well-formed section header, used only to discover a bundle's own marker on parse.
+_BUNDLE_HEADER_RE = re.compile(r"^(={5,}) (.+?) \1$")
+
+
+def _header_re(mark: str) -> re.Pattern:
+    # MULTILINE is load-bearing, not decoration: the collision scan below `search`es a whole file's
+    # text for an embedded header line. Without it `^`/`$` anchor to the string's own ends, every
+    # embedded header goes undetected, the marker is never escalated, and a file that QUOTES a bundle
+    # (a report echoing a child's reply, say) silently truncates itself at its own quotation.
+    return re.compile(rf"^{re.escape(mark)} (.+?) {re.escape(mark)}$", re.MULTILINE)
+
+
+def bundle_artifact(files: Mapping[str, str]) -> str:
+    """Pack ``{filename: content}`` into ONE ``HarnessPointer.artifact`` string.
+
+    Sections are introduced by ``===== <name> =====`` on its own line. If any file's content already
+    contains a line of that exact shape, the marker is ESCALATED (``======``, ``=======``, …) until it
+    is unambiguous — the same "choose a boundary that does not occur in the payload" discipline MIME
+    uses, so a bundled Markdown file full of ``=====`` rules can never split its own section.
+
+    Insertion order is preserved, and an empty mapping bundles to ``""`` (a harness that produced
+    nothing returns an empty artifact and exit 0 — the CALLER judges emptiness, per the contract).
+
+    Round-trips through :func:`parse_artifact_bundle` exactly, except that leading/trailing blank
+    lines within a file are not significant.
+    """
+    if not files:
+        return ""
+    mark = _BUNDLE_MARK
+    while any(_header_re(mark).search(content or "") for content in files.values()):
+        mark += "="
+    return "\n".join(
+        f"{mark} {name} {mark}\n{(content or '').strip(chr(10))}\n" for name, content in files.items()
+    )
+
+
+def parse_artifact_bundle(text: str) -> dict[str, str]:
+    """Unpack a :func:`bundle_artifact` string back into ``{filename: content}``.
+
+    Only for a client that needs the files SEPARATELY (to write them to disk, or to read one of
+    them). A client that just wants the whole deliverable as context should use the artifact string
+    as-is — that is the common case and needs nothing from this module.
+
+    The bundle's own marker is discovered from its FIRST header line and then required exactly, so a
+    line inside a file that happens to look like a *shorter* header is content, not a section break.
+    Text with no header at all yields ``{}`` — an unbundled single-file artifact is not an error
+    here, it simply is not a bundle.
+    """
+    if not text or not text.strip():
+        return {}
+    lines = text.splitlines()
+    mark = next((m.group(1) for m in map(_BUNDLE_HEADER_RE.match, lines) if m), None)
+    if mark is None:
+        return {}
+    header = _header_re(mark)
+    files: dict[str, str] = {}
+    name: Optional[str] = None
+    buf: list[str] = []
+    for line in lines:
+        found = header.match(line)
+        if found:
+            if name is not None:
+                files[name] = "\n".join(buf).strip("\n")
+            name, buf = found.group(1), []
+            continue
+        if name is not None:
+            buf.append(line)
+    if name is not None:
+        files[name] = "\n".join(buf).strip("\n")
+    return files
 
 
 def _load_env_files(paths: Sequence[str], stderr: TextIO) -> None:
