@@ -83,3 +83,29 @@ def test_load_skills_discovery_list_is_default_and_backward_compatible(tmp_path)
 def test_load_skills_discovery_invalid_raises(tmp_path):
     with pytest.raises(ValueError, match="discovery must be"):
         load_skills_as_tools(_make_skill_dir(tmp_path), discovery="bogus")
+
+
+def test_inject_mode_does_not_point_at_a_tool_it_does_not_register(tmp_path):
+    """The docstring is the tool DESCRIPTION the model reads. Under `discovery="inject"` there is
+    no `list_skills` tool, so naming it would send the planner to a name that raises NameError in
+    the REPL — the catalog comes from the caller's injected manifest instead."""
+    skill_dir = _make_skill_dir(tmp_path)
+
+    (read_skill,) = load_skills_as_tools(skill_dir, discovery="inject")
+    assert "list_skills" not in (read_skill.__doc__ or "")
+    assert "manifest" in (read_skill.__doc__ or "")
+
+    listed = load_skills_as_tools(skill_dir, discovery="list")
+    assert [t.__name__ for t in listed] == ["list_skills", "read_skill"]
+    # The default mode keeps its own pointer valid: the tool it names IS registered.
+    assert "list_skills" in (listed[1].__doc__ or "")
+
+
+def test_an_unknown_skill_name_reports_the_available_ones(tmp_path):
+    """Under "inject" there is no `list_skills` to recover with, so the miss has to carry them."""
+    (read_skill,) = load_skills_as_tools(_make_skill_dir(tmp_path), discovery="inject")
+
+    out = read_skill("gamma")
+
+    assert "No such skill: 'gamma'" in out
+    assert "recon, triage" in out
