@@ -31,9 +31,31 @@ ChatFn = Callable[[str], Any]
 Validate = Callable[[str], Any]
 
 
+#: What produced this result. `ok=False` has THREE distinct causes and they are not
+#: interchangeable — see `ModelToolResult.cause`.
+CAUSE_OK = "ok"                          # the validator ran and accepted
+CAUSE_INVALID = "invalid"                # the validator ran and rejected
+CAUSE_ENDPOINT = "endpoint"              # the model call failed after retries; the validator never ran
+CAUSE_CIRCUIT_BROKEN = "circuit_broken"  # short-circuited; no model call, no validator
+
+
 @dataclass
 class ModelToolResult:
-    """Structured outcome of one model-tool call — the caller formats the user-facing reply."""
+    """Structured outcome of one model-tool call — the caller formats the user-facing reply.
+
+    **`ok=False` has three causes, and collapsing them is a real bug, not a nuance.** The
+    validator rejected the output; the endpoint failed after retries; or the breaker
+    short-circuited without calling the model at all. In the last two the validator NEVER RAN.
+
+    That distinction has been got wrong downstream more than once, in more than one consumer, in
+    ways that reach both training data and user-facing text — a label named `*_rejects` whose
+    docstring says "the host-side validator rejected" incremented on a 502; a reviewer-facing
+    string reading "failed its format check" shown for an endpoint timeout; a per-run metric that
+    counted every `ok is False` beside a separate circuit-break count, so the two overlapped.
+    The information was always here (`circuit_broken`, `endpoint_error`), but it had no NAME, so
+    every consumer had to re-derive it and several silently did not. `cause` and `validator_ran`
+    are that name. Read one of them before writing any string or label that attributes a failure.
+    """
 
     ok: bool                              # the validator's verdict (False on endpoint error)
     raw: str                              # the model's raw output ("" on endpoint error / circuit break)
@@ -42,6 +64,31 @@ class ModelToolResult:
     validated: Any = None                 # the full object the validator returned
     endpoint_error: str | None = None  # set (ok=False) iff the model call failed after retries
     circuit_broken: bool = False          # True (ok=False, no model call) iff the breaker short-circuited
+
+    @property
+    def cause(self) -> str:
+        """Which of the four outcomes this is: `ok` / `invalid` / `endpoint` / `circuit_broken`.
+
+        Ordered so the checks cannot disagree with each other: a short-circuit sets neither
+        `endpoint_error` nor a validator verdict, and an endpoint failure never reaches the
+        validator, so `invalid` is the ONLY reading left once both are excluded.
+        """
+        if self.circuit_broken:
+            return CAUSE_CIRCUIT_BROKEN
+        if self.endpoint_error is not None:
+            return CAUSE_ENDPOINT
+        return CAUSE_OK if self.ok else CAUSE_INVALID
+
+    @property
+    def validator_ran(self) -> bool:
+        """Whether the domain validator was actually invoked.
+
+        The direct question behind the mislabels above: only when this is True may a caller say
+        the output "failed validation" / "failed its format check" / "was rejected". When it is
+        False the model produced nothing to validate, and attributing that to the model's output
+        blames it for infrastructure.
+        """
+        return self.cause in (CAUSE_OK, CAUSE_INVALID)
 
 
 def _split(out: Any) -> tuple[str, str | None]:
@@ -66,6 +113,10 @@ def make_model_tool(
     validator that returns ``ok=False`` is NOT retried (that is the caller's repair loop, e.g.
     re-spec and call again). On exhausted retries the result has ``endpoint_error`` set and
     ``ok=False``.
+
+    Three of the four outcomes carry ``ok=False`` and they are NOT interchangeable — read
+    ``result.cause`` (or ``result.validator_ran``) before attributing a failure to the model's
+    output. See ``ModelToolResult``.
 
     ``max_consecutive_invalid`` (default ``None`` = off) is a run-scoped CIRCUIT BREAKER: once the
     validator has returned ``ok=False`` that many times in a ROW, the next call SHORT-CIRCUITS —

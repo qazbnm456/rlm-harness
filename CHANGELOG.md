@@ -10,6 +10,31 @@ The next release (0.2.0) — **not yet published to PyPI**; the version number i
 target, not a release. Harness-engineering layer, plus the first round of hardening
 surfaced by dogfooding a real downstream consumer.
 
+### Added — `ModelToolResult.cause` / `.validator_ran`: `ok=False` has three causes, and now they have a name
+
+The information was always on the result — `circuit_broken`, `endpoint_error`, and their absence —
+but it had no NAME, so every consumer re-derived the distinction and several silently did not. A
+cross-repo review of three downstream projects found the same collapse in each, reaching both
+training data and user-facing text:
+
+- a per-run training label named `*_rejects`, whose docstring said "the host-side validator
+  rejected", incrementing on a 502 — the validator never ran;
+- a reviewer-facing string reading "failed its format check" rendered in a web UI for an endpoint
+  timeout, and another reading "not adoptable: patch failed validation" for a circuit break;
+- a metric pair where `rejections` counted every `ok is False` while `circuit_breaks` counted the
+  breaks separately — and since a break carries `ok=False` too, one real trace reported
+  `calls=3, breaks=7, rejections=10`.
+
+`cause` returns `"ok"` / `"invalid"` / `"endpoint"` / `"circuit_broken"`; `validator_ran` is the
+direct form of the question a caller is usually asking ("may I say this failed validation?").
+`HarnessToolResult` subclasses `ModelToolResult`, so a delegation client inherits both — and needs
+them for the same reason, since a transport failure is not a content decline.
+
+Purely additive: two properties and four constants, no field or behaviour changed. The tests drive
+each case through the REAL factory rather than constructing a result, so the mapping is pinned
+against how the outcomes are actually produced, and one of them asserts the three not-ok causes are
+mutually distinguishable — without it, the other three could pass with `cause` hardcoded.
+
 ### Added
 
 - **`bundle_artifact` / `parse_artifact_bundle` — one shared convention for a MULTI-FILE harness
