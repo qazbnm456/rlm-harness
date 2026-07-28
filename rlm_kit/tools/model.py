@@ -19,6 +19,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+# What produced this result: `ok=False` has THREE distinct causes and they are not
+# interchangeable — see `ModelToolResult.cause`. RE-EXPORTED from `rlm_kit.trace`, which owns them,
+# because a live result and a RECORDED payload must answer this question with the same four words;
+# two vocabularies for one distinction is how it gets collapsed again at the trace boundary
+# (`trace.payload_cause` is the read side).
+from ..trace import CAUSE_CIRCUIT_BROKEN, CAUSE_ENDPOINT, CAUSE_INVALID, CAUSE_OK
+
 # A chat function maps a spec to the model's output. It may return:
 #   - a plain string (the answer), or
 #   - a ``(content, reasoning)`` tuple, or
@@ -29,14 +36,6 @@ ChatFn = Callable[[str], Any]
 # ``.errors`` (list[str]). Whatever it returns is passed through verbatim as ``.validated``
 # so the caller can read its domain-specific fields (e.g. a parsed id, cleaned output).
 Validate = Callable[[str], Any]
-
-
-#: What produced this result. `ok=False` has THREE distinct causes and they are not
-#: interchangeable — see `ModelToolResult.cause`.
-CAUSE_OK = "ok"                          # the validator ran and accepted
-CAUSE_INVALID = "invalid"                # the validator ran and rejected
-CAUSE_ENDPOINT = "endpoint"              # the model call failed after retries; the validator never ran
-CAUSE_CIRCUIT_BROKEN = "circuit_broken"  # short-circuited; no model call, no validator
 
 
 @dataclass
