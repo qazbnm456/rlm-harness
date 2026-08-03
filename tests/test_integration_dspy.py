@@ -6,6 +6,8 @@ and the installed dspy. It does not call forward() (that needs a paid LLM and a
 Deno sandbox), so it stays free and offline. Skipped if dspy is absent.
 """
 
+import threading
+
 import pytest
 
 dspy = pytest.importorskip("dspy")
@@ -13,7 +15,7 @@ dspy = pytest.importorskip("dspy")
 from pydantic import BaseModel
 
 import rlm_kit.runtime as rt
-from rlm_kit import RLMConfig, RLMTask
+from rlm_kit import RLMConfig, RLMTask, SandboxCancelled
 from rlm_kit.tools import make_schema_validator
 
 
@@ -205,6 +207,55 @@ def test_arun_records_result_on_success(tmp_path):
     ev = load_events(path)
     assert any(e["type"] == EVENT_MAIN_STEP for e in ev)
     assert any(e["type"] == EVENT_RESULT for e in ev)       # success → result recorded as before
+
+
+def test_cancel_event_reaches_the_built_interpreter_end_to_end():
+    """Not just unit-tested in isolation on sandbox.py — confirms RLMTask(cancel_event=...)
+    actually threads through `_build_rlm()` -> `build_interpreter(...)` and lands on the
+    real, constructed interpreter instance's `_cancel_event` attribute."""
+    _configure_with_dummy(interpreter="pyodide")
+
+    class T(RLMTask):
+        signature = "q: str -> answer: _Out"
+        output_field = "answer"
+        output_model = _Out
+
+    ev = threading.Event()
+    task = T(cancel_event=ev)
+    rlm = task._build_rlm()
+    assert rlm._interpreter._cancel_event is ev
+
+
+async def test_sandbox_cancelled_survives_the_real_retry_engine_end_to_end():
+    """The integration-level counterpart to `test_retry.py`'s unit-level `non_retryable`
+    test: drives the REAL `run_with_retry` + the REAL outer `except Exception:` block in
+    `RLMTask.arun()`, with `max_retries=3` and an injected fake RLM that raises
+    `SandboxCancelled` on its first call. Confirms the run ends after exactly ONE attempt
+    with the ORIGINAL `SandboxCancelled` object escaping `arun()` — never retried, never
+    wrapped in `RLMTaskError` — closing the gap between "the fix works in isolation" and
+    "the fix works through the real call chain a consumer actually uses."""
+    _configure_with_dummy()
+    calls = {"n": 0}
+    original = SandboxCancelled("cancelled by the caller")
+
+    class T(RLMTask):
+        signature = "q: str -> answer: _Out"
+        output_field = "answer"
+        output_model = _Out
+
+    task = T(max_retries=3)
+
+    class _FakeRLM:
+        async def aforward(self, **kw):
+            calls["n"] += 1
+            raise original
+
+    task._build_rlm = lambda: _FakeRLM()
+
+    with pytest.raises(SandboxCancelled) as ei:
+        await task.arun(q="hi")
+    assert ei.value is original
+    assert calls["n"] == 1
 
 
 def test_build_adapter_json_and_default():

@@ -40,6 +40,28 @@ One companion rule ships under `.claude/rules/`:
   — NOT a guard hole and NOT a weakening of the `local` refusal, but the exact analogue of an injected
   `sub_lm`/`main_lm` `DummyLM` bypassing the real model (the caller supplies and owns the double). The
   default (string → `build_interpreter`) keeps the guard; don't route the string path around it.
+- **The `pyodide`/`deno` interpreter has a watchdog with TWO outcomes, and they must never be
+  conflated.** `sandbox.py`'s `_build_sandboxed_interpreter`'s guarded `execute()` kills a wedged
+  sandbox turn from a separate thread (mirroring `container_interpreter.py`'s own
+  timer-armed-before-blocking-read idiom for the `container` kind) on either of two independent
+  triggers: `RLMConfig.sandbox_turn_timeout_s` (a per-turn safety-net deadline, `None`/disabled by
+  default — NOT matching `ContainerConfig.timeout_s`'s own `120.0` default, because this budget has
+  no hook to exclude host-side tool/sub-LM dispatch time and would misfire more often as a result)
+  or an externally-set `RLMTask(cancel_event=...)`. **A timeout raises `CodeInterpreterError`
+  (RECOVERABLE — dspy's `_execute_code` catches it, the model retries next turn); a cancel raises
+  `SandboxCancelled` (NOT recoverable — deliberately NOT a `CodeInterpreterError` subclass, so it
+  propagates as a genuine run-ending failure).** Never make `SandboxCancelled` a
+  `CodeInterpreterError` subclass, and never let a caller-driven cancel degrade into a
+  retried/recoverable outcome. This distinction is only real end-to-end because
+  `_retry.py`'s `run_with_retry` has a `non_retryable` allowlist and `RLMTask.arun()` passes
+  `non_retryable=(SandboxCancelled,)` — without that wiring, `run_with_retry`'s own blanket
+  `except Exception` would retry a cancel (transparently respawning the sandbox and restarting the
+  whole trajectory from scratch) or wrap it in `RLMTaskError`, defeating the entire mechanism. Both
+  knobs are `None`/unset by default and must stay a true no-op then: `execute()`'s FIRST check
+  (`if self._turn_timeout_s is None and self._cancel_event is None:`) must keep calling
+  `super().execute(...)` directly with no watcher thread ever created — this guard was accidentally
+  dropped once during this feature's own design revision and only caught by a second adversarial
+  review pass; keep it isolated and commented so it cannot be dropped silently again.
 - **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`,
   `tools/`, `trace.py`, `skills.py`, `replay.py`, `dataset.py`, `serving.py`, `harness_serve.py`
   must NOT import `dspy` at module top — that keeps their logic testable without dspy. Only

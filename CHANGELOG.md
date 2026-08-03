@@ -104,7 +104,39 @@ mutually distinguishable — without it, the other three could pass with `cause`
   retries then degrades, while an empty artifact is exit 0 and buys the caller a full run over
   nothing); and give the operator an ABSOLUTE `workdir_base`, because the default is relative and a
   child inherits the PARENT's CWD, materialising its run folders inside the caller's project.
-
+- **A per-turn sandbox execution budget + a real cancellation seam for the `pyodide`/`deno`
+  interpreter — the reusable gap behind a genuine downstream bug.** While a downstream consumer
+  (`ctx-distillery`) was designing a live "Cancel" control for an in-flight run, it traced why the
+  obvious `asyncio.Task.cancel()` pattern (already shipped, unexercised against this exact case, in
+  a sibling consumer's own studio) does not actually work here: `dspy.RLM`'s sandbox call blocks on a
+  plain subprocess pipe read with NO timeout anywhere in dspy's own code, and that call has no
+  `await` inside it — the event loop never gets a chance to run cancellation machinery, so a wedged
+  Deno subprocess or a spinning model-written REPL cell hangs the run with literally no recourse.
+  This kit already solved the identical problem for a DIFFERENT interpreter kind
+  (`container_interpreter.py`'s own timer-armed-before-blocking-read, kill-to-unblock watchdog for
+  `container`); this change ports that exact idiom to `pyodide`/`deno`, which had no equivalent
+  guard. Two independent knobs, one mechanism: `RLMConfig.sandbox_turn_timeout_s`
+  (`RLM_SANDBOX_TURN_TIMEOUT`, a per-`execute()` safety-net deadline, `None`/disabled by
+  default — deliberately NOT matching `ContainerConfig.timeout_s`'s own `120.0`, since this budget
+  cannot exclude host-side tool/sub-LM dispatch time and would misfire more often as a result) and
+  `RLMTask(cancel_event=a_threading.Event)` (an externally-set cancel for a caller with a "Cancel"
+  UI). A fired timeout raises dspy's own recoverable `CodeInterpreterError` (the model retries next
+  turn against a freshly-respawned sandbox); a fired cancel raises the new `SandboxCancelled`
+  (exported from `rlm_kit`) — deliberately NOT a `CodeInterpreterError` subclass, so it is a genuine,
+  non-recoverable run-ending failure. `_retry.py`'s `run_with_retry` gained a generic `non_retryable`
+  allowlist parameter (dspy-free, matching its own existing design), and `RLMTask.arun()` passes
+  `SandboxCancelled` through it — without that wiring, the retry engine's own blanket
+  `except Exception` would have silently retried an explicit cancel, transparently respawning the
+  sandbox and restarting the whole trajectory from scratch. Both knobs are `None`/unset by default
+  and cost nothing when unset: no watcher thread is ever created, and every existing caller (all four
+  of this kit's real downstream consumers today) is byte-identical to before this existed. Went
+  through three rounds of adversarial design review before implementation — round 1 found the
+  retry-engine interaction and a watchdog design that didn't survive dspy's own internal
+  respawn-and-retry recovery; round 2 found the fix for the latter still didn't check the fired
+  reason on a clean return, plus an accidentally-unconditional watcher thread; round 3 found one
+  remaining exception type (`SyntaxError`) that could still race past the guard. See `CLAUDE.md`'s
+  new sandbox-watchdog invariant and `rlm_kit/README.md`'s "Sandbox turn timeout + cancellation"
+  section for the full mechanism.
 - **`rlm_kit.rubric` — reward-free rubric primitives (consumer-driven promotion).** The pydantic types
   `Criterion` / `RubricCriteria` / `CriterionFact`, plus `rubric_to_meta` / `rubric_from_meta` /
   `validate_rubric` and a pure `criteria_facts(criteria, facts, lens)` assembly loop, lifted from the
