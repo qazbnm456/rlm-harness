@@ -69,6 +69,20 @@ def _env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+def _env_optional_float(name: str) -> float | None:
+    """Like ``_env_float``, but for a knob whose "unset" state is genuinely ``None``
+    rather than a fallback numeric default (unset/blank -> ``None``; malformed -> lets
+    ``float(raw)`` raise, exactly as ``_env_float``/``_env_int`` already do for a
+    malformed value — no new failure mode). Neither existing "optional env var" shape
+    in this module transfers cleanly: ``max_tokens`` is hand-rolled with a non-``None``
+    default, and ``ContainerConfig.cpus`` is the only other ``Optional``-typed
+    env-sourced field, but it is a string, not a number."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return None
+    return float(raw)
+
+
 @dataclass(frozen=True)
 class ContainerConfig:
     """Options for the ``container`` interpreter (see ``container_interpreter.py``).
@@ -156,6 +170,18 @@ class RLMConfig:
     # but prefer slicing/summarising in REPL code — retained chars cost prompt tokens every turn.
     max_output_chars: int = 10_000
 
+    # A per-`execute()` SANDBOX-COMPUTE safety-net timeout for the pyodide/deno interpreter,
+    # mirroring ContainerConfig.timeout_s's own precedent for the container interpreter — but
+    # `None` (disabled) by default, deliberately NOT matching that precedent's `120.0`. Two
+    # independent reasons: (1) this kit has real, already-shipped downstream consumers whose
+    # existing long-running-but-legitimate turns must not start failing the moment this exists;
+    # (2) unlike ContainerConfig.timeout_s, this budget has no hook to exclude host-side
+    # tool/sub-LM dispatch time (dspy's PythonInterpreter.execute() is opaque here), so it is
+    # measurably MORE likely to misfire on a legitimate multi-tool-call turn than the container
+    # analogy implies — a "generous" always-on default would be the WRONG default, not merely an
+    # unnecessary one. See `sandbox.py`'s `_build_sandboxed_interpreter` for the mechanism.
+    sandbox_turn_timeout_s: float | None = None
+
     # Retry policy in _retry.py: how many times to run the WHOLE task (a full RLM trajectory) until
     # its output coerces into output_model. Default 1 = no retry, because a retry re-runs the entire
     # RLM from scratch — silently MULTIPLYING the max_iterations budget (3 retries ⇒ up to 3×
@@ -219,6 +245,10 @@ class RLMConfig:
         - ``RLM_MAX_LLM_CALLS`` (default ``30``).
         - ``RLM_MAX_OUTPUT_CHARS`` (default ``10000``) — head+tail character cap on REPL
           output fed back to the planner (distinct from ``RLM_MAX_TOKENS``).
+        - ``RLM_SANDBOX_TURN_TIMEOUT`` (default: unset, i.e. disabled) — a per-``execute()``
+          sandbox-compute safety-net timeout in seconds for the pyodide/deno interpreter. See
+          ``RLMConfig.sandbox_turn_timeout_s`` for why this defaults to disabled rather than a
+          generous always-on value.
         - ``RLM_MAX_RETRIES`` (default ``1``).
         - ``RLM_OBSERVE`` (default ``false``).
         """
@@ -246,6 +276,7 @@ class RLMConfig:
             max_iterations=_env_int("RLM_MAX_ITERATIONS", 10),
             max_llm_calls=_env_int("RLM_MAX_LLM_CALLS", 30),
             max_output_chars=_env_int("RLM_MAX_OUTPUT_CHARS", 10_000),
+            sandbox_turn_timeout_s=_env_optional_float("RLM_SANDBOX_TURN_TIMEOUT"),
             max_retries=_env_int("RLM_MAX_RETRIES", 1),
             observe=_env_bool("RLM_OBSERVE", False),
         )
