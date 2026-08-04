@@ -8,6 +8,7 @@ skipped if dspy is absent (the interpreter returns dspy's `FinalOutput` / raises
 """
 
 import shutil
+import subprocess
 
 import pytest
 
@@ -263,10 +264,29 @@ def test_spawn_docker_rejects_relative_workdir(monkeypatch, tmp_path):
         ci._spawn_docker("AGENT", ContainerConfig(workdir="reldir"))
 
 
-# ---- real Docker isolation (gated: skips where the docker CLI is absent) ----
+# ---- real Docker isolation (gated on a REACHABLE daemon, not just the CLI) ----
 
-@pytest.mark.skipif(shutil.which("docker") is None, reason="docker CLI not available")
+def _docker_daemon_available() -> bool:
+    """`shutil.which("docker")` is the wrong gate: Docker Desktop leaves the CLI on PATH when the
+    engine is stopped, so a which-only check lets this test run against a dead daemon and fail as
+    though the interpreter were broken. Probe the daemon itself, with a timeout so a hung engine
+    cannot stall the run. Called from inside the test, not at collection time, so the probe costs
+    nothing for the runs that never select it."""
+    if shutil.which("docker") is None:
+        return False
+    try:
+        return subprocess.run(["docker", "info"], check=False,
+                              capture_output=True, timeout=15).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def test_container_isolation_real_docker():
+    # NOT weakened for CI: the GitHub runner has a live daemon, so this still executes there. The gate
+    # only spares a local checkout whose engine happens to be stopped.
+    if not _docker_daemon_available():
+        pytest.skip("docker daemon not reachable")
+
     import os
 
     os.environ["RLM_TEST_SECRET_XYZ"] = "leaked-if-visible"
