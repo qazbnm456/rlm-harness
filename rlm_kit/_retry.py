@@ -72,6 +72,7 @@ async def run_with_retry(
     output_model: type[BaseModel] | None = None,
     max_retries: int = 3,
     logger: logging.Logger | None = None,
+    non_retryable: tuple[type[BaseException], ...] = (),
 ) -> Any:
     """Run ``runner`` until it yields a valid output or the budget is exhausted.
 
@@ -79,6 +80,16 @@ async def run_with_retry(
     (if ``output_model`` is set) validate/coerce it. Any exception — a model
     error, a missing field, a validation failure — consumes one attempt. After
     ``max_retries`` attempts the last error is wrapped in :class:`RLMTaskError`.
+
+    ``non_retryable`` is a closed allowlist of exception types a caller has
+    already decided are not worth retrying — e.g. an explicit user-driven
+    cancellation. A match propagates the ORIGINAL exception object verbatim,
+    consuming NO attempt and never wrapped in :class:`RLMTaskError`: retrying an
+    exception the caller raised on purpose to STOP the run would silently defeat
+    the reason it exists (a cancelled sandbox turn respawning the whole
+    trajectory from scratch), and wrapping it would make the caller's own
+    ``except SandboxCancelled:`` (or whatever type they passed) unable to see it.
+    The default ``()`` matches nothing, so every existing caller is unaffected.
     """
     log = logger or _DEFAULT_LOG
     if max_retries < 1:
@@ -94,6 +105,8 @@ async def run_with_retry(
                 )
             raw = getattr(prediction, output_field)
             return coerce_output(raw, output_model)
+        except non_retryable:
+            raise
         except Exception as exc:
             last_error = exc
             log.warning(

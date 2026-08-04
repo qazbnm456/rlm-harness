@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import threading
 from collections.abc import Callable, Sequence
 from typing import Any, ClassVar
 
@@ -29,7 +30,7 @@ from pydantic import BaseModel
 from ._retry import run_with_retry
 from .config import RLMConfig
 from .runtime import get_config, get_sub_lm
-from .sandbox import build_interpreter
+from .sandbox import SandboxCancelled, build_interpreter
 from .sub_lm import bind_recorder_to_sub_lm
 from .trace import current_recorder
 
@@ -110,6 +111,7 @@ class RLMTask:
         sub_lm: dspy.LM | None = None,
         max_retries: int | None = None,
         interpreter: Any | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         if not self.signature:
             raise ValueError(f"{type(self).__name__} must define `signature`")
@@ -128,6 +130,13 @@ class RLMTask:
         # bypasses the real model: the caller supplies and owns the double. The default (None) keeps the
         # string path and the guard.
         self._interpreter = interpreter
+        # An "advanced seam" kwarg exactly like `interpreter=` above, placed on __init__ rather than
+        # `arun()` for the same reason: every real consumer already constructs a fresh RLMTask
+        # instance per run, so per-instance placement loses nothing versus per-call. Threaded into
+        # `build_interpreter(...)` in `_build_rlm()`; has NO effect when `interpreter=` (above)
+        # bypasses `build_interpreter` entirely — a caller supplying their own interpreter object
+        # owns its cancellation behavior too, exactly like `ScriptedInterpreter` owns its own.
+        self._cancel_event = cancel_event
 
     def _build_rlm(self) -> dspy.RLM:
         # Resolve a custom output type (e.g. "-> finding: Finding") explicitly via
@@ -152,6 +161,8 @@ class RLMTask:
             self._config.interpreter,
             allow_insecure=self._config.allow_insecure_sandbox,
             container=self._config.container,
+            turn_timeout_s=self._config.sandbox_turn_timeout_s,
+            cancel_event=self._cancel_event,
         )
         # We now construct the deno/pyodide interpreter ourselves (to inject the
         # JSON-literal aliases), so its teardown is ours: dspy.RLM only shuts down
@@ -216,6 +227,10 @@ class RLMTask:
                     output_model=self.output_model,
                     max_retries=self._max_retries,
                     logger=logger,
+                    # A SandboxCancelled means a caller explicitly asked for this run to
+                    # STOP — retrying would transparently respawn the sandbox and restart
+                    # the whole trajectory from scratch, silently absorbing the cancel.
+                    non_retryable=(SandboxCancelled,),
                 )
             except Exception:
                 # The run FAILED (e.g. the result never coerced into output_model after the retry

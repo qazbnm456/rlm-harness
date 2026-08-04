@@ -18,6 +18,7 @@ ENV_VARS = [
     "RLM_MAX_ITERATIONS",
     "RLM_MAX_LLM_CALLS",
     "RLM_MAX_OUTPUT_CHARS",
+    "RLM_SANDBOX_TURN_TIMEOUT",
     "RLM_MAX_RETRIES",
     "RLM_OBSERVE",
 ]
@@ -112,6 +113,26 @@ def test_max_output_chars_from_env(monkeypatch):
     assert RLMConfig.from_env().max_output_chars == 10_000   # unset → dspy's default
     monkeypatch.setenv("RLM_MAX_OUTPUT_CHARS", "50000")
     assert RLMConfig.from_env().max_output_chars == 50_000   # explicit override
+
+
+def test_sandbox_turn_timeout_defaults_to_none_disabled():
+    assert RLMConfig.from_env().sandbox_turn_timeout_s is None
+
+
+def test_sandbox_turn_timeout_blank_is_also_none(monkeypatch):
+    monkeypatch.setenv("RLM_SANDBOX_TURN_TIMEOUT", "   ")
+    assert RLMConfig.from_env().sandbox_turn_timeout_s is None
+
+
+def test_sandbox_turn_timeout_from_env(monkeypatch):
+    monkeypatch.setenv("RLM_SANDBOX_TURN_TIMEOUT", "45.5")
+    assert RLMConfig.from_env().sandbox_turn_timeout_s == 45.5
+
+
+def test_sandbox_turn_timeout_malformed_value_raises(monkeypatch):
+    monkeypatch.setenv("RLM_SANDBOX_TURN_TIMEOUT", "not-a-number")
+    with pytest.raises(ValueError):
+        RLMConfig.from_env()
 
 
 def test_unknown_adapter_rejected():
