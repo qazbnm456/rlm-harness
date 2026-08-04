@@ -331,6 +331,50 @@ export RLM_INTERPRETER=container         # default stays pyodide; this is opt-in
 - **Needs the `docker` CLI** (checked at start; `import rlm_kit` stays docker-free). The `WORKDIR`
   mount resolves on the *daemon's* filesystem, so it won't work with a remote `DOCKER_HOST`.
 
+## Sandbox turn timeout + cancellation (`pyodide`/`deno`)
+
+The default `pyodide`/`deno` interpreter blocks on a plain subprocess pipe read with **no timeout
+anywhere in dspy's own code** — a wedged Deno subprocess, or a model-written REPL cell that spins
+forever, hangs the run with no recourse short of killing the whole process. `asyncio.Task.cancel()`
+cannot help: the blocking call has no `await` inside it, so the event loop never gets a chance to
+run cancellation machinery. rlm-kit closes this with the SAME timer-armed-before-blocking-read,
+kill-to-unblock idiom the container interpreter already uses for its own `TIMEOUT` (above), ported
+to `pyodide`/`deno`:
+
+- **`RLM_SANDBOX_TURN_TIMEOUT`** (seconds; `RLMConfig.sandbox_turn_timeout_s`) — a per-`execute()`
+  safety-net deadline. **Unset by default** (deliberately NOT matching the container interpreter's
+  own `120.0`-default precedent: this budget has no hook to exclude host-side tool/sub-LM dispatch
+  time, so a generous always-on value would misfire on legitimate multi-tool-call turns more often
+  than the container analogy implies). Firing raises dspy's own RECOVERABLE
+  `CodeInterpreterError` — the model sees an `"[Error] ..."` string and gets to retry next turn
+  against a freshly-respawned sandbox.
+- **`cancel_event`** (`RLMTask(cancel_event=a_threading.Event)`) — for a caller that wants to stop
+  an in-flight run NOW (e.g. a "Cancel" button in a UI driving `arun()` from a worker thread). Set
+  the event from another thread; the current sandbox turn is killed and `SandboxCancelled` (exported
+  from `rlm_kit`) propagates all the way up through `arun()` as a genuine, NON-recoverable run-ending
+  failure — never retried (see `run_with_retry`'s `non_retryable` below), never caught by dspy's own
+  `except (CodeInterpreterError, SyntaxError)`.
+
+```python
+import threading
+from rlm_kit import RLMTask, SandboxCancelled
+
+cancel = threading.Event()
+task = MyTask(cancel_event=cancel)
+# from another thread: cancel.set()
+try:
+    result = await task.arun(q="…")
+except SandboxCancelled:
+    ...  # the run was stopped on purpose; not a failure to log as one
+```
+
+Both knobs are `None` by default and cost nothing when unset: no watcher thread is ever created, and
+`execute()` is byte-identical to before either knob existed. `run_with_retry`'s `non_retryable`
+parameter (a closed allowlist of exception types that propagate verbatim, consuming no attempt and
+never wrapped in `RLMTaskError`) is what makes `SandboxCancelled` survive `RLMTask.arun()`'s own
+retry engine untouched — a caller-driven cancellation must never be silently absorbed by a retry
+that respawns the sandbox and restarts the whole trajectory from scratch.
+
 ## Grounded completeness — the sufficiency-critic recipe
 
 A convention, not an API. When the RLM generates an artifact that must MATCH a retrieved
@@ -616,4 +660,6 @@ runs the actual tool (its tracing records a genuine `tool_call`); a `dict`/`subm
 The `interpreter=` kwarg is an injection seam (like `sub_lm=`): an explicit interpreter OBJECT overrides
 `config.interpreter` and — like an injected `DummyLM` — bypasses `build_interpreter` and its guard, so it
 is a test/advanced seam; the default string path keeps the guard. `rlm_kit.testing` imports dspy lazily,
-so it doesn't affect `import rlm_kit`.
+so it doesn't affect `import rlm_kit`. `cancel_event=` (above) has NO effect when `interpreter=` is also
+given — a caller supplying their own interpreter object owns its cancellation behavior too, exactly like
+`ScriptedInterpreter` owns its own.

@@ -32,7 +32,7 @@ from .rubric import (
     rubric_to_meta,
     validate_rubric,
 )
-from .sandbox import SandboxSecurityError
+from .sandbox import SandboxCancelled, SandboxSecurityError
 from .serving import HarnessPointer, bundle_artifact, parse_artifact_bundle, serve_harness
 from .skills import discover_skills, load_skills_as_tools, render_skills_manifest
 from .sub_lm import SubLMValidationError, intercept_sub_lm, model_as_tool
@@ -57,6 +57,7 @@ __all__ = [
     "RLMConfig",
     "RLMTaskError",
     "SandboxSecurityError",
+    "SandboxCancelled",
     "configure",
     "get_config",
     "RLMTask",

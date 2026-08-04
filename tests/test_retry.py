@@ -100,6 +100,65 @@ async def test_no_model_returns_raw_field():
     assert out == "plain text"
 
 
+# ---- non_retryable: a caller-chosen exception propagates verbatim, no retry --------------
+
+
+class _Cancelled(RuntimeError):
+    """Stand-in for `sandbox.SandboxCancelled` — `_retry.py` stays dspy/sandbox-free."""
+
+
+async def test_non_retryable_exception_is_never_retried_and_never_wrapped():
+    calls = {"n": 0}
+    original = _Cancelled("stop now")
+
+    async def runner():
+        calls["n"] += 1
+        raise original
+
+    with pytest.raises(_Cancelled) as ei:
+        await run_with_retry(
+            runner,
+            output_field="finding",
+            output_model=Finding,
+            max_retries=3,
+            non_retryable=(_Cancelled,),
+        )
+    assert ei.value is original  # the ORIGINAL object, never wrapped in RLMTaskError
+    assert calls["n"] == 1  # no retry attempt happened
+
+
+async def test_an_exception_outside_non_retryable_is_retried_as_before():
+    calls = {"n": 0}
+
+    async def runner():
+        calls["n"] += 1
+        raise RuntimeError("transient")
+
+    with pytest.raises(RLMTaskError):
+        await run_with_retry(
+            runner,
+            output_field="finding",
+            output_model=Finding,
+            max_retries=3,
+            non_retryable=(_Cancelled,),
+        )
+    assert calls["n"] == 3  # today's behavior for anything NOT in the allowlist: unchanged
+
+
+async def test_default_non_retryable_matches_nothing():
+    calls = {"n": 0}
+
+    async def runner():
+        calls["n"] += 1
+        raise _Cancelled("would-be-cancelled, but no allowlist was passed")
+
+    with pytest.raises(RLMTaskError):
+        await run_with_retry(
+            runner, output_field="finding", output_model=Finding, max_retries=2
+        )
+    assert calls["n"] == 2  # the default () matches nothing — retried like any other exception
+
+
 # ---- _short_error: bound the logged exception -----------------------------
 
 def test_short_error_leaves_a_small_message_intact():
