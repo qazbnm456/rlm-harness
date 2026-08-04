@@ -1,5 +1,5 @@
 [project]
-name = "rlm-kit"
+name = "rlm-harness"
 version = "1.0.0"
 description = "A clean, reusable harness for building tasks on DSPy Recursive Language Models (RLMs)."
 readme = "README.md"
@@ -55,10 +55,10 @@ subscription = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/qazbnm456/rlm-kit"
-Repository = "https://github.com/qazbnm456/rlm-kit"
-Changelog = "https://github.com/qazbnm456/rlm-kit/blob/main/CHANGELOG.md"
-Issues = "https://github.com/qazbnm456/rlm-kit/issues"
+Homepage = "https://github.com/qazbnm456/rlm-harness"
+Repository = "https://github.com/qazbnm456/rlm-harness"
+Changelog = "https://github.com/qazbnm456/rlm-harness/blob/main/CHANGELOG.md"
+Issues = "https://github.com/qazbnm456/rlm-harness/issues"
 
 [dependency-groups]
 dev = [
@@ -76,7 +76,7 @@ requires = ["hatchling>=1.27"]  # >=1.27 for PEP 639 SPDX license expressions
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["rlm_kit"]
+packages = ["rlm_harness"]
 
 [tool.ruff]
 line-length = 110
@@ -111,7 +111,7 @@ ignore = [
 # constrained to the stdlib. `exec` is the product, the fd-capture temp file deliberately outlives
 # a `with` block because fds 1/2 are dup2'd around it, and `%`-formatting keeps the file free of
 # anything that could differ across the interpreter versions it may land on.
-"rlm_kit/_sandbox_agent.py" = ["S102", "SIM115", "UP031"]
+"rlm_harness/_sandbox_agent.py" = ["S102", "SIM115", "UP031"]
 # Test idiom: `[x for x in xs if p(x)][0]` states "the one matching event" far more clearly than
 # `next(iter(...))`, `pytest.raises(Exception)` is sometimes exactly the assertion, and a mutable
 # class attribute on a throwaway fixture needs no `ClassVar` ceremony.

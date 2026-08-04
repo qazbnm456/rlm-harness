@@ -23,7 +23,7 @@ rather than being backported to an earlier line.
 
 ## Scope notes
 
-`rlm-kit` executes model-written code, so the interpreter choice is the security
+`rlm-harness` executes model-written code, so the interpreter choice is the security
 boundary:
 
 - The **default** interpreter is sandboxed (`pyodide`/`deno`). Sandbox-escape or

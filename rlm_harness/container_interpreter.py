@@ -8,7 +8,7 @@ persistent filesystem/process state. It is the container analog of dspy's
 -i`` stdio pipe) replaces the Deno bridge. See ``_sandbox_agent.py`` for the in-container half.
 
 This module is dspy-bearing (it needs ``FinalOutput``); ``sandbox.build_interpreter`` imports it
-LAZILY in the ``"container"`` branch, so ``import rlm_kit`` stays dspy-free (and docker-free — the
+LAZILY in the ``"container"`` branch, so ``import rlm_harness`` stays dspy-free (and docker-free — the
 ``docker`` CLI is an external binary checked at ``start()``, not a Python dependency).
 
 Security: the runner's isolation IS the boundary, and it is a STRONGER one than Deno for the
@@ -140,7 +140,7 @@ def _spawn_docker(agent_src: str, config: ContainerConfig) -> _Sandbox:
             raise CodeInterpreterError(
                 f"container workdir is not an existing directory: {config.workdir!r}"
             )
-    name = "rlm-kit-env-" + uuid.uuid4().hex[:10]
+    name = "rlm-harness-env-" + uuid.uuid4().hex[:10]
     argv = _docker_argv(agent_src, config, name)
     proc = subprocess.Popen(
         argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

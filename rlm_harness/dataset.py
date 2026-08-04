@@ -151,14 +151,14 @@ def run_label_bundle(
         run_label_bundle(runs, labels=run_labels, metrics=run_metrics)
         # -> {"labels": {run_id: {...}}, "metrics": {run_id: {...}}}
 
-    ``reward`` is a REFUSED surface name: rlm-kit produces trajectories, never reward — the trainer
+    ``reward`` is a REFUSED surface name: rlm-harness produces trajectories, never reward — the trainer
     composes reward from these labels (plus its own credit assignment), so a label fn must emit FACTS,
     not a score. The kit can only refuse the NAME; that a fn returns facts and not a hidden score is the
     same convention-not-enforcement trust model as ``reward=`` on the exporters.
     """
     if "reward" in label_fns:
         raise ValueError(
-            "'reward' is not a label surface — rlm-kit exports trajectories, never reward; attach "
+            "'reward' is not a label surface — rlm-harness exports trajectories, never reward; attach "
             "reward in the trainer, and emit facts (not scores) as labels here."
         )
     return {name: {rid: fn(ev) for rid, ev in runs.items()} for name, fn in label_fns.items()}

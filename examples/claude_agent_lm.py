@@ -1,12 +1,12 @@
 """Demo: run a tiny RLMTask through a real dspy.RLM on a Claude Pro/Max SUBSCRIPTION.
 
-`ClaudeAgentLM` now ships in the kit — `from rlm_kit import ClaudeAgentLM`. The adapter's
+`ClaudeAgentLM` now ships in the kit — `from rlm_harness import ClaudeAgentLM`. The adapter's
 setup, politeness policy, and trade-offs live in its module docstring
-(`rlm_kit/claude_agent_lm.py`); this file is just the runnable demo. Prereqs:
+(`rlm_harness/claude_agent_lm.py`); this file is just the runnable demo. Prereqs:
 
   1. Log in to the Claude Code CLI with your Pro/Max account (`claude` → `/login`).
   2. `unset ANTHROPIC_API_KEY` (a leftover key would bill API credit; the adapter refuses).
-  3. `uv sync --extra subscription` (or `pip install "rlm-kit[subscription]"`) + `brew install deno`.
+  3. `uv sync --extra subscription` (or `pip install "rlm-harness[subscription]"`) + `brew install deno`.
   4. `uv run --no-sync python -m examples.claude_agent_lm`
 """
 
@@ -16,7 +16,7 @@ import asyncio
 
 from pydantic import BaseModel, Field
 
-from rlm_kit import ClaudeAgentLM, RLMConfig, RLMTask, TraceRecorder, configure
+from rlm_harness import ClaudeAgentLM, RLMConfig, RLMTask, TraceRecorder, configure
 
 
 class Summary(BaseModel):

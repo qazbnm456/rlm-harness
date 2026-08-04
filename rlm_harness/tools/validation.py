@@ -38,15 +38,15 @@ def make_json_schema_validator(
     This is the GENERIC base for the "validate against an official, vendored, version-pinned
     upstream JSON schema" pattern: a consumer vendors the schema file + a refresh script (the
     provider-specific half), and layers its own bespoke checks on top; the kit owns only this
-    wiring. ``jsonschema`` is an OPTIONAL dependency (``rlm-kit[jsonschema]``) — imported lazily
-    so ``import rlm_kit`` and the dspy-free ``tools`` package stay lean.
+    wiring. ``jsonschema`` is an OPTIONAL dependency (``rlm-harness[jsonschema]``) — imported lazily
+    so ``import rlm_harness`` and the dspy-free ``tools`` package stay lean.
     """
     try:
         from jsonschema import Draft202012Validator
     except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
         raise ImportError(
             "make_json_schema_validator needs the optional 'jsonschema' dependency. "
-            "Install it with:  pip install 'rlm-kit[jsonschema]'"
+            "Install it with:  pip install 'rlm-harness[jsonschema]'"
         ) from exc
 
     if isinstance(schema, (str, os.PathLike)):

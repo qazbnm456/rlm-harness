@@ -1,4 +1,4 @@
-"""Serve an rlm-kit harness over the delegation contract — the SERVER-side mirror of
+"""Serve an rlm-harness harness over the delegation contract — the SERVER-side mirror of
 ``make_harness_tool`` (``tools/harness.py``).
 
 ``make_harness_tool`` is the CLIENT: a parent RLM wraps a downstream harness as a tool and reaches it
@@ -16,11 +16,11 @@ parent's trace. Exit code is the infra/content split the client relies on: ``0``
 artifact may be empty/invalid; the caller judges it) · ``1`` = it could not produce a pointer (a run or
 mapping failure → the caller retries).
 
-BASE/WRAP split, same as the rest of the kit: rlm-kit owns ALL the generic plumbing (read stdin, run_id,
+BASE/WRAP split, same as the rest of the kit: rlm-harness owns ALL the generic plumbing (read stdin, run_id,
 CWD isolation, the wire schema, exit codes, keeping secrets off stdout). The consuming HARNESS supplies
 the one thing the kit cannot know — how to map ITS concrete result object into a :class:`HarnessPointer`
 (``to_pointer``) — in a ~5-line ``serve`` module in its OWN repo. The kit names no harness. dspy-free
-(stdlib only), so ``import rlm_kit`` stays light and this sits in the dspy-free module set.
+(stdlib only), so ``import rlm_harness`` stays light and this sits in the dspy-free module set.
 """
 
 from __future__ import annotations
@@ -209,14 +209,14 @@ def _default_to_pointer(result: Any) -> HarnessPointer:
     """Duck-typed fallback for a harness whose ``run()`` already returns a flat, pointer-shaped object
     (``.artifact`` / ``.run_id`` / ``.trace_path``). A harness with a NESTED result (e.g. a template on
     ``.result.template.yaml``) supplies its own ``to_pointer`` instead — this is only the zero-config
-    path for the ``python -m rlm_kit.harness_serve`` entry."""
+    path for the ``python -m rlm_harness.harness_serve`` entry."""
     if isinstance(result, HarnessPointer):
         return result
     artifact = getattr(result, "artifact", None)
     if not isinstance(artifact, str):
         raise TypeError(
             "the harness result has no string `.artifact`; pass an explicit `to_pointer` that maps this "
-            "harness's result into a HarnessPointer (see rlm_kit.serve_harness)."
+            "harness's result into a HarnessPointer (see rlm_harness.serve_harness)."
         )
     return HarnessPointer(
         artifact=artifact,

@@ -1,6 +1,6 @@
 import pytest
 
-from rlm_kit.config import RLMConfig
+from rlm_harness.config import RLMConfig
 
 ENV_VARS = [
     "RLM_MAIN_MODEL",

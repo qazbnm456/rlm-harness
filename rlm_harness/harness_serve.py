@@ -1,5 +1,5 @@
-"""``python -m rlm_kit.harness_serve <pkg.module:run> [workdir_base]`` — the zero-file way to serve a
-harness over the delegation contract (the runnable front-end of :func:`rlm_kit.serve_harness`).
+"""``python -m rlm_harness.harness_serve <pkg.module:run> [workdir_base]`` — the zero-file way to serve a
+harness over the delegation contract (the runnable front-end of :func:`rlm_harness.serve_harness`).
 
 Resolves the harness's ``run`` callable from ``<module:attr>`` and, if the same module exposes a
 ``to_pointer`` (or ``TO_POINTER``), uses it; otherwise falls back to the duck-typed extractor (for a
@@ -36,7 +36,7 @@ def main(argv: list | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         raise SystemExit(
-            "usage: python -m rlm_kit.harness_serve <package.module:run> [workdir_base]\n"
+            "usage: python -m rlm_harness.harness_serve <package.module:run> [workdir_base]\n"
             "  reads the long-text spec on STDIN, runs the harness, prints one JSON pointer on STDOUT."
         )
     run, mod = _resolve(args[0])

@@ -1,19 +1,19 @@
 """Reward-free rubric primitives — the shared substrate for decomposing "did this run succeed?" into
 observable CRITERIA carried as LABELS.
 
-``category`` is an OPAQUE, caller-defined label: rlm-kit never interprets it, hardcodes no taxonomy, and
+``category`` is an OPAQUE, caller-defined label: rlm-harness never interprets it, hardcodes no taxonomy, and
 carries no domain vocabulary. A consumer defines its own category set, criterion descriptions, and the
 ``lens`` mapping each category to the trace facts it surfaces; this module owns only the generic types, the
 run_start-meta (de)serialization, a structural lint, and the pure per-criterion fact-assembly loop.
 
 Scoring — turning facts into a per-criterion or aggregate value — is the downstream TRAINER's job, never
-here: this keeps the rubric inside rlm-kit's "trajectories, never reward" invariant (emit the criteria +
+here: this keeps the rubric inside rlm-harness's "trajectories, never reward" invariant (emit the criteria +
 per-criterion FACTS as data; scoring stays downstream). Pure pydantic + stdlib; dspy-free, so
-``import rlm_kit`` stays cheap and this module is testable in isolation.
+``import rlm_harness`` stays cheap and this module is testable in isolation.
 
 A consumer wraps these — supplying its own category set + criterion skeleton, its own ``trace -> facts``
 function, and its own ``category -> keys`` lens — and re-exports the types so its own call sites are
-unchanged. rlm-kit stays taxonomy-agnostic; the meaning of a category lives entirely in the consumer.
+unchanged. rlm-harness stays taxonomy-agnostic; the meaning of a category lives entirely in the consumer.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ class Criterion(BaseModel):
     name: str = Field(..., description="short unique criterion id")
     description: str = Field(..., description="what the trajectory must satisfy, observable from the trace")
     weight: float = Field(1.0, description="relative weight WITHIN its category (the trainer aggregates)")
-    category: str = Field(..., description="caller-defined category label — OPAQUE to rlm-kit")
+    category: str = Field(..., description="caller-defined category label — OPAQUE to rlm-harness")
 
 
 class RubricCriteria(BaseModel):
@@ -61,7 +61,7 @@ def rubric_from_meta(events: list[dict], *, categories: tuple[str, ...] | None =
     Tolerant: a non-dict or malformed entry is skipped rather than crashing the read path (legacy traces
     that stored extra keys still coerce — pydantic ignores unknown keys). If ``categories`` is given (the
     caller's allowed label set), entries whose ``category`` is not in it are dropped; if None, any truthy
-    category is accepted — rlm-kit imposes no taxonomy."""
+    category is accepted — rlm-harness imposes no taxonomy."""
     for e in events:
         if e.get("type") == EVENT_RUN_START:
             raw = ((e.get("payload") or {}).get("meta") or {}).get("rubric")

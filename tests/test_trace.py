@@ -2,7 +2,7 @@ import json
 import threading
 import types
 
-from rlm_kit.trace import (
+from rlm_harness.trace import (
     CAUSE_CIRCUIT_BROKEN,
     CAUSE_ENDPOINT,
     CAUSE_INVALID,
@@ -45,7 +45,7 @@ def test_recorder_writes_jsonl_with_monotonic_steps(tmp_path):
     assert types_seen == [EVENT_RUN_START, "sub_call", "tool_call", EVENT_RUN_END]
     assert [e["step_id"] for e in events] == [0, 1, 2, 3]
     assert all(e["run_id"] == "r1" for e in events)
-    assert all(e["schema"] == "rlm-kit/trace/v1" for e in events)
+    assert all(e["schema"] == "rlm-harness/trace/v1" for e in events)
 
 
 def test_on_event_observer_fires_live_for_every_event(tmp_path):
@@ -273,7 +273,7 @@ def test_recorder_scope_reestablishes_recorder_in_a_worker_thread(tmp_path):
     # recorder_scope re-establishes it so a record() from the worker lands in the trace.
     from concurrent.futures import ThreadPoolExecutor
 
-    from rlm_kit.trace import current_recorder, recorder_scope
+    from rlm_harness.trace import current_recorder, recorder_scope
 
     path = str(tmp_path / "trace.jsonl")
     saw_none = {}
@@ -353,7 +353,7 @@ def test_an_endpoint_error_that_STRINGIFIED_TO_NOTHING_is_still_an_endpoint_fail
 def test_payload_cause_agrees_with_ModelToolResult_cause_on_every_shape():
     """The two must not be able to drift: one is documented as the other's read-side mirror, and the
     divergence above existed precisely because nothing compared them."""
-    from rlm_kit.tools import ModelToolResult
+    from rlm_harness.tools import ModelToolResult
 
     for kwargs in (
         {"ok": True, "raw": "x"},
@@ -401,8 +401,8 @@ def test_a_non_model_tool_reads_as_ok_or_invalid_which_is_what_ok_already_said()
 def test_the_live_result_and_the_recorded_payload_agree():
     """One vocabulary, checked rather than asserted in prose — the constants really are the same
     objects, and the two derivations really do return the same word for the same outcome."""
-    from rlm_kit.tools.model import CAUSE_ENDPOINT as LIVE_ENDPOINT
-    from rlm_kit.tools.model import ModelToolResult
+    from rlm_harness.tools.model import CAUSE_ENDPOINT as LIVE_ENDPOINT
+    from rlm_harness.tools.model import ModelToolResult
 
     assert LIVE_ENDPOINT is CAUSE_ENDPOINT
     for result, payload in (
@@ -418,7 +418,7 @@ def test_export_actions_carries_the_cause_and_the_endpoint_string(tmp_path):
     """The record that reaches a TRAINER. The endpoint string rode nowhere at all before this: it
     is recorded under `error`, and `_action_record` carried only ok/output/errors — so a downstream
     reader could not reconstruct the split even by hand."""
-    from rlm_kit.dataset import export_actions
+    from rlm_harness.dataset import export_actions
 
     path = tmp_path / "t.jsonl"
     with TraceRecorder(str(path), run_id="r"):
@@ -437,7 +437,7 @@ def test_export_actions_carries_the_cause_and_the_endpoint_string(tmp_path):
 def test_an_explicitly_recorded_cause_wins_over_the_derivation(tmp_path):
     """The write side is allowed to be authoritative — it is the code that knows. Only the fallback
     is a derivation, so a tool whose outcome the three keys cannot express can still say so."""
-    from rlm_kit.dataset import export_actions
+    from rlm_harness.dataset import export_actions
 
     path = tmp_path / "t.jsonl"
     with TraceRecorder(str(path), run_id="r"):

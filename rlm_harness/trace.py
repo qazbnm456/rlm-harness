@@ -30,7 +30,7 @@ from collections.abc import Callable, Iterable, Iterator
 from contextvars import ContextVar, Token
 from typing import Any, Self
 
-SCHEMA = "rlm-kit/trace/v1"
+SCHEMA = "rlm-harness/trace/v1"
 
 # Event types written to the stream.
 EVENT_RUN_START = "run_start"
@@ -41,7 +41,7 @@ EVENT_FINAL = "final"
 EVENT_RESULT = "result"
 EVENT_RUN_END = "run_end"
 
-_active: ContextVar[TraceRecorder | None] = ContextVar("rlm_kit_recorder", default=None)
+_active: ContextVar[TraceRecorder | None] = ContextVar("rlm_harness_recorder", default=None)
 
 
 def current_recorder() -> TraceRecorder | None:
@@ -57,7 +57,7 @@ def recorder_scope(recorder: TraceRecorder | None) -> Iterator[None]:
     ``dspy.RLM.llm_query_batched`` fans the sub-LM across executor workers, those workers see
     ``current_recorder() is None`` and the batched escalations record NO ``sub_call`` (under-counting
     the lifeline). Re-establishing the recorder per call inside the worker thread fixes that. Used by
-    the per-run sub-LM binding in ``rlm_kit.sub_lm`` (kept here because ``_active`` is module-private)."""
+    the per-run sub-LM binding in ``rlm_harness.sub_lm`` (kept here because ``_active`` is module-private)."""
     token = _active.set(recorder)
     try:
         yield
@@ -78,7 +78,7 @@ CAUSE_CIRCUIT_BROKEN = "circuit_broken"  # short-circuited; no model call, no va
 
 def payload_cause(payload: dict) -> str:
     """Which of the four outcomes a recorded ``tool_call`` payload is — the read-side mirror of
-    :attr:`rlm_kit.tools.ModelToolResult.cause`.
+    :attr:`rlm_harness.tools.ModelToolResult.cause`.
 
     A consumer reading a trace has only the payload, and ``ok`` alone cannot tell a validator
     rejection from an endpoint failure or a circuit break. Reading it as one thing has shipped in
@@ -93,7 +93,7 @@ def payload_cause(payload: dict) -> str:
     ``payload.get("ok")`` returning ``None`` is exactly how it silently reads as a decline.
 
     **The endpoint keys are tested for PRESENCE, not truthiness**, which is what makes this an actual
-    mirror of :attr:`rlm_kit.tools.ModelToolResult.cause` rather than a near-copy that disagrees on
+    mirror of :attr:`rlm_harness.tools.ModelToolResult.cause` rather than a near-copy that disagrees on
     one case. The write side has always been ``self.endpoint_error is not None``; this side shipped
     as ``payload.get("endpoint_error") or ...``, and the two differ on the EMPTY STRING — which is
     not a corner case but the COMMON one, because the field is filled with ``str(exc)`` and that is
@@ -189,7 +189,7 @@ class TraceRecorder:
         self._fh = None
         # LIVE per-turn timestamps for the main LM's REPL turns. dspy.RLM only exposes its trajectory
         # on the FINAL Prediction, so record_main_trajectory() would otherwise stamp every main_step
-        # at finalize time (all identical). A per-turn callback (rlm_kit.task) feeds note_main_step()
+        # at finalize time (all identical). A per-turn callback (rlm_harness.task) feeds note_main_step()
         # AS each turn is parsed; record_main_trajectory() then matches by reasoning and backfills the
         # real ts — keeping the full {reasoning,code,output} payload, only correcting the timestamp.
         # Empty (no callback wired, or replay) → record_main_trajectory falls back to clock().
@@ -259,7 +259,7 @@ class TraceRecorder:
                 pass
         return event
 
-    # -- live per-turn timing (fed by a dspy parse callback; see rlm_kit.task) -------------
+    # -- live per-turn timing (fed by a dspy parse callback; see rlm_harness.task) -------------
 
     def begin_main_capture(self) -> None:
         """Reset the live per-turn timestamp buffer at the start of a run attempt.

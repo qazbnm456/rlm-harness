@@ -1,6 +1,6 @@
 """In-container agent for the ``container`` interpreter — runs INSIDE the sandbox.
 
-STDLIB ONLY. Imports nothing from ``rlm_kit`` or ``dspy``: it is delivered to a bare
+STDLIB ONLY. Imports nothing from ``rlm_harness`` or ``dspy``: it is delivered to a bare
 ``python:*-slim`` container via ``python -u -c <this source>`` (see
 ``container_interpreter.py``) and must run with no third-party packages.
 

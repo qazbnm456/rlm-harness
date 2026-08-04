@@ -1,4 +1,4 @@
-"""The scripted-interpreter forward-path test seam (`rlm_kit.testing`).
+"""The scripted-interpreter forward-path test seam (`rlm_harness.testing`).
 
 Unlike `test_integration_dspy.py` (which builds the RLM but never forwards), this drives the REAL
 `dspy.RLM.aforward` loop OFFLINE — no live model, no Deno — via a scripted DummyLM + `ScriptedInterpreter`
@@ -14,10 +14,10 @@ dspy = pytest.importorskip("dspy")
 
 from pydantic import BaseModel
 
-import rlm_kit.runtime as rt
-from rlm_kit import RLMConfig, RLMTask
-from rlm_kit.testing import ScriptedInterpreter, call, scripted_lm, submit
-from rlm_kit.trace import (
+import rlm_harness.runtime as rt
+from rlm_harness import RLMConfig, RLMTask
+from rlm_harness.testing import ScriptedInterpreter, call, scripted_lm, submit
+from rlm_harness.trace import (
     EVENT_RESULT,
     EVENT_TOOL_CALL,
     TraceRecorder,

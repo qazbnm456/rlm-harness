@@ -1,4 +1,4 @@
-# rlm-kit
+# rlm-harness
 
 A clean, reusable harness for building **any task** on top of
 [DSPy](https://dspy.ai)'s Recursive Language Model module (`dspy.RLM`).
@@ -10,7 +10,7 @@ first-party implementation (Khattab co-authored both DSPy and the RLM paper) —
 works with existing Signatures and is optimizer-compatible (GEPA/MIPRO). This kit
 distills the boilerplate around it into one small, opinionated layer.
 
-**rlm-kit is domain-agnostic** — anything `dspy.RLM` can do fits: multi-hop "deep
+**rlm-harness is domain-agnostic** — anything `dspy.RLM` can do fits: multi-hop "deep
 research", an RSS-digest agent that posts to a webhook, structured extraction,
 detection authoring, you name it. Security happens to be the author's own first
 use of it, but it isn't the kit's scope.
@@ -19,11 +19,11 @@ use of it, but it isn't the kit's scope.
 
 Using `dspy.RLM` directly leaves you re-writing the same plumbing for every task:
 model/sub-model config, a retry+validation loop, a sandbox choice, observability.
-`rlm-kit` makes a task a *declaration*:
+`rlm-harness` makes a task a *declaration*:
 
 ```python
-from rlm_kit import RLMConfig, RLMTask, configure
-from rlm_kit.tools import make_schema_validator
+from rlm_harness import RLMConfig, RLMTask, configure
+from rlm_harness.tools import make_schema_validator
 from pydantic import BaseModel
 
 class Article(BaseModel):
@@ -47,17 +47,17 @@ inherited.
 ## Installation
 
 ```bash
-pip install rlm-kit
+pip install rlm-harness
 # or with uv:
-uv add rlm-kit
+uv add rlm-harness
 ```
 
-`rlm-kit` needs Python ≥ 3.11
-and pulls in `dspy` + `pydantic`; extras are opt-in — observability (`pip install "rlm-kit[observe]"`)
+`rlm-harness` needs Python ≥ 3.11
+and pulls in `dspy` + `pydantic`; extras are opt-in — observability (`pip install "rlm-harness[observe]"`)
 and running on a Claude Pro/Max subscription instead of an API key
-(`pip install "rlm-kit[subscription]"` → `rlm_kit.ClaudeAgentLM`, injected via `configure(main_lm=…)`). A
+(`pip install "rlm-harness[subscription]"` → `rlm_harness.ClaudeAgentLM`, injected via `configure(main_lm=…)`). A
 *live* `dspy.RLM` run additionally needs model credentials (see the guide's
-[Configuration](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md#configuration)) and a
+[Configuration](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#configuration)) and a
 Deno sandbox (`brew install deno`) — the logic and tests run without either.
 
 ## What's in the box
@@ -77,26 +77,26 @@ Deno sandbox (`brew install deno`) — the logic and tests run without either.
 - **Sandboxed by default.** The pyodide/deno interpreter; the `local` interpreter is
   refused unless explicitly opted into; an opt-in Docker `container` interpreter for
   when the REPL itself needs real subprocesses.
-- **Offline-testable.** `rlm_kit.testing` drives the real `dspy.RLM` forward loop
+- **Offline-testable.** `rlm_harness.testing` drives the real `dspy.RLM` forward loop
   with no model, no Deno, no network.
 
 ## Documentation — the guide
 
 The deep documentation lives in
-[**`rlm_kit/README.md`**](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md):
+[**`rlm_harness/README.md`**](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md):
 
-- [Layout](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md#layout) — what each module owns.
-- [RLM as harness engineering](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md#rlm-as-harness-engineering-sub-lm-hook--tracing) — the sub-LM hook + trajectory tracing.
-- [Sub-LM vs. tool](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md#sub-lm-vs-tool-which-model-goes-where) — which model goes where; the choice decides what your RL data records.
-- [Skills](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md#skills-progressive-disclosure), [MCP tools](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md#mcp-tools-connect-an-external-mcp-server), [running local commands](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md#running-local-commands-an-isolated-runner), and the [container interpreter](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md#environment-interpreter-interpretercontainer) — the tool & environment surfaces.
-- [Grounded completeness](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md#grounded-completeness--the-sufficiency-critic-recipe) and [judgement-only SUBMIT](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md#judgement-only-submit--assemble-facts-dont-let-the-policy-report-them) — the rollout conventions.
-- [Building a consumer](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md#building-a-consumer) — the five-step extension contract.
-- [Configuration](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md#configuration) — every env var, adapter selection, model naming.
-- [Testing the forward path offline](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md#testing-the-forward-path-offline-rlm_kittesting) — the scripted offline harness.
+- [Layout](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#layout) — what each module owns.
+- [RLM as harness engineering](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#rlm-as-harness-engineering-sub-lm-hook--tracing) — the sub-LM hook + trajectory tracing.
+- [Sub-LM vs. tool](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#sub-lm-vs-tool-which-model-goes-where) — which model goes where; the choice decides what your RL data records.
+- [Skills](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#skills-progressive-disclosure), [MCP tools](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#mcp-tools-connect-an-external-mcp-server), [running local commands](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#running-local-commands-an-isolated-runner), and the [container interpreter](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#environment-interpreter-interpretercontainer) — the tool & environment surfaces.
+- [Grounded completeness](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#grounded-completeness--the-sufficiency-critic-recipe) and [judgement-only SUBMIT](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#judgement-only-submit--assemble-facts-dont-let-the-policy-report-them) — the rollout conventions.
+- [Building a consumer](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#building-a-consumer) — the five-step extension contract.
+- [Configuration](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#configuration) — every env var, adapter selection, model naming.
+- [Testing the forward path offline](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#testing-the-forward-path-offline-rlm_harnesstesting) — the scripted offline harness.
 
-## Built with rlm-kit
+## Built with rlm-harness
 
-Real projects using rlm-kit as their RLM scaffold:
+Real projects using rlm-harness as their RLM scaffold:
 
 - **[cve-reverser](https://github.com/qazbnm456/cve-reverser)**: reverses publicly disclosed CVEs from
   their patches into local-lab PoCs and Nuclei detection templates. A traced, trainable RLM harness.
@@ -107,7 +107,7 @@ Real projects using rlm-kit as their RLM scaffold:
   planner progressively discovers a large MCP toolspace and computes over tool results as code, emitting
   reward-free trajectories + per-criterion facts for a downstream trainer.
 
-Built something on rlm-kit? Open a PR to add it here.
+Built something on rlm-harness? Open a PR to add it here.
 
 ## Security note — the sandbox is the boundary
 
@@ -136,7 +136,7 @@ construction check (dspy-bearing tests use `DummyLM` or skip if dspy is absent).
 A *live* run additionally needs real credentials and a Deno sandbox
 (`brew install deno`); `examples/mini_run.py` shows it. To drive the real forward
 loop offline (no model, no Deno), see the guide's
-[Testing the forward path offline](https://github.com/qazbnm456/rlm-kit/blob/main/rlm_kit/README.md#testing-the-forward-path-offline-rlm_kittesting).
+[Testing the forward path offline](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#testing-the-forward-path-offline-rlm_harnesstesting).
 See `CLAUDE.md` for invariants when modifying the kit.
 
 ## Status
@@ -144,9 +144,9 @@ See `CLAUDE.md` for invariants when modifying the kit.
 **v1.0.0** — the first published release. Scaffold + harness-engineering layer (sub-LM hook,
 skills-as-tools, trajectory recording, replay, dataset export, harness delegation on both the client
 and server side). Hardened by dogfooding against real downstream consumers; the changes that surfaced
-are in [`CHANGELOG.md`](https://github.com/qazbnm456/rlm-kit/blob/main/CHANGELOG.md).
+are in [`CHANGELOG.md`](https://github.com/qazbnm456/rlm-harness/blob/main/CHANGELOG.md).
 
-1.0.0 means the public surface is a contract: `__init__.__all__`, the `rlm-kit/trace/v1` wire format,
+1.0.0 means the public surface is a contract: `__init__.__all__`, the `rlm-harness/trace/v1` wire format,
 and `RLMTask`'s declaration fields are frozen under
 [SemVer](https://semver.org/) and pinned by `tests/test_contract.py`. Additions ship in a minor
 release; a rename or removal ships with an alias and a `DeprecationWarning` first, and the removal
@@ -158,4 +158,4 @@ GEPA-compile tasks (currently a documented stub).
 
 ## License
 
-MIT © Boik Su ([@boik_su](https://x.com/boik_su)). See [`LICENSE`](https://github.com/qazbnm456/rlm-kit/blob/main/LICENSE).
+MIT © Boik Su ([@boik_su](https://x.com/boik_su)). See [`LICENSE`](https://github.com/qazbnm456/rlm-harness/blob/main/LICENSE).

@@ -1,4 +1,4 @@
-"""Run rlm-kit on a Claude Pro/Max SUBSCRIPTION via the official Claude Agent SDK.
+"""Run rlm-harness on a Claude Pro/Max SUBSCRIPTION via the official Claude Agent SDK.
 
 `ClaudeAgentLM` is a `dspy.BaseLM` adapter over `claude-agent-sdk`, injected through the
 kit's existing public seam `configure(main_lm=..., sub_lm=...)` — the kit itself is
@@ -6,20 +6,20 @@ unchanged. Each LM call is one stateless `query()` through the Claude Code CLI o
 subscription login: the officially sanctioned path for individual subscribers, as opposed
 to the blocked OAuth-token-against-the-API routes. Every call is a pure completion — no
 agent loop, no tools, no filesystem access, no settings leakage (`tools=[]`,
-`setting_sources=[]`) — so rlm-kit's sandbox stays the only place code runs. `max_turns` is
+`setting_sources=[]`) — so rlm-harness's sandbox stays the only place code runs. `max_turns` is
 1 for a plain completion, 8 when structured `output_format` needs the SDK's extra validation
 round.
 
-Optional: needs `pip install "rlm-kit[subscription]"` (the `claude-agent-sdk` client) plus a
-logged-in Claude Code CLI. `import rlm_kit` stays dspy/SDK-free — this module is imported only
-on first `rlm_kit.ClaudeAgentLM` access (PEP 562), and the SDK only when an instance is built.
+Optional: needs `pip install "rlm-harness[subscription]"` (the `claude-agent-sdk` client) plus a
+logged-in Claude Code CLI. `import rlm_harness` stays dspy/SDK-free — this module is imported only
+on first `rlm_harness.ClaudeAgentLM` access (PEP 562), and the SDK only when an instance is built.
 
 Setup:
   1. Install the Claude Code CLI and log in with your Pro/Max account (`claude` → `/login`),
      or mint a long-lived token: `claude setup-token` → export `CLAUDE_CODE_OAUTH_TOKEN`.
   2. `unset ANTHROPIC_API_KEY` — the CLI silently prefers it over subscription OAuth, so a
      leftover key bills API credit; the constructor refuses to start while it is set.
-  3. `pip install "rlm-kit[subscription]"` (or `uv sync --extra subscription`) into this venv,
+  3. `pip install "rlm-harness[subscription]"` (or `uv sync --extra subscription`) into this venv,
      `brew install deno` for the default pyodide sandbox. See `examples/claude_agent_lm.py`
      for a runnable end-to-end demo.
 
@@ -65,14 +65,14 @@ def _require_claude_agent_sdk():
     """Import the optional `claude-agent-sdk`, or raise a friendly install hint (the `mcp.py` guard).
 
     Deferred out of module top on purpose: keeping the import here means the module itself loads
-    without the extra (so `rlm_kit.ClaudeAgentLM` is gettable, like `mcp_tools`), and the SDK is
+    without the extra (so `rlm_harness.ClaudeAgentLM` is gettable, like `mcp_tools`), and the SDK is
     only required once an instance is actually built.
     """
     try:
         import claude_agent_sdk
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ImportError(
-            "ClaudeAgentLM requires the optional dependency: pip install 'rlm-kit[subscription]'"
+            "ClaudeAgentLM requires the optional dependency: pip install 'rlm-harness[subscription]'"
         ) from exc
     return claude_agent_sdk
 
@@ -160,7 +160,7 @@ def _looks_rate_limited(text: str) -> bool:
 class ClaudeAgentLM(dspy.BaseLM):
     """A dspy LM whose completions run through the Claude Agent SDK on a subscription login.
 
-    Satisfies both rlm-kit seats: the planner calls `aforward(messages=...)` through the
+    Satisfies both rlm-harness seats: the planner calls `aforward(messages=...)` through the
     adapter, the sub-LM seat calls `forward(prompt)` synchronously from `llm_query[_batched]`
     worker threads — both funnel into one coroutine on the shared bridge loop. Works under
     `intercept_sub_lm` unchanged. Unknown lm_kwargs (temperature, max_tokens, ...) are
@@ -261,7 +261,7 @@ class ClaudeAgentLM(dspy.BaseLM):
         )
         if result.total_cost_usd is not None:
             # Cosmetic: what the tokens WOULD cost on the API. On a subscription nothing bills
-            # it and no rlm-kit budget reads it; it just keeps `lm.history` honest.
+            # it and no rlm-harness budget reads it; it just keeps `lm.history` honest.
             response._hidden_params["response_cost"] = result.total_cost_usd
         return response
 

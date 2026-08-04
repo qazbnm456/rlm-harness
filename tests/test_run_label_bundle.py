@@ -1,6 +1,6 @@
 import pytest
 
-from rlm_kit.dataset import run_label_bundle
+from rlm_harness.dataset import run_label_bundle
 
 
 def _runs():

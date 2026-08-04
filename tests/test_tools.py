@@ -3,17 +3,17 @@ import inspect
 import pytest
 from pydantic import BaseModel
 
-import rlm_kit.tools.fetch as fetch_mod
-from rlm_kit.optimize import exact_field_metric, schema_valid_metric
-from rlm_kit.tools.command import CommandResult, make_command_tool
-from rlm_kit.tools.fetch import (
+import rlm_harness.tools.fetch as fetch_mod
+from rlm_harness.optimize import exact_field_metric, schema_valid_metric
+from rlm_harness.tools.command import CommandResult, make_command_tool
+from rlm_harness.tools.fetch import (
     _ip_blocked,
     is_safe_url,
     make_fetch_tool,
     parse_cidrs,
     resolved_host_is_safe,
 )
-from rlm_kit.tools.model import (
+from rlm_harness.tools.model import (
     CAUSE_CIRCUIT_BROKEN,
     CAUSE_ENDPOINT,
     CAUSE_INVALID,
@@ -21,9 +21,9 @@ from rlm_kit.tools.model import (
     ModelToolResult,
     make_model_tool,
 )
-from rlm_kit.tools.search import make_web_search_tool, normalise_search_results
-from rlm_kit.tools.validation import make_json_schema_validator, make_schema_validator
-from rlm_kit.trace import EVENT_TOOL_CALL, TraceRecorder, load_events
+from rlm_harness.tools.search import make_web_search_tool, normalise_search_results
+from rlm_harness.tools.validation import make_json_schema_validator, make_schema_validator
+from rlm_harness.trace import EVENT_TOOL_CALL, TraceRecorder, load_events
 
 # ---- make_model_tool (generic model-call + retry + validate core) --------
 
@@ -493,7 +493,7 @@ def test_command_tool_guard_empty_string_still_refuses(tmp_path):
 
 
 def test_command_tool_stderr_preview_capped(tmp_path):
-    from rlm_kit.tools.command import _STDERR_PREVIEW
+    from rlm_harness.tools.command import _STDERR_PREVIEW
     tool = make_command_tool(_ok_runner(out="", err="e" * (_STDERR_PREVIEW + 100)))
     path = str(tmp_path / "t.jsonl")
     with TraceRecorder(path, run_id="r1"):
@@ -615,7 +615,7 @@ def _broken_call():
 def test_the_harness_result_inherits_the_same_distinction():
     """`HarnessToolResult` subclasses `ModelToolResult`, so a delegation client gets `cause` for
     free — and needs it for the same reason: a transport failure is not a content decline."""
-    from rlm_kit.tools.harness import HarnessToolResult
+    from rlm_harness.tools.harness import HarnessToolResult
 
     assert HarnessToolResult(ok=False, raw="", endpoint_error="conn reset").cause == CAUSE_ENDPOINT
     assert HarnessToolResult(ok=False, raw="bad artifact").cause == CAUSE_INVALID

@@ -19,7 +19,7 @@ import os
 
 from pydantic import BaseModel, Field
 
-from rlm_kit import (
+from rlm_harness import (
     RLMConfig,
     RLMTask,
     TraceRecorder,

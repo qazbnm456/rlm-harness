@@ -1,18 +1,18 @@
-"""rlm-kit — a clean, reusable harness for building tasks on DSPy RLMs.
+"""rlm-harness — a clean, reusable harness for building tasks on DSPy RLMs.
 
 Public surface::
 
-    from rlm_kit import RLMConfig, configure, RLMTask
-    from rlm_kit.tools import make_schema_validator, make_fetch_tool, is_safe_url
+    from rlm_harness import RLMConfig, configure, RLMTask
+    from rlm_harness.tools import make_schema_validator, make_fetch_tool, is_safe_url
     # Harness-engineering layer (Phase A/B/C):
-    from rlm_kit import intercept_sub_lm, model_as_tool, get_sub_lm  # sub-LM hook
-    from rlm_kit import TraceRecorder, current_recorder, record_tool_call  # tracing
-    from rlm_kit import load_skills_as_tools                       # skills-as-tools
-    from rlm_kit import load_timeline, export_sft_turns, export_rl  # replay + dataset
+    from rlm_harness import intercept_sub_lm, model_as_tool, get_sub_lm  # sub-LM hook
+    from rlm_harness import TraceRecorder, current_recorder, record_tool_call  # tracing
+    from rlm_harness import load_skills_as_tools                       # skills-as-tools
+    from rlm_harness import load_timeline, export_sft_turns, export_rl  # replay + dataset
 
 ``config``, ``trace``, ``sub_lm``, ``skills``, ``replay``, ``dataset`` and the
 tools are import-light (no dspy). ``RLMTask`` / ``configure`` pull in dspy lazily
-on first attribute access, so ``import rlm_kit`` stays cheap and the dspy-free
+on first attribute access, so ``import rlm_harness`` stays cheap and the dspy-free
 modules remain testable in isolation. ``intercept_sub_lm`` imports dspy only
 when actually called.
 """
@@ -105,12 +105,12 @@ __all__ = [
     "HarnessPointer",
     "bundle_artifact",
     "parse_artifact_bundle",
-    # MCP client (optional: rlm-kit[mcp])
+    # MCP client (optional: rlm-harness[mcp])
     "mcp_tools",
     "McpConnection",
     "McpCatalog",
     "result_text",
-    # Claude subscription LM (optional: rlm-kit[subscription])
+    # Claude subscription LM (optional: rlm-harness[subscription])
     "ClaudeAgentLM",
 ]
 
@@ -135,7 +135,7 @@ def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import
 
         return get_config
     if name in ("mcp_tools", "McpConnection", "McpCatalog", "result_text"):
-        # optional MCP client (rlm-kit[mcp]); mcp.py's module top is dspy/mcp-free, the SDK loads on use
+        # optional MCP client (rlm-harness[mcp]); mcp.py's module top is dspy/mcp-free, the SDK loads on use
         from . import mcp as _mcp
 
         return getattr(_mcp, name)

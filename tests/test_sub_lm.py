@@ -1,7 +1,7 @@
 import pytest
 
-from rlm_kit.sub_lm import SubLMValidationError, intercept_sub_lm, model_as_tool
-from rlm_kit.trace import EVENT_SUB_CALL, EVENT_TOOL_CALL, TraceRecorder, load_events
+from rlm_harness.sub_lm import SubLMValidationError, intercept_sub_lm, model_as_tool
+from rlm_harness.trace import EVENT_SUB_CALL, EVENT_TOOL_CALL, TraceRecorder, load_events
 
 
 class FakeLM:
@@ -81,7 +81,7 @@ def test_bind_recorder_records_batched_escalations_else_lost(tmp_path):
     # (the bug — lifeline under-counts); the per-run binding re-establishes the recorder per call.
     from concurrent.futures import ThreadPoolExecutor
 
-    from rlm_kit.sub_lm import bind_recorder_to_sub_lm
+    from rlm_harness.sub_lm import bind_recorder_to_sub_lm
 
     inner = intercept_sub_lm(FakeLM(["A"]), name="lifeline")
     path = str(tmp_path / "t.jsonl")
@@ -102,7 +102,7 @@ def test_bind_recorder_records_batched_escalations_else_lost(tmp_path):
 
 
 def test_bind_recorder_to_sub_lm_is_a_noop_without_a_recorder():
-    from rlm_kit.sub_lm import bind_recorder_to_sub_lm
+    from rlm_harness.sub_lm import bind_recorder_to_sub_lm
 
     inner = FakeLM(["x"])
     assert bind_recorder_to_sub_lm(inner, None) is inner   # passthrough, no wrapper allocated

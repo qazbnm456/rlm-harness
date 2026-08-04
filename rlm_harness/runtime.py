@@ -183,7 +183,7 @@ def configure(
     _STATE.main_lm = main_lm
     _STATE.sub_lm = sub_lm
     logger.info(
-        "rlm-kit configured: main=%s sub=%s interpreter=%s adapter=%s observe=%s",
+        "rlm-harness configured: main=%s sub=%s interpreter=%s adapter=%s observe=%s",
         cfg.main_model,
         cfg.sub_model,
         cfg.interpreter,
@@ -241,14 +241,14 @@ def _try_instrument() -> None:
 def _require_configured() -> None:
     if not _STATE.configured:
         raise RuntimeError(
-            "rlm-kit is not configured. Call rlm_kit.configure(RLMConfig.from_env()) "
+            "rlm-harness is not configured. Call rlm_harness.configure(RLMConfig.from_env()) "
             "once before running a task."
         )
 
 
 def get_config() -> RLMConfig:
     """The effective ``RLMConfig`` that ``configure`` stored. PUBLIC accessor — re-exported as
-    ``rlm_kit.get_config``. Lets a consumer read back the active config (budgets, model names,
+    ``rlm_harness.get_config``. Lets a consumer read back the active config (budgets, model names,
     interpreter) without reaching into private runtime state. Requires ``configure`` to have run."""
     _require_configured()
     assert _STATE.config is not None
@@ -257,7 +257,7 @@ def get_config() -> RLMConfig:
 
 def get_sub_lm() -> dspy.LM:
     """The configured base sub-LM (the recursion seat). PUBLIC accessor — re-exported as
-    ``rlm_kit.get_sub_lm``. A consumer that wants a validated / post-processed sub-LM wraps
+    ``rlm_harness.get_sub_lm``. A consumer that wants a validated / post-processed sub-LM wraps
     THIS with ``intercept_sub_lm`` and passes the result as ``RLMTask(sub_lm=...)``; using the
     configured instance (rather than reconstructing ``dspy.LM(cfg.sub_model, ...)``) keeps a
     single source of truth so it can't drift from what ``configure`` built. Requires

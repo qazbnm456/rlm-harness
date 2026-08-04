@@ -4,7 +4,7 @@ consumer-supplied, ISOLATED runner (mirrors ``fetch.py`` / ``search.py``).
 An agent built on the RLM often needs to run a local command (a build, a test, a
 git op) the way a coding agent does. The reusable half is the same as every other
 tool here: enforce the sync contract, turn a failure into text the RLM can react to,
-and record ONE ``tool_call`` in the canonical shape. rlm-kit owns only that half — it
+and record ONE ``tool_call`` in the canonical shape. rlm-harness owns only that half — it
 ships NO executor and picks NO isolation mechanism.
 
 SECURITY — the runner's isolation IS the boundary. A ``run_command`` tool executes

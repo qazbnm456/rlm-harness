@@ -8,5 +8,5 @@
 - [ ] `uvx ruff check .` is clean
 - [ ] New behavior has a test
 - [ ] No new top-level `dspy` import in a dspy-free module (`config` / `_retry` / `sandbox` / `tools` / `trace` / `skills` / `replay` / `dataset`)
-- [ ] The `rlm-kit/trace/v1` trace is unchanged, or the change is additive (a new optional field) — `tests/test_contract.py` still green
+- [ ] The `rlm-harness/trace/v1` trace is unchanged, or the change is additive (a new optional field) — `tests/test_contract.py` still green
 - [ ] The public surface stays vendor-neutral (no specific downstream project names or values)

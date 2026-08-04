@@ -13,7 +13,7 @@ pytest.importorskip("dspy")
 
 import dspy
 
-from rlm_kit.mcp import (
+from rlm_harness.mcp import (
     _CLOSE_GRACE,
     McpCatalog,
     McpConnection,
@@ -22,7 +22,7 @@ from rlm_kit.mcp import (
     mcp_tools,
     result_text,
 )
-from rlm_kit.trace import TraceRecorder, load_events
+from rlm_harness.trace import TraceRecorder, load_events
 
 
 @pytest.fixture(autouse=True)
@@ -216,9 +216,9 @@ def test_mcp_tools_teardown_leaves_no_live_thread(tmp_path):
     before = {t.name for t in threading.enumerate()}
     with mcp_tools(_server(tmp_path), timeout=30) as tools:
         tools[0](text="x")
-    # the background MCP thread is joined on exit — no leaked "rlm-kit-mcp" thread.
+    # the background MCP thread is joined on exit — no leaked "rlm-harness-mcp" thread.
     after = {t.name for t in threading.enumerate()}
-    assert "rlm-kit-mcp" not in (after - before)
+    assert "rlm-harness-mcp" not in (after - before)
 
 
 def test_bad_server_spec_raises_and_cleans_up():
@@ -228,7 +228,7 @@ def test_bad_server_spec_raises_and_cleans_up():
     with pytest.raises(ValueError), mcp_tools({"nonsense": 1}, timeout=5):
         pass
     # start() failed, but mcp_tools' finally still closed the bridge — no leaked background thread.
-    assert "rlm-kit-mcp" not in ({t.name for t in threading.enumerate()} - before)
+    assert "rlm-harness-mcp" not in ({t.name for t in threading.enumerate()} - before)
 
 
 # ---- HTTP transport: real streamable-HTTP server, sync call --------------
@@ -444,7 +444,7 @@ def test_mcp_catalog_partial_eager_failure_cleans_up(tmp_path):
     with pytest.raises(Exception):
         McpCatalog(specs, timeout=5)
     # the good server connected first, then 'bad' failed — the partial connect was torn down, no leak.
-    assert "rlm-kit-mcp" not in ({t.name for t in threading.enumerate()} - before)
+    assert "rlm-harness-mcp" not in ({t.name for t in threading.enumerate()} - before)
 
 
 # ---- lazy-connect safety: a wedged connect is BOUNDED and REAPED, not a hang+leak ----------
@@ -510,10 +510,10 @@ def test_mcp_catalog_lazy_wedged_http_connect_is_bounded_and_reaped():
         assert time.monotonic() - t0 < 2.0 + 2 * 2.0 + 8   # grace = min(_CLOSE_GRACE, timeout=2) = 2
         cat.close()
         deadline = time.monotonic() + _CLOSE_GRACE + 3    # poll for the reap (grace-edge timing)
-        while ("rlm-kit-mcp" in ({t.name for t in threading.enumerate()} - before)
+        while ("rlm-harness-mcp" in ({t.name for t in threading.enumerate()} - before)
                and time.monotonic() < deadline):
             time.sleep(0.1)
-        assert "rlm-kit-mcp" not in ({t.name for t in threading.enumerate()} - before)
+        assert "rlm-harness-mcp" not in ({t.name for t in threading.enumerate()} - before)
     finally:
         stop.set()
         tarpit.close()

@@ -1,8 +1,8 @@
 import pytest
 
-from rlm_kit.dataset import export_rl, export_sft_turns, final_outputs
-from rlm_kit.replay import RecordedToolProvider, load_timeline
-from rlm_kit.trace import TraceRecorder, group_by_run, load_events
+from rlm_harness.dataset import export_rl, export_sft_turns, final_outputs
+from rlm_harness.replay import RecordedToolProvider, load_timeline
+from rlm_harness.trace import TraceRecorder, group_by_run, load_events
 
 
 def _write_run(path, run_id):

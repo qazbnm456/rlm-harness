@@ -1,11 +1,11 @@
 """Contract tests for the reward-free rubric primitives.
 
-Deliberately uses OPAQUE, methodology-agnostic categories (``"X"`` / ``"Y"``) — rlm-kit imposes no
+Deliberately uses OPAQUE, methodology-agnostic categories (``"X"`` / ``"Y"``) — rlm-harness imposes no
 taxonomy, so the contract must hold for any caller-defined labels. This doubles as a vendor-neutrality
 guard: nothing here names a specific methodology or its categories.
 """
 
-from rlm_kit.rubric import (
+from rlm_harness.rubric import (
     Criterion,
     CriterionFact,
     RubricCriteria,

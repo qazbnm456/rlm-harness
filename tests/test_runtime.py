@@ -7,8 +7,8 @@ import pytest
 
 dspy = pytest.importorskip("dspy")
 
-import rlm_kit.runtime as rt
-from rlm_kit import RLMConfig
+import rlm_harness.runtime as rt
+from rlm_harness import RLMConfig
 
 
 def test_configure_without_observe_skips_instrumentation(monkeypatch):
