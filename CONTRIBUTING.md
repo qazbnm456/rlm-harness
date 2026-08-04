@@ -54,6 +54,10 @@ These are load-bearing; see [`CLAUDE.md`](./CLAUDE.md) for the full list and the
   a plain `()`; an `async def` tool returns an un-awaited coroutine and never runs.
 - **rlm-kit produces trajectories, never reward.** The exporters carry a `reward=` hook the
   downstream trainer fills; scoring/training is a separate stage.
+- **`__init__.__all__` is SemVer-frozen since 1.0.0.** Adding a public name is a minor release.
+  Renaming or removing one ships the new name plus an alias that emits a `DeprecationWarning`, and
+  the alias survives until the next major. The pre-1.0 hard rename — change it and fix the consumers
+  in lockstep — is no longer available. `_`-prefixed names and module internals stay free to move.
 
 ## Submitting changes
 

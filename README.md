@@ -47,13 +47,12 @@ inherited.
 ## Installation
 
 ```bash
-# from git (pre-release — not on PyPI yet):
-pip install "git+https://github.com/qazbnm456/rlm-kit"
+pip install rlm-kit
 # or with uv:
-uv add "git+https://github.com/qazbnm456/rlm-kit"
+uv add rlm-kit
 ```
 
-Once the first release is published, `pip install rlm-kit` will work too. `rlm-kit` needs Python ≥ 3.11
+`rlm-kit` needs Python ≥ 3.11
 and pulls in `dspy` + `pydantic`; extras are opt-in — observability (`pip install "rlm-kit[observe]"`)
 and running on a Claude Pro/Max subscription instead of an API key
 (`pip install "rlm-kit[subscription]"` → `rlm_kit.ClaudeAgentLM`, injected via `configure(main_lm=…)`). A
@@ -142,10 +141,17 @@ See `CLAUDE.md` for invariants when modifying the kit.
 
 ## Status
 
-**v0.2.0** (in development — not yet tagged or published to PyPI; the version is the
-target) — scaffold + harness-engineering layer (sub-LM hook, skills-as-tools,
-trajectory recording, replay, dataset export). Hardened by dogfooding against a
-real downstream consumer; the changes that surfaced are in [`CHANGELOG.md`](https://github.com/qazbnm456/rlm-kit/blob/main/CHANGELOG.md).
+**v1.0.0** — the first published release. Scaffold + harness-engineering layer (sub-LM hook,
+skills-as-tools, trajectory recording, replay, dataset export, harness delegation on both the client
+and server side). Hardened by dogfooding against real downstream consumers; the changes that surfaced
+are in [`CHANGELOG.md`](https://github.com/qazbnm456/rlm-kit/blob/main/CHANGELOG.md).
+
+1.0.0 means the public surface is a contract: `__init__.__all__`, the `rlm-kit/trace/v1` wire format,
+and `RLMTask`'s declaration fields are frozen under
+[SemVer](https://semver.org/) and pinned by `tests/test_contract.py`. Additions ship in a minor
+release; a rename or removal ships with an alias and a `DeprecationWarning` first, and the removal
+itself waits for the next major. The trace format carries its own version and evolves
+additive-only within v1. A `_`-prefixed name or module internal is not part of that promise.
 
 Next: enable `optimize.compile_task` against a labelled trainset to actually
 GEPA-compile tasks (currently a documented stub).

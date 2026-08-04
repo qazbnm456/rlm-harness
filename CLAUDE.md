@@ -208,6 +208,19 @@ One companion rule ships under `.claude/rules/`:
 
 - Keep `pyproject.toml` `[project].version` and `rlm_kit/__init__.__version__` in
   sync. On a bump, fold the release's changes into `CHANGELOG.md`.
+- **Post-1.0, the public surface follows SemVer — and that RETIRES the lockstep hard rename.**
+  Before 1.0.0 this kit renamed a public name with no alias and updated its consumers in the same
+  breath (`make_middleware_lm` → `intercept_sub_lm` is the recorded case, and the CHANGELOG entry
+  says so in as many words). That is over. The frozen surface is `__init__.__all__` + the
+  `rlm-kit/trace/v1` wire format + `RLMTask`'s declaration fields, all pinned by
+  `tests/test_contract.py`. **Adding** a public name is a MINOR bump. **Renaming or removing** one
+  means: ship the new name, keep the old as an alias that emits a `DeprecationWarning`, note it in
+  the CHANGELOG — and do not delete the alias before the next MAJOR. A `_`-prefixed name or module
+  internal (`_retry`, `trace._active`) is outside the promise and may still move freely. The trace
+  format keeps its own version and its own additive-only rule within v1; a break there is a `v2`
+  migration, not a SemVer major on its own. If you find yourself wanting a hard rename because a
+  consumer is the only caller, that is exactly the situation the rule exists for — there are nine
+  of them now, and you cannot see all of their working trees.
 
 ## Consumer-driven hardening
 

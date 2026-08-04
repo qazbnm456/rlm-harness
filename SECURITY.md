@@ -13,7 +13,8 @@ before any public disclosure. Thank you for reporting responsibly.
 
 ## Supported versions
 
-`rlm-kit` is pre-1.0; only the latest released version receives security fixes.
+Only the latest released version receives security fixes; a fix ships as a patch release on top of it
+rather than being backported to an earlier line.
 
 | Version | Supported |
 | ------- | --------- |
