@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a defect in rlm-kit
+about: Report a defect in rlm-harness
 labels: bug
 ---
 
@@ -18,7 +18,7 @@ What you expected instead.
 
 **Environment**
 
-- rlm-kit version / commit:
+- rlm-harness version / commit:
 - Python version:
 - Interpreter (sandbox `pyodide`/`deno`, or `local`):
 

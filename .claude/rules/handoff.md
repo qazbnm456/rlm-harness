@@ -1,6 +1,6 @@
 # Context preservation (read before auto-compacting)
 
-`rlm-kit` already routes durable knowledge into its tracked docs — keep using them, and
+`rlm-harness` already routes durable knowledge into its tracked docs — keep using them, and
 when the conversation is about to compact, preserve only what they do NOT already hold:
 
 - **Stable invariants** → the **Invariants** section of `CLAUDE.md`.

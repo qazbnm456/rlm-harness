@@ -1,4 +1,4 @@
-"""ClaudeAgentLM tests — the optional Claude-subscription adapter (`rlm-kit[subscription]`).
+"""ClaudeAgentLM tests — the optional Claude-subscription adapter (`rlm-harness[subscription]`).
 
 The heavy `claude-agent-sdk` is NOT a test dependency: the pure helpers run without it, the
 lazy export is asserted without it, and construction is exercised against a FAKE
@@ -13,8 +13,8 @@ import pytest
 
 pytest.importorskip("dspy")
 
-import rlm_kit
-from rlm_kit.claude_agent_lm import (
+import rlm_harness
+from rlm_harness.claude_agent_lm import (
     _looks_rate_limited,
     _require_claude_agent_sdk,
     _split_messages,
@@ -25,8 +25,8 @@ from rlm_kit.claude_agent_lm import (
 def test_lazy_export_without_the_sdk():
     # In __all__ and gettable off the top-level package WITHOUT the SDK installed (the mcp_tools
     # pattern): the module imports clean, the SDK is only needed at construction.
-    assert "ClaudeAgentLM" in rlm_kit.__all__
-    assert rlm_kit.ClaudeAgentLM.__name__ == "ClaudeAgentLM"
+    assert "ClaudeAgentLM" in rlm_harness.__all__
+    assert rlm_harness.ClaudeAgentLM.__name__ == "ClaudeAgentLM"
 
 
 def test_split_messages_bare_prompt():
@@ -79,7 +79,7 @@ def test_require_sdk_raises_friendly_install_hint(monkeypatch):
     # Setting sys.modules[name] = None makes `import name` raise, simulating the extra being absent
     # even if it happens to be installed in this env.
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", None)
-    with pytest.raises(ImportError, match=r"rlm-kit\[subscription\]"):
+    with pytest.raises(ImportError, match=r"rlm-harness\[subscription\]"):
         _require_claude_agent_sdk()
 
 
@@ -98,7 +98,7 @@ def fake_sdk(monkeypatch):
 
 def test_construction_sets_the_trace_label(fake_sdk, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    lm = rlm_kit.ClaudeAgentLM("opus")
+    lm = rlm_harness.ClaudeAgentLM("opus")
     assert lm.model == "claude-agent-sdk/opus"
     assert lm._alias == "opus"
 
@@ -106,14 +106,14 @@ def test_construction_sets_the_trace_label(fake_sdk, monkeypatch):
 def test_construction_refuses_a_leftover_api_key(fake_sdk, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-not-bill")
     with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
-        rlm_kit.ClaudeAgentLM("sonnet")
+        rlm_harness.ClaudeAgentLM("sonnet")
     # explicit opt-in bypasses the guard
-    lm = rlm_kit.ClaudeAgentLM("sonnet", allow_api_key=True)
+    lm = rlm_harness.ClaudeAgentLM("sonnet", allow_api_key=True)
     assert lm.model == "claude-agent-sdk/sonnet"
 
 
 def test_construction_without_sdk_fails_fast(monkeypatch):
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", None)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with pytest.raises(ImportError, match=r"rlm-kit\[subscription\]"):
-        rlm_kit.ClaudeAgentLM("sonnet")
+    with pytest.raises(ImportError, match=r"rlm-harness\[subscription\]"):
+        rlm_harness.ClaudeAgentLM("sonnet")

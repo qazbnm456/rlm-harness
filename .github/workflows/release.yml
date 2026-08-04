@@ -2,8 +2,8 @@ name: Release
 
 # Publish to PyPI via Trusted Publishing (OIDC) — NO API token. This is INERT until a
 # GitHub Release is published, and requires one-time setup before the first release:
-#   1. On PyPI, add a Trusted Publisher for project `rlm-kit`:
-#        owner = qazbnm456, repo = rlm-kit, workflow = release.yml, environment = pypi
+#   1. On PyPI, add a Trusted Publisher for project `rlm-harness`:
+#        owner = qazbnm456, repo = rlm-harness, workflow = release.yml, environment = pypi
 #   2. In this repo's settings, create an environment named `pypi`.
 # Then publishing a GitHub Release (from a `vX.Y.Z` tag) builds + uploads automatically.
 # Supply-chain: the two third-party actions are SHA-pinned — setup-uv, and (highest blast radius, it
@@ -35,11 +35,11 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     # Fork guard. `release: published` is inherited by every fork, so a fork cutting its own release
-    # would fire this job and ask PyPI to publish `rlm-kit` over OIDC. The Trusted Publisher binding
+    # would fire this job and ask PyPI to publish `rlm-harness` over OIDC. The Trusted Publisher binding
     # (owner+repo+workflow+environment) would reject it, but that is a rejected publish attempt against
     # OUR project, plus a probe surface and a confusing red run in someone else's repo. `build` above is
     # deliberately NOT guarded — it only builds an artifact, and a fork verifying its own build is fine.
-    if: github.repository == 'qazbnm456/rlm-kit'
+    if: github.repository == 'qazbnm456/rlm-harness'
     environment: pypi
     permissions:
       id-token: write          # OIDC token for PyPI Trusted Publishing

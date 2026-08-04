@@ -3,7 +3,7 @@ the transport (invoke_fn / call_endpoint) is injected, so no live child, no dspy
 reuses make_model_tool's retry/validate/circuit-break semantics AND carries the child-rollout link."""
 import types
 
-from rlm_kit.tools import (
+from rlm_harness.tools import (
     HarnessInvocation,
     HarnessToolResult,
     harness_from_endpoint,

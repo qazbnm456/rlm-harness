@@ -13,7 +13,7 @@ Design decisions baked in (per the approved plan):
 - The sub-LM intercept does **deterministic transforms only** (validate + post-process).
   Agentic actions (calling an external tool) are *not* forced here; they are
   exposed to the main LM as RLM tools (see ``model_as_tool`` and
-  ``rlm_kit.skills``), so the decision stays in the LM's hands and lands in the
+  ``rlm_harness.skills``), so the decision stays in the LM's hands and lands in the
   trajectory.
 - Multi-model routing is done today via ``model_as_tool`` (LM-decided), not the
   unmerged official ``sub_lms`` API. When ``sub_lms`` ships, swap it in without

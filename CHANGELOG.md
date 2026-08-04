@@ -1,8 +1,8 @@
 # Changelog
 
-All notable changes to `rlm-kit`. Format loosely follows
+All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
-`rlm_kit/__init__.__version__` and `pyproject.toml` (kept in sync).
+`rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
 ## [1.0.0] - 2026-08-04
 
@@ -12,7 +12,7 @@ appeared in `pyproject.toml` and in consumers' lockfiles never corresponded to a
 so they are folded into this entry rather than kept as a fictional release history.
 
 1.0.0 is a promise about the surface, not a claim that development is finished: `__init__.__all__`,
-the `rlm-kit/trace/v1` wire format, and `RLMTask`'s declaration fields are frozen under
+the `rlm-harness/trace/v1` wire format, and `RLMTask`'s declaration fields are frozen under
 [SemVer](https://semver.org/) and pinned by `tests/test_contract.py`. Additions ship in a minor
 release; a rename or removal ships with an alias and a `DeprecationWarning` first, and the removal
 itself waits for the next major — the pre-1.0 habit of hard-renaming and updating consumers in
@@ -22,6 +22,31 @@ outside the promise.
 
 Contents: the harness-engineering layer, plus the hardening surfaced by dogfooding nine real
 downstream consumers.
+
+### Renamed before first publish: `rlm-kit` → `rlm-harness`
+
+The project was developed as `rlm-kit`. PyPI refused that name — it collapses to the same normalised
+form as the existing, actively-maintained [`rlmkit`](https://pypi.org/project/rlmkit/) ("a
+state-machine framework for recursive LLM agents"). The block is correct rather than bureaucratic:
+two packages one separator apart, both about recursive LM agents, is a genuine confusion surface, and
+the other project was there first.
+
+Rather than publish under a name that differs from the repository, all three public identities were
+moved together: the PyPI distribution, the GitHub repository, and the import name are now
+`rlm-harness` / `rlm_harness`. A user checking that a package's PyPI page and its source repository
+carry the same name is doing real phishing triage, and that check should not fail on our own package.
+The name is not an invention — the codebase already called itself the harness throughout
+(`make_harness_tool`, `serve_harness`, "the harness-engineering layer").
+
+**The trace schema identity moved with it: `rlm-kit/trace/v1` → `rlm-harness/trace/v1`.** The `v1` is
+deliberately unchanged — the *shape* is byte-identical, only the vendor tag differs, and every reader
+in this kit and in all nine consumers keys off `type`, never off `schema` (verified by audit before
+the change). A trace written before this rename is therefore still readable by every exporter and by
+`replay`; the two strings denote the same format. This is a one-time, pre-publication change made
+while the format had exactly zero external readers. It is not a precedent: `SCHEMA` is frozen from
+1.0.0 onward, and a real breaking change is still a `v2` with a migration.
+
+Environment variables were already `RLM_*` (not `RLM_KIT_*`) and are untouched.
 
 ### Added — `trace.payload_cause` + `export_actions` carries the cause: the same distinction, across the trace boundary
 
@@ -48,8 +73,8 @@ degrades to exactly the `ok` boolean. `export_actions` now emits `outcome.cause`
 `outcome.error`, preferring an explicitly recorded `cause=` over the derivation — the write side is
 the code that knows.
 
-The four `CAUSE_*` constants moved to `rlm_kit.trace`, which owns them, and are re-exported from
-`rlm_kit.tools` unchanged: a live result and a recorded payload must answer this question with the
+The four `CAUSE_*` constants moved to `rlm_harness.trace`, which owns them, and are re-exported from
+`rlm_harness.tools` unchanged: a live result and a recorded payload must answer this question with the
 same four words, or the distinction gets collapsed again at the trace boundary.
 
 `record_tool_call`'s docstring now states the two write-side hazards, both observed in shipped
@@ -109,7 +134,7 @@ mutually distinguishable — without it, the other three could pass with `cause`
   a phantom section, while the key count, the names and the order all still looked correct, so
   nothing downstream could notice. Found by an independent adversarial audit; pinned by a test over
   every one of the eleven separators.
-- **`rlm_kit/README.md`, "Delegate to another harness — or be one"** gains three rules dogfooding
+- **`rlm_harness/README.md`, "Delegate to another harness — or be one"** gains three rules dogfooding
   surfaced: use `bundle_artifact` rather than a private format; adapt in `serve.py` when your `run`
   does not already match `run(source: str, run_id=…)` (resolve the caller's text through your own
   public seam, absorb the kit's `run_id` when you have a more meaningful one, and RAISE rather than
@@ -135,7 +160,7 @@ mutually distinguishable — without it, the other three could pass with `cause`
   `RLMTask(cancel_event=a_threading.Event)` (an externally-set cancel for a caller with a "Cancel"
   UI). A fired timeout raises dspy's own recoverable `CodeInterpreterError` (the model retries next
   turn against a freshly-respawned sandbox); a fired cancel raises the new `SandboxCancelled`
-  (exported from `rlm_kit`) — deliberately NOT a `CodeInterpreterError` subclass, so it is a genuine,
+  (exported from `rlm_harness`) — deliberately NOT a `CodeInterpreterError` subclass, so it is a genuine,
   non-recoverable run-ending failure. `_retry.py`'s `run_with_retry` gained a generic `non_retryable`
   allowlist parameter (dspy-free, matching its own existing design), and `RLMTask.arun()` passes
   `SandboxCancelled` through it — without that wiring, the retry engine's own blanket
@@ -148,9 +173,9 @@ mutually distinguishable — without it, the other three could pass with `cause`
   respawn-and-retry recovery; round 2 found the fix for the latter still didn't check the fired
   reason on a clean return, plus an accidentally-unconditional watcher thread; round 3 found one
   remaining exception type (`SyntaxError`) that could still race past the guard. See `CLAUDE.md`'s
-  new sandbox-watchdog invariant and `rlm_kit/README.md`'s "Sandbox turn timeout + cancellation"
+  new sandbox-watchdog invariant and `rlm_harness/README.md`'s "Sandbox turn timeout + cancellation"
   section for the full mechanism.
-- **`rlm_kit.rubric` — reward-free rubric primitives (consumer-driven promotion).** The pydantic types
+- **`rlm_harness.rubric` — reward-free rubric primitives (consumer-driven promotion).** The pydantic types
   `Criterion` / `RubricCriteria` / `CriterionFact`, plus `rubric_to_meta` / `rubric_from_meta` /
   `validate_rubric` and a pure `criteria_facts(criteria, facts, lens)` assembly loop, lifted from the
   byte-identical rubric substrate several downstream consumers had each copied (and had begun to drift).
@@ -161,7 +186,7 @@ mutually distinguishable — without it, the other three could pass with `cause`
   (trajectories-never-reward). The `run_start` meta `rubric` wire shape is unchanged, so existing traces
   re-render/re-export as before.
 - **`serve_harness` — the SERVER-side mirror of `make_harness_tool`, so connecting a downstream harness
-  needs no bespoke glue (`rlm_kit/serving.py` + `python -m rlm_kit.harness_serve`).** `make_harness_tool`
+  needs no bespoke glue (`rlm_harness/serving.py` + `python -m rlm_harness.harness_serve`).** `make_harness_tool`
   is the CLIENT (a parent RLM wraps a harness as a tool via an injected `call_endpoint`); `serve_harness`
   is the SERVER — it turns any RLMTask harness into a process that speaks the delegation contract: reads
   the caller's long text from stdin (→ the child's RLM environment), runs the harness, and prints ONE
@@ -170,13 +195,13 @@ mutually distinguishable — without it, the other three could pass with `cause`
   plumbing (stdin, run_id, CWD isolation, the wire schema, exit codes, keeping the harness's identity +
   tracebacks OFF stdout); the consuming harness supplies only a ~5-line `serve` module in its OWN repo
   mapping its result into a `HarnessPointer` (`to_pointer`) — or, for a flat result, uses the duck-typed
-  `python -m rlm_kit.harness_serve <module:run>` with zero files. The operator points the client endpoint
+  `python -m rlm_harness.harness_serve <module:run>` with zero files. The operator points the client endpoint
   straight at the harness, no intermediate project. Exports: `serve_harness`, `HarnessPointer`. dspy-free;
   vendor-neutral (the kit names no harness). 10 offline tests. Discoverability: a copyable worked
   example (`examples/harness_serve.py`) + step 6 ("Delegate to another harness — or be one", covering
-  BOTH the client and server sides) in the consumer guide (`rlm_kit/README.md`).
-- **`make_harness_tool` — delegate a sub-task to ANOTHER rlm-kit harness, wrapped as a tool
-  (`rlm_kit/tools/harness.py`).** The promoted, generic "wrap a downstream harness as a tool" shape
+  BOTH the client and server sides) in the consumer guide (`rlm_harness/README.md`).
+- **`make_harness_tool` — delegate a sub-task to ANOTHER rlm-harness harness, wrapped as a tool
+  (`rlm_harness/tools/harness.py`).** The promoted, generic "wrap a downstream harness as a tool" shape
   (the base/wrap sibling of `make_model_tool`, which it thinly REUSES for retry/validate/circuit-break),
   adding only a child-rollout LINK. Its reason to exist is the RLM framework's native advantage: an
   input field holds near-unbounded text that dspy injects as the Root LM's REPL environment — so a
@@ -195,13 +220,13 @@ mutually distinguishable — without it, the other three could pass with `cause`
   forwarding `subscription = ["<consumer>[subscription]"]`, so a studio-scoped
   `uv run --package <consumer>-studio --extra live --extra subscription …` is portable across every
   downstream (a studio-scoped uv command resolves extras against the member, not the root).
-- **`rlm_kit.testing.assert_repl_safe(tool)` — enforce the "REPL tools expose explicit params" invariant.**
+- **`rlm_harness.testing.assert_repl_safe(tool)` — enforce the "REPL tools expose explicit params" invariant.**
   Any callable injected into the RLM REPL has its sandbox proxy built from `inspect.signature(func)` (both
   backends), so a `*args`/`**kwargs` param — or a required param after a defaulted one — silently breaks
   the model's ability to call it (the `_make_tool` kwargs bug). This convention was documented but never
   tested; the helper asserts it and `tests/test_repl_safety.py` sweeps every shipped factory. A consumer
   exposing its own tools should assert the same. New CLAUDE.md invariant records the rule.
-- **`rlm_kit.testing` — drive the RLM forward path OFFLINE (`ScriptedInterpreter` + `scripted_lm`), plus
+- **`rlm_harness.testing` — drive the RLM forward path OFFLINE (`ScriptedInterpreter` + `scripted_lm`), plus
   a `RLMTask(interpreter=…)` injection seam.** `dspy.RLM` runs the model's Python in a sandboxed
   interpreter, so the *forward* loop (planner turn → tool call → SUBMIT → validated result) normally needs
   a paid model + a Deno subprocess — which is why the kit's own tests and every consumer stop at
@@ -212,7 +237,7 @@ mutually distinguishable — without it, the other three could pass with `cause`
   STEP — dispatch a real tool (so its tracing runs) or SUBMIT a final result. Paired with `scripted_lm`
   (a `DummyLM` whose canned turns parse under the kit's JSON adapter) and injected via
   `RLMTask(interpreter=…)`, it drives the whole `planner → tools → result` chain with **no model, no
-  Deno, no network**. `rlm_kit.testing` imports dspy LAZILY, so `import rlm_kit` / the dspy-free modules
+  Deno, no network**. `rlm_harness.testing` imports dspy LAZILY, so `import rlm_harness` / the dspy-free modules
   are untouched. It is a TEST seam: an injected interpreter OBJECT overrides `config.interpreter` and
   bypasses `sandbox.build_interpreter` (and its insecure-interpreter guard) exactly like an injected
   `DummyLM` bypasses the real model — the caller supplies the double explicitly. The default string path
@@ -234,7 +259,7 @@ mutually distinguishable — without it, the other three could pass with `cause`
   on a hang. Opt-in and configurable via `RLMConfig(interpreter="container", container=ContainerConfig(…))`
   / `RLM_INTERPRETER=container` + `RLM_CONTAINER_*` (image, timeout, memory, pids_limit, cpus,
   cap_drop, read_only, workdir, network); **the default stays `pyodide`**. Needs the `docker` CLI (a
-  runtime check, not a Python dep — `import rlm_kit` stays dspy-free AND docker-free via a lazy import
+  runtime check, not a Python dep — `import rlm_harness` stays dspy-free AND docker-free via a lazy import
   in `sandbox.build_interpreter`'s `"container"` branch). No trace-schema change: the broker runs
   host-side, so `tool_call`/`main_step` recording is unchanged. The `local` refusal is untouched.
 - **`make_command_tool` — a traced, sync `run_command` tool over a consumer-supplied ISOLATED
@@ -258,7 +283,7 @@ mutually distinguishable — without it, the other three could pass with `cause`
   payload field is the additive hook to add if a consumer ever needs model-managed sessions.
   `examples/command_runner.py` is a reference stateless *inspect* runner (fresh `--rm --network=none`
   container per call, read-only mount, in-container `timeout`, memory/pids caps).
-  `make_command_tool` / `CommandResult` export from `rlm_kit.tools`. (Necessary shape, not premature:
+  `make_command_tool` / `CommandResult` export from `rlm_harness.tools`. (Necessary shape, not premature:
   `dspy.RLM`'s pyodide/deno interpreter is WASM Python and cannot spawn a subprocess — verified — so
   shell execution can only come from a host-side tool.)
 - **`make_json_schema_validator` — validate a parsed object against a JSON Schema (draft 2020-12).**
@@ -267,29 +292,29 @@ mutually distinguishable — without it, the other three could pass with `cause`
   and layers its own bespoke checks on top; the kit owns only the validator wiring. Returns the
   violation messages (`"<path>: <reason>"`, truncated at `max_errors` so a huge invalid doc can't
   flood the trace) for a parsed dict — parsing stays the consumer's job, so it composes with any
-  extract/parse step. `jsonschema` is an OPTIONAL dependency (`rlm-kit[jsonschema]`), imported lazily
-  so `import rlm_kit` and the dspy-free `tools` package stay lean. Consumer-driven: a downstream
+  extract/parse step. `jsonschema` is an OPTIONAL dependency (`rlm-harness[jsonschema]`), imported lazily
+  so `import rlm_harness` and the dspy-free `tools` package stay lean. Consumer-driven: a downstream
   consumer was hand-rolling structural gates that drift from the real upstream format; this is the
   reusable half of moving to authoritative schema validation.
-- **`get_sub_lm` promoted to the public surface** (`rlm_kit.get_sub_lm`; lazy re-export, keeps
-  `import rlm_kit` dspy-free). Returns the base sub-LM `configure` built — the instance a consumer
+- **`get_sub_lm` promoted to the public surface** (`rlm_harness.get_sub_lm`; lazy re-export, keeps
+  `import rlm_harness` dspy-free). Returns the base sub-LM `configure` built — the instance a consumer
   wraps with `intercept_sub_lm` before passing as `RLMTask(sub_lm=...)`. Consumer-driven: TWO
-  independent consumers were reaching into `rlm_kit.runtime.get_sub_lm` (a submodule internal) because
+  independent consumers were reaching into `rlm_harness.runtime.get_sub_lm` (a submodule internal) because
   the kit exposed no public way to get the configured sub-LM; per the "add a named hook, don't reach
   into a `_private` name" rule it is now that hook. Using it (vs reconstructing `dspy.LM(cfg.sub_model,
   …)`) keeps a single source of truth so the wrapped model can't drift from `configure`.
 - **Public LM-injection seam + `get_config` accessor** (`configure(cfg, main_lm=…, sub_lm=…)`,
-  `rlm_kit.get_config`). `configure` now accepts a pre-built `main_lm` / `sub_lm` and uses it
+  `rlm_harness.get_config`). `configure` now accepts a pre-built `main_lm` / `sub_lm` and uses it
   verbatim instead of constructing one from config — a `dspy.utils.DummyLM` in tests, or a cached /
   custom client in production. `get_config` (lazy re-export) reads the active `RLMConfig` back.
   Consumer-driven: consumer test suites (and the kit's own) were poking private
-  `rlm_kit.runtime._STATE` to inject a fake LM because there was no public path; this closes that
+  `rlm_harness.runtime._STATE` to inject a fake LM because there was no public path; this closes that
   reach-in. Backward-compatible (keyword-only, default `None`); no wire-format change.
-- **The trace/v1 `EVENT_*` type constants are now exported** (`rlm_kit.EVENT_RUN_START`,
+- **The trace/v1 `EVENT_*` type constants are now exported** (`rlm_harness.EVENT_RUN_START`,
   `EVENT_MAIN_STEP`, `EVENT_SUB_CALL`, `EVENT_TOOL_CALL`, `EVENT_FINAL`, `EVENT_RESULT`,
   `EVENT_RUN_END`). A trace reader matches on these instead of hardcoding wire strings like `"result"`.
   Additive to `__all__`; the strings themselves are unchanged and still pinned by `test_contract.py`.
-- **Reusable resolved-IP SSRF guard for the `direct`-fetch pattern** (`rlm_kit.tools.resolved_host_is_safe`
+- **Reusable resolved-IP SSRF guard for the `direct`-fetch pattern** (`rlm_harness.tools.resolved_host_is_safe`
   + `parse_cidrs`). `is_safe_url` is only syntactic; the DNS-rebinding re-check (re-resolve each hop,
   refuse a private/reserved address) was left to each consumer's fetcher — and every consumer re-derived
   it. `resolved_host_is_safe(host, port, *, allow_nets=())` now ships that check ONCE, with an
@@ -305,11 +330,11 @@ mutually distinguishable — without it, the other three could pass with `cause`
   Previously the knob was pinned at dspy's default; now it rides the same best-effort
   passthrough as `max_iterations` / `max_llm_calls`. (Distinct from `max_tokens`,
   which caps the model's own generation.)
-- **MCP client — connect an external MCP server's tools to an RLM** (`rlm_kit.mcp.mcp_tools`,
-  optional `rlm-kit[mcp]`). `with mcp_tools(server) as tools:` connects to someone else's
+- **MCP client — connect an external MCP server's tools to an RLM** (`rlm_harness.mcp.mcp_tools`,
+  optional `rlm-harness[mcp]`). `with mcp_tools(server) as tools:` connects to someone else's
   [MCP](https://modelcontextprotocol.io) server (a local stdio command, or a remote streamable-HTTP
   URL), discovers its tools, and yields them as ready-to-use `dspy.Tool`s for `RLMTask(tools=…)`;
-  the connection is live for the block and torn down on exit. rlm-kit is a CLIENT only (never a
+  the connection is live for the block and torn down on exit. rlm-harness is a CLIENT only (never a
   server, bundles none). The crux: the MCP SDK is async but dspy.RLM invokes tools synchronously, so
   the session runs in a dedicated background thread + event loop and each call bridges via
   `run_coroutine_threadsafe(...).result(timeout)` — dspy's own `Tool.from_mcp_tool` yields an ASYNC
@@ -319,13 +344,13 @@ mutually distinguishable — without it, the other three could pass with `cause`
   against a real server. Each call records a `tool_call` (trace/v1, no schema change). MCP tools run HOST-SIDE (outside the sandbox; a stdio server is a spawned
   subprocess) — treat the server as a trusted dependency and its output as a prompt-injection
   surface. `mcp.py` lives outside the dspy-free `tools/` and `mcp_tools` is a lazy export, so
-  `import rlm_kit` stays dspy/mcp-free.
+  `import rlm_harness` stays dspy/mcp-free.
 - **The extension contract is now documented AND guarded** (`CLAUDE.md`, `README.md`,
-  `tests/test_contract.py`) — so the next consumer builds on rlm-kit without reverse-engineering it.
+  `tests/test_contract.py`) — so the next consumer builds on rlm-harness without reverse-engineering it.
   A README **"Building a consumer"** section states the 5-step recipe, the promotion rule
   (generic → kit via the base/wrap split; specific → consumer), and the rollout-vs-reward stage
   boundary; three matching CLAUDE.md hard invariants pin the contract — the trace is a VERSIONED
-  `rlm-kit/trace/v1` wire format (additive-only within v1; removing/renaming/re-typing an event type,
+  `rlm-harness/trace/v1` wire format (additive-only within v1; removing/renaming/re-typing an event type,
   envelope key, or established payload field is a `v2` break), the kit produces TRAJECTORIES not
   reward (every exporter carries a `reward=` hook the downstream trainer fills), and the public
   surface is `__all__` (consumers EXTEND via subclass + base/wrap + read-the-trace; if a seam is
@@ -335,7 +360,7 @@ mutually distinguishable — without it, the other three could pass with `cause`
   / `export_rl` record shapes + the public `__all__` — so a kit change that would silently break a
   downstream reader (a consumer's report + RL export, a consumer UI's replay) fails HERE in
   the kit's own suite, not opaquely in the consumer. (+7 tests → 148.)
-- **README "Built with rlm-kit" adopters section** (`README.md`, `CLAUDE.md`). A single,
+- **README "Built with rlm-harness" adopters section** (`README.md`, `CLAUDE.md`). A single,
   clearly-delimited list of real, PUBLIC downstream projects built on the kit (currently
   `cve-reverser`), plus a neutral maintainer-contact line. It is an adopters list, NOT design
   coupling: the kit's mechanics, examples, API docs, and commit messages still describe consumers
@@ -480,9 +505,9 @@ mutually distinguishable — without it, the other three could pass with `cause`
   REPL. *(trace.py, tools/)*
 - **GEPA harness skeleton** (`optimize.py`): metric templates now; `compile_task`
   is a documented Phase-2 stub.
-- **`ClaudeAgentLM` — run rlm-kit on a Claude Pro/Max SUBSCRIPTION (no API key), now shipped in
-  the kit.** `from rlm_kit import ClaudeAgentLM` behind the opt-in extra
-  `pip install "rlm-kit[subscription]"`: a `dspy.BaseLM` adapter over the official Claude Agent SDK
+- **`ClaudeAgentLM` — run rlm-harness on a Claude Pro/Max SUBSCRIPTION (no API key), now shipped in
+  the kit.** `from rlm_harness import ClaudeAgentLM` behind the opt-in extra
+  `pip install "rlm-harness[subscription]"`: a `dspy.BaseLM` adapter over the official Claude Agent SDK
   (the sanctioned path for individual subscribers), injected through the existing
   `configure(main_lm=…, sub_lm=…)` seam — zero kit-core changes. Every call is a pure completion
   (`tools=[]`, `setting_sources=[]`, no agent loop), the async SDK is bridged to dspy's sync/async
@@ -491,7 +516,7 @@ mutually distinguishable — without it, the other three could pass with `cause`
   `json` adapter's `response_format` is translated to the SDK's native schema-validated
   `output_format` (with `max_turns` headroom for its validation step), and a leftover
   `ANTHROPIC_API_KEY` fails fast so a subscription run can't silently bill API credit. Lazily
-  exported (PEP 562) with the `claude-agent-sdk` import deferred to construction, so `import rlm_kit`
+  exported (PEP 562) with the `claude-agent-sdk` import deferred to construction, so `import rlm_harness`
   stays dspy/SDK-free (the `mcp_tools` pattern). Previously lived only under `examples/` (not in the
   wheel), which forced every downstream consumer to vendor a byte-identical copy;
   `examples/claude_agent_lm.py` now shrinks to the runnable demo.
@@ -501,11 +526,11 @@ mutually distinguishable — without it, the other three could pass with `cause`
   (validity flags, objective metrics, a rubric's deterministic per-criterion facts) that ride BESIDE the
   trajectory records — so a downstream trainer reads ONE canonical bundle shape instead of each consumer
   re-deriving it. `runs` is positional-only so a label surface may itself be named `runs`; `reward` is a
-  REFUSED surface name (rlm-kit produces trajectories, never reward — the trainer composes reward from
+  REFUSED surface name (rlm-harness produces trajectories, never reward — the trainer composes reward from
   these labels plus its own credit assignment). Consumer-driven: promoted from a downstream consumer's
   per-run labelling so every consumer shares one bundle shape.
 - **Public multi-server MCP catalog: `McpConnection` + `McpCatalog` + `result_text`** (`mcp.py`,
-  optional `rlm-kit[mcp]`). Alongside the single-server `mcp_tools(...)` convenience (one server's tools
+  optional `rlm-harness[mcp]`). Alongside the single-server `mcp_tools(...)` convenience (one server's tools
   as self-tracing `dspy.Tool`s), the kit now exposes a MULTI-server, queryable transport for a consumer
   building a PROGRESSIVE tool surface: list servers → `load` one on demand → read its RAW MCP `Tool`s →
   `call`. `McpCatalog(specs)` manages one `McpConnection` per server — the now-public single-server bridge
@@ -542,18 +567,18 @@ mutually distinguishable — without it, the other three could pass with `cause`
   signature). Regression tests in `tests/test_mcp.py`; the class is now guarded kit-wide by
   `assert_repl_safe` (see Added).
 - **The co-dev editable overlay no longer shadows a consumer's namespace `tests/`** (dropped
-  `tests/__init__.py`; guard test in `tests/test_packaging.py`). A consumer co-develops rlm-kit by
-  overlaying an editable install (`uv pip install -e ../rlm-kit`), whose bare-path `.pth` puts the repo
-  ROOT on the consumer's `sys.path`. Because rlm-kit shipped `tests/__init__.py` (a REGULAR package), a
-  consumer's `import tests` bound to rlm-kit's `tests/` and SHADOWED the consumer's own namespace
+  `tests/__init__.py`; guard test in `tests/test_packaging.py`). A consumer co-develops rlm-harness by
+  overlaying an editable install (`uv pip install -e ../rlm-harness`), whose bare-path `.pth` puts the repo
+  ROOT on the consumer's `sys.path`. Because rlm-harness shipped `tests/__init__.py` (a REGULAR package), a
+  consumer's `import tests` bound to rlm-harness's `tests/` and SHADOWED the consumer's own namespace
   `tests/` — regardless of `sys.path` order (PEP 420: a regular package at any later entry beats an
-  earlier namespace portion) — breaking its `from tests.conftest import ...` collection. rlm-kit's
-  `tests/` is now a namespace dir (the `__init__.py` was empty; the suite is unchanged), so `rlm_kit`
+  earlier namespace portion) — breaking its `from tests.conftest import ...` collection. rlm-harness's
+  `tests/` is now a namespace dir (the `__init__.py` was empty; the suite is unchanged), so `rlm_harness`
   is the only regular package in the repo and the shadow is gone; a guard test keeps it that way. Wheel
-  users were never affected (the wheel ships `rlm_kit` only). Note: rlm-kit and a consumer may share a
+  users were never affected (the wheel ships `rlm_harness` only). Note: rlm-harness and a consumer may share a
   test basename (e.g. `tests/test_config.py`) — harmless under pytest (namespace-dir tests import by
   file, not package path), but an explicit `import tests.test_config` in consumer code could resolve to
-  rlm-kit's copy under the overlay; keep test basenames project-unique if that ever matters.
+  rlm-harness's copy under the overlay; keep test basenames project-unique if that ever matters.
 - **No more "Unclosed connector" warning from litellm** (`runtime.py`). litellm
   (dspy's LM backend) defaults to an aiohttp transport whose pooled `ClientSession`
   is bound to the per-run `asyncio.run` loop; when that loop closes, aiohttp logs a
@@ -738,7 +763,7 @@ mutually distinguishable — without it, the other three could pass with `cause`
   overview with a docs index, the adopters section, the security note, and develop/status. The deep
   documentation — layout, the harness-engineering layer, the tool surfaces, the rollout conventions,
   "Building a consumer", full configuration, and the offline forward-path harness — moved verbatim to
-  **`rlm_kit/README.md` ("the guide")**, which GitHub renders when browsing the package folder and
+  **`rlm_harness/README.md` ("the guide")**, which GitHub renders when browsing the package folder and
   hatchling ships inside the wheel. Cross-references in `CLAUDE.md` / `CONTRIBUTING.md` now point at
   the guide; external deep links into the old top-README sections need re-pointing.
 

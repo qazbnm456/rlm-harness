@@ -6,7 +6,7 @@ A model-as-tool — a SECONDARY model the RLM root calls as a tool to PRODUCE so
 The reusable mechanics are: call the model, retry only *transient* endpoint errors,
 capture the answer + any thinking-mode reasoning, then run a validator on the output.
 
-rlm-kit owns ONLY that generic core. The consuming project supplies the ``chat_fn`` (its
+rlm-harness owns ONLY that generic core. The consuming project supplies the ``chat_fn`` (its
 endpoint/model/prompt), a ``validate`` callable (its domain validator), and — around the
 returned ``ModelToolResult`` — its own tool name, result-message wording, and tracing
 (exactly as the fetch / web_search consumers wrap their bases). The factory returns a
@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # What produced this result: `ok=False` has THREE distinct causes and they are not
-# interchangeable — see `ModelToolResult.cause`. RE-EXPORTED from `rlm_kit.trace`, which owns them,
+# interchangeable — see `ModelToolResult.cause`. RE-EXPORTED from `rlm_harness.trace`, which owns them,
 # because a live result and a RECORDED payload must answer this question with the same four words;
 # two vocabularies for one distinction is how it gets collapsed again at the trace boundary
 # (`trace.payload_cause` is the read side).

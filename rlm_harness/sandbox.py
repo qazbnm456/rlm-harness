@@ -100,7 +100,7 @@ def build_interpreter(
         # The environment interpreter: the REPL runs inside an isolated container so model
         # code can spawn subprocesses natively. NOT routed through INSECURE_INTERPRETERS — it
         # is a STRONGER boundary than the WASM sandbox, the opposite of `local`. Lazily imported
-        # (it is dspy-bearing) so this module and ``import rlm_kit`` stay dspy-free.
+        # (it is dspy-bearing) so this module and ``import rlm_harness`` stay dspy-free.
         return _build_container_interpreter(container)
 
     if normalized in INSECURE_INTERPRETERS:

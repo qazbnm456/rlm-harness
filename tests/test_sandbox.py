@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from rlm_kit.sandbox import (
+from rlm_harness.sandbox import (
     _JSON_LITERAL_ALIASES,
     SandboxCancelled,
     SandboxSecurityError,

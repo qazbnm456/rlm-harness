@@ -14,8 +14,8 @@ its tracing runs for real) or SUBMIT a final result (terminating the loop). Pair
 (a ``DummyLM`` whose canned turns parse under the kit's JSON adapter) and injected via
 ``RLMTask(interpreter=...)``, it drives the whole ``planner -> tools -> result`` chain with zero cost.
 
-This module imports ``dspy`` LAZILY (inside functions), so ``import rlm_kit.testing`` stays cheap and the
-``import rlm_kit`` / dspy-free-module invariants are untouched. It is a TEST seam: the injected
+This module imports ``dspy`` LAZILY (inside functions), so ``import rlm_harness.testing`` stays cheap and the
+``import rlm_harness`` / dspy-free-module invariants are untouched. It is a TEST seam: the injected
 interpreter bypasses ``sandbox.build_interpreter`` (and therefore the insecure-interpreter guard) exactly
 like an injected ``DummyLM`` bypasses the real model — the caller supplies the double explicitly and owns
 it. The default string path (``RLMConfig(interpreter=...)`` -> ``build_interpreter``) is unchanged and
@@ -40,7 +40,7 @@ def assert_repl_safe(tool: Any) -> None:
     """Assert ``tool`` is safe to inject into the RLM's REPL (``RLMTask(tools=[...])``).
 
     dspy.RLM builds the in-sandbox tool proxy from ``inspect.signature(tool.func)`` — NOT from
-    ``dspy.Tool.args`` — and this holds for BOTH the Deno ``PythonInterpreter`` and rlm-kit's
+    ``dspy.Tool.args`` — and this holds for BOTH the Deno ``PythonInterpreter`` and rlm-harness's
     ``ContainerInterpreter`` (each reads the wrapped func's signature). Two consequences no
     CONSTRUCTION test can see, only a real REPL call:
 

@@ -16,8 +16,8 @@ pytest.importorskip("dspy.primitives.code_interpreter")
 
 from dspy.primitives.code_interpreter import CodeInterpreterError, FinalOutput
 
-from rlm_kit.config import ContainerConfig
-from rlm_kit.container_interpreter import ContainerInterpreter, _spawn_subprocess
+from rlm_harness.config import ContainerConfig
+from rlm_harness.container_interpreter import ContainerInterpreter, _spawn_subprocess
 
 
 def _interp(**cfg_kw) -> ContainerInterpreter:
@@ -170,7 +170,7 @@ def test_container_config_from_env(monkeypatch):
     cfg = ContainerConfig.from_env()
     assert cfg.image == "custom:tag" and cfg.timeout_s == 45.0 and cfg.pids_limit == 128
 
-    from rlm_kit import RLMConfig
+    from rlm_harness import RLMConfig
 
     rc = RLMConfig.from_env()
     assert rc.interpreter == "pyodide"                        # default interpreter is UNCHANGED
@@ -178,7 +178,7 @@ def test_container_config_from_env(monkeypatch):
 
 
 def test_build_interpreter_selects_container_lazily():
-    from rlm_kit.sandbox import build_interpreter
+    from rlm_harness.sandbox import build_interpreter
 
     interp = build_interpreter("container", container=ContainerConfig(memory="256m"))
     assert isinstance(interp, ContainerInterpreter)           # construction spawns nothing
@@ -186,7 +186,7 @@ def test_build_interpreter_selects_container_lazily():
 
 
 def test_local_refusal_is_untouched():
-    from rlm_kit.sandbox import SandboxSecurityError, build_interpreter
+    from rlm_harness.sandbox import SandboxSecurityError, build_interpreter
 
     with pytest.raises(SandboxSecurityError):                 # container must not have loosened this
         build_interpreter("local")
@@ -195,7 +195,7 @@ def test_local_refusal_is_untouched():
 # ---- docker argv construction (pure function, no daemon) ----
 
 def test_docker_argv_defaults_are_capped_but_uncpu_unmounted():
-    from rlm_kit.container_interpreter import _docker_argv
+    from rlm_harness.container_interpreter import _docker_argv
 
     argv = _docker_argv("AGENT", ContainerConfig(), "n1")
     assert "--network=none" in argv
@@ -209,14 +209,14 @@ def test_docker_argv_defaults_are_capped_but_uncpu_unmounted():
 
 
 def test_docker_argv_cpus_and_cap_drop_toggle():
-    from rlm_kit.container_interpreter import _docker_argv
+    from rlm_harness.container_interpreter import _docker_argv
 
     argv = _docker_argv("A", ContainerConfig(cpus="2", cap_drop=False), "n")
     assert "--cpus=2" in argv and "--cap-drop=ALL" not in argv
 
 
 def test_docker_argv_read_only_adds_tmpfs_and_tmpdir():
-    from rlm_kit.container_interpreter import _docker_argv
+    from rlm_harness.container_interpreter import _docker_argv
 
     argv = _docker_argv("A", ContainerConfig(read_only=True), "n")
     assert "--read-only" in argv
@@ -225,7 +225,7 @@ def test_docker_argv_read_only_adds_tmpfs_and_tmpdir():
 
 
 def test_docker_argv_workdir_mounts_read_only():
-    from rlm_kit.container_interpreter import _docker_argv
+    from rlm_harness.container_interpreter import _docker_argv
 
     argv = _docker_argv("A", ContainerConfig(workdir="/repo"), "n")
     assert "-v" in argv and "/repo:/workspace:ro" in argv and "-w" in argv and "/workspace" in argv
@@ -245,7 +245,7 @@ def test_container_config_phase2_env(monkeypatch):
 
 def test_spawn_docker_rejects_missing_workdir(monkeypatch):
     # workdir validation fires before spawning, so this needs no real daemon (docker is mocked present).
-    import rlm_kit.container_interpreter as ci
+    import rlm_harness.container_interpreter as ci
 
     monkeypatch.setattr(ci.shutil, "which", lambda _cmd: "/usr/bin/docker")
     with pytest.raises(CodeInterpreterError):
@@ -255,7 +255,7 @@ def test_spawn_docker_rejects_missing_workdir(monkeypatch):
 def test_spawn_docker_rejects_relative_workdir(monkeypatch, tmp_path):
     # A relative workdir that EXISTS under cwd passes isdir, but docker would mount it as an empty
     # NAMED VOLUME (silent-wrong). The programmatic path (bypassing from_env's abspath) must reject it.
-    import rlm_kit.container_interpreter as ci
+    import rlm_harness.container_interpreter as ci
 
     monkeypatch.setattr(ci.shutil, "which", lambda _cmd: "/usr/bin/docker")
     monkeypatch.chdir(tmp_path)

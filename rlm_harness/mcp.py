@@ -1,6 +1,6 @@
 """MCP client — expose an EXTERNAL MCP server's tools to an ``RLMTask`` as SYNC tools.
 
-rlm-kit is an MCP **client only**: it never runs a server and bundles none. You point
+rlm-harness is an MCP **client only**: it never runs a server and bundles none. You point
 ``mcp_tools(...)`` at someone else's server — a local stdio command, or a remote
 streamable-HTTP URL — and get that server's tools back as sync ``dspy.Tool``s ready for
 ``RLMTask(tools=…)``.
@@ -28,7 +28,7 @@ Two public surfaces:
   wrapper owns any ``tool_call`` — so it stays dspy-free and the consumer maps tools to its shape.
   ``result_text`` flattens a ``CallToolResult`` to text.
 
-Optional: needs ``pip install "rlm-kit[mcp]"``.
+Optional: needs ``pip install "rlm-harness[mcp]"``.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ def _require_mcp() -> None:
         import mcp  # noqa: F401
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ImportError(
-            "MCP support requires the optional dependency: pip install 'rlm-kit[mcp]'"
+            "MCP support requires the optional dependency: pip install 'rlm-harness[mcp]'"
         ) from exc
 
 
@@ -107,13 +107,13 @@ class McpConnection:
     ``server`` is a bare URL string, ``{"url": ...}`` (streamable-HTTP), or
     ``{"command": ..., "args": [...], "env": {...}}`` (stdio subprocess). After :meth:`start`,
     ``tools`` holds the server's listed MCP ``Tool`` objects; :meth:`call` returns the raw
-    ``CallToolResult`` (flatten it with :func:`result_text`). Needs ``rlm-kit[mcp]``."""
+    ``CallToolResult`` (flatten it with :func:`result_text`). Needs ``rlm-harness[mcp]``."""
 
     def __init__(self, server: ServerSpec, *, timeout: float = 30.0) -> None:
         self._server = server
         self._timeout = timeout
         self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._run, name="rlm-kit-mcp", daemon=True)
+        self._thread = threading.Thread(target=self._run, name="rlm-harness-mcp", daemon=True)
         self._ready = threading.Event()
         self._error: BaseException | None = None
         self._stop: asyncio.Event | None = None
@@ -241,7 +241,7 @@ class McpCatalog:
     runs on the connection's OWN background thread + loop (the caller's wait is ``timeout``-bounded,
     and a wedged connect is cancelled and reaped by :meth:`close`); **stdio** servers still connect
     eagerly in ``__init__`` (deferring a local subprocess spawn buys nothing, and keeps the spawn out
-    of the loop). ``connect="lazy"`` is opt-in/experimental. Needs ``rlm-kit[mcp]``."""
+    of the loop). ``connect="lazy"`` is opt-in/experimental. Needs ``rlm-harness[mcp]``."""
 
     def __init__(self, specs: list[dict], *, connect: str = "eager", timeout: float = 60.0) -> None:
         _require_mcp()
@@ -374,7 +374,7 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str)
 @contextlib.contextmanager
 def mcp_tools(server: ServerSpec, *, timeout: float = 30.0, prefix: str = "") -> Iterator[list]:
     """Connect to an EXTERNAL MCP server and yield its tools as sync ``dspy.Tool``s for
-    ``RLMTask(tools=…)``. rlm-kit is a CLIENT only — point this at someone else's server.
+    ``RLMTask(tools=…)``. rlm-harness is a CLIENT only — point this at someone else's server.
 
     ``server``: a stdio spec ``{"command": "npx", "args": ["-y", "some-mcp"], "env": {...}}``, or a
     streamable-HTTP spec ``{"url": "https://host/mcp"}`` (or a bare URL string). ``prefix`` is an
@@ -382,7 +382,7 @@ def mcp_tools(server: ServerSpec, *, timeout: float = 30.0, prefix: str = "") ->
 
     The connection is LIVE for the ``with`` block and torn down on exit (a stdio subprocess is
     terminated). Tool calls are SYNC (bridged from the SDK's async API). Each call records a
-    ``tool_call`` trace event. Needs ``rlm-kit[mcp]``.
+    ``tool_call`` trace event. Needs ``rlm-harness[mcp]``.
 
         with mcp_tools({"url": "https://mcp.example.com/mcp"}) as tools:
             result = MyTask(tools=tools).run(...)

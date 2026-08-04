@@ -14,7 +14,7 @@ pytest.importorskip("dspy")
 
 import dspy
 
-from rlm_kit.testing import assert_repl_safe
+from rlm_harness.testing import assert_repl_safe
 
 # ---- assert_repl_safe itself ---------------------------------------------
 
@@ -55,10 +55,10 @@ def test_assert_repl_safe_rejects_required_after_default():
 def test_all_shipped_repl_factories_are_safe(tmp_path):
     from pydantic import BaseModel
 
-    from rlm_kit.mcp import _make_tool
-    from rlm_kit.skills import load_skills_as_tools
-    from rlm_kit.sub_lm import model_as_tool
-    from rlm_kit.tools import (
+    from rlm_harness.mcp import _make_tool
+    from rlm_harness.skills import load_skills_as_tools
+    from rlm_harness.sub_lm import model_as_tool
+    from rlm_harness.tools import (
         make_command_tool,
         make_fetch_tool,
         make_model_tool,

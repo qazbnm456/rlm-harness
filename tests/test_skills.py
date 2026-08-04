@@ -1,11 +1,11 @@
 import pytest
 
-from rlm_kit.skills import (
+from rlm_harness.skills import (
     discover_skills,
     load_skills_as_tools,
     render_skills_manifest,
 )
-from rlm_kit.trace import EVENT_TOOL_CALL, TraceRecorder, load_events
+from rlm_harness.trace import EVENT_TOOL_CALL, TraceRecorder, load_events
 
 
 def _make_skill_dir(tmp_path):

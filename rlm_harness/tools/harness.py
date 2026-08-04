@@ -1,4 +1,4 @@
-"""Provider-agnostic ``make_harness_tool`` — delegate a sub-task to ANOTHER rlm-kit harness, wrapped
+"""Provider-agnostic ``make_harness_tool`` — delegate a sub-task to ANOTHER rlm-harness harness, wrapped
 as a tool (the promoted "wrap a downstream harness as a tool" shape; mirrors ``model.py``).
 
 A *harness* is a full RLM in its own right: it takes a long-text input, runs its own Root LM in a REPL
@@ -19,7 +19,7 @@ else, so the only thing a caller can hand across the boundary is its pre-assembl
 injects as the child's REPL environment). The point is not "call a sub-model"; it is "hand a big context
 to a harness that runs a full RLM loop over it."
 
-BASE/WRAP split (like the rest of ``tools/``). rlm-kit owns ONLY the generic core + the long-text-env
+BASE/WRAP split (like the rest of ``tools/``). rlm-harness owns ONLY the generic core + the long-text-env
 adapter. The consuming project supplies the ``call_endpoint`` (HOW to reach ITS harness — a subprocess
 command, an in-process entry, an HTTP URL; the kit ships NONE and names NONE, exactly as
 ``make_command_tool`` demands an injected ``Runner`` and ships no executor), a ``validate`` callable, and

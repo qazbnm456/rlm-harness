@@ -1,6 +1,6 @@
-# rlm-kit — the guide
+# rlm-harness — the guide
 
-The deep documentation for `rlm-kit`: what each module owns, the harness-engineering
+The deep documentation for `rlm-harness`: what each module owns, the harness-engineering
 layer (sub-LM hook + trajectory tracing), the tool surfaces, the rollout conventions,
 the consumer contract, and every configuration knob. For what the kit *is* — the
 pitch, the quickstart, and installation — start at the
@@ -15,7 +15,7 @@ pitch, the quickstart, and installation — start at the
 | `task.py` | `RLMTask` base class. |
 | `_retry.py` | Validation + retry engine (dspy-free, unit-tested). |
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
-| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-kit[jsonschema]`), SSRF-guarded `make_fetch_tool`, provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor), and `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages). |
+| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor), and `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages). |
 | `optimize.py` | GEPA harness — metric templates now, compile in Phase 2. |
 | `sub_lm.py` | `intercept_sub_lm` — wrap the RLM's sub-LM to trace every escalation as a `sub_call` (+ optional validate/post-process); `model_as_tool` for LM-decided multi-model routing. |
 | `skills.py` | `load_skills_as_tools` — expose a Skills directory to the RLM as tools. |
@@ -23,7 +23,7 @@ pitch, the quickstart, and installation — start at the
 | `replay.py` | Reconstruct/replay a recorded run using recorded tool outputs. |
 | `dataset.py` | `export_sft_turns` / `export_rl` / `export_actions` — turn traces into training datasets (`export_sft_turns` = per-root-turn SFT, the RLM recipe of arXiv 2512.24601); `run_label_bundle` — carry per-run LABEL surfaces beside the trajectory. |
 | `rubric.py` | Reward-free rubric primitives: the `Criterion`/`RubricCriteria`/`CriterionFact` types, `rubric_to_meta`/`rubric_from_meta`, `validate_rubric`, and a pure `criteria_facts(criteria, facts, lens)`. `category` is an OPAQUE caller-defined label — the kit imposes no taxonomy. See "Building a consumer". |
-| `claude_agent_lm.py` | `ClaudeAgentLM` — run rlm-kit on a Claude Pro/Max subscription: a `dspy.BaseLM` over the official Claude Agent SDK, injected via `configure(main_lm=…, sub_lm=…)`. Opt-in `rlm-kit[subscription]`; pure completions (no tools), lazily exported so `import rlm_kit` stays dspy/SDK-free. |
+| `claude_agent_lm.py` | `ClaudeAgentLM` — run rlm-harness on a Claude Pro/Max subscription: a `dspy.BaseLM` over the official Claude Agent SDK, injected via `configure(main_lm=…, sub_lm=…)`. Opt-in `rlm-harness[subscription]`; pure completions (no tools), lazily exported so `import rlm_harness` stays dspy/SDK-free. |
 | `examples/mini_run.py` | Minimal end-to-end live run — config + a tiny `RLMTask` through a real `dspy.RLM`, with the trajectory recorded and summarised. |
 | `examples/claude_agent_lm.py` | Runnable demo of `ClaudeAgentLM` — a tiny `RLMTask` through a real `dspy.RLM` on a subscription login. |
 
@@ -33,7 +33,7 @@ pitch, the quickstart, and installation — start at the
 multi-sub-model or depth>1 recursion. The clean lever is to **wrap a `dspy.LM`**:
 
 ```python
-from rlm_kit import intercept_sub_lm, model_as_tool, get_sub_lm, TraceRecorder, RLMConfig, configure
+from rlm_harness import intercept_sub_lm, model_as_tool, get_sub_lm, TraceRecorder, RLMConfig, configure
 
 configure(RLMConfig.from_env())
 base = get_sub_lm()          # the configured base sub-LM — single source of truth
@@ -200,22 +200,22 @@ Scope & caveats:
 ## MCP tools (connect an external MCP server)
 
 `mcp_tools(server)` exposes an **external** [MCP](https://modelcontextprotocol.io) server's tools to
-an `RLMTask` as ready-to-use tools. rlm-kit is a **client only** — it never runs a server and bundles
+an `RLMTask` as ready-to-use tools. rlm-harness is a **client only** — it never runs a server and bundles
 none; you point it at someone else's (a local stdio command, or a remote streamable-HTTP URL):
 
 ```python
-from rlm_kit import mcp_tools
+from rlm_harness import mcp_tools
 
 with mcp_tools({"url": "https://mcp.example.com/mcp"}) as tools:        # or {"command": "npx", "args": [...]}
     finding = MyTask(tools=tools).run(...)                              # the server's tools are now callable
 ```
 
-Needs the extra: `pip install "rlm-kit[mcp]"`.
+Needs the extra: `pip install "rlm-harness[mcp]"`.
 
 - **The connection is live for the `with` block** and torn down on exit (a stdio subprocess is
   terminated). Each tool call is recorded as a `tool_call` in the trace, like any other tool.
 - **Sync, despite an async SDK.** The MCP Python SDK is async, but dspy.RLM invokes tools
-  synchronously, so rlm-kit runs the session in a background thread and bridges each call across.
+  synchronously, so rlm-harness runs the session in a background thread and bridges each call across.
   (dspy's own `Tool.from_mcp_tool` makes an *async* tool for `dspy.ReAct` — it does not work on the
   RLM sandbox path, which is why `mcp_tools` exists.)
 - **Security: MCP tools run HOST-SIDE**, outside the sandbox — a stdio server is a subprocess this
@@ -229,7 +229,7 @@ Needs the extra: `pip install "rlm-kit[mcp]"`.
 — list servers, `load` one on demand, read its tools, `call` — use `McpCatalog`:
 
 ```python
-from rlm_kit import McpCatalog
+from rlm_harness import McpCatalog
 
 cat = McpCatalog([{"name": "docs", "url": "https://mcp.example.com/mcp"},
                   {"name": "shell", "command": "npx", "args": ["-y", "some-mcp"]}])
@@ -262,7 +262,7 @@ It enforces the sync contract, turns a failure into text the RLM reacts to, and 
 supply the `runner`.
 
 ```python
-from rlm_kit.tools import make_command_tool
+from rlm_harness.tools import make_command_tool
 
 run_command = make_command_tool(my_isolated_runner)     # your runner; the kit ships none
 finding = MyTask(tools=[run_command]).run(...)
@@ -328,7 +328,7 @@ export RLM_INTERPRETER=container         # default stays pyodide; this is opt-in
   (`512m`), `PIDS_LIMIT` (`256`), `NETWORK` (`none`), `CPUS` (unset = uncapped), `CAP_DROP` (`true`),
   `READ_ONLY` (`false`; opt-in read-only rootfs for an inspect-only task, paired with a tmpfs `/tmp`),
   `WORKDIR` (a host dir mounted **read-only** at `/workspace`).
-- **Needs the `docker` CLI** (checked at start; `import rlm_kit` stays docker-free). The `WORKDIR`
+- **Needs the `docker` CLI** (checked at start; `import rlm_harness` stays docker-free). The `WORKDIR`
   mount resolves on the *daemon's* filesystem, so it won't work with a remote `DOCKER_HOST`.
 
 ## Sandbox turn timeout + cancellation (`pyodide`/`deno`)
@@ -337,7 +337,7 @@ The default `pyodide`/`deno` interpreter blocks on a plain subprocess pipe read 
 anywhere in dspy's own code** — a wedged Deno subprocess, or a model-written REPL cell that spins
 forever, hangs the run with no recourse short of killing the whole process. `asyncio.Task.cancel()`
 cannot help: the blocking call has no `await` inside it, so the event loop never gets a chance to
-run cancellation machinery. rlm-kit closes this with the SAME timer-armed-before-blocking-read,
+run cancellation machinery. rlm-harness closes this with the SAME timer-armed-before-blocking-read,
 kill-to-unblock idiom the container interpreter already uses for its own `TIMEOUT` (above), ported
 to `pyodide`/`deno`:
 
@@ -351,13 +351,13 @@ to `pyodide`/`deno`:
 - **`cancel_event`** (`RLMTask(cancel_event=a_threading.Event)`) — for a caller that wants to stop
   an in-flight run NOW (e.g. a "Cancel" button in a UI driving `arun()` from a worker thread). Set
   the event from another thread; the current sandbox turn is killed and `SandboxCancelled` (exported
-  from `rlm_kit`) propagates all the way up through `arun()` as a genuine, NON-recoverable run-ending
+  from `rlm_harness`) propagates all the way up through `arun()` as a genuine, NON-recoverable run-ending
   failure — never retried (see `run_with_retry`'s `non_retryable` below), never caught by dspy's own
   `except (CodeInterpreterError, SyntaxError)`.
 
 ```python
 import threading
-from rlm_kit import RLMTask, SandboxCancelled
+from rlm_harness import RLMTask, SandboxCancelled
 
 cancel = threading.Event()
 task = MyTask(cancel_event=cancel)
@@ -387,7 +387,7 @@ The fix (the agentic-RAG *sufficient-context* pattern) is to GROUND the complete
 the retrieved source instead of the model's recall:
 
 1. **Hold the ground-truth in REPL state.** Fetch the source once (a `fetch_url` tool, a skill)
-   and keep it as a REPL variable — rlm-kit's interpreter persists variables across turns, so the
+   and keep it as a REPL variable — rlm-harness's interpreter persists variables across turns, so the
    ground-truth stays addressable without re-fetching or re-pasting.
 2. **Diff the artifact against it, itemized.** Each turn, compare the generated artifact to the
    held ground-truth field-by-field and emit the SPECIFIC gaps ("missing header X, body field Y"),
@@ -458,7 +458,7 @@ and `max_iterations` there so an offline reader reads the real per-run values, n
 
 ## Building a consumer
 
-`rlm-kit` is the ROLLOUT floor; a consumer is a thin declaration on top of it. `examples/harness_run.py`
+`rlm-harness` is the ROLLOUT floor; a consumer is a thin declaration on top of it. `examples/harness_run.py`
 is a minimal worked example — a task that wires the sub-LM hook, skills, tracing, and
 RL export together. Five steps:
 
@@ -468,7 +468,7 @@ RL export together. Five steps:
    authoring KNOWLEDGE in a Skills directory (`load_skills_as_tools`), not the prompt — the prompt
    is for orchestration; skills are progressive-disclosure reference the LM pulls on demand.
 2. **Add tools the base/wrap way.** Need a new capability (a model-as-tool producer, a fetcher, a
-   searcher)? rlm-kit owns the GENERIC base + the syntactic guard + the async-safe factory
+   searcher)? rlm-harness owns the GENERIC base + the syntactic guard + the async-safe factory
    (`make_model_tool`, `make_fetch_tool`, `make_web_search_tool`); the consumer owns the PROVIDER
    (the endpoint/validator/messages, or the httpx/vendor call) and the project-side TRACING. Tools
    passed to `RLMTask(tools=…)` MUST be sync — dspy's interpreter calls them with a plain `()`, so
@@ -485,9 +485,9 @@ RL export together. Five steps:
    READ (judgement-only SUBMIT), so a label can never drift from the bytes it describes.
 5. **Export trajectories; score elsewhere.** `export_sft_turns` / `export_rl` / `export_actions`
    turn traces into training datasets. They are REWARD-FREE: each carries a `reward=` HOOK the
-   trainer fills — rlm-kit never computes a reward.
+   trainer fills — rlm-harness never computes a reward.
 6. **Delegate to another harness — or be one.** When a sub-task is better handled by a more
-   specialized rlm-kit harness, delegate to it as a TOOL rather than reimplementing it. Two symmetric
+   specialized rlm-harness harness, delegate to it as a TOOL rather than reimplementing it. Two symmetric
    sides, both base/wrap, and NEITHER names the other harness in code — the identity lives only in the
    operator's runtime endpoint config:
    - **Client (you call another harness):** `make_harness_tool(invoke_fn, validate)` +
@@ -501,7 +501,7 @@ RL export together. Five steps:
      wire, exit codes (0=ran / 1=infra→caller retries), and keeping your logs + tracebacks OFF stdout;
      you own only `to_pointer` — the mapping from YOUR result object into a `HarnessPointer`. The
      operator points the client at `python -m <pkg>.serve`. A FLAT result (`.artifact`/`.run_id`) needs
-     NO file — `python -m rlm_kit.harness_serve <pkg.module>:run` uses the duck-typed default. Copy
+     NO file — `python -m rlm_harness.harness_serve <pkg.module>:run` uses the duck-typed default. Copy
      `examples/harness_serve.py`.
    - **Give the operator an ABSOLUTE `workdir_base`.** `serve_harness` isolates each run's CWD under
      it, and the default is RELATIVE — a child inherits the PARENT's working directory, so its run
@@ -529,7 +529,7 @@ RL export together. Five steps:
      read as-is, by a Root LM and by a human debugging the wire.
 
 **Score your own rubric (optional).** To decompose "did this run succeed?" into observable per-run
-LABELS, `rlm_kit.rubric` gives you the reward-free substrate — the `Criterion`/`RubricCriteria`/
+LABELS, `rlm_harness.rubric` gives you the reward-free substrate — the `Criterion`/`RubricCriteria`/
 `CriterionFact` types, `rubric_to_meta`/`rubric_from_meta` (carry the rubric in the `run_start` meta),
 `validate_rubric`, and a pure `criteria_facts(criteria, facts, lens)`. `category` is an OPAQUE label YOU
 define — the kit imposes no taxonomy. The pattern (all consumer-side except the primitives):
@@ -540,7 +540,7 @@ define — the kit imposes no taxonomy. The pattern (all consumer-side except th
   LENS)` → per-criterion facts, reward-free. Emit them beside the trajectory via
   `run_label_bundle(runs, rubric=lambda ev: {...})`; a downstream trainer turns facts into a score.
 
-An OPTIONAL model-graded EVAL is the same base/wrap shape — rlm-kit ships NO eval, only the pieces to
+An OPTIONAL model-graded EVAL is the same base/wrap shape — rlm-harness ships NO eval, only the pieces to
 build one: wrap `make_model_tool` with YOUR judge prompt (100% your domain), a strict parser reading a
 per-category 0–10 score dict, and a per-category means aggregation. Keep the prompt, the taskset, and the
 category MEANINGS in your repo; the categories stay OPAQUE to the kit. This is a reference PATTERN, not a
@@ -561,17 +561,17 @@ across them.
 
 **The promotion rule** keeps the boundary clean. When the consumer forces a workaround, ask "is this
 GENERIC?" A reusable mechanic (the model-tool + retry + validate core, a new sandbox seam, a trace
-hook) is PROMOTED into rlm-kit via the base/wrap split — the generic half here, the specific half in
+hook) is PROMOTED into rlm-harness via the base/wrap split — the generic half here, the specific half in
 the consumer. A consumer-specific VALUE (a model name, a schema, a validator, a path) stays in the
 consumer. Never special-case the consumer inside the kit; never fork the harness or re-implement
 tracing inside the consumer. If you need an internal seam the kit doesn't expose, ADD a public hook
 here (that is how `recorder_scope` / `bind_recorder_to_sub_lm` / `get_sub_lm` were born) rather than
 reaching into a `_private` name. The trace schema, the `EVENT_*` types, and the exporter record shapes
 are a FROZEN v1 wire format — `tests/test_contract.py` pins them; adding an optional field is fine,
-removing or re-typing one is a `v2` break. The `EVENT_*` type constants are exported from `rlm_kit`,
-so a trace reader matches on `rlm_kit.EVENT_RESULT` instead of hardcoding the wire string `"result"`.
+removing or re-typing one is a `v2` break. The `EVENT_*` type constants are exported from `rlm_harness`,
+so a trace reader matches on `rlm_harness.EVENT_RESULT` instead of hardcoding the wire string `"result"`.
 
-**The stage boundary** keeps the data honest. rlm-kit + your consumer are the ROLLOUT stage: they
+**The stage boundary** keeps the data honest. rlm-harness + your consumer are the ROLLOUT stage: they
 produce trajectories (the trace) and turn them into datasets, emitting raw LABELS / METRICS, never a
 reward scalar. SCORING (reward composition, credit assignment) and TRAINING (GRPO / SFT) are a
 SEPARATE downstream project that installs the trainer. A prompt/policy rule that makes the rollouts
@@ -632,16 +632,16 @@ promotes `reasoning_content` to the answer when `content` is empty (guarded — 
 dying on dspy's "empty or null response" check. The native chain-of-thought is still dropped from the
 trajectory either way, so a reasoning root spends extra tokens the trace won't keep.
 
-## Testing the forward path offline (`rlm_kit.testing`)
+## Testing the forward path offline (`rlm_harness.testing`)
 
 Construction tests (`task._build_rlm()`) catch signature/kwarg drift but never run the loop — where
 wiring bugs actually hide (a prompt naming a tool `foo` while it registered as `foo_tool` is a
-`NameError` no construction test sees). `rlm_kit.testing` drives the **real `dspy.RLM.aforward` loop
+`NameError` no construction test sees). `rlm_harness.testing` drives the **real `dspy.RLM.aforward` loop
 offline** — no model, no Deno, no network:
 
 ```python
-from rlm_kit import RLMConfig, RLMTask, configure
-from rlm_kit.testing import ScriptedInterpreter, call, scripted_lm, submit
+from rlm_harness import RLMConfig, RLMTask, configure
+from rlm_harness.testing import ScriptedInterpreter, call, scripted_lm, submit
 
 configure(RLMConfig(main_model="x", sub_model="x", interpreter="mock"),
           main_lm=scripted_lm([                         # the planner's canned turns
@@ -659,7 +659,7 @@ result = await task.arun(q="…")                          # the whole planner�
 runs the actual tool (its tracing records a genuine `tool_call`); a `dict`/`submit(...)` step SUBMITs.
 The `interpreter=` kwarg is an injection seam (like `sub_lm=`): an explicit interpreter OBJECT overrides
 `config.interpreter` and — like an injected `DummyLM` — bypasses `build_interpreter` and its guard, so it
-is a test/advanced seam; the default string path keeps the guard. `rlm_kit.testing` imports dspy lazily,
-so it doesn't affect `import rlm_kit`. `cancel_event=` (above) has NO effect when `interpreter=` is also
+is a test/advanced seam; the default string path keeps the guard. `rlm_harness.testing` imports dspy lazily,
+so it doesn't affect `import rlm_harness`. `cancel_event=` (above) has NO effect when `interpreter=` is also
 given — a caller supplying their own interpreter object owns its cancellation behavior too, exactly like
 `ScriptedInterpreter` owns its own.

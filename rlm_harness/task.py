@@ -125,7 +125,7 @@ class RLMTask:
         )
         # An explicit interpreter OBJECT overrides `config.interpreter` (the string that
         # `sandbox.build_interpreter` maps to a sandbox). This is a TEST/advanced seam — mainly
-        # `rlm_kit.testing.ScriptedInterpreter`, to drive the forward path offline — and it bypasses
+        # `rlm_harness.testing.ScriptedInterpreter`, to drive the forward path offline — and it bypasses
         # `build_interpreter` (and its insecure-interpreter guard) exactly like an injected `sub_lm`
         # bypasses the real model: the caller supplies and owns the double. The default (None) keeps the
         # string path and the guard.
@@ -193,7 +193,7 @@ class RLMTask:
     async def arun(self, **inputs: Any) -> Any:
         """Run the task asynchronously, returning the validated output.
 
-        If a :class:`rlm_kit.trace.TraceRecorder` is active in the current
+        If a :class:`rlm_harness.trace.TraceRecorder` is active in the current
         context, the main LM trajectory and the final result are recorded after
         the run (sub-LM and tool events are recorded live during it).
         """

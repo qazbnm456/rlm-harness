@@ -129,7 +129,7 @@ class RLMConfig:
     """Immutable runtime configuration for an RLM task.
 
     Build one with :meth:`from_env` (the common path) or construct directly in
-    tests. Pass it to :func:`rlm_kit.runtime.configure`.
+    tests. Pass it to :func:`rlm_harness.runtime.configure`.
     """
 
     main_model: str

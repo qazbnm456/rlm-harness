@@ -9,8 +9,8 @@ import types
 
 import pytest
 
-from rlm_kit import HarnessPointer, serve_harness
-from rlm_kit.serving import _default_to_pointer, bundle_artifact, parse_artifact_bundle
+from rlm_harness import HarnessPointer, serve_harness
+from rlm_harness.serving import _default_to_pointer, bundle_artifact, parse_artifact_bundle
 
 
 @pytest.fixture(autouse=True)
@@ -204,12 +204,12 @@ def test_harness_stdout_noise_cannot_corrupt_the_pointer(tmp_path):
     assert "BANNER" not in stdout.getvalue() and "BANNER" in stderr.getvalue()        # noise → stderr
 
 
-# ---- the `python -m rlm_kit.harness_serve <module:run>` entry --------------
+# ---- the `python -m rlm_harness.harness_serve <module:run>` entry --------------
 
 def test_harness_serve_entry_resolves_and_serves(tmp_path, monkeypatch, capsys):
     import sys as _sys
 
-    from rlm_kit import harness_serve
+    from rlm_harness import harness_serve
 
     fake = types.ModuleType("fake_harness_mod")
     fake.run = lambda source, *, run_id, **_: types.SimpleNamespace(artifact="FLAT", run_id=run_id)
@@ -222,7 +222,7 @@ def test_harness_serve_entry_resolves_and_serves(tmp_path, monkeypatch, capsys):
 
 
 def test_harness_serve_entry_rejects_a_bad_target():
-    from rlm_kit import harness_serve
+    from rlm_harness import harness_serve
     with pytest.raises(SystemExit, match="expected 'package.module:run'"):
         harness_serve.main(["not_a_spec"])
 
@@ -232,7 +232,7 @@ def test_harness_serve_entry_uses_a_module_to_pointer_and_run_kwargs(tmp_path, m
     # -m entry must pick them up rather than fall back to the duck-typed default.
     import sys as _sys
 
-    from rlm_kit import HarnessPointer, harness_serve
+    from rlm_harness import HarnessPointer, harness_serve
 
     seen = {}
 

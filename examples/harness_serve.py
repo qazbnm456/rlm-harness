@@ -5,18 +5,18 @@ Run it directly:
     echo "some long context" | python examples/harness_serve.py [workdir_base]
 
 It prints ONE `HarnessPointer` JSON line on stdout. In production the harness's OWN venv runs this as a
-module (`python -m <your_pkg>.serve`), and an upstream rlm-kit consumer points its harness endpoint
+module (`python -m <your_pkg>.serve`), and an upstream rlm-harness consumer points its harness endpoint
 config at that command — no bespoke glue project.
 
 To turn a REAL harness into a server, copy this shape into `<your_pkg>/serve.py` and change TWO things:
   1. import your harness's `run` (its RLMTask programmatic entry) instead of `_demo_run`;
   2. write `to_pointer` — the ONE harness-specific hook — mapping YOUR result object into a
-     `HarnessPointer`. rlm-kit's `serve_harness` owns everything else (read stdin → the child's RLM
+     `HarnessPointer`. rlm-harness's `serve_harness` owns everything else (read stdin → the child's RLM
      environment, run_id, CWD isolation, the JSON-pointer wire, exit codes 0=ran/1=infra, and keeping
      the harness's logs + tracebacks OFF stdout).
 
 If your `run()` already returns a FLAT object (`.artifact` / `.run_id` / `.trace_path`), you need NO
-file at all — just `python -m rlm_kit.harness_serve <your_pkg.module>:run` uses the duck-typed default.
+file at all — just `python -m rlm_harness.harness_serve <your_pkg.module>:run` uses the duck-typed default.
 `to_pointer` is only needed for a NESTED result (navigate to the artifact yourself).
 """
 
@@ -25,7 +25,7 @@ from __future__ import annotations
 import sys
 import types
 
-from rlm_kit import HarnessPointer, serve_harness
+from rlm_harness import HarnessPointer, serve_harness
 
 
 def _demo_run(source: str, *, run_id: str, **_):

@@ -2161,7 +2161,7 @@ wheels = [
 ]
 
 [[package]]
-name = "rlm-kit"
+name = "rlm-harness"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [

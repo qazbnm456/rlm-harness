@@ -1,7 +1,7 @@
 """Example: a container-backed ISOLATED runner for ``make_command_tool``.
 
-rlm-kit ships NO command executor on purpose — the runner's isolation IS the
-security boundary (see ``rlm_kit/tools/command.py``). This example shows the
+rlm-harness ships NO command executor on purpose — the runner's isolation IS the
+security boundary (see ``rlm_harness/tools/command.py``). This example shows the
 reference pattern: run each model-chosen command inside a disposable, network-off
 Docker container with the workspace mounted READ-ONLY, so a command the model
 chooses (or is steered into by untrusted content it read) cannot touch the host,
@@ -34,8 +34,8 @@ import os
 import subprocess
 import time
 
-from rlm_kit import RLMConfig, RLMTask, TraceRecorder, configure
-from rlm_kit.tools import CommandResult, make_command_tool
+from rlm_harness import RLMConfig, RLMTask, TraceRecorder, configure
+from rlm_harness.tools import CommandResult, make_command_tool
 
 
 def make_docker_runner(

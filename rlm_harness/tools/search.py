@@ -1,9 +1,9 @@
 """Provider-agnostic ``web_search`` building blocks (mirrors ``fetch.py``).
 
 A search tool needs two halves: the PROVIDER (an HTTP call to DuckDuckGo / Tavily /
-TinyFish / … plus its API key) and the generic GUARD/NORMALISE step. rlm-kit owns only
+TinyFish / … plus its API key) and the generic GUARD/NORMALISE step. rlm-harness owns only
 the generic half — it picks NO provider. The consuming project supplies a ``searcher``
-(``query -> raw results``) and rlm-kit turns the raw results into a safe, capped,
+(``query -> raw results``) and rlm-harness turns the raw results into a safe, capped,
 uniform ``[{"title","url","snippet"}]`` list.
 
 Two entry points, matching ``fetch.py``'s ``is_safe_url`` (primitive) + ``make_fetch_tool``

@@ -1,7 +1,7 @@
 """Integration test against a real dspy.RLM (no LLM API, no Deno sandbox).
 
 Unit tests elsewhere use fakes. This one wires our RLMTask through the *real*
-dspy.RLM constructor to catch signature/kwarg/interpreter drift between rlm-kit
+dspy.RLM constructor to catch signature/kwarg/interpreter drift between rlm-harness
 and the installed dspy. It does not call forward() (that needs a paid LLM and a
 Deno sandbox), so it stays free and offline. Skipped if dspy is absent.
 """
@@ -14,9 +14,9 @@ dspy = pytest.importorskip("dspy")
 
 from pydantic import BaseModel
 
-import rlm_kit.runtime as rt
-from rlm_kit import RLMConfig, RLMTask, SandboxCancelled
-from rlm_kit.tools import make_schema_validator
+import rlm_harness.runtime as rt
+from rlm_harness import RLMConfig, RLMTask, SandboxCancelled
+from rlm_harness.tools import make_schema_validator
 
 
 class Finding(BaseModel):
@@ -101,7 +101,7 @@ def test_custom_output_type_resolves_even_without_instructions():
 def test_intercepted_sub_lm_is_accepted_as_sub_lm():
     """An intercepted sub-LM must be a real dspy.LM usable as RLM.sub_lm."""
     _configure_with_dummy()
-    from rlm_kit import intercept_sub_lm
+    from rlm_harness import intercept_sub_lm
 
     base = dspy.utils.dummies.DummyLM([{"text": "ok"}])
     mw = intercept_sub_lm(base, postprocessors=[str.strip], name="mw")
@@ -127,7 +127,7 @@ def test_main_step_timer_captures_only_root_planner_turns():
     """The per-turn parse callback feeds the recorder ONLY for ROOT planner turns (parses carrying
     both `reasoning` and `code`); a lifeline parse (no code) or the extract-fallback parse (output
     fields, no code) must not be mistaken for a turn."""
-    from rlm_kit.task import _MainStepTimer
+    from rlm_harness.task import _MainStepTimer
 
     captured: list = []
 
@@ -170,8 +170,8 @@ def test_arun_records_trajectory_on_failure(tmp_path):
     import asyncio
     import types
 
-    from rlm_kit._retry import RLMTaskError
-    from rlm_kit.trace import EVENT_MAIN_STEP, EVENT_RESULT, TraceRecorder, load_events
+    from rlm_harness._retry import RLMTaskError
+    from rlm_harness.trace import EVENT_MAIN_STEP, EVENT_RESULT, TraceRecorder, load_events
 
     _configure_with_dummy()
     pred = types.SimpleNamespace(
@@ -192,7 +192,7 @@ def test_arun_records_result_on_success(tmp_path):
     import asyncio
     import types
 
-    from rlm_kit.trace import EVENT_MAIN_STEP, EVENT_RESULT, TraceRecorder, load_events
+    from rlm_harness.trace import EVENT_MAIN_STEP, EVENT_RESULT, TraceRecorder, load_events
 
     _configure_with_dummy()
     pred = types.SimpleNamespace(

@@ -1,6 +1,6 @@
 """Contract test — PIN the cross-project surface a consumer builds on, so a change that would
 silently break a downstream reader (a consumer's report renderer + RL export, a trajectory-replay
-UI, a future RL trainer) fails HERE, in rlm-kit's own suite, instead of in the consumer with no
+UI, a future RL trainer) fails HERE, in rlm-harness's own suite, instead of in the consumer with no
 clue why.
 
 Three frozen things (see CLAUDE.md "The trace is a VERSIONED wire format"):
@@ -9,16 +9,16 @@ Three frozen things (see CLAUDE.md "The trace is a VERSIONED wire format"):
   3. the dataset-exporter RECORD shapes (export_actions / export_sft_turns / export_rl / run_label_bundle),
 plus the public ``__all__`` surface a consumer imports. ADDITIVE change is fine (a new optional
 payload field, a new ``__all__`` entry); removing / renaming / re-typing any of these is a v1 break —
-bump SCHEMA to ``rlm-kit/trace/v2`` with a migration instead of editing this test to be green.
+bump SCHEMA to ``rlm-harness/trace/v2`` with a migration instead of editing this test to be green.
 """
 
-import rlm_kit
-from rlm_kit import trace as T
-from rlm_kit.dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
+import rlm_harness
+from rlm_harness import trace as T
+from rlm_harness.dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
 
 
 def test_schema_id_is_frozen_at_v1():
-    assert T.SCHEMA == "rlm-kit/trace/v1"
+    assert T.SCHEMA == "rlm-harness/trace/v1"
 
 
 def test_event_type_strings_are_frozen():
@@ -39,7 +39,7 @@ def test_recorded_event_envelope_shape(tmp_path):
     with T.TraceRecorder(str(tmp_path / "t.jsonl"), run_id="r1", clock=lambda: 1.0) as rec:
         ev = rec.record(T.EVENT_TOOL_CALL, {"tool": "x"})
     assert set(ev) == {"schema", "run_id", "step_id", "ts", "type", "payload"}
-    assert ev["schema"] == "rlm-kit/trace/v1" and ev["run_id"] == "r1"
+    assert ev["schema"] == "rlm-harness/trace/v1" and ev["run_id"] == "r1"
     assert ev["type"] == "tool_call" and ev["payload"] == {"tool": "x"}
     assert isinstance(ev["step_id"], int)
 
@@ -117,4 +117,4 @@ def test_public_surface_includes_the_consumer_contract():
         "EVENT_RUN_START", "EVENT_MAIN_STEP", "EVENT_SUB_CALL", "EVENT_TOOL_CALL",
         "EVENT_FINAL", "EVENT_RESULT", "EVENT_RUN_END",
     }
-    assert must_export <= set(rlm_kit.__all__)
+    assert must_export <= set(rlm_harness.__all__)
