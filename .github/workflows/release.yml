@@ -34,6 +34,12 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    # Fork guard. `release: published` is inherited by every fork, so a fork cutting its own release
+    # would fire this job and ask PyPI to publish `rlm-kit` over OIDC. The Trusted Publisher binding
+    # (owner+repo+workflow+environment) would reject it, but that is a rejected publish attempt against
+    # OUR project, plus a probe surface and a confusing red run in someone else's repo. `build` above is
+    # deliberately NOT guarded — it only builds an artifact, and a fork verifying its own build is fine.
+    if: github.repository == 'qazbnm456/rlm-kit'
     environment: pypi
     permissions:
       id-token: write          # OIDC token for PyPI Trusted Publishing
