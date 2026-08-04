@@ -4,11 +4,24 @@ All notable changes to `rlm-kit`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_kit/__init__.__version__` and `pyproject.toml` (kept in sync).
 
-## [Unreleased]
+## [1.0.0] - 2026-08-04
 
-The next release (0.2.0) — **not yet published to PyPI**; the version number is the
-target, not a release. Harness-engineering layer, plus the first round of hardening
-surfaced by dogfooding a real downstream consumer.
+**The first published release.** Everything below ships in it. Nothing was released before this:
+there were no tags, no GitHub releases, and no PyPI distribution — the `0.1.0` / `0.2.0` numbers that
+appeared in `pyproject.toml` and in consumers' lockfiles never corresponded to a published version,
+so they are folded into this entry rather than kept as a fictional release history.
+
+1.0.0 is a promise about the surface, not a claim that development is finished: `__init__.__all__`,
+the `rlm-kit/trace/v1` wire format, and `RLMTask`'s declaration fields are frozen under
+[SemVer](https://semver.org/) and pinned by `tests/test_contract.py`. Additions ship in a minor
+release; a rename or removal ships with an alias and a `DeprecationWarning` first, and the removal
+itself waits for the next major — the pre-1.0 habit of hard-renaming and updating consumers in
+lockstep (see `make_middleware_lm` → `intercept_sub_lm` below) ends here. The trace format carries
+its own version and evolves additive-only within v1. A `_`-prefixed name or module internal is
+outside the promise.
+
+Contents: the harness-engineering layer, plus the hardening surfaced by dogfooding nine real
+downstream consumers.
 
 ### Added — `trace.payload_cause` + `export_actions` carries the cause: the same distinction, across the trace boundary
 
@@ -729,8 +742,9 @@ mutually distinguishable — without it, the other three could pass with `cause`
   hatchling ships inside the wheel. Cross-references in `CLAUDE.md` / `CONTRIBUTING.md` now point at
   the guide; external deep links into the old top-README sections need re-pointing.
 
-## [0.1.0]
+### Initial scaffold
 
-- Initial scaffold: `RLMConfig` + `configure`, `RLMTask`, the retry/validation
-  engine (`_retry.py`), the sandbox security guard (`sandbox.py`), tools (schema
-  validator, SSRF-guarded fetch), examples, and tests.
+Where it started, before the layers above were built on top:
+
+- `RLMConfig` + `configure`, `RLMTask`, the retry/validation engine (`_retry.py`), the sandbox
+  security guard (`sandbox.py`), tools (schema validator, SSRF-guarded fetch), examples, and tests.
