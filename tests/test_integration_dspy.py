@@ -33,6 +33,20 @@ def _configure_with_dummy(interpreter="mock"):
     return dummy
 
 
+def _budget_attr(rlm, *names):
+    """Read a budget cap off a built ``dspy.RLM`` under whichever name this dspy uses.
+
+    Keeps these assertions about the CAP LANDING rather than about dspy's spelling of it.
+    """
+    for name in names:
+        if hasattr(rlm, name):
+            return getattr(rlm, name)
+    raise AssertionError(
+        f"dspy.RLM exposes none of {names!r} — it renamed a budget kwarg again; "
+        f"add the new name to rlm_harness._dspy_compat._BUDGET_ALIASES."
+    )
+
+
 def test_rlmtask_builds_real_dspy_rlm():
     dummy = _configure_with_dummy()
 
@@ -48,9 +62,13 @@ def test_rlmtask_builds_real_dspy_rlm():
     assert rlm.sub_lm is dummy
     assert "finding" in rlm.signature.output_fields
     # Budget kwargs were accepted by the real constructor (no TypeError fallback).
-    assert rlm.max_iterations == 10
-    assert rlm.max_llm_calls == 30
-    assert rlm.max_output_chars == 10_000
+    # Read them by VALUE under whichever name the installed dspy uses — 3.3.0 renamed
+    # `max_iterations` to `max_iters`. Asserting one hardcoded name would either fail on
+    # a dspy that renamed it (a false alarm) or, worse, pass while the cap was silently
+    # dropped. `_budget_attr` fails loudly if dspy exposes NEITHER name.
+    assert _budget_attr(rlm, "max_iters", "max_iterations") == 10
+    assert _budget_attr(rlm, "max_llm_calls") == 30
+    assert _budget_attr(rlm, "max_output_chars") == 10_000
 
 
 def test_custom_output_type_resolves_without_frame_help():
@@ -223,7 +241,17 @@ def test_cancel_event_reaches_the_built_interpreter_end_to_end():
     ev = threading.Event()
     task = T(cancel_event=ev)
     rlm = task._build_rlm()
-    assert rlm._interpreter._cancel_event is ev
+
+    # Assert on the KIT's own handle, not dspy's private `_interpreter` slot: dspy 3.3.0
+    # stopped holding the interpreter on the module (it takes one per forward() call).
+    built = task._built_interpreter
+    assert built is not None and built._cancel_event is ev
+
+    # ...and that the same instance is queued for delivery on whichever seam this dspy
+    # uses — constructor (3.2.x) or the forward() positional (3.3.x). Without this half,
+    # the test would still pass if `_build_rlm` built the interpreter and then dropped it.
+    delivered = getattr(rlm, "_interpreter", None) or task._forward_interpreter
+    assert delivered is built
 
 
 async def test_sandbox_cancelled_survives_the_real_retry_engine_end_to_end():
