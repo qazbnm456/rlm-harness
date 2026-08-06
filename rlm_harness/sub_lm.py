@@ -29,6 +29,7 @@ import logging
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from ._toolname import sanitize_tool_name
 from .trace import current_recorder, record_tool_call, recorder_scope
 
 
@@ -195,7 +196,12 @@ def model_as_tool(name: str, lm: Any, *, description: str = "") -> Callable[[str
         record_tool_call(f"model:{name}", args={"prompt": prompt}, result=text)
         return text
 
-    query_model.__name__ = f"query_{name}"
+    # SANITISED, because `name` is a model id and a real one is not an identifier:
+    # `openai/gpt-4o-mini` gave `query_openai/gpt-4o-mini`, which dspy refuses outright
+    # (on BOTH 3.2.x and 3.3.x) — the tool could never be registered. The RAW id stays on
+    # the `record_tool_call(f"model:{name}", …)` above: that is the trace identity and it
+    # must not move, so a reader still sees which model was actually consulted.
+    query_model.__name__ = sanitize_tool_name(f"query_{name}")
     query_model.__qualname__ = query_model.__name__
     query_model.__doc__ = description or (
         f"Send a prompt to the '{name}' model and return its text response."

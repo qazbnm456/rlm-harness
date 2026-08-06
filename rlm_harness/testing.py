@@ -28,6 +28,9 @@ import inspect
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from ._dspy_compat import reserved_tool_names
+from ._toolname import is_valid_tool_name
+
 # A step is one execute() worth of behaviour. It is one of:
 #   - a ``dict``     -> SUBMIT it as the run's final output (``{output_field: value}``); ends the loop.
 #   - a ``str``      -> the REPL output for that turn (non-terminal — the next planner turn sees it).
@@ -56,7 +59,30 @@ def assert_repl_safe(tool: Any) -> None:
     (checks its ``.func``) or a bare callable.
     """
     fn = getattr(tool, "func", tool)
-    label = getattr(fn, "__name__", repr(fn))
+
+    # Resolve the name the way DSPY does, not the way Python does. `dspy.Tool` takes an
+    # explicit `name=` and only falls back to `func.__name__` when it is omitted — so for a
+    # tool built as `dspy.Tool(f, name="get-weather")`, `f.__name__` is a string dspy never
+    # looks at. Checking it would validate the wrong value and pass a tool that dspy refuses.
+    # (This is not hypothetical: `mcp.py` builds its tools exactly that way, and an earlier
+    # draft of the 1.0.2 fix sanitised `__name__` alone — a placebo this check catches.)
+    label = getattr(tool, "name", None) or getattr(fn, "__name__", None) or repr(fn)
+
+    # dspy validates the name at `RLM(...)` construction and a failure aborts the ENTIRE
+    # tool registration, so one bad name silently takes every other tool down with it.
+    if not is_valid_tool_name(label):
+        raise AssertionError(
+            f"REPL tool name {label!r} is not a valid Python identifier (or is a keyword): "
+            f"dspy refuses it at RLM construction, which aborts registration for EVERY tool "
+            f"in the task. Derive the REPL name with `_toolname.sanitize_tool_name` and keep "
+            f"the raw name for the wire/trace identity."
+        )
+    if label in reserved_tool_names():
+        raise AssertionError(
+            f"REPL tool name {label!r} is reserved by dspy's sandbox "
+            f"({sorted(reserved_tool_names())}) — registering it would shadow a built-in."
+        )
+
     seen_default = False
     for pname, p in inspect.signature(fn).parameters.items():
         if p.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL):
