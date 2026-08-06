@@ -165,6 +165,35 @@ def reserved_tool_names() -> frozenset[str]:
     return frozenset(names)
 
 
+#: Output-field names dspy's RLM owns on its own Prediction. Hardcoded floor for
+#: :func:`reserved_result_names`; dspy 3.2.x has no attribute for these at all.
+_RESERVED_RESULT_FALLBACK = frozenset({"trajectory", "final_reasoning"})
+
+
+@lru_cache(maxsize=1)
+def reserved_result_names() -> frozenset[str]:
+    """Output-field names dspy refuses because its own Prediction already carries them.
+
+    Union with the fallback, like :func:`reserved_tool_names` — but for a DIFFERENT reason, so
+    don't read the two rationales as one. Over-rejecting a *tool* name is cheap: the kit renames
+    a tool nobody minded. Over-rejecting an *output field* is not auto-fixable — the field is the
+    consumer's signature, and a false positive fails a task that runs fine on their dspy. The
+    union is still right, because the failure mode it prevents (a task that constructs here and
+    raises in their rollout) is worse than a loud, local, one-line-to-fix rename. Note dspy 3.2.x
+    exposes no attribute for this, so there the fallback IS the answer.
+    """
+    names = set(_RESERVED_RESULT_FALLBACK)
+    try:
+        import dspy
+
+        found = getattr(dspy.RLM, "_RESERVED_RESULT_NAMES", None)
+        if found:
+            names |= {str(n) for n in found}
+    except Exception:  # pragma: no cover - defensive: never let this raise
+        pass
+    return frozenset(names)
+
+
 @lru_cache(maxsize=1)
 def recoverable_interpreter_error() -> type[Exception]:
     """The interpreter-error class dspy's RLM loop CATCHES and feeds back to the model.

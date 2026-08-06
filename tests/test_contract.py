@@ -110,6 +110,11 @@ def test_public_surface_includes_the_consumer_contract():
         "intercept_sub_lm", "model_as_tool", "get_sub_lm", "load_skills_as_tools",
         "TraceRecorder", "current_recorder", "record_tool_call", "load_events", "group_by_run",
         "export_sft_turns", "export_rl", "export_actions", "run_label_bundle",
+        # REPL-safety rules a CONSUMER needs when it builds its own tools (1.1.0). Listed here
+        # DELIBERATELY: the assertion below is a SUBSET check, so a new __all__ entry passes on
+        # its own — being in `must_export` is what makes an accidental removal go red.
+        "is_valid_tool_name", "sanitize_tool_name", "unique_tool_names",
+        "signature_from_json_schema",
         # reward-free rubric primitives (opaque category)
         "Criterion", "RubricCriteria", "CriterionFact",
         "rubric_to_meta", "rubric_from_meta", "validate_rubric", "criteria_facts",
@@ -118,3 +123,7 @@ def test_public_surface_includes_the_consumer_contract():
         "EVENT_FINAL", "EVENT_RESULT", "EVENT_RUN_END",
     }
     assert must_export <= set(rlm_harness.__all__)
+    # ...and each is actually REACHABLE. `__all__` membership alone would pass for a name with
+    # no binding behind it — a real hazard here, since several are lazy `__getattr__` exports.
+    for name in must_export:
+        assert getattr(rlm_harness, name, None) is not None, f"{name} is in __all__ but unbound"
