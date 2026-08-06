@@ -56,6 +56,8 @@ class Research(RLMTask):
     instructions = _INSTRUCTIONS
 
     def __init__(self, skills_dir: str, **kw):
+        # NOTE: assembling tools here and passing `tools=` to the constructor are alternatives,
+        # not additions — an explicit `tools=` REPLACES this list (see `RLMTask.resolved_tools`).
         # discovery="inject": the skill CATALOG (name + description) is injected into the system
         # prompt via render_skills_manifest, so the LM sees every skill at startup with NO
         # `list_skills` discovery round-trip; `read_skill(name)` pulls a skill's full body JIT.

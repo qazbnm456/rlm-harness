@@ -299,3 +299,132 @@ def test_reserved_names_are_a_superset_of_the_hardcoded_floor():
     """Union with dspy's live set, never either-or: a stale fallback may only OVER-reject
     (loud, local) — under-rejecting would pass here and raise in a consumer's rollout."""
     assert reserved_tool_names() >= {"llm_query", "llm_query_batched", "SUBMIT", "print"}
+
+
+# ---- task-level REPL safety (1.1.0) --------------------------------------
+#
+# `assert_repl_safe` checks ONE tool. Three of dspy's construction-time rules are
+# properties of the whole TASK and no per-tool check can see them; each aborts
+# registration for every tool. dspy 3.2.x — the version uv.lock pins, so what CI runs —
+# enforces NONE of them, which is why a helper matters most there.
+
+from rlm_harness import RLMConfig
+from rlm_harness.testing import assert_task_repl_safe
+
+
+def _task(signature="q: str -> a: str", tools=()):
+    """A duck-typed stand-in. `assert_task_repl_safe` must NOT import RLMTask (task.py
+    imports dspy eagerly, and testing.py is documented as importable without it), so it
+    duck-types — and this fixture is what pins that it really does."""
+    return types.SimpleNamespace(signature=signature, tools=list(tools), output_field="a")
+
+
+def _named(name):
+    def f(x: str):
+        """d"""
+    f.__name__ = name
+    return f
+
+
+def test_task_level_accepts_a_clean_task():
+    assert_task_repl_safe(_task(tools=[_named("alpha"), _named("beta")]))
+
+
+def test_duplicate_tool_names_rejected():
+    """The one dspy 3.2.x will NOT tell you about: it keys its tool dict by name, so the
+    second registration overwrites the first and the model is never told it exists."""
+    with pytest.raises(AssertionError, match="duplicate REPL tool name"):
+        assert_task_repl_safe(_task(tools=[_named("same"), _named("same")]))
+
+
+def test_input_field_colliding_with_a_tool_name_rejected():
+    with pytest.raises(AssertionError, match="collide with a tool name"):
+        assert_task_repl_safe(_task("lookup: str -> a: str", tools=[_named("lookup")]))
+
+
+def test_input_field_colliding_with_a_sandbox_builtin_rejected():
+    with pytest.raises(AssertionError, match="built-in sandbox functions"):
+        assert_task_repl_safe(_task("llm_query: str -> a: str"))
+
+
+@pytest.mark.parametrize("field", ["trajectory", "final_reasoning"])
+def test_output_field_colliding_with_rlm_result_metadata_rejected(field):
+    with pytest.raises(AssertionError, match="dspy's own RLM Prediction"):
+        assert_task_repl_safe(_task(f"q: str -> {field}: str"))
+
+
+def test_task_level_still_runs_the_per_tool_checks():
+    with pytest.raises(AssertionError, match="valid Python identifier"):
+        assert_task_repl_safe(_task(tools=[_named("get-weather")]))
+
+
+def test_task_level_reads_the_INSTANCE_tools_not_the_class():
+    """Runtime-assembled tools (the MCP case) live only on an instance — a class-level
+    check cannot see them, which is exactly the set these rules bite on."""
+    from rlm_harness import RLMTask, configure
+    from rlm_harness.testing import ScriptedInterpreter, scripted_lm
+
+    configure(RLMConfig(main_model="d/m", sub_model="d/s"),
+              main_lm=scripted_lm([{"reasoning": "x", "code": "y"}]))
+
+    class T(RLMTask):
+        signature = "q: str -> a: str"
+        output_field = "a"
+
+    assert list(T.tools) == []                       # nothing declared on the class
+    inst = T(tools=[_named("dup"), _named("dup")], interpreter=ScriptedInterpreter([]))
+    with pytest.raises(AssertionError, match="duplicate REPL tool name"):
+        assert_task_repl_safe(inst)
+
+
+# ---- the signature parser mirrors dspy's ---------------------------------
+
+
+def test_signature_parser_matches_dspy_on_every_repo_signature():
+    """Every signature this repo and its examples actually use must parse."""
+    from rlm_harness.testing import _signature_field_names
+
+    for sig, ins, outs in [
+        ("q: str -> a: str", ["q"], ["a"]),
+        ("context, question -> answer", ["context", "question"], ["answer"]),
+        ("document: str -> summary: Summary", ["document"], ["summary"]),
+        ("a: str -> b: str, c: int", ["a"], ["b", "c"]),
+        ("docs: list[str] -> answer: dict[str, int]", ["docs"], ["answer"]),
+    ]:
+        assert _signature_field_names(sig) == (ins, outs), sig
+
+
+def test_signature_parser_rejects_what_dspy_rejects():
+    """A keyword field name and a stray arrow are both things dspy itself raises on —
+    the helper must not silently no-op on exactly the broken tasks."""
+    from rlm_harness.testing import _signature_field_names
+
+    with pytest.raises(AssertionError, match="does not parse"):
+        _signature_field_names("class: str -> a: str")
+    with pytest.raises(AssertionError, match="exactly one"):
+        _signature_field_names("doc: Literal['a->b'] -> a: str")   # a naive split corrupts this
+    with pytest.raises(AssertionError, match="must be a str"):
+        _signature_field_names(None)
+
+
+def test_task_level_accepts_a_bare_CLASS():
+    """The docstring says a subclass is accepted, so pin it. On a CLASS,
+    `getattr(cls, "resolved_tools")` returns the property DESCRIPTOR — truthy and not
+    iterable — so a naive `getattr(...) or getattr(...)` raises
+    `TypeError: 'property' object is not iterable` on exactly the documented path."""
+    from rlm_harness import RLMTask
+
+    class Clean(RLMTask):
+        signature = "q: str -> a: str"
+        output_field = "a"
+        tools = [_named("alpha")]
+
+    assert_task_repl_safe(Clean)                     # must not raise
+
+    class Dup(RLMTask):
+        signature = "q: str -> a: str"
+        output_field = "a"
+        tools = [_named("same"), _named("same")]
+
+    with pytest.raises(AssertionError, match="duplicate REPL tool name"):
+        assert_task_repl_safe(Dup)

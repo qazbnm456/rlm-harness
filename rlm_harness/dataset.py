@@ -71,6 +71,16 @@ def _action_record(event: dict) -> dict:
         return {
             "kind": "tool",
             "tool": p.get("tool"),
+            # The REPL alias, when sanitising changed the name (MCP: the model types
+            # `get_weather`, the trace records `get-weather`). CONDITIONAL, mirroring
+            # `mcp._repl_alias`: an unconditional key would put `"repl_name": null` on every
+            # tool record including non-MCP ones, churning every consumer's golden fixtures for
+            # nothing. TOP LEVEL beside `tool` because both are IDENTITY — putting it under
+            # `action` would imply the model supplied it. A trainer joining the planner's code
+            # (`main_step.payload.code` shows `get_weather(...)`) to this record needs it, and
+            # the mapping is unrecoverable offline: it depends on the server's whole tool list
+            # at run time, which never enters the trace.
+            **({"repl_name": p["repl_name"]} if p.get("repl_name") else {}),
             "action": {"input": p.get("args"), "reasoning": p.get("reasoning")},
             "outcome": {
                 "ok": p.get("ok"),

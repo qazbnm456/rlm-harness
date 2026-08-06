@@ -22,6 +22,12 @@ pitch, the quickstart, and installation — start at the
 | `trace.py` | `TraceRecorder` — unified append-only JSONL trajectory (main steps + sub-LM + tool calls). |
 | `replay.py` | Reconstruct/replay a recorded run using recorded tool outputs. |
 | `dataset.py` | `export_sft_turns` / `export_rl` / `export_actions` — turn traces into training datasets (`export_sft_turns` = per-root-turn SFT, the RLM recipe of arXiv 2512.24601); `run_label_bundle` — carry per-run LABEL surfaces beside the trajectory. |
+| `mcp.py` | MCP **client** (optional `rlm-harness[mcp]`): `mcp_tools` exposes an external server's tools as SYNC `dspy.Tool`s; `McpCatalog`/`McpConnection` for a progressive multi-server surface. |
+| `testing.py` | Offline forward-path harness — `ScriptedInterpreter`, `scripted_lm`, and the REPL-safety assertions `assert_repl_safe` / `assert_task_repl_safe`. |
+| `serving.py` / `harness_serve.py` | Server side of the harness-delegation contract — turn an `RLMTask` into a process that speaks it. |
+| `container_interpreter.py` | The opt-in `interpreter="container"` REPL — model code runs inside an isolated Docker container so it can spawn subprocesses. |
+| `_toolname.py` | REPL-safety rules for a tool's NAME and SIGNATURE. Mostly private, but `is_valid_tool_name` / `sanitize_tool_name` / `unique_tool_names` / `signature_from_json_schema` are public — a consumer building its own tools (e.g. from `McpCatalog`'s raw names) needs the same derivation the kit uses. |
+| `_dspy_compat.py` | Private. Every cross-version dspy difference (kwarg renames, the interpreter seam, the recoverable/terminal error split) resolved by introspection in ONE place. |
 | `rubric.py` | Reward-free rubric primitives: the `Criterion`/`RubricCriteria`/`CriterionFact` types, `rubric_to_meta`/`rubric_from_meta`, `validate_rubric`, and a pure `criteria_facts(criteria, facts, lens)`. `category` is an OPAQUE caller-defined label — the kit imposes no taxonomy. See "Building a consumer". |
 | `claude_agent_lm.py` | `ClaudeAgentLM` — run rlm-harness on a Claude Pro/Max subscription: a `dspy.BaseLM` over the official Claude Agent SDK, injected via `configure(main_lm=…, sub_lm=…)`. Opt-in `rlm-harness[subscription]`; pure completions (no tools), lazily exported so `import rlm_harness` stays dspy/SDK-free. |
 | `examples/mini_run.py` | Minimal end-to-end live run — config + a tiny `RLMTask` through a real `dspy.RLM`, with the trajectory recorded and summarised. |
@@ -208,6 +214,8 @@ from rlm_harness import mcp_tools
 
 with mcp_tools({"url": "https://mcp.example.com/mcp"}) as tools:        # or {"command": "npx", "args": [...]}
     finding = MyTask(tools=tools).run(...)                              # the server's tools are now callable
+# `tools=` (1.1.0+) is the per-instance override — the sanctioned way to attach tools that exist
+# ONLY inside this `with` block. It REPLACES the class-body `tools` declaration.
 ```
 
 Needs the extra: `pip install "rlm-harness[mcp]"`.

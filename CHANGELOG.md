@@ -4,23 +4,101 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
-## [Unreleased]
+## [1.1.0] - 2026-08-07
 
-CI only — no package change, so no version bump.
+Additive on the API surface: nothing removed, renamed or re-typed, and `rlm-harness/trace/v1` is
+untouched. **Two behaviour changes to know about before upgrading**, both detailed below:
 
-- **`.github/workflows/dspy-latest.yml`** — runs the suite against the NEWEST published dspy, on a
-  weekly cron + `workflow_dispatch` + push-to-main, never on a PR. This is the job that would have
-  caught 1.0.1: `ci.yml` resolves dspy from `uv.lock`, so it tests a version nobody installing from
-  PyPI necessarily gets, and the whole suite stayed green while the kit was completely unrunnable on
-  a fresh install. A separate workflow rather than a job in `ci.yml` because `schedule:` and
-  `concurrency:` are workflow-scoped: a cron in `ci.yml` would fire the 3-way Python matrix and lint
-  on every tick, and its `ci-${{ github.ref }}` group would make a cron tick and a push to `main`
-  cancel each other. No `continue-on-error` — that makes the run conclude `success`, so a failed
-  scheduled run would notify nobody, which is the hole it would be added to close. The newest
-  version is resolved from PyPI at run time and then **asserted** after install: a hardcoded floor
-  goes stale, "fail if resolved == locked" false-alarms right after every lock bump, and a bare
-  `--with dspy` silently resolves back to the locked version (only `--with "dspy==<exact>"`
-  overrides it) — without the assert the job would be decorative.
+- `RecordedToolProvider.replay` now RAISES on a `preview`-only record where it previously returned
+  `None`. That affects replaying a trace containing MCP or `read_skill` calls. It is the correct
+  posture — it was silently serving nothing — but it is a change, not an addition.
+- `make_model_tool` / `make_harness_tool`'s returned callables were renamed in 1.0.2; if you also
+  declare `tools: ClassVar[...]` on an `RLMTask` subclass, note `tools` is no longer annotated
+  `ClassVar` here, so a type checker will flag "cannot override instance variable with class
+  variable". Drop the `ClassVar` on your side; runtime behaviour is unchanged either way.
+
+### `RLMTask(tools=…)` — the kwarg the guide already documented
+
+`tools` was a `ClassVar` only, so the guide's own **runnable** examples raised
+`TypeError: RLMTask.__init__() got an unexpected keyword argument 'tools'`. For MCP that was
+the ONLY documented attach path, and it cannot be a class-body list because the tools exist
+only inside the `with mcp_tools(...)` block.
+
+The override is resolved at BUILD time (`RLMTask.resolved_tools`, also new), not assigned in
+`__init__`. That is what makes it order-independent: writing `self.tools = tools` in
+`__init__` would make the winner depend on where the subclass calls `super().__init__()` —
+assign-after-super, the more idiomatic ordering, would have silently clobbered the caller's
+explicit kwarg. `tools=` REPLACES the declaration (never merges — merging would make the
+effective list depend on inheritance depth); `tools=[]` is a deliberate "no tools", distinct
+from the `None` default, which leaves the declaration path untouched. `tools` is no longer
+annotated `ClassVar`: it was describing a rule the kit itself did not follow
+(`examples/harness_run.py` already assigned per instance), and the package ships `py.typed`,
+so that reached consumers' type checkers.
+
+### Public REPL-safety rules — `sanitize_tool_name`, `unique_tool_names`, `is_valid_tool_name`, `signature_from_json_schema`
+
+A consumer driving `McpCatalog` gets the server's RAW tool names and schemas and builds its
+own `dspy.Tool`s — hitting exactly the defects 1.0.2 fixed inside `mcp.py`, with no sanctioned
+remedy: both halves were private, and "consumers EXTEND, they don't fork" bars reaching into a
+`_`-private name. 1.0.2's `assert_repl_safe` detects both and fixed neither.
+
+**Both halves are exported, because either alone is a half-fix**: the NAME rule on its own
+leaves a well-named tool whose `**kwargs` wrapper `assert_repl_safe` still rejects.
+`signature_from_json_schema` is the SHAPE half, factored out of `mcp.py` so there is one
+derivation. `unique_tool_names` gained `taken=` for progressive loading (servers load one at a
+time, so server B's names must avoid server A's).
+
+What is frozen is the PROPERTIES — the fixpoint, validity, non-collision — **not** the literal
+output strings (`t_`, the `_2` suffix, the trailing `_`). The reserved set is read from the
+INSTALLED dspy, so a sanitised name can differ across dspy versions under an unchanged
+rlm-harness; don't persist these as long-lived keys.
+
+### `assert_task_repl_safe`
+
+`assert_repl_safe` checks ONE tool. Three of dspy's construction-time rules are properties of
+the whole task and each aborts registration for EVERY tool: duplicate tool names (dspy 3.2.x
+keeps only one, **silently**, with no error), an input field colliding with a tool name or a
+reserved sandbox name, and an output field dspy's Prediction already owns. dspy 3.2.x enforces
+none of them — and that is the version `uv.lock` pins, so it is what CI runs.
+
+Prefer passing an INSTANCE: runtime-assembled tools (the MCP case) exist only there, and those
+are the sets these rules bite on. The signature parser mirrors dspy's own two lines
+(`signatures/signature.py:616`, `:649`) rather than calling `dspy.Signature`, which resolves
+the output type off the call stack and raises `Unknown name` for a dynamically-built model.
+
+### Fixes
+
+- **`replay.py` served `None` for three of the four shipped tool families.** It read only
+  `result`, while MCP and `read_skill` record under `preview`, `web_search` under `results`,
+  and the `make_model_tool` convention under `raw` — and `dataset.py` already read the
+  fallback, so two readers of the same trace disagreed. Now reads `raw → result → results`.
+  `preview` is deliberately excluded: it is a TRUNCATED head, so serving it would hand a replay
+  silently-wrong bytes; a `preview`-only record now raises the same loud `LookupError` the
+  class already uses for drift.
+- **`export_actions` dropped `repl_name`.** Carried through now — conditionally, mirroring
+  `mcp._repl_alias`, so non-MCP records stay byte-identical — at top level beside `tool`,
+  because both are identity.
+- **`mcp.py` could ship a tool its own guard rejects.** The signature stamping was skipped for
+  a schema-less tool, leaving the `**kwargs` proxy while the comment above it claimed
+  otherwise. Now unconditional: a zero-parameter signature. (The SDK makes `inputSchema` a
+  required dict, so this was unreachable through `mcp_tools`.) The remaining `**kwargs` case —
+  a property named `from`, or `db.query`, which cannot be an `inspect.Parameter` — is
+  knowingly degraded and now records why: sanitising the property name is NOT an option, since
+  the proxy forwards it to the server as a JSON key.
+
+### CI
+
+- **`.github/workflows/dspy-latest.yml`** — runs the suite against the NEWEST published dspy, on
+  a weekly cron + `workflow_dispatch` + push-to-main, never on a PR. This is the job that would
+  have caught 1.0.1: `ci.yml` resolves dspy from `uv.lock`, so it tests a version nobody
+  installing from PyPI necessarily gets, and the whole suite stayed green while the kit was
+  completely unrunnable on a fresh install. A separate workflow because `schedule:` and
+  `concurrency:` are workflow-scoped. No `continue-on-error` — that makes the run conclude
+  `success`, so a failed scheduled run would notify nobody. The newest version is resolved from
+  PyPI at run time and then **asserted** after install: a bare `--with dspy` silently resolves
+  back to the locked version, so without the assert the job would be decorative.
+
+Suite: 431 passed, 1 skipped on both dspy 3.2.1 and 3.3.0.
 
 ## [1.0.2] - 2026-08-06
 

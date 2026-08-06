@@ -115,3 +115,84 @@ def test_final_outputs(tmp_path):
     _write_run(path, "r1")
     outs = final_outputs(load_events(path))
     assert outs == [{"answer": "done"}]
+
+
+# ---- the multi-key output fallback (1.1.0) -------------------------------
+#
+# `record_tool_call` pins no key for a tool's output and the kit's own tools disagree:
+# MCP and read_skill record under `preview`, web_search under `results`, the
+# make_model_tool convention under `raw`, list_skills under `result`. `replay` read only
+# `result`, so THREE of the four shipped families replayed as None — silently, while
+# `dataset.py:_action_record` already read the fallback. Two readers of one trace
+# disagreeing was the bug.
+
+def test_replay_serves_every_shipped_output_key(tmp_path):
+    from rlm_harness import TraceRecorder, load_timeline
+    from rlm_harness.replay import RecordedToolProvider
+    from rlm_harness.trace import record_tool_call
+
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r"):
+        record_tool_call("model_tool", args={}, raw="the model output")
+        record_tool_call("web_search", args={}, results=[{"t": "x"}])
+        record_tool_call("list_skills", args={}, result="a, b")
+
+    prov = RecordedToolProvider(load_timeline(path, "r"))
+    assert prov.replay("model_tool") == "the model output"
+    assert prov.replay("web_search") == [{"t": "x"}]
+    assert prov.replay("list_skills") == "a, b"
+
+
+def test_replay_refuses_to_serve_a_truncated_preview(tmp_path):
+    """`preview` is deliberately NOT in the fallback: it is a TRUNCATED head of the output,
+    so serving it would hand the replay silently-wrong bytes. Fail loudly instead — the same
+    posture this class already takes for drift."""
+    from rlm_harness import TraceRecorder, load_timeline
+    from rlm_harness.replay import RecordedToolProvider
+    from rlm_harness.trace import record_tool_call
+
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r"):
+        record_tool_call("mcp_thing", args={}, ok=True, preview="truncated head…")
+
+    prov = RecordedToolProvider(load_timeline(path, "r"))
+    with pytest.raises(LookupError, match="TRUNCATED"):
+        prov.replay("mcp_thing")
+
+
+def test_replay_matches_the_raw_name_not_the_repl_alias(tmp_path):
+    """`payload["tool"]` is the RAW name; a caller holding the sanitised REPL name the model
+    typed matches nothing. Pinned so the doc line stays true."""
+    from rlm_harness import TraceRecorder, load_timeline
+    from rlm_harness.replay import RecordedToolProvider
+    from rlm_harness.trace import record_tool_call
+
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r"):
+        record_tool_call("get-weather", args={}, raw="sunny", repl_name="get_weather")
+
+    prov = RecordedToolProvider(load_timeline(path, "r"))
+    assert prov.replay("get-weather") == "sunny"
+    with pytest.raises(LookupError):
+        prov.replay("get_weather")
+
+
+def test_export_actions_carries_repl_name_only_when_it_differs(tmp_path):
+    """§4's other half. The MCP mapping is UNRECOVERABLE offline — it depends on the server's
+    whole tool list at run time, which never enters the trace — so the exporter must carry it.
+    Conditional, mirroring `mcp._repl_alias`: a `null` key on every non-MCP tool record would
+    churn every consumer's golden fixtures for nothing."""
+    from rlm_harness import TraceRecorder, export_actions, group_by_run, load_events
+    from rlm_harness.trace import record_tool_call
+
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r"):
+        record_tool_call("get-weather", args={}, raw="sunny", repl_name="get_weather")
+        record_tool_call("plain_tool", args={}, raw="ok")
+
+    tools = [r for r in export_actions(group_by_run(load_events(path))) if r["kind"] == "tool"]
+    by_name = {r["tool"]: r for r in tools}
+
+    assert by_name["get-weather"]["repl_name"] == "get_weather"   # the join key
+    assert by_name["get-weather"]["tool"] == "get-weather"        # identity stays RAW
+    assert "repl_name" not in by_name["plain_tool"]               # byte-identical to pre-1.1.0

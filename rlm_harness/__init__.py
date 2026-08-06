@@ -20,6 +20,12 @@ when actually called.
 from __future__ import annotations
 
 from ._retry import RLMTaskError
+from ._toolname import (
+    is_valid_tool_name,
+    sanitize_tool_name,
+    signature_from_json_schema,
+    unique_tool_names,
+)
 from .config import RLMConfig
 from .dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
 from .replay import RecordedToolProvider, load_timeline, reconstruct
@@ -100,6 +106,13 @@ __all__ = [
     "rubric_from_meta",
     "validate_rubric",
     "criteria_facts",
+    # REPL-safety rules for a tool a CONSUMER builds itself (e.g. from McpCatalog's raw names):
+    # the NAME half and the SIGNATURE half. dspy validates both at RLM construction and either
+    # failure aborts registration for EVERY tool on the task.
+    "is_valid_tool_name",
+    "sanitize_tool_name",
+    "unique_tool_names",
+    "signature_from_json_schema",
     # serving a downstream harness over the make_harness_tool delegation contract (server-side mirror)
     "serve_harness",
     "HarnessPointer",
@@ -114,7 +127,7 @@ __all__ = [
     "ClaudeAgentLM",
 ]
 
-__version__ = "1.0.2"
+__version__ = "1.1.0"
 
 
 def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import
