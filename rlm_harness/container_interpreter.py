@@ -390,8 +390,6 @@ class ContainerInterpreter:
         Container analog of dspy's ``PythonInterpreter._handle_tool_call``. Credentials the tool
         needs stay in THIS process; only the result crosses the pipe. Not counted against the
         execution timeout (the watchdog is disarmed while we are here)."""
-        from dspy.primitives.code_interpreter import CodeInterpreterError
-
         rid = request["id"]
         params = request.get("params", {})
         name = params.get("name")
@@ -409,12 +407,17 @@ class ContainerInterpreter:
             reply = {"jsonrpc": "2.0", "id": rid,
                      "error": {"code": -32007, "message": str(exc), "data": {"type": type(exc).__name__}}}
         # Sending the reply is separate: a send failure means the sandbox died (e.g. a watchdog kill
-        # raced this callback), which must surface as a CodeInterpreterError dspy catches — not a
-        # bare BrokenPipeError it does not.
+        # raced this callback), which must surface as the interpreter error dspy CATCHES — not a
+        # bare BrokenPipeError it does not. Which class that is moved in dspy 3.3.0, so resolve it
+        # rather than hardcode (see `_dspy_compat.recoverable_interpreter_error`).
+        from ._dspy_compat import recoverable_interpreter_error
+
         try:
             self._sandbox.send(json.dumps(reply))
         except (OSError, ValueError) as exc:
-            raise CodeInterpreterError(f"sandbox died before a tool reply could be delivered: {exc}")
+            raise recoverable_interpreter_error()(
+                f"sandbox died before a tool reply could be delivered: {exc}"
+            ) from exc
 
     # ---- variable injection --------------------------------------------------
 
@@ -450,6 +453,18 @@ class ContainerInterpreter:
     def execute(self, code: str, variables: dict[str, Any] | None = None) -> Any:
         from dspy.primitives.code_interpreter import CodeInterpreterError, FinalOutput
 
+        from ._dspy_compat import recoverable_interpreter_error
+
+        # Two DIFFERENT error classes on purpose, and the split is load-bearing:
+        #   Recoverable → dspy's RLM loop catches it and hands the model another turn.
+        #   CodeInterpreterError → terminal; it ends the run.
+        # They were the same class on dspy 3.2.x (where the base class WAS the recoverable
+        # one). dspy 3.3.0 split them and made the base terminal, so continuing to raise
+        # the base everywhere would end the whole run the first time the model's own code
+        # threw an exception in the sandbox — the single most ordinary thing that happens
+        # in a REPL loop. Setup/protocol failures below deliberately keep the base class.
+        _Recoverable = recoverable_interpreter_error()
+
         code = self._inject_variables(code, variables or {})
         self.start()
         self._register_tools()
@@ -467,7 +482,10 @@ class ContainerInterpreter:
             armed_total += elapsed
             if timed_out:
                 self._teardown_dead()
-                raise CodeInterpreterError(
+                # RECOVERABLE: the safety net fired, the container is gone, and the next
+                # call respawns it clean — the model is meant to get another turn. Mirrors
+                # `sandbox.py`'s `turn_timeout_s` outcome for the pyodide/deno kind.
+                raise _Recoverable(
                     f"execution timed out after {self._config.timeout_s:g}s of sandbox compute; "
                     "the container was killed and will restart with FRESH state on the next call"
                 )
@@ -489,7 +507,9 @@ class ContainerInterpreter:
                 if err.get("code") == -32000:
                     raise SyntaxError(f"Invalid Python syntax: {err.get('message')}")
                 etype = err.get("data", {}).get("type", "Error")
-                raise CodeInterpreterError(f"{etype}: {err.get('message')}")
+                # RECOVERABLE: the MODEL's code raised inside the healthy sandbox. This is
+                # the ordinary REPL case — hand it back as text and let it fix its own bug.
+                raise _Recoverable(f"{etype}: {err.get('message')}")
             raise CodeInterpreterError(f"unexpected frame from sandbox: {msg}")
 
         raise CodeInterpreterError("too many non-JSON lines during execution")

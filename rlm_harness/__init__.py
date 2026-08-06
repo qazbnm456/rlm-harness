@@ -114,7 +114,7 @@ __all__ = [
     "ClaudeAgentLM",
 ]
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 
 def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import

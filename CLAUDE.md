@@ -47,12 +47,23 @@ One companion rule ships under `.claude/rules/`:
   triggers: `RLMConfig.sandbox_turn_timeout_s` (a per-turn safety-net deadline, `None`/disabled by
   default — NOT matching `ContainerConfig.timeout_s`'s own `120.0` default, because this budget has
   no hook to exclude host-side tool/sub-LM dispatch time and would misfire more often as a result)
-  or an externally-set `RLMTask(cancel_event=...)`. **A timeout raises `CodeInterpreterError`
-  (RECOVERABLE — dspy's `_execute_code` catches it, the model retries next turn); a cancel raises
+  or an externally-set `RLMTask(cancel_event=...)`. **A timeout raises dspy's RECOVERABLE
+  interpreter error — `_dspy_compat.recoverable_interpreter_error()`, never a hardcoded class —
+  (dspy's `_execute_code` catches it, the model retries next turn); a cancel raises
   `SandboxCancelled` (NOT recoverable — deliberately NOT a `CodeInterpreterError` subclass, so it
   propagates as a genuine run-ending failure).** Never make `SandboxCancelled` a
   `CodeInterpreterError` subclass, and never let a caller-driven cancel degrade into a
-  retried/recoverable outcome. This distinction is only real end-to-end because
+  retried/recoverable outcome. **Which class is "recoverable" is dspy-VERSION-DEPENDENT and must
+  stay resolved, not written down:** on dspy 3.2.x the base `CodeInterpreterError` IS the recoverable
+  one, and 3.3.0 inverted that — it added `CodeExecutionError` for the recoverable role and made the
+  base TERMINAL. Hardcoding the base class silently turns the safety-net timeout into a run-ending
+  failure with no test going red (CHANGELOG 1.0.1). The same rule governs
+  `container_interpreter.py`: its execute-path raises that are *meant* to hand the model another turn
+  (execution timeout, an exception raised by the model's own code, a sandbox death mid tool-reply)
+  use the resolved class; its setup/health/protocol failures keep the base class and are terminal by
+  intent. `SandboxCancelled` needs no shim precisely because it stands outside dspy's hierarchy
+  entirely — that is what makes it non-recoverable across every version, so keep it there.
+  This distinction is only real end-to-end because
   `_retry.py`'s `run_with_retry` has a `non_retryable` allowlist and `RLMTask.arun()` passes
   `non_retryable=(SandboxCancelled,)` — without that wiring, `run_with_retry`'s own blanket
   `except Exception` would retry a cancel (transparently respawning the sandbox and restarting the
@@ -62,8 +73,26 @@ One companion rule ships under `.claude/rules/`:
   `super().execute(...)` directly with no watcher thread ever created — this guard was accidentally
   dropped once during this feature's own design revision and only caught by a second adversarial
   review pass; keep it isolated and commented so it cannot be dropped silently again.
+- **Every dspy API difference is resolved in `_dspy_compat.py` — one place, by introspection.**
+  The kit declares `dspy>=3.2.1` while consumers pin the KIT, so a consumer's fresh install picks up
+  whatever dspy is current and the kit must work across dspy's renames without them noticing. Three
+  landed at once in 3.3.0 (`RLM(interpreter=…)` → a positional arg of `forward()`/`aforward()`;
+  `max_iterations` → `max_iters`; the recoverable/terminal interpreter-error inversion) and only the
+  first failed loudly — see CHANGELOG 1.0.1. So: NEVER hardcode a dspy kwarg name, attribute, or
+  error class at a call site, and never assert on a dspy internal (`rlm._interpreter`,
+  `rlm.max_iterations`) in a test — add a shim here and a case to `tests/test_dspy_compat.py`, which
+  asserts the shim's contract against the installed dspy so the next rename goes red HERE. The module
+  is `_`-private and dspy-free at module top (every lookup imports dspy lazily, `lru_cache`d because
+  the installed dspy cannot change mid-process). Two rules the shims encode and that must not drift:
+  interpreter OWNERSHIP stays the kit's on every version (dspy shuts down only an interpreter it
+  built itself, so `RLMTask._teardown_interpreter` stays correct) — which is exactly why 3.3.0's
+  `interpreter_factory=` is the WRONG seam, dspy *does* shut down whatever that factory returns and
+  would double-shutdown our sandbox; and a lossy fallback must be LOUD — `_build_rlm`'s `except
+  TypeError` drops all three budget caps to dspy's defaults, so it `logger.warning`s rather than
+  `logger.debug`s.
 - **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`,
-  `tools/`, `trace.py`, `skills.py`, `replay.py`, `dataset.py`, `serving.py`, `harness_serve.py`
+  `tools/`, `trace.py`, `skills.py`, `replay.py`, `dataset.py`, `serving.py`, `harness_serve.py`,
+  `_dspy_compat.py`
   must NOT import `dspy` at module top — that keeps their logic testable without dspy. Only
   `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`, `container_interpreter.py`,
   `testing.py`, and `claude_agent_lm.py` touch dspy — the last four live outside the dspy-free
