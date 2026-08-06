@@ -4,6 +4,64 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.0.2] - 2026-08-06
+
+**Four shipped tool-naming defects.** dspy validates a tool's NAME when `RLM(...)` is constructed —
+it must be a Python identifier, must not be a keyword, and must be unique across the task — and a
+failure aborts registration for **every** tool, so one bad name silently takes the rest down with it.
+Four factories derived a name from data the kit does not control, and all four were broken. No public
+surface change, no trace-format break; drop-in.
+
+- **`mcp.py` — the worst of the four.** The external MCP server's own tool name went straight to
+  dspy. Hyphens and dots are the MCP naming *norm*, and both are hard failures on 3.2.x and 3.3.x:
+  `ValueError: Invalid tool name 'get-weather'`. A single such tool made the whole `RLMTask` fail to
+  construct, taking every other tool from that server with it. Three identities are now kept
+  separate: `mcp_tool.name` stays the WIRE name (`bridge.call`), `prefix + name` stays the TRACE
+  identity (`record_tool_call`), and only the REPL-facing name is sanitised. Names are resolved in
+  ONE pass over the server's full tool list, because uniqueness is a property of the set —
+  `get-weather` and `get.weather` both clean to `get_weather`.
+- **`sub_lm.py:model_as_tool`** built `f"query_{model_id}"`, so a real id gave
+  `query_openai/gpt-4o-mini` — refused outright on both dspy versions. The tool could never be
+  registered. `tests/test_repl_safety.py` had masked this by passing `name="m"`.
+- **`tools/model.py` + `tools/harness.py`** both returned a closure literally named `call`. Using the
+  two together — which CLAUDE.md's own invariant describes as the expected pattern — registered
+  `['call']` on dspy 3.2.x, **silently dropping one tool with no error**, and raised
+  `Duplicate tool name` on 3.3.x. Now `call_model` and `call_harness`. This is the only
+  model-visible rename in the release; neither factory records a `tool_call`, so no trace payload
+  moved.
+- **`tools/validation.py:make_schema_validator`** built `f"validate_{model.__name__}"`; a
+  `pydantic.create_model("bad-name")` carried the hyphen through. Dynamic output models are exactly
+  what `RLMTask.output_model` exists for, so this is reachable.
+
+Added:
+
+- `rlm_harness/_toolname.py` (private) — one derivation of the naming rule for all four sites.
+  `sanitize_tool_name` guarantees a **fixpoint**: an already-valid name is returned unchanged,
+  *including a non-ASCII one*. This is the property that matters and the one an obvious
+  `re.sub(r"[^A-Za-z0-9_]", "_", …)` silently violates — `str.isidentifier()` accepts non-ASCII
+  letters and so does dspy, so `日本語ツール` and `café_search` are valid tool names that work today
+  and that a character-class sanitiser would rewrite (an all-CJK name collapses to a bare `_`).
+  Character validity is tested with `str.isidentifier()` itself. `unique_tool_names` reserves every
+  already-valid name *first*, so a sanitised name can never displace one that was already fine.
+- `_dspy_compat.reserved_tool_names()` — dspy's reserved sandbox names, probed newest-first
+  (`_RESERVED_SANDBOX_NAMES` on 3.3.x, `_RESERVED_TOOL_NAMES` on 3.2.x) and **unioned** with a
+  hardcoded floor. Union, not either-or: a stale fallback may then only over-reject (loud and local)
+  rather than under-reject (silent here, a dspy `ValueError` in a consumer's rollout).
+- `testing.assert_repl_safe` now also checks the NAME, resolving it the way dspy does —
+  `getattr(tool, "name", …)` before `func.__name__`. `dspy.Tool(f, name=…)` overrides the function's
+  name and dspy validates the *override*, so checking `__name__` alone would pass a tool dspy
+  refuses. That is not hypothetical: an earlier draft of the `mcp.py` fix sanitised `__name__` only
+  and was a placebo; this check is what catches that class of mistake.
+- `tool_call` payloads gain an **optional** `repl_name`, emitted only when sanitising actually
+  changed the name (additive within `rlm-harness/trace/v1`; the common payload stays byte-identical).
+  It is needed because the mapping is otherwise unrecoverable offline — the sanitised name depends on
+  the server's whole tool list at run time, which never enters the trace, so a reader correlating
+  `main_step.payload.code` (the model typing `get_weather(...)`) against the tool events (recording
+  `get-weather`) has no join key. Read it as `payload.get("repl_name") or payload["tool"]`, which
+  degrades correctly for older traces and for every non-MCP tool.
+
+Suite: 393 passed, 1 skipped on both dspy 3.2.1 and 3.3.0.
+
 ## [1.0.1] - 2026-08-06
 
 **Compatibility fix: the kit did not run at all on `dspy` 3.3.0.** No public surface change, no

@@ -42,6 +42,7 @@ import threading
 from collections.abc import Iterator
 from typing import Any
 
+from ._toolname import unique_tool_names
 from .trace import record_tool_call
 
 # Head of a tool result recorded for inspection (a replay UI shows it) — like read_skill / fetch,
@@ -317,8 +318,39 @@ class McpCatalog:
         self._conns.clear()
 
 
-def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str):
+def _repl_alias(name: str, repl: str) -> dict:
+    """The optional ``repl_name`` payload field — emitted ONLY when sanitising changed the name.
+
+    Additive within ``rlm-harness/trace/v1`` (a new OPTIONAL payload field is allowed; the
+    envelope, the event types and the established fields are untouched). Conditional so the
+    common case stays byte-identical to pre-1.0.2 payloads — nine consumers hold golden
+    fixtures, and a field that appears on every MCP event would churn all of them for nothing.
+
+    It has to exist at all because the mapping is UNRECOVERABLE offline: the sanitised name
+    depends on the server's whole tool list at run time, which never enters the trace. Without
+    it, a reader correlating the planner's code (``main_step.payload.code`` shows the model
+    typing ``get_weather(...)``) against the tool events (which record ``get-weather``) has no
+    way to join them. Read it as ``payload.get("repl_name") or payload["tool"]``, which
+    degrades correctly for older traces and for every non-MCP tool.
+    """
+    return {"repl_name": repl} if repl != name else {}
+
+
+def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str,
+               repl_name: str | None = None):
+    # THREE identities, and conflating any two of them is a bug:
+    #   `mcp_tool.name` — the WIRE name. What `bridge.call(...)` sends back to the server.
+    #                     Never derived, never sanitised.
+    #   `name`          — prefix + wire name. The TRACE identity (`record_tool_call`), so a
+    #                     reader sees what the operator configured. Also never sanitised.
+    #   `repl_name`     — what the MODEL types in the sandbox. MUST be a Python identifier.
+    # Hyphens and dots are the MCP naming norm (`get-weather`, `db.query`) and dspy refuses
+    # both, aborting the WHOLE registration — one bad name takes every other tool with it.
+    # `repl_name` is computed by the CALLER across the server's full tool list, because
+    # uniqueness cannot be decided one tool at a time (`get-weather` and `get.weather` both
+    # clean to `get_weather`).
     name = f"{prefix}{mcp_tool.name}"
+    repl = repl_name or name
     desc = mcp_tool.description or f"MCP tool {name}"
     schema = mcp_tool.inputSchema if isinstance(mcp_tool.inputSchema, dict) else None
     props = _args_from_schema(schema)
@@ -331,19 +363,22 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str)
         # (additionalProperties:false / typed) server schema.
         args = {k: v for k, v in kwargs.items() if v is not None}
         try:
-            result = bridge.call(mcp_tool.name, args)
+            result = bridge.call(mcp_tool.name, args)     # WIRE name — unprefixed, unsanitised
         except Exception as exc:
-            record_tool_call(name, args=args, ok=False, note=f"error: {type(exc).__name__}")
-            return f"MCP tool {name!r} error: {type(exc).__name__}: {str(exc)[:200]}"
+            record_tool_call(name, args=args, ok=False, note=f"error: {type(exc).__name__}",
+                             **_repl_alias(name, repl))
+            # Model-facing text uses the name the model can actually call.
+            return f"MCP tool {repl!r} error: {type(exc).__name__}: {str(exc)[:200]}"
         text = result_text(result)
         ok = not getattr(result, "isError", False)
         record_tool_call(
             name, args=args, ok=ok, preview=text[:_PREVIEW],
             note="ok" if ok else "tool reported an error",
+            **_repl_alias(name, repl),
         )
         return text
 
-    call.__name__ = name
+    call.__name__ = repl   # cosmetic; dspy reads the explicit `name=` at the return below
     call.__doc__ = desc
     # dspy.RLM injects `tool.func` (this `call`) into its PythonInterpreter, which builds the sandbox
     # tool proxy from ``inspect.signature(func)`` — NOT from ``dspy.Tool.args``. A bare ``**kwargs``
@@ -368,7 +403,11 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str)
             call.__signature__ = inspect.Signature(params)
         except (ValueError, TypeError):
             pass  # bad property name → keep the untyped **kwargs proxy for this tool
-    return dspy_mod.Tool(call, name=name, desc=desc, args=props)
+    # `name=` is what dspy VALIDATES and what it registers in the sandbox — NOT
+    # `call.__name__` (`dspy.Tool` only falls back to the function's name when `name=` is
+    # omitted). Sanitising `__name__` alone is a placebo: the raw name still reaches dspy
+    # and still raises. This line is the fix.
+    return dspy_mod.Tool(call, name=repl, desc=desc, args=props)
 
 
 @contextlib.contextmanager
@@ -397,6 +436,13 @@ def mcp_tools(server: ServerSpec, *, timeout: float = 30.0, prefix: str = "") ->
         # start() inside the try so a start failure (timeout / a server that errors on init) still
         # runs close() — otherwise the background thread + any spawned stdio subprocess would leak.
         bridge.start()
-        yield [_make_tool(dspy, bridge, t, prefix) for t in bridge.tools]
+        # Resolve every REPL name in ONE pass over the server's full tool list: uniqueness
+        # is a property of the SET, so per-tool sanitising could map two server tools onto
+        # the same identifier and trade an invalid-name failure for a duplicate-name one.
+        repl_names = unique_tool_names(f"{prefix}{t.name}" for t in bridge.tools)
+        yield [
+            _make_tool(dspy, bridge, t, prefix, repl_names[f"{prefix}{t.name}"])
+            for t in bridge.tools
+        ]
     finally:
         bridge.close()

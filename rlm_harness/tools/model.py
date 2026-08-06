@@ -134,7 +134,7 @@ def make_model_tool(
     retries = max(0, transient_retries)
     consecutive_invalid = 0
 
-    def call(spec: str) -> ModelToolResult:
+    def call_model(spec: str) -> ModelToolResult:
         nonlocal consecutive_invalid
         if max_consecutive_invalid is not None and consecutive_invalid >= max_consecutive_invalid:
             return ModelToolResult(
@@ -176,4 +176,4 @@ def make_model_tool(
             validated=validated,
         )
 
-    return call
+    return call_model

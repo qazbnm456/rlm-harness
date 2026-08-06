@@ -128,6 +128,22 @@ One companion rule ships under `.claude/rules/`:
   KEYWORD_ONLY — so the proxy exposes real names. Enforce it in a test with
   `rlm_harness.testing.assert_repl_safe(tool)` (see `tests/test_repl_safety.py`, which sweeps every shipped
   factory); a consumer exposing its own tools should assert the same.
+- **A tool's NAME is derived data too — sanitize it, and keep the raw name for the wire and the
+  trace.** dspy validates the name at `RLM(...)` construction (identifier, not a keyword, unique
+  across the task) and a failure aborts registration for EVERY tool, so one bad name silently takes
+  the rest down. Any name built from data the kit does not control — an MCP server's tool name, a
+  model id, a `pydantic` model's `__name__` — goes through `_toolname.sanitize_tool_name` /
+  `unique_tool_names` (uniqueness is a property of the SET, so resolve a whole tool list in one
+  pass). All four such sites shipped broken; CHANGELOG 1.0.2. **Keep the three identities separate:**
+  the WIRE name (what goes back to the server) and the TRACE name (`record_tool_call`) stay RAW —
+  only the REPL-facing name is sanitized, with an optional `repl_name` payload field carrying the
+  mapping when it differs. And `sanitize_tool_name` MUST stay a fixpoint on already-valid names,
+  *including non-ASCII ones*: `str.isidentifier()` accepts them and so does dspy, so a
+  `[^A-Za-z0-9_]` character class would rewrite names that work today (an all-CJK name collapses to
+  `_`) — test character validity with `str.isidentifier()`, never with a character class. Note dspy
+  reads `dspy.Tool(name=…)` when given, NOT `func.__name__`; sanitizing only `__name__` on a tool
+  built with an explicit `name=` is a placebo (`assert_repl_safe` resolves it dspy's way and catches
+  exactly that).
 - **MCP is CLIENT-ONLY, and its async SDK is bridged to sync (`mcp.py`, optional `rlm-harness[mcp]`).**
   `mcp_tools(server)` connects to an EXTERNAL MCP server (rlm-harness never IS a server, never bundles
   one — you point it at someone else's) and exposes that server's tools to `RLMTask`. The MCP SDK is
