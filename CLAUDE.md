@@ -21,9 +21,26 @@ One companion rule ships under `.claude/rules/`:
   - `uv run --group dev --extra mcp python -m pytest -q` — the full suite (CI runs it on
     3.11/3.12/3.13). `--extra mcp` so the MCP-client tests run instead of skipping. No live LLM,
     network, or Deno needed: the dspy-bearing tests use `DummyLM` or are skipped if dspy is absent.
+- **A THIRD workflow, `.github/workflows/dspy-latest.yml`, runs the same suite against the NEWEST
+  published dspy.** Separate workflow, on a weekly cron + `workflow_dispatch` + push-to-main, never
+  on a PR (an upstream break is not a contributor's problem). It exists because the two jobs above
+  resolve dspy from `uv.lock`, so they test a version nobody installing from PyPI necessarily gets:
+  dspy 3.3.0 renamed three things at once and the whole suite stayed green while the kit was
+  completely unrunnable on a fresh install — one break loud, two silent (CHANGELOG 1.0.1). It
+  resolves the newest version from PyPI at run time and ASSERTS it actually installed that; a
+  hardcoded floor goes stale, and "fail if resolved == locked" false-alarms right after every lock
+  bump. `--with "dspy==<exact>"` is what overrides the lock — a bare `--with dspy` (and
+  `--isolated --with dspy`) resolve back to the LOCKED version and would make the job decorative.
+  **When it goes red, the kit is broken for every fresh install — a release blocker, not a flake.**
+  But do NOT read green as "a fresh install works": the overlay upgrades ONLY dspy (plus whatever
+  transitive it forces), so everything else stays locked and a break from, say, the newest
+  `pydantic` is invisible to it. Reproduce locally with
+  `uv run --group dev --extra mcp --with "dspy==<newest>" python -m pytest -q` — it leaves
+  `uv.lock` untouched.
 - A *live* `dspy.RLM` run needs real model credentials **and** a Deno sandbox
   (`brew install deno`). Don't run it in CI; it costs money. `examples/` show it.
-- Before claiming done, actually run BOTH commands and paste the output.
+- Before claiming done, actually run the two commands above and paste the output. (The
+  newest-dspy workflow is NOT one of them — it needs network, and CI runs it for you.)
 
 ## Invariants — do not break
 
