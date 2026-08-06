@@ -103,7 +103,16 @@ class RLMTask:
     #: Natural-language instructions attached to the signature.
     instructions: ClassVar[str] = ""
     #: Tools (plain callables) the RLM may invoke inside the REPL.
-    tools: ClassVar[Sequence[Callable[..., Any]]] = ()
+    #: NOT a ``ClassVar``: since 1.1.0 an instance may carry its own tool list (declare it in the
+    #: class body, set ``self.tools`` in a subclass ``__init__``, or pass ``tools=`` — see below).
+    #: The annotation said ``ClassVar`` while ``examples/harness_run.py`` was already assigning
+    #: per instance, so it was describing a rule the kit itself did not follow; the package ships
+    #: ``py.typed``, so that lie reached consumers' type checkers.
+    tools: Sequence[Callable[..., Any]] = ()
+
+    #: Class-level default so `resolved_tools` still answers for a subclass that forgets to call
+    #: `super().__init__()` — it would otherwise raise AttributeError from a read-only property.
+    _tools_override: Sequence[Callable[..., Any]] | None = None
 
     def __init__(
         self,
@@ -113,6 +122,7 @@ class RLMTask:
         max_retries: int | None = None,
         interpreter: Any | None = None,
         cancel_event: threading.Event | None = None,
+        tools: Sequence[Callable[..., Any]] | None = None,
     ) -> None:
         if not self.signature:
             raise ValueError(f"{type(self).__name__} must define `signature`")
@@ -142,6 +152,41 @@ class RLMTask:
         # it on the forward() call rather than the constructor (3.3.x). Initialised here so
         # the attribute always exists, even for a caller that inspects a task it never ran.
         self._forward_interpreter: Any | None = None
+
+        # `tools=` is stashed and resolved in `_build_rlm`, NOT written to `self.tools` here.
+        # That is what makes it ORDER-INDEPENDENT. Assigning `self.tools` in `__init__` would
+        # make the winner depend on where the subclass calls `super().__init__()`:
+        #     self.tools = [...]  ; super().__init__(**kw)   -> the kwarg wins
+        #     super().__init__(**kw) ; self.tools = [...]    -> the kwarg is SILENTLY LOST
+        # and the second is the more idiomatic ordering. Resolving at build time means the
+        # explicit kwarg always wins, whichever way the subclass is written.
+        #
+        # This is NOT an injection seam like `interpreter=` / `sub_lm=` above — those bypass a
+        # guard (the sandbox builder, the real model) and the caller owns the double. This
+        # bypasses nothing; it is a per-instance override of a declaration field. Keep the two
+        # ideas apart: conflating them dilutes a distinction the sandbox guard depends on.
+        self._tools_override: Sequence[Callable[..., Any]] | None = (
+            None if tools is None else list(tools)
+        )
+
+    @property
+    def resolved_tools(self) -> Sequence[Callable[..., Any]]:
+        """The tools this task will actually hand the model — the ONE derivation.
+
+        An explicit ``tools=`` kwarg REPLACES the class-body / ``self.tools`` declaration; it
+        never merges, because merging would make the effective list depend on inheritance depth.
+        ``tools=[]`` is therefore a deliberate "no tools", distinct from the ``None`` default,
+        which leaves the declaration path completely untouched.
+
+        Exposed rather than inlined into :meth:`_build_rlm` because the answer to "what will
+        this task give the model?" is otherwise unanswerable from outside: ``self.tools`` stops
+        being the whole truth once ``tools=`` is in play, and anything that needs the real list
+        (``rlm_harness.testing.assert_task_repl_safe``, a consumer's own introspection, a
+        debugger) would have to re-derive the rule — the two-derivations-of-one-value hazard.
+        """
+        if self._tools_override is not None:
+            return self._tools_override
+        return self.tools
 
     def _build_rlm(self) -> dspy.RLM:
         # Resolve a custom output type (e.g. "-> finding: Finding") explicitly via
@@ -176,7 +221,7 @@ class RLMTask:
 
         kwargs: dict[str, Any] = {
             "sub_lm": self._sub_lm,
-            "tools": list(self.tools),
+            "tools": list(self.resolved_tools),
         }
 
         # WHERE the caller's interpreter goes depends on the installed dspy: 3.2.x takes

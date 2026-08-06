@@ -1,6 +1,24 @@
-"""Tool-name rules for the REPL — one derivation, shared by every naming site.
+"""REPL-safety rules for a tool — its NAME and its SIGNATURE, one derivation each.
 
-PRIVATE (``_``-prefixed): not part of the public surface, may change without notice.
+The module is ``_``-prefixed, but **three of its functions are PUBLIC and SemVer-frozen**
+since 1.1.0, re-exported from ``rlm_harness.__all__``: :func:`is_valid_tool_name`,
+:func:`sanitize_tool_name` and :func:`unique_tool_names`, plus
+:func:`signature_from_json_schema`. Everything else here is private and may change.
+
+They were promoted because a consumer driving :class:`rlm_harness.McpCatalog` gets the
+server's RAW tool names and builds its own ``dspy.Tool``s from them — hitting exactly the
+defects 1.0.2 fixed inside ``mcp.py``, with no sanctioned remedy, since CLAUDE.md's
+"consumers EXTEND, they don't fork" invariant bars reaching into a ``_private`` name.
+Both halves are needed: the NAME rule alone leaves that consumer with a valid name on a
+``**kwargs`` tool that ``assert_repl_safe`` still rejects.
+
+**What is frozen is the PROPERTIES, not the literal output strings.** Callers may rely on:
+the fixpoint (below), that the result is always a valid non-reserved identifier, and that
+:func:`unique_tool_names` never collides. They may NOT rely on a specific rewrite —
+``t_``, the ``_2`` suffix and the trailing ``_`` are implementation. Note also that the
+reserved set is read from the INSTALLED dspy, so ``sanitize_tool_name("print")`` can differ
+across dspy versions under an unchanged rlm-harness. Do not persist these names as
+long-lived keys; the trace's ``repl_name`` field carries the mapping per run for that.
 
 dspy validates a tool's name when ``RLM`` is constructed: it must be a Python
 identifier, must not be a keyword (dspy 3.3.0+), and must be unique across the task's
@@ -33,8 +51,10 @@ would BREAK a server that currently works. Character validity is therefore teste
 
 from __future__ import annotations
 
+import inspect
 import keyword
 from collections.abc import Iterable, Mapping
+from typing import Any
 
 #: Stem for a name that cannot begin an identifier (a leading digit, or nothing left).
 _STEM = "t_"
@@ -99,11 +119,19 @@ def sanitize_tool_name(raw: str, *, taken: Iterable[str] = ()) -> str:
     return f"{cleaned}_{n}"
 
 
-def unique_tool_names(raws: Iterable[str]) -> Mapping[str, str]:
+def unique_tool_names(
+    raws: Iterable[str], *, taken: Iterable[str] = ()
+) -> Mapping[str, str]:
     """Map every name in ``raws`` to a valid, mutually-unique REPL name.
 
     Owns the collision bookkeeping, so a caller cannot forget to thread a ``taken`` set
     and silently reintroduce a duplicate — which is the exact defect this release fixes.
+
+    ``taken`` are names already registered on the task from an EARLIER call. This exists for
+    the progressive :class:`rlm_harness.McpCatalog` case, where servers load one at a time:
+    server B's names must avoid server A's, and without this parameter the caller would have
+    to drop back to :func:`sanitize_tool_name` and thread the set by hand — the very thing
+    this function exists to make impossible to forget.
 
     **Two passes, and the order is load-bearing.** Every already-valid name is reserved
     FIRST, then the rest are sanitised into what is left. One pass would let a sanitised
@@ -117,14 +145,67 @@ def unique_tool_names(raws: Iterable[str]) -> Mapping[str, str]:
     """
     ordered = list(dict.fromkeys(raws))
     reserved = _reserved()
+    already = set(taken)
     claimed: set[str] = {
-        r for r in ordered if is_valid_tool_name(r) and r not in reserved
+        r for r in ordered if is_valid_tool_name(r) and r not in reserved and r not in already
     }
     mapping: dict[str, str] = {}
     for raw in ordered:
         if raw in claimed and raw not in mapping.values():
             mapping[raw] = raw
             continue
-        resolved = sanitize_tool_name(raw, taken=claimed | set(mapping.values()))
+        resolved = sanitize_tool_name(raw, taken=already | claimed | set(mapping.values()))
         mapping[raw] = resolved
     return mapping
+
+
+def signature_from_json_schema(schema: Any) -> inspect.Signature:
+    """Build the ``inspect.Signature`` to stamp on a ``**kwargs`` tool wrapper, from a JSON
+    Schema object (an MCP tool's ``inputSchema``, or any equivalent).
+
+    **Why a wrapper needs this at all.** ``dspy.RLM`` builds its in-sandbox tool proxy from
+    ``inspect.signature(tool.func)`` — NOT from ``dspy.Tool.args`` — on both the Deno and the
+    container backend. So a wrapper written as ``def call(**kwargs)`` registers a single proxy
+    param literally named ``kwargs``: the model calls ``get_thing(kwargs=…)`` and a strict
+    server rejects the unexpected property. Stamping a real signature is the fix, and it is
+    the SHAPE half of REPL safety — the NAME half is :func:`sanitize_tool_name`. A consumer
+    building tools from :class:`rlm_harness.McpCatalog` needs both; having only the name gives
+    a well-named tool that :func:`rlm_harness.testing.assert_repl_safe` still rejects.
+
+    **REQUIRED-FIRST, and it is not cosmetic.** The Deno stub emits ``def f(<params>)`` in
+    this order, and a no-default param after a defaulted one is a ``SyntaxError`` that aborts
+    the ENTIRE tool registration — every other tool with it. ``KEYWORD_ONLY`` hides that
+    host-side, which is exactly why the ordering has to be enforced here rather than trusted.
+
+    Raises ``ValueError``/``TypeError`` when a property name cannot be a Python parameter (a
+    keyword like ``from``, or a non-identifier like ``db.query``). **Do not "fix" that by
+    sanitising the property name:** the proxy forwards the parameter name to the server as a
+    JSON key, so a renamed property sends wrong wire arguments. The honest handling is to let
+    the tool keep its ``**kwargs`` shape and know it is degraded — see ``mcp.py``.
+
+    A schema with no properties yields a zero-parameter signature, which is correct and
+    strictly better than ``**kwargs`` for a genuinely no-argument tool.
+    """
+    props = {}
+    required: set[str] = set()
+    if isinstance(schema, dict):
+        raw_props = schema.get("properties")
+        if isinstance(raw_props, dict):
+            props = raw_props
+        req = schema.get("required")
+        if isinstance(req, list):
+            # Only names that are actually declared properties: a `required` entry with no
+            # matching property cannot be given a parameter, and silently inventing one would
+            # make the model pass an argument the server never declared.
+            required = {r for r in req if r in props}
+    ordered = [n for n in props if n in required] + [n for n in props if n not in required]
+    return inspect.Signature(
+        [
+            inspect.Parameter(
+                n,
+                inspect.Parameter.KEYWORD_ONLY,
+                default=(inspect.Parameter.empty if n in required else None),
+            )
+            for n in ordered
+        ]
+    )

@@ -36,13 +36,12 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
-import inspect
 import json
 import threading
 from collections.abc import Iterator
 from typing import Any
 
-from ._toolname import unique_tool_names
+from ._toolname import signature_from_json_schema, unique_tool_names
 from .trace import record_tool_call
 
 # Head of a tool result recorded for inspection (a replay UI shows it) — like read_skill / fetch,
@@ -354,8 +353,6 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str,
     desc = mcp_tool.description or f"MCP tool {name}"
     schema = mcp_tool.inputSchema if isinstance(mcp_tool.inputSchema, dict) else None
     props = _args_from_schema(schema)
-    req = schema.get("required") if schema else None
-    required = set(req) if isinstance(req, list) else set()  # a non-list `required` must not sink tool-load
 
     def call(**kwargs: Any) -> str:
         # The REPL sandbox proxy forwards EVERY declared param — incl. a defaulted optional the model
@@ -383,26 +380,31 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str,
     # dspy.RLM injects `tool.func` (this `call`) into its PythonInterpreter, which builds the sandbox
     # tool proxy from ``inspect.signature(func)`` — NOT from ``dspy.Tool.args``. A bare ``**kwargs``
     # wrapper therefore registers a single param literally named "kwargs", so the model calls e.g.
-    # ``get_vulnerability(kwargs=...)`` and the server rejects the unexpected property. Stamp a real
-    # signature from the schema so the proxy exposes the true argument names. REQUIRED-FIRST: the Deno
-    # stub emits ``def f(<params>)`` in this order, and a no-default param after a defaulted one is a
-    # SyntaxError that aborts the ENTIRE sandbox registration — keyword-only hides that host-side, so we
-    # emit required (no default) before optional (default None). Stamp even the zero-arg case, so a
-    # no-param tool isn't left with the broken ``**kwargs`` proxy. A non-identifier / keyword property
-    # name can't be an ``inspect.Parameter``; fall back to the untyped ``**kwargs`` proxy for that tool.
-    if schema is not None:
-        try:
-            ordered = [n for n in props if n in required] + [n for n in props if n not in required]
-            params = [
-                inspect.Parameter(
-                    n, inspect.Parameter.KEYWORD_ONLY,
-                    default=(inspect.Parameter.empty if n in required else None),
-                )
-                for n in ordered
-            ]
-            call.__signature__ = inspect.Signature(params)
-        except (ValueError, TypeError):
-            pass  # bad property name → keep the untyped **kwargs proxy for this tool
+    # ``get_vulnerability(kwargs=...)`` and the server rejects the unexpected property. The rule
+    # itself lives in `signature_from_json_schema` (public since 1.1.0) so a consumer building its
+    # own tools from `McpCatalog` names uses the SAME derivation rather than re-deriving it.
+    #
+    # UNCONDITIONAL — no `if schema is not None` guard. A schema-less tool used to keep the broken
+    # ``**kwargs`` proxy while the comment here claimed otherwise; the SDK makes `inputSchema` a
+    # required dict so that branch is not reachable through `mcp_tools`, but a caller constructing
+    # `_make_tool` directly could hit it, and a zero-parameter signature is right for a genuinely
+    # no-argument tool either way.
+    try:
+        call.__signature__ = signature_from_json_schema(schema)
+    except (ValueError, TypeError):
+        # KNOWINGLY DEGRADED, and the only honest outcome: a property named `from` or `db.query`
+        # cannot be an `inspect.Parameter`. Sanitising it is NOT an option — the proxy forwards the
+        # parameter name to the server as a JSON key, so a renamed property sends wrong wire
+        # arguments. Keeping `**kwargs` leaves a tool the model can still call (dspy accepts it;
+        # only the arg NAMES are lost), whereas stamping a bad name would emit `def tool(from):`
+        # into the Deno stub and abort registration for EVERY tool on the task.
+        # `assert_repl_safe` rejects this shape by design — it is a real degradation, recorded
+        # here rather than hidden.
+        call.__repl_degraded__ = (  # type: ignore[attr-defined]
+            f"tool {name!r}: a property name in this server's schema cannot be a Python "
+            f"parameter, so the wrapper keeps its **kwargs shape and the model cannot pass "
+            f"arguments by name"
+        )
     # `name=` is what dspy VALIDATES and what it registers in the sandbox — NOT
     # `call.__name__` (`dspy.Tool` only falls back to the function's name when `name=` is
     # omitted). Sanitising `__name__` alone is a placebo: the raw name still reaches dspy

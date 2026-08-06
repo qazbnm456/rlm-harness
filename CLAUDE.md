@@ -149,9 +149,13 @@ One companion rule ships under `.claude/rules/`:
   trace.** dspy validates the name at `RLM(...)` construction (identifier, not a keyword, unique
   across the task) and a failure aborts registration for EVERY tool, so one bad name silently takes
   the rest down. Any name built from data the kit does not control — an MCP server's tool name, a
-  model id, a `pydantic` model's `__name__` — goes through `_toolname.sanitize_tool_name` /
-  `unique_tool_names` (uniqueness is a property of the SET, so resolve a whole tool list in one
-  pass). All four such sites shipped broken; CHANGELOG 1.0.2. **Keep the three identities separate:**
+  model id, a `pydantic` model's `__name__` — goes through `sanitize_tool_name` /
+  `unique_tool_names`; uniqueness is a property of the SET, so resolve a whole tool list in one
+  pass. All four such sites shipped broken; CHANGELOG 1.0.2. Both of those are PUBLIC since 1.1.0,
+  along with the SHAPE half `signature_from_json_schema`, so a CONSUMER building its own tools
+  (e.g. from `McpCatalog`'s raw names) uses the same derivation instead of writing a second one —
+  and it needs BOTH halves: fixing only the name leaves a well-named `**kwargs` tool that
+  `assert_repl_safe` still rejects. **Keep the three identities separate:**
   the WIRE name (what goes back to the server) and the TRACE name (`record_tool_call`) stay RAW —
   only the REPL-facing name is sanitized, with an optional `repl_name` payload field carrying the
   mapping when it differs. And `sanitize_tool_name` MUST stay a fixpoint on already-valid names,

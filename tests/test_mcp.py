@@ -184,8 +184,14 @@ def test_make_tool_tolerates_malformed_schema_fields():
         {"type": "object", "properties": {"id": {"type": "string"}}, "required": "id"}), "sc_")
     params = inspect.signature(bad_required.func).parameters
     assert list(params) == ["id"] and params["id"].default is None       # required treated as empty
+    # A non-dict inputSchema now yields a ZERO-PARAM signature, not the old `**kwargs` proxy.
+    # `**kwargs` was never usable here anyway — dspy builds the sandbox proxy from the wrapped
+    # func's signature, so the model could only call `tool(kwargs=…)` and the server would reject
+    # the unexpected property — and it is a shape `assert_repl_safe` rejects, i.e. the kit was
+    # shipping a tool its own guard fails. (The SDK makes `inputSchema` a required dict, so this
+    # is unreachable through `mcp_tools`; it is reachable by calling `_make_tool` directly.)
     non_dict = _make_tool(dspy, _FakeBridge(), _fake_tool(None), "sc_")   # inputSchema not a dict
-    assert list(inspect.signature(non_dict.func).parameters) == ["kwargs"]  # schemaless → **kwargs
+    assert list(inspect.signature(non_dict.func).parameters) == []
 
 
 # ---- the bridge: real stdio server, sync call, teardown ------------------
