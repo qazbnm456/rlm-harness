@@ -1,0 +1,116 @@
+name: dspy latest
+
+# EARLY WARNING for an upstream dspy release — a SEPARATE workflow from `ci.yml` on purpose.
+#
+# Why this exists: `rlm-harness` declares `dspy>=3.2.1` while consumers pin the KIT, so a
+# consumer's fresh install resolves whatever dspy is current. `ci.yml` resolves dspy from
+# `uv.lock`, so it tests a version nobody installing from PyPI necessarily gets. dspy 3.3.0
+# renamed three things at once (see CHANGELOG 1.0.1) and the whole suite stayed green while
+# the kit was completely unrunnable on a fresh install — one break was loud, two were silent.
+# This job is the thing that would have caught all three.
+#
+# Why it is NOT a job inside `ci.yml`:
+#
+#  * `schedule:` applies to the WHOLE workflow, so adding it to `ci.yml` would fire the
+#    3-way Python matrix and the lint job on every tick too.
+#  * `concurrency` is workflow-scoped. `ci.yml` uses `group: ci-${{ github.ref }}` with
+#    `cancel-in-progress: true`, and a `schedule` event's `github.ref` is the default branch
+#    ref — so a cron tick and a push to `main` would land in the SAME group and cancel each
+#    other. A cron tick silently killing a real CI run on main is the worse direction.
+#    (A cron tick and a push-to-main still collide inside THIS workflow's own group — that
+#    collision is made benign, not eliminated: both runs test the same thing, so a cancel
+#    costs nothing and is not a missed signal.)
+#  * A failure here is an UPSTREAM problem, not a contributor's. Keeping it out of the
+#    `pull_request` trigger means it never shows red on someone's unrelated PR.
+#
+# Why there is no `continue-on-error`: job-level `continue-on-error` makes the *workflow run*
+# conclude `success`, which means a failed scheduled run notifies NOBODY — exactly the hole it
+# would be added to close. This workflow is allowed to fail loudly, precisely because it never
+# gates a PR.
+#
+# NOTE: GitHub disables scheduled workflows after 60 days with no repository activity. If this
+# stops ticking, a push (or a manual `workflow_dispatch`) re-arms it.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"        # Mondays 06:17 UTC — off the hour, to dodge the cron stampede
+  workflow_dispatch:            # so it can be run on demand right after a dspy release lands
+  push:
+    branches: [main]            # post-merge signal: catches a kit change that only breaks newest dspy
+
+permissions:
+  contents: read
+
+concurrency:
+  # Its OWN group — must not share with `ci.yml`, see the header.
+  group: dspy-latest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (dspy latest)
+    runs-on: ubuntu-latest
+    # This job installs an as-yet-unseen dspy, so it is the likeliest in the repo to hang;
+    # without this it would burn the 6-hour default before anyone noticed.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          # ONE Python on purpose: this job varies the DSPY axis; `ci.yml`'s matrix varies the
+          # Python axis on the locked dspy. Accepted gap: a dspy release that breaks only on 3.11
+          # stays green here. Widening this to a matrix would multiply a weekly cron by three for
+          # a failure mode nobody has seen.
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Resolve the newest published dspy
+        id: dspy
+        # Ask PyPI rather than hardcoding a floor. A hardcoded `--with "dspy>=3.3"` goes stale the
+        # moment 3.4 ships, and the obvious guard "fail if resolved == locked" has a built-in false
+        # alarm: right after any `uv lock` bump the two ARE equal, so the job would sit red until
+        # some new dspy happens to ship — indistinguishable from "dspy broke the kit".
+        #
+        # RETRIES on the curl: with `set -e` a transient DNS/5xx would fail the step and redden a
+        # scheduled run for a non-reason — reintroducing, through a different door, exactly the
+        # false-alarm class this design rejected `resolved == locked` for.
+        run: |
+          set -euo pipefail
+          LATEST=$(curl --retry 3 --retry-all-errors --retry-delay 5 --max-time 60 -fsSL \
+            https://pypi.org/pypi/dspy/json \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["info"]["version"])')
+          LOCKED=$(python3 -c '
+          import re, pathlib
+          m = re.search(r"name = \"dspy\"\nversion = \"([^\"]+)\"", pathlib.Path("uv.lock").read_text())
+          print(m.group(1) if m else "unknown")')
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "PyPI latest: $LATEST | uv.lock pins: $LOCKED"
+          if [ "$LATEST" = "$LOCKED" ]; then
+            echo "::notice::uv.lock is already on the newest dspy ($LATEST) — this run duplicates the main suite."
+          else
+            echo "::notice::Testing against dspy $LATEST, which is NEWER than the locked $LOCKED."
+          fi
+
+      - name: Run the suite against it
+        # The version reaches bash through `env:`, NOT through `${{ }}` inline in `run:`. GitHub
+        # substitutes a `${{ }}` expression TEXTUALLY before bash parses the line, so a value
+        # containing a quote would break out of the surrounding string — and this value comes from
+        # a network response. PEP 440 makes that unreachable via PyPI itself, but this repo already
+        # SHA-pins its actions on exactly the "unlikely, one line to prevent" reasoning, and
+        # `enable-cache: true` writes a cache the other workflows read. Same line, held here.
+        env:
+          DSPY_LATEST: ${{ steps.dspy.outputs.latest }}
+        # `--with "dspy==<exact>"` is what actually overrides the lock. Verified on uv 0.10.9: a
+        # bare `--with dspy` and `--isolated --with dspy` BOTH resolve back to the LOCKED version,
+        # so either would have made this job decorative — green while proving nothing.
+        # The assert is the single most valuable line here: if uv ever changes `--with` semantics,
+        # this fails loudly instead of reporting a false pass.
+        run: |
+          set -euo pipefail
+          uv run --group dev --extra mcp --with "dspy==${DSPY_LATEST}" python -c "
+          import dspy, os, sys
+          want = os.environ['DSPY_LATEST']
+          print('running against dspy', dspy.__version__)
+          sys.exit(0 if dspy.__version__ == want else f'expected dspy {want}, got {dspy.__version__}')"
+          uv run --group dev --extra mcp --with "dspy==${DSPY_LATEST}" python -m pytest -q

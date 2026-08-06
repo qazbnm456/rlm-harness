@@ -4,6 +4,24 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [Unreleased]
+
+CI only — no package change, so no version bump.
+
+- **`.github/workflows/dspy-latest.yml`** — runs the suite against the NEWEST published dspy, on a
+  weekly cron + `workflow_dispatch` + push-to-main, never on a PR. This is the job that would have
+  caught 1.0.1: `ci.yml` resolves dspy from `uv.lock`, so it tests a version nobody installing from
+  PyPI necessarily gets, and the whole suite stayed green while the kit was completely unrunnable on
+  a fresh install. A separate workflow rather than a job in `ci.yml` because `schedule:` and
+  `concurrency:` are workflow-scoped: a cron in `ci.yml` would fire the 3-way Python matrix and lint
+  on every tick, and its `ci-${{ github.ref }}` group would make a cron tick and a push to `main`
+  cancel each other. No `continue-on-error` — that makes the run conclude `success`, so a failed
+  scheduled run would notify nobody, which is the hole it would be added to close. The newest
+  version is resolved from PyPI at run time and then **asserted** after install: a hardcoded floor
+  goes stale, "fail if resolved == locked" false-alarms right after every lock bump, and a bare
+  `--with dspy` silently resolves back to the locked version (only `--with "dspy==<exact>"`
+  overrides it) — without the assert the job would be decorative.
+
 ## [1.0.2] - 2026-08-06
 
 **Four shipped tool-naming defects.** dspy validates a tool's NAME when `RLM(...)` is constructed —
