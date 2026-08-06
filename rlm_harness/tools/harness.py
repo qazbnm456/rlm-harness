@@ -112,7 +112,7 @@ def make_harness_tool(
         max_consecutive_invalid=max_consecutive_invalid,
     )
 
-    def call(source: str) -> HarnessToolResult:
+    def call_harness(source: str) -> HarnessToolResult:
         held.clear()  # cleared → child_* stays None on endpoint-error / circuit-break (no child ran)
         r = base(source)
         return HarnessToolResult(
@@ -123,7 +123,7 @@ def make_harness_tool(
             child_meta=held.get("child_meta"),
         )
 
-    return call
+    return call_harness
 
 
 def harness_from_endpoint(

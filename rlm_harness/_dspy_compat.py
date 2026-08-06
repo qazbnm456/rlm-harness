@@ -129,6 +129,42 @@ def rlm_budget_kwargs(
     return resolved
 
 
+#: Names dspy owns inside the sandbox. The hardcoded floor for
+#: :func:`reserved_tool_names`; unioned with whatever the installed dspy exposes.
+_RESERVED_FALLBACK = frozenset({"llm_query", "llm_query_batched", "SUBMIT", "print"})
+
+#: dspy's attribute for that set, NEWEST FIRST — 3.3.0 renamed `_RESERVED_TOOL_NAMES`
+#: to `_RESERVED_SANDBOX_NAMES`. Same probing order as `_BUDGET_ALIASES` above.
+_RESERVED_ATTRS = ("_RESERVED_SANDBOX_NAMES", "_RESERVED_TOOL_NAMES")
+
+
+@lru_cache(maxsize=1)
+def reserved_tool_names() -> frozenset[str]:
+    """Tool names dspy refuses because it owns them inside the sandbox.
+
+    Returns the UNION of what the installed dspy exposes and `_RESERVED_FALLBACK`, not
+    one or the other. The asymmetry is deliberate: a stale fallback that over-rejects
+    fails LOUDLY and locally (the kit renames a tool nobody had a problem with), while
+    one that under-rejects passes here and resurfaces as a dspy ``ValueError`` in a
+    consumer's rollout. Over-rejecting is the cheap direction.
+
+    These are ``_``-private dspy attributes, so a rename or removal must be a non-event:
+    anything unreadable falls through to the fallback rather than raising.
+    """
+    names = set(_RESERVED_FALLBACK)
+    try:
+        import dspy
+
+        for attr in _RESERVED_ATTRS:
+            found = getattr(dspy.RLM, attr, None)
+            if found:
+                names |= {str(n) for n in found}
+                break
+    except Exception:  # pragma: no cover - defensive: never let this raise
+        pass
+    return frozenset(names)
+
+
 @lru_cache(maxsize=1)
 def recoverable_interpreter_error() -> type[Exception]:
     """The interpreter-error class dspy's RLM loop CATCHES and feeds back to the model.
