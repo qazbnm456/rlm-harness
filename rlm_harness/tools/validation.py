@@ -19,6 +19,8 @@ from collections.abc import Callable
 
 from pydantic import BaseModel
 
+from .._toolname import sanitize_tool_name
+
 
 def make_json_schema_validator(
     schema: dict | str | os.PathLike,
@@ -84,6 +86,9 @@ def make_schema_validator(model: type[BaseModel]) -> Callable[[str], str]:
         except Exception as exc:
             return f"Validation failed: {exc}"
 
-    validate.__name__ = f"validate_{model.__name__.lower()}"
+    # SANITISED: `model.__name__` is caller data. A statically-declared class is always an
+    # identifier, but `pydantic.create_model("bad-name")` is not — and a dynamic output
+    # model is the exact case `RLMTask.output_model` exists for, so this is reachable.
+    validate.__name__ = sanitize_tool_name(f"validate_{model.__name__.lower()}")
     validate.__qualname__ = validate.__name__
     return validate
