@@ -27,6 +27,7 @@ from typing import Any, ClassVar
 import dspy
 from pydantic import BaseModel
 
+from . import _dspy_compat
 from ._retry import run_with_retry
 from .config import RLMConfig
 from .runtime import get_config, get_sub_lm
@@ -137,6 +138,10 @@ class RLMTask:
         # bypasses `build_interpreter` entirely — a caller supplying their own interpreter object
         # owns its cancellation behavior too, exactly like `ScriptedInterpreter` owns its own.
         self._cancel_event = cancel_event
+        # Set per build by `_build_rlm`: holds the interpreter when the installed dspy wants
+        # it on the forward() call rather than the constructor (3.3.x). Initialised here so
+        # the attribute always exists, even for a caller that inspects a task it never ran.
+        self._forward_interpreter: Any | None = None
 
     def _build_rlm(self) -> dspy.RLM:
         # Resolve a custom output type (e.g. "-> finding: Finding") explicitly via
@@ -173,21 +178,40 @@ class RLMTask:
             "sub_lm": self._sub_lm,
             "tools": list(self.tools),
         }
-        if interpreter is not None:
-            kwargs["interpreter"] = interpreter
 
-        # Budget controls are passed best-effort: dspy's exact kwarg names have
-        # shifted across releases, so tolerate their absence rather than crash.
-        # (All-or-nothing: one unknown kwarg drops the whole dict to dspy defaults.)
-        budget = {
-            "max_iterations": self._config.max_iterations,
-            "max_llm_calls": self._config.max_llm_calls,
-            "max_output_chars": self._config.max_output_chars,
-        }
+        # WHERE the caller's interpreter goes depends on the installed dspy: 3.2.x takes
+        # it as `RLM(interpreter=…)`, 3.3.x takes it as the first POSITIONAL argument of
+        # forward()/aforward(). `_dspy_compat` decides; we stash it for `arun` when it
+        # belongs on the forward call. OWNERSHIP is identical on both — dspy shuts down
+        # only an interpreter it created itself — so `_teardown_interpreter` stays ours.
+        # (Do NOT reach for 3.3.x's `interpreter_factory=`: dspy DOES shut down whatever
+        # that factory returns, which would double-shutdown our sandbox.)
+        self._forward_interpreter = None
+        if interpreter is not None:
+            if _dspy_compat.rlm_accepts_interpreter_kwarg():
+                kwargs["interpreter"] = interpreter
+            else:
+                self._forward_interpreter = interpreter
+
+        # Budget caps are mapped onto the names the installed dspy accepts (3.3.x renamed
+        # `max_iterations` to `max_iters`). The `except TypeError` below is now only a
+        # backstop for an unknown future signature — and it is a LOSSY one, so the
+        # mapping has to be right: it drops every cap to dspy's defaults, silently.
+        budget = _dspy_compat.rlm_budget_kwargs(
+            max_iterations=self._config.max_iterations,
+            max_llm_calls=self._config.max_llm_calls,
+            max_output_chars=self._config.max_output_chars,
+        )
         try:
             return dspy.RLM(signature, **kwargs, **budget)
         except TypeError:
-            logger.debug("dspy.RLM rejected budget kwargs; building without them.")
+            logger.warning(
+                "dspy.RLM rejected the budget kwargs %s — building WITHOUT budget caps "
+                "(max_iterations/max_llm_calls/max_output_chars fall back to dspy's own "
+                "defaults). This usually means dspy renamed them again; update "
+                "rlm_harness._dspy_compat._BUDGET_ALIASES.",
+                sorted(budget),
+            )
             return dspy.RLM(signature, **kwargs)
 
     async def arun(self, **inputs: Any) -> Any:
@@ -198,6 +222,7 @@ class RLMTask:
         the run (sub-LM and tool events are recorded live during it).
         """
         rlm = self._build_rlm()
+        forward_args = _dspy_compat.forward_interpreter_args(self._forward_interpreter)
         # Bind the active recorder to the sub_lm so dspy's llm_query_batched — which fans the sub-LM
         # across a ThreadPoolExecutor whose workers DON'T inherit the recorder ContextVar — still records
         # each escalation as a sub_call (else the lifeline metric under-counts). Per-run (this rlm is
@@ -215,7 +240,10 @@ class RLMTask:
             if recorder is not None and hasattr(recorder, "begin_main_capture"):
                 recorder.begin_main_capture()
             with _live_main_timing(recorder):
-                prediction = await rlm.aforward(**inputs)
+                # On dspy 3.3.x a caller-owned interpreter is the first POSITIONAL
+                # argument here rather than a constructor kwarg; empty tuple on 3.2.x
+                # (where `_build_rlm` already passed it) and whenever there is none.
+                prediction = await rlm.aforward(*forward_args, **inputs)
             captured["prediction"] = prediction
             return prediction
 

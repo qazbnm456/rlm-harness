@@ -84,6 +84,11 @@ class ScriptedInterpreter:
     ``.calls`` records the code strings ``dspy`` asked to execute, in order, for assertions. ``.tools``
     is populated by ``dspy.RLM`` with the run's execution tools (the consumer's tools + ``SUBMIT`` /
     ``llm_query`` / ...), so a callable step can dispatch a REAL tool: ``lambda tools, v: tools["scan"](x=1)``.
+
+    It implements dspy's full ``CodeInterpreter`` surface — ``tools`` / ``start`` / ``execute`` /
+    ``shutdown`` — and must keep doing so: from dspy 3.3.0 that protocol is ``@runtime_checkable`` and
+    a caller-supplied interpreter is ``isinstance``-checked against it before every forward pass, so a
+    missing method turns into a ``TypeError`` at run time rather than anything a type checker catches.
     """
 
     def __init__(self, steps: Sequence[Step] = ()) -> None:
@@ -91,6 +96,10 @@ class ScriptedInterpreter:
         self.steps: list[Step] = list(steps)
         self.calls: list[str] = []
         self._i = 0
+
+    def start(self) -> None:
+        """No-op: there is no process to spin up. Present because dspy's ``CodeInterpreter``
+        protocol requires it (see the class docstring), not because the double needs it."""
 
     def execute(self, code: str, variables: dict | None = None) -> Any:
         self.calls.append(code)
