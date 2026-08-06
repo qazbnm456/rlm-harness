@@ -43,13 +43,16 @@ class SandboxSecurityError(RuntimeError):
     """Raised when an insecure interpreter is requested without explicit opt-in."""
 
 
-#: Raised when `cancel_event` fires during a sandbox `execute()` call — deliberately NOT a
-#: dspy ``CodeInterpreterError`` subclass. dspy's ``RLM._execute_code`` catches only
-#: ``(CodeInterpreterError, SyntaxError)``, so this propagates all the way up through
-#: ``RLMTask.arun()`` (and through ``run_with_retry``'s ``non_retryable`` allowlist, untouched)
-#: as a genuine run-ending failure. A plain ``RuntimeError`` subclass with zero dspy dependency,
-#: so it is defined here at module top without touching this module's lazy-dspy-import
-#: discipline — the same posture ``SandboxSecurityError`` above already has.
+#: Raised when `cancel_event` fires during a sandbox `execute()` call — deliberately NOT any
+#: dspy interpreter-error subclass. dspy's ``RLM._execute_code`` catches only its own
+#: recoverable interpreter error plus ``SyntaxError`` (``CodeInterpreterError`` on dspy 3.2.x,
+#: the narrower ``CodeExecutionError`` from 3.3.0 — see ``_dspy_compat``), so this propagates
+#: all the way up through ``RLMTask.arun()`` (and through ``run_with_retry``'s ``non_retryable``
+#: allowlist, untouched) as a genuine run-ending failure on EVERY supported dspy. Standing
+#: outside dspy's hierarchy entirely is what makes that true across the rename. A plain
+#: ``RuntimeError`` subclass with zero dspy dependency, so it is defined here at module top
+#: without touching this module's lazy-dspy-import discipline — the same posture
+#: ``SandboxSecurityError`` above already has.
 class SandboxCancelled(RuntimeError):
     """A caller explicitly cancelled a sandbox execution in progress."""
 
@@ -162,9 +165,12 @@ def _build_sandboxed_interpreter(
     Two independent knobs, one mechanism:
 
     * ``turn_timeout_s`` — a per-``execute()`` safety-net deadline. Firing raises
-      dspy's own RECOVERABLE ``CodeInterpreterError`` (caught by
-      ``RLM._execute_code``, fed back to the model as an ``"[Error] ..."`` string —
-      it gets to retry next turn against a freshly-respawned sandbox).
+      dspy's own RECOVERABLE interpreter error — whichever class that is on the
+      installed dspy (``_dspy_compat.recoverable_interpreter_error``; the base
+      ``CodeInterpreterError`` on 3.2.x, the narrower ``CodeExecutionError`` from
+      3.3.0). Caught by ``RLM._execute_code`` and fed back to the model as an
+      ``"[Error] ..."`` string — it gets to retry next turn against a
+      freshly-respawned sandbox.
     * ``cancel_event`` — an externally-set ``threading.Event`` for a caller (e.g. a
       "Cancel" UI) that wants to stop an in-flight run NOW. Firing raises
       ``SandboxCancelled`` — NOT recoverable, not caught by
@@ -177,8 +183,18 @@ def _build_sandboxed_interpreter(
     """
     global _sandboxed_interpreter_cls
     if _sandboxed_interpreter_cls is None:
-        from dspy.primitives.code_interpreter import CodeInterpreterError
         from dspy.primitives.python_interpreter import PythonInterpreter
+
+        from ._dspy_compat import recoverable_interpreter_error
+
+        # The class dspy's RLM loop CATCHES, resolved for the installed dspy rather than
+        # hardcoded. This is the whole recoverable/terminal distinction below, and dspy
+        # 3.3.0 moved it: `CodeInterpreterError` was the recoverable one on 3.2.x and is
+        # TERMINAL on 3.3.x, where the recoverable one is the new `CodeExecutionError`
+        # subclass. Hardcoding the base class would silently turn the per-turn timeout —
+        # a SAFETY NET that is supposed to hand the model another turn — into a
+        # run-ending failure, with nothing here going red to reveal it.
+        _RecoverableExecError = recoverable_interpreter_error()
 
         class _JsonLiteralInterpreter(PythonInterpreter):
             _JSON_ALIASES = _JSON_LITERAL_ALIASES
@@ -265,7 +281,7 @@ def _build_sandboxed_interpreter(
                 # regardless of whether the underlying work technically finished.
                 reason = fired["reason"]
                 if reason == "timeout":
-                    raise CodeInterpreterError(
+                    raise _RecoverableExecError(
                         f"execution exceeded the {self._turn_timeout_s:g}s per-turn "
                         f"sandbox budget; the interpreter was killed and will restart "
                         f"with FRESH state on the next call"

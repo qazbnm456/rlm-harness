@@ -4,6 +4,58 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.0.1] - 2026-08-06
+
+**Compatibility fix: the kit did not run at all on `dspy` 3.3.0.** No public surface change, no
+trace-format change — `__init__.__all__`, `rlm-harness/trace/v1`, and `RLMTask`'s declaration fields
+are untouched, so this is a drop-in upgrade for every consumer.
+
+The kit declares `dspy>=3.2.1` and consumers pin the KIT, not dspy. dspy 3.3.0 renamed three things
+at once, so any consumer resolving dspy freshly got a kit that was broken in one loud way and two
+silent ones:
+
+- **`RLM(interpreter=…)` moved** to the first positional argument of `forward()`/`aforward()`.
+  Every run raised `TypeError: RLM.__init__() got an unexpected keyword argument 'interpreter'`
+  before the first LM call — including the default `pyodide` path, since the kit always constructs
+  its own sandbox (to pre-bind the JSON literals) and hands it to dspy. Total failure, at least loud.
+- **`max_iterations` → `max_iters`.** The old best-effort `try` around the budget kwargs was
+  all-or-nothing, so the one renamed kwarg made dspy reject the call and the fallback dropped **all
+  three** caps (`max_iterations`, `max_llm_calls`, `max_output_chars`) back to dspy's own defaults.
+  Silent: runs simply ran to a budget nobody configured.
+- **`CodeInterpreterError` stopped being the recoverable interpreter error.** dspy 3.3.0 added
+  `CodeExecutionError` for that role and made the base class TERMINAL, inverting the meaning of every
+  `raise CodeInterpreterError` in the kit. A `sandbox_turn_timeout_s` firing — a *safety net* whose
+  entire point is to hand the model another turn — became a run-ending failure, and in the
+  `container` interpreter so did **any exception the model's own code raised in the sandbox**, the
+  most ordinary event in a REPL loop. Silent, and only visible under load.
+
+Fixed by resolving each difference through a new private `rlm_harness/_dspy_compat.py` (introspection
++ `lru_cache`, dspy-free at module top), so one build works on 3.2.x and 3.3.x:
+
+- `task.py:_build_rlm` — picks the interpreter seam (constructor kwarg vs. stashing it on
+  `_forward_interpreter` for the forward call) and maps the budget caps onto the accepted names;
+  `arun` prepends `_dspy_compat.forward_interpreter_args(...)` to `rlm.aforward(...)`. The `except
+  TypeError` fallback survives as a backstop but now `logger.warning`s, because it is lossy.
+  Interpreter OWNERSHIP is unchanged and remains the kit's: dspy shuts down only an interpreter it
+  created, which 3.3.0 documents explicitly. Deliberately **not** using 3.3.0's
+  `interpreter_factory=` — dspy *does* shut down whatever that factory returns, which would
+  double-shutdown the kit's sandbox.
+- `sandbox.py` — the turn-timeout raises `_dspy_compat.recoverable_interpreter_error()` instead of a
+  hardcoded `CodeInterpreterError`. `SandboxCancelled` is unchanged and still stands outside dspy's
+  hierarchy entirely, which is what keeps it non-recoverable across the rename.
+- `container_interpreter.py` — the three execute-path raises that were always meant to be recoverable
+  (execution timeout, an exception from the model's code, a sandbox death mid tool-reply) now use the
+  resolved class. Setup/health/protocol failures keep the base class and are terminal by intent.
+- `testing.py:ScriptedInterpreter` — gained a no-op `start()`. From 3.3.0 dspy's `CodeInterpreter` is
+  a `@runtime_checkable` Protocol and a caller-supplied interpreter is `isinstance`-checked before
+  every forward pass, so the missing method was a run-time `TypeError`.
+- `tests/test_dspy_compat.py` (new) — asserts the shim's contract against whichever dspy is
+  installed, so the next rename lands as a red test here rather than in a consumer's rollout.
+  `tests/test_integration_dspy.py` stopped asserting on dspy internals (`rlm._interpreter`,
+  `rlm.max_iterations`) and now checks the kit's own wiring and the caps by value.
+
+Suite: 359 passed, 1 skipped on **both** dspy 3.2.1 and 3.3.0.
+
 ## [1.0.0] - 2026-08-04
 
 **The first published release.** Everything below ships in it. Nothing was released before this:
