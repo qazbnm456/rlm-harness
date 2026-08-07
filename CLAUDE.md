@@ -21,8 +21,16 @@ One companion rule ships under `.claude/rules/`:
   - `uv run --group dev --extra mcp python -m pytest -q` — the full suite (CI runs it on
     3.11/3.12/3.13). `--extra mcp` so the MCP-client tests run instead of skipping. No live LLM,
     network, or Deno needed: the dspy-bearing tests use `DummyLM` or are skipped if dspy is absent.
-- **A THIRD workflow, `.github/workflows/dspy-latest.yml`, runs the same suite against the NEWEST
-  published dspy.** Separate workflow, on a weekly cron + `workflow_dispatch` + push-to-main, never
+- **`.github/workflows/ci.yml` also has a `packaging` job** — builds the wheel, installs it into a
+  clean environment with NO lockfile, and runs a task from it. Every other job runs from the source
+  tree via `uv run`, so a module missing from the wheel would ship silently. It is the PACKAGING
+  axis only: an offline end-to-end run still returns the right answer while a renamed dspy kwarg
+  silently drops the caller's budget cap, so it is blind to exactly the failures `_dspy_compat`
+  exists for. Never let it stand in for the job below.
+- **`.github/workflows/dspy-latest.yml` runs the same suite against the NEWEST published dspy —
+  and since the 1.2.0 floor bump it is the ONLY dspy axis** (the floor and `uv.lock` are both on
+  3.3.0, so `ci.yml` no longer covers a second version; the workflow says so in a `::notice::`
+  and restores real two-version coverage by itself the day dspy 3.4 ships). Separate workflow, on a weekly cron + `workflow_dispatch` + push-to-main, never
   on a PR (an upstream break is not a contributor's problem). It exists because the two jobs above
   resolve dspy from `uv.lock`, so they test a version nobody installing from PyPI necessarily gets:
   dspy 3.3.0 renamed three things at once and the whole suite stayed green while the kit was
@@ -71,9 +79,8 @@ One companion rule ships under `.claude/rules/`:
   propagates as a genuine run-ending failure).** Never make `SandboxCancelled` a
   `CodeInterpreterError` subclass, and never let a caller-driven cancel degrade into a
   retried/recoverable outcome. **Which class is "recoverable" is dspy-VERSION-DEPENDENT and must
-  stay resolved, not written down:** on dspy 3.2.x the base `CodeInterpreterError` IS the recoverable
-  one, and 3.3.0 inverted that — it added `CodeExecutionError` for the recoverable role and made the
-  base TERMINAL. Hardcoding the base class silently turns the safety-net timeout into a run-ending
+  stay resolved, not written down:** dspy 3.3.0 inverted it — the base `CodeInterpreterError` had been
+  the recoverable one, and 3.3.0 added `CodeExecutionError` for that role and made the base TERMINAL. Hardcoding the base class silently turns the safety-net timeout into a run-ending
   failure with no test going red (CHANGELOG 1.0.1). The same rule governs
   `container_interpreter.py`: its execute-path raises that are *meant* to hand the model another turn
   (execution timeout, an exception raised by the model's own code, a sandbox death mid tool-reply)
@@ -91,8 +98,12 @@ One companion rule ships under `.claude/rules/`:
   dropped once during this feature's own design revision and only caught by a second adversarial
   review pass; keep it isolated and commented so it cannot be dropped silently again.
 - **Every dspy API difference is resolved in `_dspy_compat.py` — one place, by introspection.**
-  The kit declares `dspy>=3.2.1` while consumers pin the KIT, so a consumer's fresh install picks up
-  whatever dspy is current and the kit must work across dspy's renames without them noticing. Three
+  The kit declares only a FLOOR on dspy (`>=3.3.0` since 1.2.0) while consumers pin the KIT, so a
+  consumer's fresh install picks up whatever dspy is current and the kit must survive dspy's
+  renames without them noticing. The 1.2.0 floor bump deleted the 3.2.x BRANCHES but deliberately
+  kept this module: its value was never "supports two versions", it is that every dspy fact lives
+  at ONE introspected call site. Do NOT collapse a shim into its call site just because it now
+  resolves a single answer — that is how the next rename gets to be silent again. Three
   landed at once in 3.3.0 (`RLM(interpreter=…)` → a positional arg of `forward()`/`aforward()`;
   `max_iterations` → `max_iters`; the recoverable/terminal interpreter-error inversion) and only the
   first failed loudly — see CHANGELOG 1.0.1. So: NEVER hardcode a dspy kwarg name, attribute, or

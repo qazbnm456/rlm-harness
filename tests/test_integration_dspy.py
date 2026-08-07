@@ -240,7 +240,7 @@ def test_cancel_event_reaches_the_built_interpreter_end_to_end():
 
     ev = threading.Event()
     task = T(cancel_event=ev)
-    rlm = task._build_rlm()
+    task._build_rlm()   # builds the interpreter and queues it for the forward() seam
 
     # Assert on the KIT's own handle, not dspy's private `_interpreter` slot: dspy 3.3.0
     # stopped holding the interpreter on the module (it takes one per forward() call).
@@ -248,9 +248,9 @@ def test_cancel_event_reaches_the_built_interpreter_end_to_end():
     assert built is not None and built._cancel_event is ev
 
     # ...and that the same instance is queued for delivery on whichever seam this dspy
-    # uses — constructor (3.2.x) or the forward() positional (3.3.x). Without this half,
-    # the test would still pass if `_build_rlm` built the interpreter and then dropped it.
-    delivered = getattr(rlm, "_interpreter", None) or task._forward_interpreter
+    # queues for delivery on the forward() positional seam. Without this half, the test would
+    # still pass if `_build_rlm` built the interpreter and then dropped it.
+    delivered = task._forward_interpreter
     assert delivered is built
 
 

@@ -4,6 +4,81 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.2.0] - 2026-08-07
+
+**Requires `dspy>=3.3.0`.** The 3.2.x compatibility branches are deleted.
+
+### ⚠️ Before you upgrade
+
+If you pin `dspy==3.2.x`, this upgrade will **fail to resolve** — pip/uv refuses the install.
+Nothing misbehaves silently; you get an error at install time. Either unpin dspy (the kit's
+documented model is "pin the KIT, not dspy" — the floor exists so you don't have to), or stay on
+`rlm-harness~=1.1.0`.
+
+Your Python floor is unaffected: dspy 3.2.1 and 3.3.0 both require `>=3.10,<3.15`. dspy 3.3.0 also
+carries *fewer* exact pins than 3.2.1 (it drops `asyncer`, `typeguard`, `numpy`, `xxhash`), so for
+most consumers the bump relaxes the transitive constraint graph rather than tightening it.
+
+### Why
+
+Supporting two dspy minors was not free, and 3.2.x is **strictly worse for users**:
+
+- it accepts DUPLICATE tool names and silently keeps only one — the model is never told the other
+  exists (3.3.x raises);
+- it does not reject a keyword tool name at construction; that becomes a Deno `SyntaxError` at
+  registration instead, aborting every tool on the task;
+- it has no `CodeExecutionError`, so a recoverable REPL error cannot be distinguished from a
+  terminal one as precisely.
+
+So the kit's own guarantees differed by whichever dspy a consumer happened to resolve. They are
+uniform now.
+
+### What was deleted, and what deliberately was not
+
+Gone: `_dspy_compat.rlm_accepts_interpreter_kwarg` and the `RLM(interpreter=…)` branch in
+`_build_rlm`; the `max_iterations` budget alias; `_RESERVED_TOOL_NAMES` from the reserved-name
+probe; the `getattr` fallback in `recoverable_interpreter_error`; and the 3.2.x rationale prose
+across the package, the tests and `dspy-latest.yml`.
+
+**`_dspy_compat` itself stays, and so do its shims** even where each now resolves a single answer.
+Its value was never "supports two versions" — it is that every dspy fact lives at ONE introspected
+call site, so the next rename is a one-line change plus a red test here, instead of a silent
+behaviour change in someone's rollout. dspy has now renamed in a minor release once, and two of
+those three renames were silent. Do not collapse a shim into its call site just because it
+currently has one branch.
+
+One consequence worth stating: the interpreter seam is now hardcoded to the `forward()`-positional
+form. A dspy that moved it back to the constructor would fail LOUDLY (a `TypeError` from
+`aforward`) rather than auto-adapting. That is the right trade, and `dspy-latest.yml` is what
+catches it.
+
+### `assert_task_repl_safe`'s reason changed
+
+It used to be justified as "dspy 3.2.x enforces none of these". dspy 3.3.x enforces all four. The
+helper's surviving value is that it moves the failure from run time to test time, names the rule
+instead of surfacing a dspy-worded `ValueError`, and — with no dspy equivalent at all — runs
+`assert_repl_safe` over every tool, covering the SHAPE rules (`*args`/`**kwargs`, required param
+after a defaulted one) that dspy does not validate anywhere.
+
+### CI
+
+- **New `packaging (fresh install)` job** — builds the wheel, installs it into a clean environment
+  with no lockfile, and runs a task from it. That axis was genuinely untested: every other job runs
+  from the source tree via `uv run`, so a module missing from the wheel would have shipped silently.
+  It is explicitly **not** a substitute for the dspy axis — measured, an offline end-to-end run
+  still returns the correct answer while a renamed dspy kwarg silently drops the caller's budget
+  cap, so it catches a loud break and is blind to the silent ones.
+- **`dspy-latest.yml` is now the only dspy axis.** With the floor and the lock both at 3.3.0 it
+  tests the same version as `ci.yml` and says so in a `::notice::` — and it restores real
+  two-version coverage automatically the day dspy 3.4 ships, with no human action.
+
+Still open, not in this release: fast-failing non-retryable LM errors. The floor bump makes the
+shim writable (`isinstance(exc, dspy.LMError) and not dspy.is_retryable_lm_error(exc)`), but the
+residual set is contested — `ContextWindowExceededError` should probably still retry here, because
+`run_with_retry` re-runs the whole trajectory and may produce a shorter context that fits.
+
+Suite: 434 passed, 1 skipped on dspy 3.3.0.
+
 ## [1.1.0] - 2026-08-07
 
 Additive on the API surface: nothing removed, renamed or re-typed, and `rlm-harness/trace/v1` is

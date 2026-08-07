@@ -12,10 +12,12 @@ failed in a way the previous suite could not see:
    any exception the model's own code raised in the container, went from "retry next
    turn" to "kill the run". Silent, and only visible under load.
 
-The kit declares ``dspy>=3.2.1`` while consumers pin the KIT, so a consumer's fresh
-install picks whatever dspy is current — none of them can be expected to notice any
-of the above. These tests assert the shim's CONTRACT against the installed dspy, so
-the next rename lands here as a red test instead of in someone's rollout.
+The kit declares only a FLOOR on dspy while consumers pin the KIT, so a consumer's fresh
+install picks whatever dspy is current — none of them can be expected to notice any of the
+above. These tests assert the shim's CONTRACT against the installed dspy, so the next rename
+lands here as a red test instead of in someone's rollout. That is why they survived the 1.2.0
+floor bump: the shims now resolve a single answer each, but these are what make the NEXT
+rename loud.
 """
 
 from __future__ import annotations
@@ -37,7 +39,8 @@ def _clear_caches():
         _dspy_compat._rlm_init_signature,
         _dspy_compat._rlm_init_params,
         _dspy_compat._rlm_init_takes_var_keyword,
-        _dspy_compat.rlm_accepts_interpreter_kwarg,
+        _dspy_compat.reserved_tool_names,
+        _dspy_compat.reserved_result_names,
         _dspy_compat.recoverable_interpreter_error,
         _dspy_compat.terminal_interpreter_error,
     ):
@@ -47,7 +50,8 @@ def _clear_caches():
         _dspy_compat._rlm_init_signature,
         _dspy_compat._rlm_init_params,
         _dspy_compat._rlm_init_takes_var_keyword,
-        _dspy_compat.rlm_accepts_interpreter_kwarg,
+        _dspy_compat.reserved_tool_names,
+        _dspy_compat.reserved_result_names,
         _dspy_compat.recoverable_interpreter_error,
         _dspy_compat.terminal_interpreter_error,
     ):
@@ -110,34 +114,27 @@ def test_budget_prefers_the_newest_alias(monkeypatch):
 # ---- the caller-owned interpreter ------------------------------------------------
 
 
-def test_interpreter_goes_to_exactly_one_seam():
-    """It is passed to the constructor XOR to forward() — never both (dspy would then
-    hold one interpreter and be handed another), never neither (the sandbox the kit
-    built, with its JSON-literal aliases and watchdog, would be silently ignored)."""
-    sentinel = object()
-    via_ctor = _dspy_compat.rlm_accepts_interpreter_kwarg()
-    via_forward = bool(_dspy_compat.forward_interpreter_args(sentinel))
-    assert via_ctor != via_forward
+def test_the_interpreter_seam_still_exists_on_this_dspy():
+    """THE tripwire for the seam. `forward_interpreter_args` has no dspy contact left after the
+    3.3.0 floor — it is a one-liner — so this assertion is the only thing that would notice dspy
+    moving the interpreter again. It must stay UNCONDITIONAL: making it mirror the shim would
+    make it a tautology, and the seam would then be untestable by construction."""
+    for method in (dspy.RLM.forward, dspy.RLM.aforward):
+        params = list(inspect.signature(method).parameters.values())
+        positional = [
+            p for p in params
+            if p.name != "self"
+            and p.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                           inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        assert positional, f"{method.__name__} takes no positional interpreter"
+        assert positional[0].name == "interpreter", (
+            f"{method.__name__}'s first positional arg is {positional[0].name!r}, not "
+            f"'interpreter' — dspy moved the seam; update `forward_interpreter_args`."
+        )
 
 
-def test_the_chosen_seam_actually_exists_on_this_dspy():
-    if _dspy_compat.rlm_accepts_interpreter_kwarg():
-        assert "interpreter" in inspect.signature(dspy.RLM.__init__).parameters
-    else:
-        # 3.3.x: forward()/aforward() take it positionally, before **input_args.
-        for method in (dspy.RLM.forward, dspy.RLM.aforward):
-            params = list(inspect.signature(method).parameters.values())
-            positional = [
-                p for p in params
-                if p.name != "self"
-                and p.kind in (inspect.Parameter.POSITIONAL_ONLY,
-                               inspect.Parameter.POSITIONAL_OR_KEYWORD)
-            ]
-            assert positional, f"{method.__name__} takes no positional interpreter"
-            assert positional[0].name == "interpreter"
-
-
-def test_no_interpreter_means_no_forward_args():
+def test_no_interpreter_still_means_no_forward_args():
     assert _dspy_compat.forward_interpreter_args(None) == ()
 
 
@@ -150,11 +147,7 @@ def test_recoverable_error_is_the_one_dspy_actually_catches():
     name the class that is on the CAUGHT side for the installed dspy."""
     from dspy.primitives import code_interpreter
 
-    recoverable = _dspy_compat.recoverable_interpreter_error()
-    expected = getattr(
-        code_interpreter, "CodeExecutionError", code_interpreter.CodeInterpreterError
-    )
-    assert recoverable is expected
+    assert _dspy_compat.recoverable_interpreter_error() is code_interpreter.CodeExecutionError
 
 
 def test_recoverable_error_is_catchable_as_the_base_class():
@@ -183,8 +176,7 @@ def test_terminal_error_is_not_the_recoverable_one_when_dspy_splits_them():
 
     terminal = _dspy_compat.terminal_interpreter_error()
     assert terminal is code_interpreter.CodeInterpreterError
-    if hasattr(code_interpreter, "CodeExecutionError"):
-        assert terminal is not _dspy_compat.recoverable_interpreter_error()
+    assert terminal is not _dspy_compat.recoverable_interpreter_error()
 
 
 # ---- import hygiene --------------------------------------------------------------
@@ -231,22 +223,24 @@ def test_importing_the_package_still_does_not_import_dspy():
 # ---- degraded introspection ------------------------------------------------------
 
 
-def test_var_keyword_signature_falls_back_to_the_legacy_names(monkeypatch):
-    """A dspy whose ``RLM.__init__`` is ``(*args, **kwargs)`` tells us nothing. Probing
-    names then proves nothing either, so fall back to what the kit has always sent and
-    let the constructor be the judge."""
+def test_var_keyword_signature_falls_back_to_the_current_names(monkeypatch):
+    """A dspy whose ``RLM.__init__`` is ``(*args, **kwargs)`` tells us nothing — probing names
+    proves nothing, so send the names this kit currently targets and let the constructor judge.
+
+    This branch is STILL LIVE after the 3.3.0 floor (`_rlm_init_takes_var_keyword` has a real
+    caller), and it reads `candidates[-1]`. Shrinking `_BUDGET_ALIASES` therefore CHANGED what
+    it sends — this test is the only coverage of that, which is why it was updated rather than
+    deleted with the other two-version cases."""
 
     def _opaque(self, *args, **kwargs):
         ...
 
     monkeypatch.setattr(dspy.RLM, "__init__", _opaque, raising=True)
     for fn in (_dspy_compat._rlm_init_signature, _dspy_compat._rlm_init_params,
-               _dspy_compat._rlm_init_takes_var_keyword,
-               _dspy_compat.rlm_accepts_interpreter_kwarg):
+               _dspy_compat._rlm_init_takes_var_keyword):
         fn.cache_clear()
 
-    assert _dspy_compat.rlm_accepts_interpreter_kwarg() is True
     resolved = _dspy_compat.rlm_budget_kwargs(
         max_iterations=7, max_llm_calls=11, max_output_chars=13
     )
-    assert resolved == {"max_iterations": 7, "max_llm_calls": 11, "max_output_chars": 13}
+    assert resolved == {"max_iters": 7, "max_llm_calls": 11, "max_output_chars": 13}

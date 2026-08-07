@@ -4,7 +4,7 @@ Two sources must be merged to get a complete picture of an RLM-as-harness run:
 
 1. The main LM's REPL trajectory, which ``dspy.RLM`` already returns on the
    ``Prediction`` object as ``trajectory`` (a list of ``{reasoning, code,
-   output}`` dicts, verified against dspy 3.2.1) plus ``final_reasoning``.
+   output}`` dicts, verified against dspy 3.3.0) plus ``final_reasoning``.
 2. The intercepted sub-LM pipeline and any LM-decided tool calls — which live
    *inside* the intercepted ``sub_lm`` / tool wrappers and are therefore invisible
    to the RLM trajectory. These are exactly the steps most valuable for Agentic RL.

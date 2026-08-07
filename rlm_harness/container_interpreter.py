@@ -458,11 +458,10 @@ class ContainerInterpreter:
         # Two DIFFERENT error classes on purpose, and the split is load-bearing:
         #   Recoverable → dspy's RLM loop catches it and hands the model another turn.
         #   CodeInterpreterError → terminal; it ends the run.
-        # They were the same class on dspy 3.2.x (where the base class WAS the recoverable
-        # one). dspy 3.3.0 split them and made the base terminal, so continuing to raise
-        # the base everywhere would end the whole run the first time the model's own code
-        # threw an exception in the sandbox — the single most ordinary thing that happens
-        # in a REPL loop. Setup/protocol failures below deliberately keep the base class.
+        # dspy 3.3.0 split them and made the base TERMINAL, so raising the base everywhere
+        # would end the whole run the first time the model's own code threw an exception in
+        # the sandbox — the single most ordinary thing that happens in a REPL loop.
+        # Setup/protocol failures below deliberately keep the base class.
         _Recoverable = recoverable_interpreter_error()
 
         code = self._inject_variables(code, variables or {})
