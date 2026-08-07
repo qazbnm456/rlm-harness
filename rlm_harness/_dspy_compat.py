@@ -106,7 +106,8 @@ def rlm_budget_kwargs(
     resolved: dict[str, int] = {}
     for canonical, candidates in _BUDGET_ALIASES:
         if permissive:
-            # Can't probe: use the name this kit has always sent (oldest = last).
+            # Can't probe: send the name this kit currently targets (newest = last, since
+            # the alias tuples are newest-first and 1.2.0 dropped the legacy spellings).
             resolved[candidates[-1]] = values[canonical]
             continue
         for name in candidates:

@@ -93,14 +93,26 @@ def test_iteration_cap_uses_whichever_name_this_dspy_has():
 
 
 def test_budget_prefers_the_newest_alias(monkeypatch):
-    """When a dspy accepts BOTH spellings, send the newer one — the older is the one
-    on its way out, and a deprecation shim can disappear in a patch release."""
+    """When a dspy accepts BOTH spellings, send the newer one — the older is on its way out
+    and a deprecation shim can vanish in a patch release.
+
+    `_BUDGET_ALIASES` is monkeypatched to hold two names. Without that this test would be a
+    TAUTOLOGY after 1.2.0 dropped the legacy spellings: the shim would have only one name to
+    choose from, so the assertion could not fail however the preference logic behaved. What is
+    under test is the ORDERING RULE, which has to outlive any particular alias list."""
 
     def _both(self, signature, max_iters=20, max_iterations=20,
               max_llm_calls=50, max_output_chars=10_000):
         ...
 
     monkeypatch.setattr(dspy.RLM, "__init__", _both, raising=True)
+    monkeypatch.setattr(
+        _dspy_compat, "_BUDGET_ALIASES",
+        (("max_iterations", ("max_iters", "max_iterations")),
+         ("max_llm_calls", ("max_llm_calls",)),
+         ("max_output_chars", ("max_output_chars",))),
+        raising=True,
+    )
     for fn in (_dspy_compat._rlm_init_signature, _dspy_compat._rlm_init_params,
                _dspy_compat._rlm_init_takes_var_keyword):
         fn.cache_clear()
