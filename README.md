@@ -141,7 +141,7 @@ See `CLAUDE.md` for invariants when modifying the kit.
 
 ## Status
 
-**v1.1.0** — the current release. Scaffold + harness-engineering layer (sub-LM hook,
+**v1.2.0** — the current release. Scaffold + harness-engineering layer (sub-LM hook,
 skills-as-tools, trajectory recording, replay, dataset export, harness delegation on both the client
 and server side). Hardened by dogfooding against real downstream consumers; the changes that surfaced
 are in [`CHANGELOG.md`](https://github.com/qazbnm456/rlm-harness/blob/main/CHANGELOG.md).
