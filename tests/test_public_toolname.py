@@ -141,7 +141,7 @@ def test_taken_beats_an_already_valid_name():
     """The progressive-loading worst case, and the one the other `taken=` test misses: a raw
     name that is ALREADY a valid identifier and is ALSO taken. Server B exposes `search`;
     server A registered `search` a moment ago. Without the taken-check in the reservation
-    pass this returns `search` and collides — dspy 3.2.x would then silently drop one."""
+    pass this returns `search` and collides, and dspy rejects a duplicate tool name."""
     out = unique_tool_names(["search"], taken=["search"])
     assert out["search"] != "search"
     assert is_valid_tool_name(out["search"])

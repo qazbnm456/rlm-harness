@@ -35,8 +35,8 @@ of them shipped broken (CHANGELOG 1.0.2):
 - ``tools/validation.py:make_schema_validator`` — ``f"validate_{model.__name__}"``; a
   ``pydantic.create_model("bad-name")`` carries the hyphen straight through.
 - ``tools/model.py`` / ``tools/harness.py`` — both returned a closure literally named
-  ``call``, so using the two together silently dropped one on dspy 3.2.x and raised on
-  3.3.x. Fixed by naming them distinctly rather than by sanitising.
+  ``call``, so using the two together made dspy raise ``Duplicate tool name``. Fixed by
+  naming them distinctly rather than by sanitising.
 
 ## The fixpoint rule, and why it is the important one
 
@@ -63,11 +63,10 @@ _STEM = "t_"
 def is_valid_tool_name(name: object) -> bool:
     """True if dspy will accept ``name`` as a tool name.
 
-    Mirrors dspy's own rule (``isidentifier()`` and not a keyword) with ONE deliberate
-    difference: dspy 3.2.x does not reject keywords, but a keyword name is broken there
-    anyway — dspy's Deno runner interpolates the name into ``def <name>(…):``, so
-    ``def class(…)`` is a sandbox ``SyntaxError`` that aborts registration. Rejecting it
-    on both versions fixes a latent 3.2.x hazard rather than inventing a stricter rule.
+    Mirrors dspy's own rule: ``isidentifier()`` and not a keyword. The keyword half matters
+    for a reason worth keeping written down — dspy's Deno runner interpolates the name into
+    ``def <name>(…):``, so ``def class(…)`` is a sandbox ``SyntaxError`` that aborts
+    registration for EVERY tool on the task, not just the offending one.
     """
     return isinstance(name, str) and name.isidentifier() and not keyword.iskeyword(name)
 

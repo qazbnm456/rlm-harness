@@ -35,7 +35,7 @@ pitch, the quickstart, and installation — start at the
 
 ## RLM as Harness Engineering (sub-LM hook + tracing)
 
-`dspy.RLM` exposes no hook to intercept a sub-LLM response, and (as of 3.2.1) no
+`dspy.RLM` exposes no hook to intercept a sub-LLM response, and (as of dspy 3.3.0) no
 multi-sub-model or depth>1 recursion. The clean lever is to **wrap a `dspy.LM`**:
 
 ```python
