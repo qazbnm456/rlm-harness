@@ -187,12 +187,11 @@ def _build_sandboxed_interpreter(
         from ._dspy_compat import recoverable_interpreter_error
 
         # The class dspy's RLM loop CATCHES, resolved for the installed dspy rather than
-        # hardcoded. This is the whole recoverable/terminal distinction below, and dspy
-        # dspy 3.3.0 moved it: `CodeInterpreterError` became TERMINAL and the recoverable
+        # hardcoded — this IS the recoverable/terminal distinction the two raises below turn
+        # on. dspy 3.3.0 moved it: `CodeInterpreterError` became TERMINAL and the recoverable
         # role passed to its `CodeExecutionError` subclass. Hardcoding the base class here
-        # would silently turn the per-turn timeout —
-        # a SAFETY NET that is supposed to hand the model another turn — into a
-        # run-ending failure, with nothing here going red to reveal it.
+        # would silently turn the per-turn timeout — a SAFETY NET whose whole point is to hand
+        # the model another turn — into a run-ending failure, with nothing going red to show it.
         _RecoverableExecError = recoverable_interpreter_error()
 
         class _JsonLiteralInterpreter(PythonInterpreter):
@@ -313,10 +312,27 @@ def _build_container_interpreter(container: Any) -> Any:
 def _build_mock_interpreter() -> Any:
     """A do-nothing interpreter usable in tests without a real sandbox.
 
-    Implements the minimal ``execute``/``shutdown`` surface; dspy is not required.
+    Implements the FULL ``CodeInterpreter`` surface — ``tools`` / ``start`` / ``execute`` /
+    ``shutdown`` — and must keep doing so. From dspy 3.3.0 that protocol is
+    ``@runtime_checkable`` and ``RLM._interpreter_context`` ``isinstance``-checks a
+    caller-supplied interpreter on EVERY forward pass, so a missing member is a run-time
+    ``TypeError``, not something a type checker or a construction test catches. ``tools`` and
+    ``start`` were absent until 1.2.1 and `interpreter="mock"` could not run a task at all
+    (it worked before only because dspy 3.2.x took the interpreter as a constructor kwarg and
+    validated nothing). Same requirement, same reason, as
+    ``rlm_harness.testing.ScriptedInterpreter``.
+
+    Still dspy-free: the protocol is structural, so satisfying it needs no import.
     """
 
-    class _MockInterpreter:  # minimal CodeInterpreter surface
+    class _MockInterpreter:
+        def __init__(self) -> None:
+            # RLM mutates this dict in place to inject the run's execution tools.
+            self.tools: dict[str, Any] = {}
+
+        def start(self) -> None:
+            """No-op: there is no process to spin up."""
+
         def execute(self, code: str, variables: dict | None = None) -> str:
             return ""
 
