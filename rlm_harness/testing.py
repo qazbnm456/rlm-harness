@@ -171,12 +171,13 @@ def _signature_field_names(signature: str) -> tuple[list[str], list[str]]:
 def assert_task_repl_safe(task: Any) -> None:
     """Assert a WHOLE ``RLMTask`` is safe to construct — the checks no per-tool test can make.
 
-    :func:`assert_repl_safe` validates one tool's shape and name. Three of dspy's
+    :func:`assert_repl_safe` validates one tool's shape and name. FOUR of dspy's
     construction-time rules are properties of the whole task, and each aborts registration for
     EVERY tool:
 
     * duplicate tool names — dspy keys its tool dict by name;
-    * a signature INPUT field colliding with a tool name, or with a reserved sandbox name;
+    * a signature INPUT field colliding with a tool name;
+    * a signature INPUT field colliding with a reserved sandbox name;
     * a signature OUTPUT field dspy's own Prediction already owns (``trajectory`` /
       ``final_reasoning``).
 

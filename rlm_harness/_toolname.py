@@ -21,8 +21,7 @@ across dspy versions under an unchanged rlm-harness. Do not persist these names 
 long-lived keys; the trace's ``repl_name`` field carries the mapping per run for that.
 
 dspy validates a tool's name when ``RLM`` is constructed: it must be a Python
-identifier, must not be a keyword (dspy 3.3.0+), and must be unique across the task's
-tools. A name that fails any of those aborts the WHOLE tool registration, so one bad
+identifier, must not be a keyword, and must be unique across the task's tools. A name that fails any of those aborts the WHOLE tool registration, so one bad
 name takes every other tool down with it.
 
 Four places in this kit derive a tool name from data it does not control, and every one

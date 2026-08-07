@@ -277,3 +277,39 @@ def test_build_interpreter_silently_accepts_turn_timeout_for_mock():
     # mirrors how `allow_insecure` is already silently irrelevant outside `local`.
     interp = build_interpreter("mock", turn_timeout_s=5.0)
     assert interp.execute("1+1") == ""
+
+
+def test_mock_interpreter_satisfies_dspys_protocol():
+    """`interpreter="mock"` is a documented public config value, and from dspy 3.3.0 the
+    `CodeInterpreter` protocol is `@runtime_checkable` and `RLM._interpreter_context`
+    isinstance-checks a caller-supplied interpreter on EVERY forward pass. Missing `tools`
+    or `start` is therefore a run-time TypeError — invisible to a construction test, which
+    is exactly how it shipped broken in 1.2.0."""
+    pytest.importorskip("dspy")
+    from dspy.primitives.code_interpreter import CodeInterpreter
+
+    from rlm_harness.sandbox import build_interpreter
+
+    assert isinstance(build_interpreter("mock"), CodeInterpreter)
+
+
+def test_mock_interpreter_runs_a_task_end_to_end():
+    """The regression test that would have caught it: drive a real `dspy.RLM` forward pass
+    through the STRING `mock` path. Every prior mock test either stopped at `_build_rlm()`
+    or injected a `ScriptedInterpreter`, which overrides the string path entirely."""
+    pytest.importorskip("dspy")
+    from rlm_harness import RLMConfig, RLMTask, configure
+    from rlm_harness.testing import scripted_lm
+
+    class T(RLMTask):
+        signature = "q: str -> a: str"
+        output_field = "a"
+
+    configure(RLMConfig(main_model="d/m", sub_model="d/s", interpreter="mock",
+                        max_iterations=1),
+              main_lm=scripted_lm([{"reasoning": "r", "code": "pass"}]))
+    # A mock interpreter never SUBMITs, so the run exhausts its budget and fails on the
+    # missing output — the point is that it fails THERE, not at interpreter validation.
+    with pytest.raises(Exception) as excinfo:
+        T().run(q="hi")
+    assert "must implement CodeInterpreter" not in str(excinfo.value)

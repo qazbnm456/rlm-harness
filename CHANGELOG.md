@@ -77,7 +77,18 @@ shim writable (`isinstance(exc, dspy.LMError) and not dspy.is_retryable_lm_error
 residual set is contested — `ContextWindowExceededError` should probably still retry here, because
 `run_with_retry` re-runs the whole trajectory and may produce a shorter context that fits.
 
-Suite: 434 passed, 1 skipped on dspy 3.3.0.
+### Fixed before release
+
+- **`interpreter="mock"` could not run a task.** The floor bump was what broke it: dspy 3.2.x
+  took the interpreter as a constructor kwarg and validated nothing, while 3.3.x
+  `isinstance`-checks it against the `@runtime_checkable` `CodeInterpreter` protocol on EVERY
+  forward pass — and `_MockInterpreter` was missing `tools` and `start`. It failed with
+  `TypeError: interpreter must implement CodeInterpreter`. Invisible to the suite, because every
+  mock test either stopped at `_build_rlm()` or injected a `ScriptedInterpreter` (which overrides
+  the string path and does satisfy the protocol). Now implements the full surface, with a
+  regression test that drives a real forward pass through the STRING `mock` path.
+
+Suite: 436 passed, 1 skipped on dspy 3.3.0.
 
 ## [1.1.0] - 2026-08-07
 

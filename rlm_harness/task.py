@@ -148,9 +148,9 @@ class RLMTask:
         # bypasses `build_interpreter` entirely — a caller supplying their own interpreter object
         # owns its cancellation behavior too, exactly like `ScriptedInterpreter` owns its own.
         self._cancel_event = cancel_event
-        # Set per build by `_build_rlm`: holds the interpreter when the installed dspy wants
-        # it on the forward() call rather than the constructor (3.3.x). Initialised here so
-        # the attribute always exists, even for a caller that inspects a task it never ran.
+        # Set per build by `_build_rlm`: the interpreter that `arun` passes to forward() as
+        # its first positional arg. Initialised here so the attribute always exists, even for
+        # a caller that inspects a task it never ran.
         self._forward_interpreter: Any | None = None
 
         # `tools=` is stashed and resolved in `_build_rlm`, NOT written to `self.tools` here.
