@@ -1,36 +1,30 @@
-"""Cross-version shims for ``dspy``'s ``RLM`` / interpreter API renames.
+"""Shims for ``dspy``'s ``RLM`` / interpreter API, resolved by introspection in ONE place.
 
 PRIVATE (``_``-prefixed): not part of the public surface, may change without notice.
 
-The kit declares ``dspy>=3.2.1`` and consumers pin the KIT, not dspy — so a fresh
-install resolves whatever dspy is current, and one build has to work across the
-renames dspy has made to ``RLM``'s constructor and to the interpreter error
-hierarchy. Every such difference is resolved HERE, by introspection, so the rest of
-the kit reads as if there were only one dspy.
+**Why this module exists, and why it survives the 3.3.0 floor.** rlm-harness declares only a
+FLOOR on dspy and consumers pin the KIT, so a consumer's fresh install resolves whatever dspy
+is current. dspy 3.3.0 renamed three things at once — the caller-owned interpreter moved from
+``RLM(interpreter=…)`` to ``forward``/``aforward``'s first positional arg, ``max_iterations``
+became ``max_iters``, and ``CodeInterpreterError`` stopped being the RECOVERABLE interpreter
+error (the new ``CodeExecutionError`` took that role) — and only the first failed loudly. The
+kit was completely unrunnable on a fresh install while its whole suite stayed green
+(CHANGELOG 1.0.1).
 
-Known differences:
+Since 1.2.0 the floor is ``dspy>=3.3.0`` and the 3.2.x branches are gone, so most of these
+now resolve a single answer. **They are kept anyway**: the module's value was never "supports
+two versions", it is that every dspy fact lives at ONE introspected call site, so the NEXT
+rename is a one-line change here plus a red test in ``tests/test_dspy_compat.py`` — instead of
+a silent behaviour change in someone's rollout. Do not collapse a shim into its call site just
+because it currently has one branch.
 
-===================  =========================  ==========================
-what                 dspy 3.2.x                 dspy 3.3.x
-===================  =========================  ==========================
-caller's interpreter ``RLM(interpreter=obj)``   1st POSITIONAL arg of
-                                                ``forward``/``aforward``
-iteration cap        ``max_iterations=``        ``max_iters=``
-recoverable REPL     ``CodeInterpreterError``   ``CodeExecutionError``
-error                                           (``CodeInterpreterError``
-                                                 became TERMINAL)
-===================  =========================  ==========================
+Note one consequence of the floor: the interpreter seam is now HARDCODED to the
+``forward()``-positional form. A future dspy that moved it back to the constructor would fail
+LOUDLY (a ``TypeError`` from ``aforward``) rather than auto-adapting — which is the right
+trade, and ``.github/workflows/dspy-latest.yml`` is what catches it.
 
-Interpreter OWNERSHIP is the same on both and is what the kit relies on: dspy shuts
-down only an interpreter it created itself, never one the caller supplied. 3.3.0
-states this explicitly ("Pass an existing interpreter as the first positional
-argument when calling the module"), so ``RLMTask._teardown_interpreter`` stays
-correct either way. Do NOT switch to 3.3.0's ``interpreter_factory=``: dspy shuts
-down whatever that factory returns, which would double-shutdown the kit's sandbox.
-
-This module must stay importable without dspy (its module top is dspy-free); every
-lookup imports dspy lazily and is cached, since the installed dspy cannot change
-mid-process.
+This module must stay importable without dspy (its module top is dspy-free); every lookup
+imports dspy lazily and is cached, since the installed dspy cannot change mid-process.
 """
 
 from __future__ import annotations
@@ -42,7 +36,7 @@ from typing import Any
 # Canonical kit name -> the dspy kwarg names that have carried it, NEWEST FIRST.
 # Probing in this order means a future rename only needs a new entry at the front.
 _BUDGET_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("max_iterations", ("max_iters", "max_iterations")),
+    ("max_iterations", ("max_iters",)),
     ("max_llm_calls", ("max_llm_calls",)),
     ("max_output_chars", ("max_output_chars",)),
 )
@@ -74,27 +68,20 @@ def _rlm_init_takes_var_keyword() -> bool:
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
 
 
-@lru_cache(maxsize=1)
-def rlm_accepts_interpreter_kwarg() -> bool:
-    """True on dspy 3.2.x, where a caller-owned interpreter goes to ``RLM(...)``.
-
-    False on 3.3.x, where it goes to ``forward``/``aforward`` as the first positional
-    argument instead — see :func:`forward_interpreter_args`.
-    """
-    if _rlm_init_takes_var_keyword():
-        return True  # can't disprove it; the legacy path is the safer guess
-    return "interpreter" in _rlm_init_params()
-
-
 def forward_interpreter_args(interpreter: Any) -> tuple:
     """The positional args to prepend to ``rlm.aforward(...)`` for ``interpreter``.
 
-    Empty when the interpreter was already handed to the constructor (3.2.x) or when
-    there is no caller-owned interpreter at all.
+    From dspy 3.3.0 a caller-owned interpreter is the FIRST POSITIONAL argument of
+    ``forward``/``aforward``, not a constructor kwarg. Ownership is what makes this the right
+    seam: dspy shuts down only an interpreter it created itself, never one the caller supplied
+    ("Pass an existing interpreter as the first positional argument when calling the module"),
+    so ``RLMTask._teardown_interpreter`` stays correct. Do NOT switch to ``interpreter_factory=``
+    — dspy DOES shut down whatever that factory returns, which would double-shutdown the kit's
+    sandbox.
+
+    Empty when there is no caller-owned interpreter at all.
     """
-    if interpreter is None or rlm_accepts_interpreter_kwarg():
-        return ()
-    return (interpreter,)
+    return () if interpreter is None else (interpreter,)
 
 
 def rlm_budget_kwargs(
@@ -133,9 +120,9 @@ def rlm_budget_kwargs(
 #: :func:`reserved_tool_names`; unioned with whatever the installed dspy exposes.
 _RESERVED_FALLBACK = frozenset({"llm_query", "llm_query_batched", "SUBMIT", "print"})
 
-#: dspy's attribute for that set, NEWEST FIRST — 3.3.0 renamed `_RESERVED_TOOL_NAMES`
-#: to `_RESERVED_SANDBOX_NAMES`. Same probing order as `_BUDGET_ALIASES` above.
-_RESERVED_ATTRS = ("_RESERVED_SANDBOX_NAMES", "_RESERVED_TOOL_NAMES")
+#: dspy's attribute for that set, NEWEST FIRST — a tuple, not a constant, so the next rename
+#: is one entry here. Same probing shape as `_BUDGET_ALIASES` above.
+_RESERVED_ATTRS = ("_RESERVED_SANDBOX_NAMES",)
 
 
 @lru_cache(maxsize=1)
@@ -166,7 +153,7 @@ def reserved_tool_names() -> frozenset[str]:
 
 
 #: Output-field names dspy's RLM owns on its own Prediction. Hardcoded floor for
-#: :func:`reserved_result_names`; dspy 3.2.x has no attribute for these at all.
+#: :func:`reserved_result_names`, unioned with whatever the installed dspy exposes.
 _RESERVED_RESULT_FALLBACK = frozenset({"trajectory", "final_reasoning"})
 
 
@@ -179,8 +166,7 @@ def reserved_result_names() -> frozenset[str]:
     a tool nobody minded. Over-rejecting an *output field* is not auto-fixable — the field is the
     consumer's signature, and a false positive fails a task that runs fine on their dspy. The
     union is still right, because the failure mode it prevents (a task that constructs here and
-    raises in their rollout) is worse than a loud, local, one-line-to-fix rename. Note dspy 3.2.x
-    exposes no attribute for this, so there the fallback IS the answer.
+    raises in their rollout) is worse than a loud, local, one-line-to-fix rename.
     """
     names = set(_RESERVED_RESULT_FALLBACK)
     try:
@@ -198,30 +184,26 @@ def reserved_result_names() -> frozenset[str]:
 def recoverable_interpreter_error() -> type[Exception]:
     """The interpreter-error class dspy's RLM loop CATCHES and feeds back to the model.
 
-    Load-bearing, and the reason this is resolved rather than hardcoded: dspy 3.3.0
-    added ``CodeExecutionError`` and INVERTED the meaning of the base class. Raising a
-    bare ``CodeInterpreterError`` was recoverable on 3.2.x and is TERMINAL on 3.3.x —
-    so a sandbox turn-timeout that used to hand the model another turn would instead
-    end the whole run, with no test failure to reveal it.
-
-    Falls back to ``CodeInterpreterError`` on a dspy too old to have the split, which
-    is exactly right there: on 3.2.x that base class IS the recoverable one.
+    Load-bearing, and the reason it is resolved rather than hardcoded at the raise sites: dspy
+    3.3.0 added ``CodeExecutionError`` and INVERTED the meaning of the base class. Raising a bare
+    ``CodeInterpreterError`` was recoverable on 3.2.x and is TERMINAL from 3.3.0 — so a sandbox
+    turn-timeout that used to hand the model another turn would instead end the whole run, with
+    no test failure to reveal it. That inversion is why every raise site asks here instead of
+    naming a class (see ``sandbox.py``'s watchdog and ``container_interpreter.py``'s execute path).
     """
-    from dspy.primitives import code_interpreter
+    from dspy.primitives.code_interpreter import CodeExecutionError
 
-    return getattr(
-        code_interpreter, "CodeExecutionError", code_interpreter.CodeInterpreterError
-    )
+    return CodeExecutionError
 
 
 @lru_cache(maxsize=1)
 def terminal_interpreter_error() -> type[Exception]:
     """The interpreter-error class dspy's RLM loop does NOT catch — a run-ending failure.
 
-    ``CodeInterpreterError`` on both: on 3.3.x it is terminal by design, and on 3.2.x
-    there is nothing more terminal to reach for (dspy catches it, but the kit has no
-    stronger interpreter-level signal there — a genuinely run-ending condition should
-    use a non-``CodeInterpreterError`` exception such as ``SandboxCancelled``).
+    ``CodeInterpreterError``: terminal by design from dspy 3.3.0, since the recoverable role
+    moved to its ``CodeExecutionError`` subclass. A condition that must end the run REGARDLESS
+    of dspy's handling should still use an exception outside dspy's hierarchy entirely — that is
+    what ``SandboxCancelled`` is, and why it needs no shim.
     """
     from dspy.primitives.code_interpreter import CodeInterpreterError
 

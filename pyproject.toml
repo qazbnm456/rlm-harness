@@ -1,6 +1,6 @@
 [project]
 name = "rlm-harness"
-version = "1.1.0"
+version = "1.2.0"
 description = "A clean, reusable harness for building tasks on DSPy Recursive Language Models (RLMs)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,7 +29,13 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "dspy>=3.2.1",
+    # FLOOR 3.3.0 since rlm-harness 1.2.0. 3.2.x is strictly worse for users — it accepts
+    # DUPLICATE tool names and silently keeps only one, does not reject a keyword tool name
+    # at construction, and has no CodeExecutionError, so the kit's own guarantees differed by
+    # whichever dspy a consumer happened to resolve. No upper bound: a cap propagates through
+    # pinned consumers and blocks them from dspy fixes; `.github/workflows/dspy-latest.yml` is
+    # the defence instead.
+    "dspy>=3.3.0",
     "pydantic>=2.9",
 ]
 
