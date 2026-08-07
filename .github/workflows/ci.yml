@@ -49,6 +49,13 @@ jobs:
     # offline end-to-end run still returns the CORRECT answer while a renamed dspy kwarg silently
     # drops the caller's budget cap — so this catches a LOUD break and is blind to exactly the
     # silent ones `_dspy_compat` exists for. Do not let a green run here stand in for that.
+    #
+    # dspy is PINNED to `uv.lock`'s version here, even though the point of the job is a
+    # lockfile-free install. This job runs on `pull_request`, and letting it float dspy would let
+    # an upstream release redden a contributor's unrelated PR — the exact thing
+    # `dspy-latest.yml` is kept out of the PR trigger to avoid. Floating dspy is THAT job's
+    # responsibility; this one varies only the packaging. Everything else still resolves fresh,
+    # which is what makes it a real fresh-install test.
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -59,9 +66,15 @@ jobs:
       - name: Build the wheel and run a task from it
         run: |
           set -euo pipefail
+          LOCKED=$(python3 -c '
+          import re, pathlib
+          m = re.search(r"name = \"dspy\"\nversion = \"([^\"]+)\"", pathlib.Path("uv.lock").read_text())
+          print(m.group(1) if m else "")')
+          test -n "$LOCKED" || { echo "could not read dspy's version from uv.lock"; exit 1; }
+          echo "pinning dspy==$LOCKED (the locked version) so an upstream release cannot fail a PR"
           uv build --wheel
           uv venv /tmp/fresh
-          VIRTUAL_ENV=/tmp/fresh uv pip install dist/*.whl
+          VIRTUAL_ENV=/tmp/fresh uv pip install dist/*.whl "dspy==$LOCKED"
           /tmp/fresh/bin/python - <<'PY'
           import sys, rlm_harness
           assert "dspy" not in sys.modules, "import rlm_harness pulled in dspy"
