@@ -26,7 +26,9 @@ One companion rule ships under `.claude/rules/`:
   tree via `uv run`, so a module missing from the wheel would ship silently. It is the PACKAGING
   axis only: an offline end-to-end run still returns the right answer while a renamed dspy kwarg
   silently drops the caller's budget cap, so it is blind to exactly the failures `_dspy_compat`
-  exists for. Never let it stand in for the job below.
+  exists for. Never let it stand in for the job below. It PINS dspy to `uv.lock`'s version on
+  purpose: it runs on `pull_request`, and a floating dspy would let an upstream release redden
+  a contributor's unrelated PR — which is the very reason the job below is kept off that trigger.
 - **`.github/workflows/dspy-latest.yml` runs the same suite against the NEWEST published dspy —
   and since the 1.2.0 floor bump it is the ONLY dspy axis** (the floor and `uv.lock` are both on
   3.3.0, so `ci.yml` no longer covers a second version; the workflow says so in a `::notice::`

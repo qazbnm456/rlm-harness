@@ -63,7 +63,9 @@ after a defaulted one) that dspy does not validate anywhere.
 ### CI
 
 - **New `packaging (fresh install)` job** — builds the wheel, installs it into a clean environment
-  with no lockfile, and runs a task from it. That axis was genuinely untested: every other job runs
+  and runs a task from it, with dspy PINNED to `uv.lock`'s version (it runs on `pull_request`, and a
+  floating dspy would let an upstream release redden a contributor's unrelated PR — the reason
+  `dspy-latest.yml` is kept off that trigger; varying dspy is that job's responsibility). That axis was genuinely untested: every other job runs
   from the source tree via `uv run`, so a module missing from the wheel would have shipped silently.
   It is explicitly **not** a substitute for the dspy axis — measured, an offline end-to-end run
   still returns the correct answer while a renamed dspy kwarg silently drops the caller's budget
