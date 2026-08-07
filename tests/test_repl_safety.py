@@ -121,16 +121,15 @@ _ok = lambda raw: types.SimpleNamespace(ok=True, errors=[])
 
 
 def test_model_and_harness_tools_do_not_collide():
-    """D1. Both factories returned a closure literally named `call`. dspy 3.2.x keys its
-    tool dict by name, so one SILENTLY VANISHED (registered `['call']`, no error); 3.3.x
-    raises `Duplicate tool name`. CLAUDE.md calls using both together an expected pattern."""
+    """D1. Both factories returned a closure literally named `call`, and dspy raises
+    `Duplicate tool name`. CLAUDE.md calls using both together an expected pattern."""
     model_tool = make_model_tool(lambda spec: "x", _ok)
     harness_tool = make_harness_tool(lambda src: types.SimpleNamespace(content="x"), _ok)
     assert model_tool.__name__ != harness_tool.__name__
 
     rlm = dspy.RLM("q: str -> a: str", tools=[model_tool, harness_tool])
     # BOTH must survive registration — the 1.0.1 bug was a silent drop, not an exception,
-    # so asserting on the registered set is the only thing that catches it on dspy 3.2.x.
+    # so asserting on the REGISTERED SET is stronger than asserting an exception was raised.
     assert len(rlm._user_tools) == 2
 
 
@@ -305,8 +304,8 @@ def test_reserved_names_are_a_superset_of_the_hardcoded_floor():
 #
 # `assert_repl_safe` checks ONE tool. Three of dspy's construction-time rules are
 # properties of the whole TASK and no per-tool check can see them; each aborts
-# registration for every tool. dspy 3.2.x — the version uv.lock pins, so what CI runs —
-# enforces NONE of them, which is why a helper matters most there.
+# registration for every tool. dspy raises on each; the helper catches them STATICALLY, at
+# test time, with no runtime and a message that names the rule.
 
 from rlm_harness import RLMConfig
 from rlm_harness.testing import assert_task_repl_safe
@@ -331,8 +330,8 @@ def test_task_level_accepts_a_clean_task():
 
 
 def test_duplicate_tool_names_rejected():
-    """The one dspy 3.2.x will NOT tell you about: it keys its tool dict by name, so the
-    second registration overwrites the first and the model is never told it exists."""
+    """Two tools with one name: dspy keys its tool dict by name, so this is the failure that
+    used to end with the model never being told the second tool exists."""
     with pytest.raises(AssertionError, match="duplicate REPL tool name"):
         assert_task_repl_safe(_task(tools=[_named("same"), _named("same")]))
 

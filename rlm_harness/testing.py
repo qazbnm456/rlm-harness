@@ -175,7 +175,7 @@ def assert_task_repl_safe(task: Any) -> None:
     construction-time rules are properties of the whole task, and each aborts registration for
     EVERY tool:
 
-    * duplicate tool names — dspy 3.2.x registers only ONE (a SILENT drop, no error); 3.3.x raises;
+    * duplicate tool names — dspy keys its tool dict by name;
     * a signature INPUT field colliding with a tool name, or with a reserved sandbox name;
     * a signature OUTPUT field dspy's own Prediction already owns (``trajectory`` /
       ``final_reasoning``).
@@ -187,10 +187,15 @@ def assert_task_repl_safe(task: Any) -> None:
     Note ``RLMTask.__init__`` needs a configured runtime, so constructing an instance in a test
     means either a prior ``configure(...)`` or passing BOTH ``config=`` and ``sub_lm=``.
 
-    This is a TEST-time helper. It is deliberately NOT wired into ``RLMTask.__init__`` — dspy
-    already enforces these at construction on 3.3.x, and duplicating an upstream check in the hot
-    path invites the two to drift. (dspy 3.2.x enforces NONE of them, which is why running this
-    matters there most: it is also the version ``uv.lock`` pins, so it is what CI runs.)
+    This is a TEST-time helper, deliberately NOT wired into ``RLMTask.__init__``: dspy enforces
+    all four at construction, and duplicating an upstream check in the hot path invites the two
+    to drift.
+
+    **What it is still FOR, now that dspy enforces them too.** It moves the failure from run time
+    to test time, names the rule instead of surfacing a dspy-worded ``ValueError``, and — the part
+    dspy has no equivalent for at all — it runs ``assert_repl_safe`` over every tool, which checks
+    the SHAPE rules (no ``*args``/``**kwargs``, no required param after a defaulted one) that dspy
+    does not validate anywhere. Those two shape hazards are invisible until a real REPL call.
     """
     # `resolved_tools` is `RLMTask`'s ONE derivation of the effective list (a `tools=` kwarg
     # replaces the declaration), so read it when present rather than re-deriving the rule here.
@@ -212,9 +217,9 @@ def assert_task_repl_safe(task: Any) -> None:
     duplicates = sorted({n for n in names if names.count(n) > 1})
     if duplicates:
         raise AssertionError(
-            f"duplicate REPL tool name(s) {duplicates}: dspy 3.3.x raises, and 3.2.x keeps only "
-            f"ONE of them with no error at all — the other tool silently vanishes and the model "
-            f"is never told it exists. Give each tool a distinct name."
+            f"duplicate REPL tool name(s) {duplicates}: dspy keys its tool dict by name and "
+            f"refuses the collision, so registration aborts for EVERY tool on the task. "
+            f"Give each tool a distinct name."
         )
 
     signature = getattr(task, "signature", "")

@@ -224,19 +224,13 @@ class RLMTask:
             "tools": list(self.resolved_tools),
         }
 
-        # WHERE the caller's interpreter goes depends on the installed dspy: 3.2.x takes
-        # it as `RLM(interpreter=…)`, 3.3.x takes it as the first POSITIONAL argument of
-        # forward()/aforward(). `_dspy_compat` decides; we stash it for `arun` when it
-        # belongs on the forward call. OWNERSHIP is identical on both — dspy shuts down
-        # only an interpreter it created itself — so `_teardown_interpreter` stays ours.
-        # (Do NOT reach for 3.3.x's `interpreter_factory=`: dspy DOES shut down whatever
-        # that factory returns, which would double-shutdown our sandbox.)
-        self._forward_interpreter = None
-        if interpreter is not None:
-            if _dspy_compat.rlm_accepts_interpreter_kwarg():
-                kwargs["interpreter"] = interpreter
-            else:
-                self._forward_interpreter = interpreter
+        # The caller's interpreter goes to forward()/aforward() as the first POSITIONAL
+        # argument (dspy >= 3.3.0), not to the constructor — so stash it for `arun`.
+        # OWNERSHIP stays ours: dspy shuts down only an interpreter it created itself, which
+        # is what keeps `_teardown_interpreter` correct. (Do NOT reach for
+        # `interpreter_factory=`: dspy DOES shut down whatever that factory returns, which
+        # would double-shutdown our sandbox.)
+        self._forward_interpreter = interpreter
 
         # Budget caps are mapped onto the names the installed dspy accepts (3.3.x renamed
         # `max_iterations` to `max_iters`). The `except TypeError` below is now only a
@@ -286,8 +280,8 @@ class RLMTask:
                 recorder.begin_main_capture()
             with _live_main_timing(recorder):
                 # On dspy 3.3.x a caller-owned interpreter is the first POSITIONAL
-                # argument here rather than a constructor kwarg; empty tuple on 3.2.x
-                # (where `_build_rlm` already passed it) and whenever there is none.
+                # argument here rather than a constructor kwarg; empty tuple when the task
+                # has no caller-owned interpreter.
                 prediction = await rlm.aforward(*forward_args, **inputs)
             captured["prediction"] = prediction
             return prediction

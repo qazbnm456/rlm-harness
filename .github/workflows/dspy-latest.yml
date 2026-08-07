@@ -2,7 +2,7 @@ name: dspy latest
 
 # EARLY WARNING for an upstream dspy release — a SEPARATE workflow from `ci.yml` on purpose.
 #
-# Why this exists: `rlm-harness` declares `dspy>=3.2.1` while consumers pin the KIT, so a
+# Why this exists: `rlm-harness` declares only a FLOOR on dspy (>=3.3.0) while consumers pin the KIT, so a
 # consumer's fresh install resolves whatever dspy is current. `ci.yml` resolves dspy from
 # `uv.lock`, so it tests a version nobody installing from PyPI necessarily gets. dspy 3.3.0
 # renamed three things at once (see CHANGELOG 1.0.1) and the whole suite stayed green while

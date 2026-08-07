@@ -45,8 +45,8 @@ class SandboxSecurityError(RuntimeError):
 
 #: Raised when `cancel_event` fires during a sandbox `execute()` call — deliberately NOT any
 #: dspy interpreter-error subclass. dspy's ``RLM._execute_code`` catches only its own
-#: recoverable interpreter error plus ``SyntaxError`` (``CodeInterpreterError`` on dspy 3.2.x,
-#: the narrower ``CodeExecutionError`` from 3.3.0 — see ``_dspy_compat``), so this propagates
+#: recoverable interpreter error plus ``SyntaxError`` (``CodeExecutionError`` — see
+#: ``_dspy_compat``), so this propagates
 #: all the way up through ``RLMTask.arun()`` (and through ``run_with_retry``'s ``non_retryable``
 #: allowlist, untouched) as a genuine run-ending failure on EVERY supported dspy. Standing
 #: outside dspy's hierarchy entirely is what makes that true across the rename. A plain
@@ -166,9 +166,8 @@ def _build_sandboxed_interpreter(
 
     * ``turn_timeout_s`` — a per-``execute()`` safety-net deadline. Firing raises
       dspy's own RECOVERABLE interpreter error — whichever class that is on the
-      installed dspy (``_dspy_compat.recoverable_interpreter_error``; the base
-      ``CodeInterpreterError`` on 3.2.x, the narrower ``CodeExecutionError`` from
-      3.3.0). Caught by ``RLM._execute_code`` and fed back to the model as an
+      installed dspy (``_dspy_compat.recoverable_interpreter_error``). Caught by
+      ``RLM._execute_code`` and fed back to the model as an
       ``"[Error] ..."`` string — it gets to retry next turn against a
       freshly-respawned sandbox.
     * ``cancel_event`` — an externally-set ``threading.Event`` for a caller (e.g. a
@@ -189,9 +188,9 @@ def _build_sandboxed_interpreter(
 
         # The class dspy's RLM loop CATCHES, resolved for the installed dspy rather than
         # hardcoded. This is the whole recoverable/terminal distinction below, and dspy
-        # 3.3.0 moved it: `CodeInterpreterError` was the recoverable one on 3.2.x and is
-        # TERMINAL on 3.3.x, where the recoverable one is the new `CodeExecutionError`
-        # subclass. Hardcoding the base class would silently turn the per-turn timeout —
+        # dspy 3.3.0 moved it: `CodeInterpreterError` became TERMINAL and the recoverable
+        # role passed to its `CodeExecutionError` subclass. Hardcoding the base class here
+        # would silently turn the per-turn timeout —
         # a SAFETY NET that is supposed to hand the model another turn — into a
         # run-ending failure, with nothing here going red to reveal it.
         _RecoverableExecError = recoverable_interpreter_error()

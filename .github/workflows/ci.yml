@@ -37,6 +37,50 @@ jobs:
         # --extra mcp so the MCP-client tests run (they spawn a stdio MCP subprocess) rather than skip
         run: uv run --group dev --extra mcp python -m pytest -q
 
+  packaging:
+    name: packaging (fresh install)
+    runs-on: ubuntu-latest
+    # The PACKAGING axis, and only that: does a wheel built from this tree install into a clean
+    # environment with no lockfile and actually run? Genuinely untested until now — every other
+    # job runs from the source tree via `uv run`, so a module missing from the wheel, or a
+    # dependency the lock happened to provide, would ship silently.
+    #
+    # It is NOT a substitute for the dspy axis (`dspy-latest.yml`). Measured, not assumed: an
+    # offline end-to-end run still returns the CORRECT answer while a renamed dspy kwarg silently
+    # drops the caller's budget cap — so this catches a LOUD break and is blind to exactly the
+    # silent ones `_dspy_compat` exists for. Do not let a green run here stand in for that.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Build the wheel and run a task from it
+        run: |
+          set -euo pipefail
+          uv build --wheel
+          uv venv /tmp/fresh
+          VIRTUAL_ENV=/tmp/fresh uv pip install dist/*.whl
+          /tmp/fresh/bin/python - <<'PY'
+          import sys, rlm_harness
+          assert "dspy" not in sys.modules, "import rlm_harness pulled in dspy"
+          import dspy
+          from rlm_harness import RLMConfig, RLMTask, configure
+          from rlm_harness.testing import ScriptedInterpreter, scripted_lm, submit
+          print("rlm-harness", rlm_harness.__version__, "on dspy", dspy.__version__)
+
+          class T(RLMTask):
+              signature = "q: str -> a: str"
+              output_field = "a"
+
+          configure(RLMConfig(main_model="d/m", sub_model="d/s"),
+                    main_lm=scripted_lm([{"reasoning": "r", "code": "SUBMIT(a='ok')"}]))
+          out = T(interpreter=ScriptedInterpreter([submit({"a": "ok"})])).run(q="hi")
+          assert out == "ok", out
+          print("fresh-install task run:", out)
+          PY
+
   lint:
     name: ruff
     runs-on: ubuntu-latest
