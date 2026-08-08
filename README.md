@@ -98,6 +98,9 @@ The deep documentation lives in
 
 Real projects using rlm-harness as their RLM scaffold:
 
+- **[ctx-distillery](https://github.com/qazbnm456/ctx-distillery)**: distils an AI coding agent's
+  session transcripts and memory store into a judgement-only distillation plan — what to prune,
+  cross-reference, or promote into durable memory or a reusable Skill. It proposes; it writes nothing.
 - **[cve-reverser](https://github.com/qazbnm456/cve-reverser)**: reverses publicly disclosed CVEs from
   their patches into local-lab PoCs and Nuclei detection templates. A traced, trainable RLM harness.
 - **[diff-sentry](https://github.com/qazbnm456/diff-sentry)**: classifies GitHub changes (PRs, issues,
