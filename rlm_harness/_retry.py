@@ -73,6 +73,7 @@ async def run_with_retry(
     max_retries: int = 3,
     logger: logging.Logger | None = None,
     non_retryable: tuple[type[BaseException], ...] = (),
+    is_fast_fail: Callable[[BaseException], bool] | None = None,
 ) -> Any:
     """Run ``runner`` until it yields a valid output or the budget is exhausted.
 
@@ -81,7 +82,7 @@ async def run_with_retry(
     error, a missing field, a validation failure — consumes one attempt. After
     ``max_retries`` attempts the last error is wrapped in :class:`RLMTaskError`.
 
-    ``non_retryable`` is a closed allowlist of exception types a caller has
+    ``non_retryable`` is a closed allowlist of exception TYPES a caller has
     already decided are not worth retrying — e.g. an explicit user-driven
     cancellation. A match propagates the ORIGINAL exception object verbatim,
     consuming NO attempt and never wrapped in :class:`RLMTaskError`: retrying an
@@ -90,6 +91,17 @@ async def run_with_retry(
     trajectory from scratch), and wrapping it would make the caller's own
     ``except SandboxCancelled:`` (or whatever type they passed) unable to see it.
     The default ``()`` matches nothing, so every existing caller is unaffected.
+
+    ``is_fast_fail`` is the same "don't retry, propagate verbatim, consume no
+    attempt" behavior for a caught exception a static type tuple cannot express —
+    e.g. "this dspy LM error is in a category dspy itself calls non-retryable,
+    except for the one subtype that is worth retrying here for a reason dspy has
+    no way to know about" (see ``_dspy_compat.is_fast_fail_lm_error``). Checked
+    only for exceptions that fall through ``non_retryable`` first, since a type
+    match there is cheaper and the two are not expected to overlap. This module
+    stays dspy-free by construction: the predicate, like ``runner`` itself, is
+    supplied by a dspy-aware caller. The default ``None`` never fires, so every
+    existing caller is unaffected.
     """
     log = logger or _DEFAULT_LOG
     if max_retries < 1:
@@ -108,6 +120,8 @@ async def run_with_retry(
         except non_retryable:
             raise
         except Exception as exc:
+            if is_fast_fail is not None and is_fast_fail(exc):
+                raise
             last_error = exc
             log.warning(
                 "RLM attempt %d/%d failed: %s", attempt, max_retries, _short_error(exc)

@@ -298,6 +298,12 @@ class RLMTask:
                     # STOP — retrying would transparently respawn the sandbox and restart
                     # the whole trajectory from scratch, silently absorbing the cancel.
                     non_retryable=(SandboxCancelled,),
+                    # An LM error dspy itself calls non-retryable (auth/billing/config/
+                    # invalid-request/unsupported-model) burns the whole retry budget
+                    # re-running the same doomed trajectory for nothing. Fails fast instead,
+                    # except ContextWindowExceededError — see is_fast_fail_lm_error's docstring
+                    # for why that one keeps retrying.
+                    is_fast_fail=_dspy_compat.is_fast_fail_lm_error,
                 )
             except Exception:
                 # The run FAILED (e.g. the result never coerced into output_model after the retry

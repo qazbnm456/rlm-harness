@@ -4,6 +4,77 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.2.1] - 2026-08-23
+
+**Fast-failing non-retryable LM errors** — the item 1.2.0 left open. No public surface change, no
+trace-format change; `_retry.py` and `_dspy_compat.py` are both private modules.
+
+### ⚠️ Before you upgrade
+
+An LM error dspy itself classifies as non-retryable (`LMAuthError`, `LMBillingError`,
+`LMConfigurationError`, `LMUnsupportedModelError`, `LMUnsupportedFeatureError`,
+`LMUnexpectedError`) now escapes `RLMTask.arun()`/`run()` **as that original dspy exception**,
+after exactly one attempt. Previously it burned the full `max_retries` budget re-running the same
+doomed trajectory and was then wrapped in `RLMTaskError`. If you catch `RLMTaskError` around a
+task run expecting it to be the only failure type, add a matching `except dspy.LMError:` (or the
+specific subclass you care about) alongside it — the two convey different things: `RLMTaskError`
+now means "the model kept producing invalid output," while an `LMError` means "the call to the LM
+itself was never going to succeed."
+
+### Why
+
+`run_with_retry` treated every exception the same: a validation failure worth another attempt and
+an invalid API key worth zero more were both retried `max_retries` times, then both wrapped in the
+same `RLMTaskError`. For an unrecoverable LM error, every one of those retries re-sends the exact
+same doomed request — pure wasted latency and cost, and the wrapping erased the one piece of
+information (which dspy exception it actually was) a caller needs to tell "fix your API key" apart
+from "the model can't do this task."
+
+dspy 3.3.0 already ships the classification this needed: `dspy.is_retryable_lm_error(exc)`, built
+on a full `LMError` hierarchy (`LMAuthError`, `LMBillingError`, `LMConfigurationError`,
+`LMProviderError`, `LMRateLimitError`, `LMServerError`, `LMTimeoutError`, `LMTransportError`,
+`LMUnexpectedError`, `LMUnsupportedFeatureError`, `LMUnsupportedModelError`,
+`ContextWindowExceededError`). 1.2.0's floor bump made this shim finally *writable* — the
+3.2.x era had no such helper to build on — and `is_retryable_lm_error` calls only
+`LMRateLimitError`/`LMTimeoutError`/`LMServerError`/`LMTransportError` retryable; everything else
+in the hierarchy is not.
+
+### The one carve-out: `ContextWindowExceededError`
+
+dspy's classification assumes a retry re-sends the *identical* request, which is true for the
+provider-level retries `is_retryable_lm_error` is documented for. It is not true here:
+`run_with_retry` retries by re-running the **whole trajectory**, and a different turn sequence (or
+a truncated tool result) can genuinely produce a shorter prompt that fits on a later attempt. So
+`ContextWindowExceededError` — a non-retryable `LMInvalidRequestError` by dspy's own rule — is
+excluded from the fast-fail set and keeps retrying like any other exception, consuming the full
+`max_retries` budget as before. This was the exact residual question 1.2.0 left contested; it is
+resolved now, in one place, rather than left for whoever next reads that note.
+
+### Added
+
+- `_dspy_compat.is_fast_fail_lm_error(exc) -> bool` — the classification above, resolved through
+  the PUBLIC `dspy.is_retryable_lm_error`, never the private `dspy.utils.exceptions.
+  _RETRYABLE_LM_ERRORS` tuple it is built from (the same "introspect the public seam" rule as
+  every other shim in this module). Degrades to `False` (never fast-fail — today's pre-1.2.1
+  behavior) if the installed dspy is missing `LMError` or `is_retryable_lm_error`, so a future
+  dspy rename fails safe rather than over-eagerly killing a run that would have succeeded on
+  retry.
+- `_retry.py:run_with_retry` gained an `is_fast_fail: Callable[[BaseException], bool] | None`
+  parameter, alongside the existing `non_retryable` type allowlist. A predicate, not another type
+  tuple, because "is an `LMError`, is NOT `ContextWindowExceededError`, and
+  `is_retryable_lm_error` says no" cannot be expressed as a static `except (A, B, C):` — it needs
+  a runtime decision `_retry.py` itself must not know how to make (the module stays dspy-free).
+  Matched exactly like `non_retryable`: the original exception propagates verbatim, consumes no
+  attempt, and is never wrapped in `RLMTaskError`. Checked only for exceptions that fall through
+  `non_retryable` first (a type match there is cheaper, and the two sets don't overlap). Default
+  `None` never fires, so every existing caller of `run_with_retry` is unaffected.
+- `RLMTask.arun()` wires `is_fast_fail=_dspy_compat.is_fast_fail_lm_error` into its
+  `run_with_retry` call, alongside the existing `non_retryable=(SandboxCancelled,)`.
+
+Suite: 456 passed, 1 skipped on dspy 3.3.0 (+20 tests: the classification matrix in
+`test_dspy_compat.py`, the predicate mechanics in `test_retry.py`, and two end-to-end cases in
+`test_integration_dspy.py` driving the real `RLMTask.arun()` → `run_with_retry` chain).
+
 ## [1.2.0] - 2026-08-07
 
 **Requires `dspy>=3.3.0`.** The 3.2.x compatibility branches are deleted.

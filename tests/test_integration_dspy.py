@@ -286,6 +286,64 @@ async def test_sandbox_cancelled_survives_the_real_retry_engine_end_to_end():
     assert calls["n"] == 1
 
 
+async def test_fast_fail_lm_error_survives_the_real_retry_engine_end_to_end():
+    """The `is_fast_fail` counterpart to `test_sandbox_cancelled_survives_the_real_retry_engine_
+    end_to_end`: an LM error dspy itself calls non-retryable (`LMAuthError`) must end the run
+    after exactly ONE attempt through the REAL call chain, with the ORIGINAL exception object
+    escaping `arun()` unwrapped — not `max_retries` attempts, not `RLMTaskError`."""
+    _configure_with_dummy()
+    calls = {"n": 0}
+    original = dspy.LMAuthError("bad key")
+
+    class T(RLMTask):
+        signature = "q: str -> answer: _Out"
+        output_field = "answer"
+        output_model = _Out
+
+    task = T(max_retries=3)
+
+    class _FakeRLM:
+        async def aforward(self, **kw):
+            calls["n"] += 1
+            raise original
+
+    task._build_rlm = lambda: _FakeRLM()
+
+    with pytest.raises(dspy.LMAuthError) as ei:
+        await task.arun(q="hi")
+    assert ei.value is original
+    assert calls["n"] == 1
+
+
+async def test_context_window_exceeded_still_retries_end_to_end():
+    """The carve-out, driven through the same real call chain: `ContextWindowExceededError` is
+    non-retryable by dspy's own classification, but must still consume the FULL retry budget
+    here (a later attempt can produce a shorter trajectory that fits) rather than fast-failing
+    on the first one."""
+    _configure_with_dummy()
+    calls = {"n": 0}
+
+    class T(RLMTask):
+        signature = "q: str -> answer: _Out"
+        output_field = "answer"
+        output_model = _Out
+
+    task = T(max_retries=3)
+
+    class _FakeRLM:
+        async def aforward(self, **kw):
+            calls["n"] += 1
+            raise dspy.ContextWindowExceededError()
+
+    task._build_rlm = lambda: _FakeRLM()
+
+    from rlm_harness._retry import RLMTaskError
+
+    with pytest.raises(RLMTaskError):
+        await task.arun(q="hi")
+    assert calls["n"] == 3  # burned the full retry budget, not fast-failed on attempt 1
+
+
 def test_build_adapter_json_and_default():
     assert isinstance(rt._build_adapter("json"), dspy.JSONAdapter)
     assert rt._build_adapter("default") is None  # leave dspy's stock adapter in place
