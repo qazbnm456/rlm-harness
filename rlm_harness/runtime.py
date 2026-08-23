@@ -108,6 +108,33 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
         )
 
 
+def _maybe_subscription_lm(model: str) -> dspy.LM | None:
+    """A ``ClaudeAgentLM`` when ``model`` carries the ``claude_agent_lm.SUBSCRIPTION_PREFIX``
+    sentinel, else ``None`` (leaving the caller to build a plain ``dspy.LM`` from ``config`` exactly
+    as before). Lazily imports ``claude_agent_lm`` — only when the prefix actually matches — so
+    ``configure()``'s own module top, and every call that never touches a subscription-prefixed
+    model string, stays dspy-SDK-free.
+
+    Raises ``ValueError`` (not ``SystemExit``) for a bare prefix with no model id: `configure()` is
+    called from arbitrary contexts — a server's request handler, a notebook cell, a library
+    embedding rlm-harness — and `SystemExit` propagating out of a shared library call is a far more
+    dangerous default there than in a purpose-built CLI, which can catch `ValueError` and convert
+    it to its own fail-fast behavior at its own top level if it wants that.
+    """
+    from . import claude_agent_lm
+
+    if not model.startswith(claude_agent_lm.SUBSCRIPTION_PREFIX):
+        return None
+    name = model[len(claude_agent_lm.SUBSCRIPTION_PREFIX) :].strip()
+    if not name:
+        raise ValueError(
+            f"{model!r} names no model — expected "
+            f"{claude_agent_lm.SUBSCRIPTION_PREFIX}<id>, e.g. "
+            f"{claude_agent_lm.SUBSCRIPTION_PREFIX}claude-sonnet-5."
+        )
+    return claude_agent_lm.ClaudeAgentLM(name)
+
+
 def configure(
     config: RLMConfig | None = None,
     *,
@@ -124,8 +151,28 @@ def configure(
     production. Whichever you inject is stored and (for the sub-LM) handed back by
     ``get_sub_lm``; an injected ``main_lm`` also becomes the dspy global. This is the public
     seam for supplying a test double, so nothing needs to reach into the private runtime state.
+
+    **Claude-subscription auto-routing.** For a role whose caller-supplied override is ``None``,
+    if ``cfg.main_model``/``cfg.sub_model`` starts with ``claude_agent_lm.SUBSCRIPTION_PREFIX``
+    (``"claude-agent-sdk/"`` — the sentinel ``ClaudeAgentLM`` stamps its own model string with),
+    that role is built as a ``ClaudeAgentLM`` instead of a plain ``dspy.LM``, with ONLY the
+    stripped model id — never ``lm_kwargs`` (``api_key``/``base_url``/``custom_llm_provider``),
+    which are meaningless (or, for ``base_url``, actively misleading) for this adapter. An
+    explicit ``main_lm=``/``sub_lm=`` kwarg always wins outright regardless of the model string —
+    the prefix is only consulted for a role left ``None``. This can raise, in addition to this
+    function's own errors: ``ValueError`` for a bare prefix with no model id (e.g.
+    ``"claude-agent-sdk/"``); ``RuntimeError`` if ``ANTHROPIC_API_KEY`` is set (``ClaudeAgentLM``
+    refuses to start while it's set — the CLI silently prefers it over subscription OAuth);
+    ``ImportError`` with an install hint if the optional ``subscription`` extra isn't installed.
+    None of these three can collide with this function's own unrelated ``except RuntimeError``
+    ownership-error swallow below — the LM-construction step happens entirely BEFORE that
+    ``try:`` block starts, so control flow cannot reach it from here regardless of message text.
     """
     cfg = config or RLMConfig.from_env()
+    if main_lm is None:
+        main_lm = _maybe_subscription_lm(cfg.main_model)
+    if sub_lm is None:
+        sub_lm = _maybe_subscription_lm(cfg.sub_model)
 
     # litellm (dspy.LM's backend) defaults to an aiohttp transport whose pooled ClientSession is bound to
     # the current asyncio loop. A driver that runs each task in its own short-lived `asyncio.run` loop
@@ -152,8 +199,8 @@ def configure(
         lm_kwargs["custom_llm_provider"] = "openai"
     # Both LMs are plain dspy.LM. In "json" mode it's _LenientJSONAdapter (not the LM) that
     # forces the json_schema response_format, so the LM needs no special capability flag.
-    # An injected main_lm/sub_lm is used verbatim (test double or pre-built client) — we build
-    # from config ONLY for the ones not supplied.
+    # An injected main_lm/sub_lm (explicit, or resolved above via subscription auto-routing) is
+    # used verbatim — we build a plain dspy.LM from config ONLY for a role that is still None here.
     if main_lm is None:
         main_lm = dspy.LM(cfg.main_model, **lm_kwargs)
     if sub_lm is None:

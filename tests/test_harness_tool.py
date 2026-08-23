@@ -3,11 +3,14 @@ the transport (invoke_fn / call_endpoint) is injected, so no live child, no dspy
 reuses make_model_tool's retry/validate/circuit-break semantics AND carries the child-rollout link."""
 import types
 
+from rlm_harness.serving import HarnessPointer
 from rlm_harness.tools import (
     HarnessInvocation,
     HarnessToolResult,
     harness_from_endpoint,
     make_harness_tool,
+    pointer_to_invocation,
+    run_isolated,
 )
 
 
@@ -156,3 +159,53 @@ def test_endpoint_error_after_a_prior_success_does_not_leak_a_stale_link():
     second = tool("ctx")                       # endpoint error AFTER a prior success
     assert not second.ok and second.endpoint_error
     assert second.child_run_id is None         # the start-of-call clear prevents a stale-link leak
+
+
+# ---- pointer_to_invocation — the HarnessPointer -> HarnessInvocation mapping ----------------
+
+def test_pointer_to_invocation_maps_every_field():
+    pointer = HarnessPointer(
+        artifact="ARTIFACT", run_id="r1", trace_path="children/r1.jsonl",
+        reasoning="thought", meta={"elapsed_s": 3},
+    )
+    inv = pointer_to_invocation(pointer)
+    assert isinstance(inv, HarnessInvocation)
+    assert inv.content == "ARTIFACT"
+    assert inv.reasoning == "thought"
+    assert inv.child_run_id == "r1"
+    assert inv.child_trace == "children/r1.jsonl"
+    assert inv.child_meta == {"elapsed_s": 3}
+
+
+def test_pointer_to_invocation_handles_a_minimal_pointer():
+    inv = pointer_to_invocation(HarnessPointer(artifact="X"))
+    assert inv.content == "X"
+    assert inv.reasoning is None
+    assert inv.child_run_id is None
+    assert inv.child_trace is None
+    assert inv.child_meta is None
+
+
+# ---- in-process transport wiring — the same composition as examples/harness_local_run.py ---
+
+def test_in_process_transport_wiring():
+    """run_isolated + pointer_to_invocation + harness_from_endpoint + make_harness_tool, composed
+    exactly as examples/harness_local_run.py does — with a stub async child instead of a real
+    dspy.RLM, so the wiring itself is protected by CI rather than left as unexercised prose."""
+    calls = []
+
+    def call_endpoint(long_text):
+        calls.append(long_text)
+
+        async def _child():
+            return HarnessPointer(artifact=f"handled: {long_text}", run_id="child-1")
+
+        return run_isolated(_child)
+
+    invoke = harness_from_endpoint(call_endpoint, read_output=pointer_to_invocation)
+    tool = make_harness_tool(invoke, lambda raw: _V(ok=True))
+
+    r = tool("a long pre-assembled context")
+    assert calls == ["a long pre-assembled context"]      # the whole context reached the child
+    assert r.ok and r.raw == "handled: a long pre-assembled context"
+    assert r.child_run_id == "child-1"

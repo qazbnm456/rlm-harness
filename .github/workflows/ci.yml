@@ -34,8 +34,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
       - name: Run tests
-        # --extra mcp so the MCP-client tests run (they spawn a stdio MCP subprocess) rather than skip
-        run: uv run --group dev --extra mcp python -m pytest -q
+        # --extra mcp so the MCP-client tests run (they spawn a stdio MCP subprocess) rather than skip.
+        # --extra grep so make_grep_repo_tool's timeout tests exercise the real `regex` package
+        # rather than skip — the whole point of that test suite is verifying a REAL timeout fires.
+        run: uv run --group dev --extra mcp --extra grep python -m pytest -q
 
   packaging:
     name: packaging (fresh install)

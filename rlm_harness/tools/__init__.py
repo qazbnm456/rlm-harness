@@ -1,18 +1,21 @@
 """Reusable tools that RLM tasks can expose to the model inside the REPL."""
 
-from .command import CommandResult, make_command_tool
+from ._async import run_isolated
+from .command import CommandResult, make_command_tool, refuse_broad_git_history
 from .fetch import (
     is_safe_url,
     make_fetch_tool,
     parse_cidrs,
     resolved_host_is_safe,
 )
+from .fs import make_grep_repo_tool, make_read_file_tool, resolve_within_root
 from .harness import (
     HarnessInvocation,
     HarnessInvoke,
     HarnessToolResult,
     harness_from_endpoint,
     make_harness_tool,
+    pointer_to_invocation,
 )
 from .model import (
     CAUSE_CIRCUIT_BROKEN,
@@ -39,12 +42,18 @@ __all__ = [
     "is_safe_url",
     "make_command_tool",
     "make_fetch_tool",
+    "make_grep_repo_tool",
     "make_harness_tool",
     "make_json_schema_validator",
     "make_model_tool",
+    "make_read_file_tool",
     "make_schema_validator",
     "make_web_search_tool",
     "normalise_search_results",
     "parse_cidrs",
+    "pointer_to_invocation",
+    "refuse_broad_git_history",
+    "resolve_within_root",
     "resolved_host_is_safe",
+    "run_isolated",
 ]

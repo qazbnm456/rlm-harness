@@ -34,6 +34,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from ..serving import HarnessPointer
 from .model import ModelToolResult, Validate, make_model_tool
 
 # A harness invocation maps ONE long text — the child Root LM's REPL environment — to the child's
@@ -57,6 +58,30 @@ class HarnessInvocation:
     child_run_id: str | None = None    # the child rollout's own run_id
     child_trace: str | None = None     # path / URI to the child's OWN trace (never inlined here)
     child_meta: dict | None = None     # generic, e.g. {"elapsed_s": …, "child_steps": …}
+
+
+def pointer_to_invocation(pointer: HarnessPointer) -> HarnessInvocation:
+    """Map a server-side :class:`rlm_harness.serving.HarnessPointer` onto a client-side
+    :class:`HarnessInvocation` — the one canonical field mapping between the two delegation-boundary
+    shapes, so a ``read_output`` callback doesn't have to re-derive it by hand.
+
+    ``HarnessPointer`` (``serving.py``) is what a served harness prints (or, for an in-process
+    transport, constructs directly): ``artifact`` / ``run_id`` / ``trace_path`` / ``reasoning`` /
+    ``meta``. ``HarnessInvocation`` (this module) is what :func:`make_harness_tool` reads:
+    ``content`` / ``reasoning`` / ``child_run_id`` / ``child_trace`` / ``child_meta``. The two exist
+    on opposite sides of the delegation boundary for a reason (a served harness cannot know about
+    the client's tool wrapper, and vice versa), so this is a pure, explicit mapping rather than a
+    shared dataclass — but the mapping itself is exactly the same regardless of transport, whether
+    the pointer arrived over a subprocess's stdout JSON line, an HTTP reply, or (see
+    ``examples/harness_local_run.py``) an in-process call that built the pointer directly.
+    """
+    return HarnessInvocation(
+        content=pointer.artifact,
+        reasoning=pointer.reasoning,
+        child_run_id=pointer.run_id,
+        child_trace=pointer.trace_path,
+        child_meta=pointer.meta,
+    )
 
 
 @dataclass

@@ -4,6 +4,109 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.3.0] - 2026-08-24
+
+Eleven new public names, plus one new optional extra (`grep`; the pre-existing `subscription`
+extra also gains new auto-routing behavior in `configure()`, but is not itself new). No
+trace-format change; every existing call site behaves byte-for-byte identically to 1.2.1.
+
+**Harness delegation, made lighter-weight and consumer-name-agnostic.**
+
+- **`pointer_to_invocation`** — the one canonical mapping from a served harness's
+  `serving.HarnessPointer` (`artifact`/`run_id`/`trace_path`/`reasoning`/`meta`) onto
+  `tools.HarnessInvocation` (`content`/`child_run_id`/`child_trace`/`reasoning`/`child_meta`), the
+  shape `make_harness_tool` reads. Previously every consumer's `read_output` callback re-derived
+  this by hand; now it's a `read_output=pointer_to_invocation` one-liner, whether the pointer
+  arrived over a subprocess's stdout, an HTTP reply, or an in-process call that built one directly.
+- **`run_isolated`** — a small async-bridge primitive for a consumer building their OWN
+  `call_endpoint` for `harness_from_endpoint` (e.g. an in-process transport that awaits a child
+  `RLMTask.arun()` directly, instead of a subprocess or HTTP call). Runs a coroutine to completion
+  on a dedicated new thread with its own fresh event loop, so it never raises "cannot be called
+  from a running event loop" regardless of whether the calling thread already has one — which it
+  will, whenever the parent task itself is mid-`arun()` (`RLMTask.run()` calls
+  `asyncio.run(self.arun(...))`). **Read its docstring before wrapping a traced delegation**: a
+  fresh thread starts with an empty `contextvars.Context` (the same non-inheritance
+  `trace.recorder_scope` already documents for `dspy.RLM`'s own `ThreadPoolExecutor` sub-LM
+  workers), so a `TraceRecorder` for the delegated child's own rollout must be entered *inside* the
+  isolated call, never around it — see `examples/harness_local_run.py` for the worked pattern. The
+  kit still ships no transport (`call_endpoint` stays consumer-supplied) — this is a bridging
+  primitive underneath one, not a shipped transport itself.
+- **`refuse_broad_git_history`** — an opt-in `guard` for `make_command_tool` that refuses a
+  `git log` invocation carrying a broad-history option (`--all`, `--branches`, `--remotes`,
+  `--tags`, `--glob`, `--reflog`, `--walk-reflogs`, `-g`, `--alternate-refs`). An eval/training-run
+  convention — stop a model from reading branches/tags/reflogs it should not have task-specific
+  hints from — not a security boundary, same honesty framing as every other `guard` (shape-only;
+  a shell string chaining multiple commands is a documented non-goal, not silently swept under it).
+
+Also new: `examples/harness_local_run.py`, a worked in-process delegation recipe built from the
+two primitives above (protected offline by `tests/test_harness_tool.py::test_in_process_transport_wiring`,
+which exercises the same composition with a stub child).
+
+**Mechanics promoted from a consumer-driven audit of downstream consumers**, plus reward-free
+trace utilization metrics.
+
+- **`atomic_write_text`** (top-level) — write a file via a same-directory temp file + `fsync` +
+  `os.replace`, so a concurrent reader never sees a partial write. Useful for any consumer building
+  a resumable/checkpointed job on top of `RLMTask` (a manifest, a cache); two independent
+  downstream consumers had each built the identical primitive on their own before this landed here.
+- **Claude-subscription auto-routing in `configure()`** — a `main_model`/`sub_model` string carrying
+  the `claude-agent-sdk/` sentinel (the same one `ClaudeAgentLM` already stamps its own model
+  string with) is now automatically routed to a `ClaudeAgentLM` for that role, with no explicit
+  `main_lm=`/`sub_lm=` wiring required. An explicit override still wins outright. **New exception
+  surface**: `configure()` can now also raise `ValueError` (a bare `claude-agent-sdk/` with no model
+  id), `RuntimeError` (a stale `ANTHROPIC_API_KEY` — `ClaudeAgentLM` refuses to start while it's
+  set), or `ImportError` (the optional `subscription` extra isn't installed) for a role whose model
+  string carries the prefix. `claude_agent_lm.SUBSCRIPTION_PREFIX` is exported (lazily, alongside
+  `ClaudeAgentLM`) as the single source of truth for the sentinel spelling.
+- **`RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run`** (top-level,
+  `rlm_harness.metrics`) — how a run's activity was distributed across the root LM's own turns,
+  tool calls, and sub-LM escalations (inspired by prior "PTC/sub-agent utilization" metrics work
+  elsewhere). Reward-free, like `rubric.py`: raw counts and rates derived purely from already-
+  recorded `trace/v1` events, no new event type or payload field. `None` (not `0.0`) for a rate
+  when `main_steps == 0` — a crashed/cancelled run that failed before its first `Prediction` ever
+  returned can carry live-recorded `tool_call`/`sub_call` events with zero `main_step` events, and
+  `0.0` would misleadingly read as "measured and found to be zero usage" rather than "undefined."
+
+**Reading and searching a bounded local directory (not just "a repo") — the filesystem-side
+`make_fetch_tool`, generalized beyond its first pass.**
+
+- **`make_read_file_tool` / `make_grep_repo_tool` / `resolve_within_root`** (`rlm_harness.tools`) —
+  the filesystem-side analogue of `make_fetch_tool`'s SSRF-guarded `is_safe_url`: a safe, scoped,
+  no-shell way to let a model read or search a bounded local directory tree — a source repository,
+  a docs corpus, an extracted archive, a dataset directory, a log directory, whatever the consumer
+  scopes `root` to — filling the gap between "no filesystem access" and `make_command_tool`'s
+  full-shell escape hatch. `resolve_within_root` refuses `..`/absolute-path/symlink escapes via
+  `realpath`+`commonpath` containment (never `normpath`, which would miss a symlink escape).
+  `make_grep_repo_tool` **requires the new optional `regex` package outright** (`pip install
+  "rlm-harness[grep]"`, a friendly `ImportError` otherwise, no silent fallback to stdlib `re`) — an
+  LM-controlled regex `pattern` matched with no bound is a catastrophic-backtracking DoS against
+  the host, and stdlib `re` cannot be bounded by any pure-Python mechanism (not even
+  `signal.alarm`); `regex`'s native `timeout=` is the only thing that actually works. Bounded
+  per-line (`per_match_timeout_s`, default `1.0`) and for the whole call (`max_total_time_s`,
+  default `30.0`, checked before every line so a single large file with many pathological lines
+  can't exceed it either).
+- **`name=` on both factories** (default `"read_file"`/`"grep_repo"`) — fixes a real, reachable
+  bug: a task wanting BOTH "read the source repo" AND "read the docs corpus" as two distinct tools
+  hit a duplicate-tool-name collision at dspy's `RLM(...)` construction (dspy keys its tool dict by
+  name; the collision aborts registration for EVERY tool on the task, not just the second one).
+  Validated at factory-build time against both `is_valid_tool_name` and dspy's reserved-tool-name
+  set — a bad name raises `ValueError` immediately rather than surfacing as an obscure construction
+  failure later.
+- **`make_read_file_tool`** additionally takes `encoding=` (default `"utf-8"`) for a non-UTF-8
+  corpus; `max_output_chars=` (default `None` = unlimited) truncates with a visible, non-silent
+  marker; `line_numbers=` (default `False`) prefixes each line with its real 1-indexed file line
+  number, removing the off-by-one a model can introduce computing one itself from `start_line`.
+  Both `max_output_chars`/`line_numbers` are scoped to the successful-read branch only — the
+  `Refused`/`Read error` strings are never numbered or truncated.
+- **`make_grep_repo_tool`** additionally takes `output_mode=` (default `"content"`, unchanged) —
+  `"files_with_matches"` (distinct matching file paths only) and `"count"` (`path: N` per file,
+  zero-match files omitted) — all three modes scan every line of every candidate file IDENTICALLY
+  (no per-file early-break; the two new modes are cheaper in output/trace size only, never in scan
+  cost, honestly stated as such); and `ignore_case=` (default `False`) for case-insensitive
+  matching as a first-class flag. `max_results` has one consistent, mode-agnostic "caps output
+  rows" definition across all three modes. The regex-DoS mitigation above is verified, via a
+  parametrized test, to hold across every `output_mode` × `ignore_case` combination.
+
 ## [1.2.1] - 2026-08-23
 
 **Fast-failing non-retryable LM errors** — the item 1.2.0 left open. No public surface change, no

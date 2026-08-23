@@ -11,11 +11,13 @@ pitch, the quickstart, and installation — start at the
 | Module | Responsibility |
 |---|---|
 | `config.py` | Single source of truth; `RLMConfig.from_env()`. No dspy import. |
-| `runtime.py` | `configure()` — wires dspy + optional observability once. |
+| `runtime.py` | `configure()` — wires dspy + optional observability once, including auto-routing a `claude-agent-sdk/`-prefixed model string onto `ClaudeAgentLM`. |
 | `task.py` | `RLMTask` base class. |
 | `_retry.py` | Validation + retry engine (dspy-free, unit-tested). |
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
-| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor), and `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages). |
+| `atomic.py` | `atomic_write_text` — a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write. dspy-free. |
+| `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` — reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded `trace/v1` events. dspy-free. |
+| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_repo_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_repo` — see below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
 | `optimize.py` | GEPA harness — metric templates now, compile in Phase 2. |
 | `sub_lm.py` | `intercept_sub_lm` — wrap the RLM's sub-LM to trace every escalation as a `sub_call` (+ optional validate/post-process); `model_as_tool` for LM-decided multi-model routing. |
 | `skills.py` | `load_skills_as_tools` — expose a Skills directory to the RLM as tools. |
@@ -29,7 +31,7 @@ pitch, the quickstart, and installation — start at the
 | `_toolname.py` | REPL-safety rules for a tool's NAME and SIGNATURE. Mostly private, but `is_valid_tool_name` / `sanitize_tool_name` / `unique_tool_names` / `signature_from_json_schema` are public — a consumer building its own tools (e.g. from `McpCatalog`'s raw names) needs the same derivation the kit uses. |
 | `_dspy_compat.py` | Private. Every cross-version dspy difference (kwarg renames, the interpreter seam, the recoverable/terminal error split) resolved by introspection in ONE place. |
 | `rubric.py` | Reward-free rubric primitives: the `Criterion`/`RubricCriteria`/`CriterionFact` types, `rubric_to_meta`/`rubric_from_meta`, `validate_rubric`, and a pure `criteria_facts(criteria, facts, lens)`. `category` is an OPAQUE caller-defined label — the kit imposes no taxonomy. See "Building a consumer". |
-| `claude_agent_lm.py` | `ClaudeAgentLM` — run rlm-harness on a Claude Pro/Max subscription: a `dspy.BaseLM` over the official Claude Agent SDK, injected via `configure(main_lm=…, sub_lm=…)`. Opt-in `rlm-harness[subscription]`; pure completions (no tools), lazily exported so `import rlm_harness` stays dspy/SDK-free. |
+| `claude_agent_lm.py` | `ClaudeAgentLM` — run rlm-harness on a Claude Pro/Max subscription: a `dspy.BaseLM` over the official Claude Agent SDK. `configure()` now auto-routes a `SUBSCRIPTION_PREFIX`-carrying (`"claude-agent-sdk/"`) `main_model`/`sub_model` string onto it — no explicit `main_lm=`/`sub_lm=` wiring needed unless you're overriding it. Opt-in `rlm-harness[subscription]`; pure completions (no tools), lazily exported so `import rlm_harness` stays dspy/SDK-free. |
 | `examples/mini_run.py` | Minimal end-to-end live run — config + a tiny `RLMTask` through a real `dspy.RLM`, with the trajectory recorded and summarised. |
 | `examples/claude_agent_lm.py` | Runnable demo of `ClaudeAgentLM` — a tiny `RLMTask` through a real `dspy.RLM` on a subscription login. |
 
@@ -285,7 +287,13 @@ container / VM / OS-sandbox; `examples/command_runner.py` is a reference Docker 
 --network=none`, workspace mounted read-only). A command **allowlist is not a substitute** — a shell
 allowlist is routinely bypassed (`make`/`npm run` script edits, `find -exec`, `git -c`, `$(...)`,
 env-var injection), so the kit ships no allowlist primitive; the optional `guard` hook is a
-shape-only pre-flight, never a security claim.
+shape-only pre-flight, never a security claim. One such guard ships ready-made:
+`refuse_broad_git_history` refuses a `git log` invocation carrying a broad-history option (`--all`,
+`--branches`, `--remotes`, `--tags`, `--glob`, `--reflog`, `--walk-reflogs`, `-g`,
+`--alternate-refs`) — an eval/training-run convention for stopping a model from reading branches,
+tags, or reflogs it should not have task-specific hints from, same shape-only honesty as any other
+`guard` (it is not a shell parser — a chained shell string bypasses it, by design, same as any
+other `guard`).
 
 - On success the model receives a `{"exit_code", "stdout", "stderr"}` dict (dspy JSON-bridges a
   `dict` into a real REPL value it reads — `run_command("ls")["stdout"]`; a dataclass would arrive
@@ -306,6 +314,74 @@ consumer later needs model-managed sessions, that's the moment to add an additiv
 payload, not before. (`dspy.RLM`'s own pyodide/deno interpreter is WASM Python and **cannot** spawn a
 subprocess, so shell execution has to come from a host-side tool like this — there is no in-sandbox
 alternative.)
+
+## Reading and searching local files (a bounded directory, no shell)
+
+`make_read_file_tool(root)` / `make_grep_repo_tool(root, candidate_paths)` — the filesystem-side
+analogue of `make_fetch_tool`'s SSRF-guarded `is_safe_url`, filling the gap between "no filesystem
+access at all" and `run_command`'s full-shell escape hatch. `root` is not "a repo" — it's any
+bounded local directory tree a consumer scopes it to: a source repository, a docs corpus, an
+extracted archive, a dataset directory, a log directory. The single most common thing a
+coding-adjacent consumer needs — let the model read or search a bounded directory tree — does not
+require a shell: both tools are a pure-Python scan over `resolve_within_root`-guarded paths, no
+subprocess, no `rg`/`grep` binary on `PATH`.
+
+```python
+from rlm_harness.tools import make_grep_repo_tool, make_read_file_tool
+
+read_file = make_read_file_tool(repo_root)
+grep_repo = make_grep_repo_tool(repo_root, candidate_paths=my_file_list)   # a consumer-computed list
+finding = MyTask(tools=[read_file, grep_repo]).run(...)
+```
+
+- **`resolve_within_root(root, path)`** is the shared guard both factories build on (public, like
+  `is_safe_url`/`parse_cidrs`, for a consumer building a third filesystem tool the kit doesn't
+  ship): refuses a `..` traversal, an absolute path elsewhere, or a symlink INSIDE `root` pointing
+  OUTSIDE it — via `os.path.realpath` (which follows symlinks) then a `commonpath` containment
+  check, never `os.path.normpath` (purely lexical, which would miss the symlink case).
+- **`candidate_paths` is REQUIRED, consumer-supplied** — no default directory walk, no built-in
+  `.gitignore` handling. Same base/wrap split as `make_command_tool` demanding an injected
+  `Runner`: the kit owns the safety guard, the consumer decides which files are even candidates
+  (walk a directory, read a manifest, whatever fits).
+- **`name=` on both factories** (default `"read_file"`/`"grep_repo"`) fixes a real collision: a
+  task with more than one bounded root (a source root AND a docs root, say) needs each one's tool
+  to have a distinct REPL identity, since dspy keys its tool dict by name and two tools sharing a
+  name abort registration for EVERY tool on the task, not just the second one. Validated at
+  factory-build time (a valid, non-reserved identifier) — a bad name raises `ValueError`
+  immediately rather than surfacing as an obscure construction failure later.
+- **`make_read_file_tool`** additionally takes `encoding=` (default `"utf-8"`, for a non-UTF-8
+  corpus), `max_output_chars=` (default `None` = unlimited; truncates with a visible, non-silent
+  marker when set), and `line_numbers=` (default `False`; prefixes each returned line with its
+  REAL 1-indexed file line number, so a model reading a slice starting mid-file doesn't have to
+  compute one itself from `start_line` — removing exactly the off-by-one a model gets wrong when
+  later asked to cite or edit that line). The last two are scoped to the successful-read branch
+  only — a `Refused`/`Read error` string is never numbered or truncated.
+- **`make_grep_repo_tool` requires the optional `regex` package outright** (`pip install
+  "rlm-harness[grep]"` — a friendly `ImportError` otherwise, no silent fallback to stdlib `re`).
+  `pattern` is LM-controlled, unbounded regex, matched against real file lines with no wall-clock
+  budget anywhere else in a tool's call path — a catastrophic-backtracking pattern (`(a+)+$`
+  against a non-matching line) can hang the host process indefinitely on stdlib `re`, and stdlib
+  `re` cannot be bounded by ANY pure-Python mechanism, not even `signal.alarm` (CPython's `re`
+  engine doesn't yield to the signal dispatcher mid-match — one `re.search()` call is a single,
+  uninterruptible C-level operation). `regex`'s own matching loop periodically checks elapsed
+  wall-clock time internally and raises `TimeoutError` when exceeded — a real, working,
+  pattern-structure-agnostic mechanism. Same "no silently-weaker substitute" posture
+  `make_json_schema_validator` already takes for its own optional `jsonschema` extra.
+- Two composed budgets, both factory (operator) parameters, never model-controlled:
+  `per_match_timeout_s` (default `1.0`) bounds ONE line's match — a timeout skips just that line
+  (counted, surfaced in the result, never silent); `max_total_time_s` (default `30.0`) bounds the
+  WHOLE call, checked before EVERY line (not merely once per file — a per-file-only check would let
+  a single large file with many timeout-tripping lines blow past the budget by an arbitrary
+  multiple before it ever fired again).
+- **`output_mode=` and `ignore_case=` on `grep_repo`.** `output_mode` (default `"content"`,
+  unchanged) adds `"files_with_matches"` (distinct matching file paths only, no line text) and
+  `"count"` (`path: N`, files with zero matches omitted). All three modes scan every line of
+  every candidate file IDENTICALLY — the two new modes are cheaper in OUTPUT/TRACE SIZE only,
+  never in scan cost (no per-file early-break yet; that's a natural, separately-reviewable future
+  addition). `max_results` caps the number of output ROWS across all three modes consistently (a
+  row = a matching line in `"content"` mode, a file in the other two). `ignore_case` (default
+  `False`) is case-insensitive matching as a first-class flag rather than something baked into the
+  pattern.
 
 ## Environment interpreter (`interpreter="container"`)
 
@@ -536,6 +612,29 @@ RL export together. Five steps:
      that just wants the whole deliverable as CONTEXT needs no parser at all — the text is meant to be
      read as-is, by a Root LM and by a human debugging the wire.
 
+   - **In-process transport (no subprocess).** The kit still ships no `call_endpoint` — subprocess
+     (`serve_harness`) and HTTP remain the usual choices — but a THIRD option, for a trusted child
+     harness in the same process/deployment where low latency matters more than OS-level isolation,
+     is to await the child's `RLMTask.arun()` directly. Two small primitives make this easy to build
+     correctly: `rlm_harness.tools.run_isolated(coro_factory)` bridges the sync tool-call contract
+     into the child's `async arun()` — always on a dedicated new thread, so it works regardless of
+     whether the calling thread already has a running loop (it will, whenever the parent task is
+     itself mid-`arun()`) — and `rlm_harness.tools.pointer_to_invocation(pointer)` is the canonical
+     `serving.HarnessPointer` → `tools.HarnessInvocation` mapping, reused unchanged from the
+     subprocess/HTTP case. **Read `run_isolated`'s docstring before wrapping a traced delegation**: a
+     fresh thread starts with an empty `contextvars.Context`, so the delegated child's OWN
+     `TraceRecorder` must be entered INSIDE the coroutine `run_isolated` runs, never around the call
+     to `run_isolated` itself — a `TraceRecorder` entered outside is invisible to `current_recorder()`
+     inside, and the child's own tool_calls/sub_calls would go silently unrecorded. See
+     `examples/harness_local_run.py` for the full worked pattern (protected offline by
+     `tests/test_harness_tool.py::test_in_process_transport_wiring`, which exercises the identical
+     composition with a stub child instead of a real `dspy.RLM`). Nothing here adds a NEW
+     code-execution surface — the child still enforces its own `RLMConfig`/sandbox guard on its own
+     REPL code, exactly as it would over any other transport; an in-process call only changes HOW a
+     Python object gets invoked, not WHAT gets executed where. Keep the subprocess/HTTP transport
+     instead when the child needs real process/OS isolation, a different runtime/language, or truly
+     runs on a remote machine.
+
 **Score your own rubric (optional).** To decompose "did this run succeed?" into observable per-run
 LABELS, `rlm_harness.rubric` gives you the reward-free substrate — the `Criterion`/`RubricCriteria`/
 `CriterionFact` types, `rubric_to_meta`/`rubric_from_meta` (carry the rubric in the `run_start` meta),
@@ -586,6 +685,36 @@ SEPARATE downstream project that installs the trainer. A prompt/policy rule that
 BETTER is in scope; a reward or penalty is not. Keep the trace clean training data and let the
 trainer score it.
 
+## Trace utilization metrics
+
+`rlm_harness.metrics` answers "how was this run's activity distributed" — a sibling question to
+`rubric.py`'s "does this run satisfy criterion X," equally reward-free, but a fixed COMPUTATION
+over the raw events rather than a caller-supplied fact-slice:
+
+```python
+from rlm_harness import compute_run_utilization, group_by_run, load_events
+
+runs = group_by_run(load_events("traces/run.jsonl"))
+u = compute_run_utilization(runs["r1"])
+print(u.main_steps, u.tool_calls_total, u.tool_calls_by_name, u.sub_calls_total)
+print(u.tool_call_rate, u.sub_call_rate)   # per root-LM turn taken; None if main_steps == 0
+```
+
+`compute_utilization_by_run(events)` computes every run's `RunUtilization` in one call, for a
+batch/dataset-level view. Reads ONLY already-frozen `trace/v1` fields (`event["type"]`,
+`event["payload"]["tool"]`) — no new event type, no new payload field, nothing the trace contract
+needs to change for.
+
+Both rates are denominated over `main_steps` (root-LM turns) — "how many tool calls / sub-LM
+escalations happened per root-LM turn taken." This is a judgment call, not a uniquely correct
+answer: the raw counts are exposed alongside the rates, so a consumer wanting a different
+denominator can recompute one from the same fields. A rate is `None` (not `0.0`) when
+`main_steps == 0` — `0.0` would misleadingly read as "measured and found to be zero usage" rather
+than "undefined," and a crashed/cancelled run that failed before its first `Prediction` ever
+returned is a real, reachable example of this: it can carry live-recorded `tool_call`/`sub_call`
+events with zero `main_step` events (`RLMTask.arun()` only records the main trajectory `if
+"prediction" in captured`).
+
 ## Configuration
 
 All via env (`RLMConfig.from_env()`): `RLM_MAIN_MODEL` (or `AI_MODEL_NAME`),
@@ -601,6 +730,19 @@ without re-keying env; the `RLM_*` form wins when both are set.
 verbatim instead of constructing one from `cfg` — a `dspy.utils.DummyLM` in tests, or a
 cached / custom client in production. It's the public seam for a test double, so nothing
 has to reach into private runtime state; read the active config back with `get_config()`.
+
+**Claude-subscription auto-routing.** Set `RLM_MAIN_MODEL`/`RLM_SUB_MODEL` (or pass `main_model=`/
+`sub_model=` on `RLMConfig`) to `claude_agent_lm.SUBSCRIPTION_PREFIX` + a model id — e.g.
+`claude-agent-sdk/claude-sonnet-5` — and `configure()` builds a `ClaudeAgentLM` for that role
+automatically; no explicit `main_lm=`/`sub_lm=` wiring needed. An explicit `main_lm=`/`sub_lm=`
+kwarg still wins outright regardless of the model string — the prefix is only consulted for a role
+left unset. This can raise, in addition to `configure()`'s own errors: `ValueError` for a bare
+prefix with no model id; `RuntimeError` if `ANTHROPIC_API_KEY` is set (`ClaudeAgentLM` refuses to
+start while it's set — the Claude Code CLI silently prefers it over subscription OAuth); or
+`ImportError` with an install hint if the optional `rlm-harness[subscription]` extra isn't
+installed. Needs the same setup as `ClaudeAgentLM` itself (see the module's own docstring) —
+building one by hand via `main_lm=ClaudeAgentLM(...)` still works exactly as before, for anyone who
+wants to pass its other constructor kwargs (`timeout_s`, `cwd`, …) explicitly.
 
 **Model names with a custom endpoint.** When `RLM_BASE_URL` is set, `configure` pins
 litellm's `custom_llm_provider="openai"`, so the model names are the **plain id your

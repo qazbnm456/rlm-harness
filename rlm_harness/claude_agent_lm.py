@@ -60,6 +60,15 @@ _BACKOFF_S = 30.0
 # ("failed to generate", "delimiter") and turn a non-retryable error into a 30s sleep + retry.
 _RATE_LIMIT_RE = re.compile(r"rate.?limit|usage limit|overloaded|429|529")
 
+#: The sentinel `ClaudeAgentLM` stamps its own `dspy.LM.model` with (see `__init__` below) — the
+#: kit's own convention, not a consumer-invented one. `runtime.configure()` reads this SAME
+#: constant back to auto-route a `claude-agent-sdk/<id>` `main_model`/`sub_model` string onto a
+#: `ClaudeAgentLM` for a role the caller didn't already override with an explicit `main_lm=`/
+#: `sub_lm=`. Exported (lazily, alongside `ClaudeAgentLM`) so a consumer composing its OWN
+#: model-string convention on top gets the single source of truth instead of hardcoding the
+#: literal a second time.
+SUBSCRIPTION_PREFIX = "claude-agent-sdk/"
+
 
 def _require_claude_agent_sdk():
     """Import the optional `claude-agent-sdk`, or raise a friendly install hint (the `mcp.py` guard).
@@ -187,7 +196,7 @@ class ClaudeAgentLM(dspy.BaseLM):
                 "subscription OAuth, so this run would bill API credit. Unset it (or pass "
                 "allow_api_key=True if that is genuinely what you want)."
             )
-        super().__init__(model=f"claude-agent-sdk/{model}", **kwargs)
+        super().__init__(model=f"{SUBSCRIPTION_PREFIX}{model}", **kwargs)
         self._alias = model
         # End-to-end deadline per call, INCLUDING time queued behind the semaphore.
         self._timeout_s = timeout_s

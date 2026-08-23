@@ -1,6 +1,6 @@
 [project]
 name = "rlm-harness"
-version = "1.2.1"
+version = "1.3.0"
 description = "A clean, reusable harness for building tasks on DSPy Recursive Language Models (RLMs)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -58,6 +58,14 @@ jsonschema = [
 # Opt-in — a plain API-key install never pulls the (heavy) SDK wheel.
 subscription = [
     "claude-agent-sdk>=0.1.60",
+]
+# Wall-clock-bounded regex matching (make_grep_repo_tool): an LM-controlled pattern is bounded by
+# a real timeout instead of a catastrophic-backtracking pattern hanging the host indefinitely —
+# stdlib `re` has no way to bound this cost by any pure-Python mechanism. Opt-in — required
+# outright by make_grep_repo_tool (a friendly ImportError otherwise), no silent unsafe fallback,
+# the same posture make_json_schema_validator already takes for its own `jsonschema` extra.
+grep = [
+    "regex>=2023.0.0",
 ]
 
 [project.urls]
