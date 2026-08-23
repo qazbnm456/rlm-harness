@@ -75,6 +75,19 @@ Suite: 456 passed, 1 skipped on dspy 3.3.0 (+20 tests: the classification matrix
 `test_dspy_compat.py`, the predicate mechanics in `test_retry.py`, and two end-to-end cases in
 `test_integration_dspy.py` driving the real `RLMTask.arun()` → `run_with_retry` chain).
 
+### Fixed (release pipeline, no package-content change)
+
+- **The first attempt to publish this release failed before reaching PyPI.**
+  `.github/workflows/release.yml`'s `pypa/gh-action-pypi-publish` was SHA-pinned to `v1.14.0`,
+  whose bundled twine does not recognize `Metadata-Version: 2.5` — which `hatchling>=1.27`'s PEP
+  639 SPDX license support has emitted for a while, so every wheel this kit builds now carries it.
+  The publish job's metadata-verification step rejected the wheel outright with
+  `InvalidDistribution: Invalid distribution metadata: '2.5' is not a valid metadata version`,
+  before ever contacting PyPI — a CI/pipeline failure, not a defect in the 1.2.1 code above,
+  which is unchanged. Fixed by bumping the pin to `v1.14.2` (twine v7, which added 2.5 support).
+  Same SHA-pinning discipline as every other pin in that file: SHA + trailing version comment
+  updated together.
+
 ## [1.2.0] - 2026-08-07
 
 **Requires `dspy>=3.3.0`.** The 3.2.x compatibility branches are deleted.
