@@ -9,9 +9,11 @@ Public surface::
     from rlm_harness import TraceRecorder, current_recorder, record_tool_call  # tracing
     from rlm_harness import load_skills_as_tools                       # skills-as-tools
     from rlm_harness import load_timeline, export_sft_turns, export_rl  # replay + dataset
+    from rlm_harness import atomic_write_text                          # atomic filesystem write
+    from rlm_harness import compute_run_utilization, RunUtilization    # trace utilization metrics
 
-``config``, ``trace``, ``sub_lm``, ``skills``, ``replay``, ``dataset`` and the
-tools are import-light (no dspy). ``RLMTask`` / ``configure`` pull in dspy lazily
+``config``, ``trace``, ``sub_lm``, ``skills``, ``replay``, ``dataset``, ``atomic``, ``metrics`` and
+the tools are import-light (no dspy). ``RLMTask`` / ``configure`` pull in dspy lazily
 on first attribute access, so ``import rlm_harness`` stays cheap and the dspy-free
 modules remain testable in isolation. ``intercept_sub_lm`` imports dspy only
 when actually called.
@@ -26,8 +28,10 @@ from ._toolname import (
     signature_from_json_schema,
     unique_tool_names,
 )
+from .atomic import atomic_write_text
 from .config import RLMConfig
 from .dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
+from .metrics import RunUtilization, compute_run_utilization, compute_utilization_by_run
 from .replay import RecordedToolProvider, load_timeline, reconstruct
 from .rubric import (
     Criterion,
@@ -125,9 +129,16 @@ __all__ = [
     "result_text",
     # Claude subscription LM (optional: rlm-harness[subscription])
     "ClaudeAgentLM",
+    "SUBSCRIPTION_PREFIX",
+    # atomic filesystem write — never a partial file visible mid-write
+    "atomic_write_text",
+    # trace utilization metrics — how a run's activity was distributed (reward-free, like rubric)
+    "RunUtilization",
+    "compute_run_utilization",
+    "compute_utilization_by_run",
 ]
 
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 
 
 def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import
@@ -156,4 +167,8 @@ def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import
         from .claude_agent_lm import ClaudeAgentLM
 
         return ClaudeAgentLM
+    if name == "SUBSCRIPTION_PREFIX":  # the claude_agent_lm.py sentinel, joins the same lazy group
+        from .claude_agent_lm import SUBSCRIPTION_PREFIX
+
+        return SUBSCRIPTION_PREFIX
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

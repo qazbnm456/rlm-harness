@@ -18,9 +18,12 @@ One companion rule ships under `.claude/rules/`:
 - Run what CI gates on — BOTH jobs — before pushing:
   - `uvx ruff check .` — lint (ruff defaults, line-length 110). CI fails the build on any
     violation; it is NOT part of the pytest suite, so a green `pytest` is not enough on its own.
-  - `uv run --group dev --extra mcp python -m pytest -q` — the full suite (CI runs it on
-    3.11/3.12/3.13). `--extra mcp` so the MCP-client tests run instead of skipping. No live LLM,
-    network, or Deno needed: the dspy-bearing tests use `DummyLM` or are skipped if dspy is absent.
+  - `uv run --group dev --extra mcp --extra grep python -m pytest -q` — the full suite (CI runs it
+    on 3.11/3.12/3.13). `--extra mcp` so the MCP-client tests run instead of skipping; `--extra
+    grep` so `make_grep_repo_tool`'s timeout tests exercise a REAL `regex` timeout instead of
+    skipping (the whole point of that suite is verifying an actual timeout fires, not that the
+    code merely imports). No live LLM, network, or Deno needed: the dspy-bearing tests use
+    `DummyLM` or are skipped if dspy is absent.
 - **`.github/workflows/ci.yml` also has a `packaging` job** — builds the wheel, installs it into a
   clean environment with NO lockfile, and runs a task from it. Every other job runs from the source
   tree via `uv run`, so a module missing from the wheel would ship silently. It is the PACKAGING
@@ -45,7 +48,7 @@ One companion rule ships under `.claude/rules/`:
   But do NOT read green as "a fresh install works": the overlay upgrades ONLY dspy (plus whatever
   transitive it forces), so everything else stays locked and a break from, say, the newest
   `pydantic` is invisible to it. Reproduce locally with
-  `uv run --group dev --extra mcp --with "dspy==<newest>" python -m pytest -q` — it leaves
+  `uv run --group dev --extra mcp --extra grep --with "dspy==<newest>" python -m pytest -q` — it leaves
   `uv.lock` untouched.
 - A *live* `dspy.RLM` run needs real model credentials **and** a Deno sandbox
   (`brew install deno`). Don't run it in CI; it costs money. `examples/` show it.
@@ -201,6 +204,21 @@ One companion rule ships under `.claude/rules/`:
   reads `dspy.Tool(name=…)` when given, NOT `func.__name__`; sanitizing only `__name__` on a tool
   built with an explicit `name=` is a placebo (`assert_repl_safe` resolves it dspy's way and catches
   exactly that).
+- **A fresh `threading.Thread` starts with an empty `contextvars.Context` — contextvars are NOT
+  inherited into it.** `tools/_async.py`'s `run_isolated` (a bridging primitive for a consumer's own
+  in-process harness-delegation transport — see `tools/harness.py`'s `pointer_to_invocation` and
+  `examples/harness_local_run.py`) always runs its coroutine on a dedicated new thread, which means
+  the SAME non-inheritance `trace.recorder_scope`'s docstring already documents for
+  `dspy.RLM.llm_query_batched`'s `ThreadPoolExecutor` sub-LM workers applies here too — arguably more
+  starkly (no partial context-copying at all). Concretely: a `TraceRecorder` entered AROUND a
+  `run_isolated(...)` call is invisible to `current_recorder()` INSIDE the coroutine it runs, so any
+  `record_tool_call`/`intercept_sub_lm` activity a delegated child triggers would go silently
+  unrecorded. Any contextvar-scoped state needed inside the isolated call — notably a delegated
+  child's OWN `TraceRecorder`, for its own separate rollout — must be established INSIDE the
+  coroutine `run_isolated` runs, never around the call to `run_isolated` itself. Tested directly in
+  `tests/test_async.py` (both the single-call isolation and a sequential-calls case, so a future
+  "simplification" that reused a thread/pool across calls — leaving a recorder's `_active.set()`
+  unmatched by a `reset()` on a persistent `Context` — would go red here).
 - **MCP is CLIENT-ONLY, and its async SDK is bridged to sync (`mcp.py`, optional `rlm-harness[mcp]`).**
   `mcp_tools(server)` connects to an EXTERNAL MCP server (rlm-harness never IS a server, never bundles
   one — you point it at someone else's) and exposes that server's tools to `RLMTask`. The MCP SDK is

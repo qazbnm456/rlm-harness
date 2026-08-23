@@ -36,6 +36,7 @@ runner if you need them (and add an additive ``session_id`` to the payload at th
 
 from __future__ import annotations
 
+import shlex
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -141,3 +142,80 @@ def make_command_tool(
         return {"exit_code": result.exit_code, "stdout": result.stdout, "stderr": result.stderr}
 
     return run_command
+
+
+# `git log`'s own broad-history options this guard refuses. Two shapes: an EXACT boolean flag, and
+# a PREFIXABLE one that optionally takes `=<pattern>` (matched on the token up to its first `=`).
+# Scoped to `git log` only (not a general git lockdown) — mirrors an eval/training-run convention
+# for refusing a model access to other branches/tags/reflogs it should not be looking at, not a
+# general git restriction (e.g. `git branch -a` is untouched).
+_GIT_LOG_DENYLIST_EXACT = frozenset(
+    {"--all", "--reflog", "--walk-reflogs", "-g", "--alternate-refs"}
+)
+_GIT_LOG_DENYLIST_PREFIXABLE = frozenset({"--branches", "--remotes", "--tags", "--glob"})
+
+# Global git options that legally precede the subcommand and take a following value token
+# (`git -C <path> log ...`, `git -c <k=v> log ...`) — consumed as a pair, never mistaken for the
+# subcommand itself.
+_GIT_GLOBAL_OPTS_WITH_VALUE = frozenset({"-C", "-c"})
+
+
+def refuse_broad_git_history(command: Command) -> str | None:
+    """An OPTIONAL ``guard`` for :func:`make_command_tool` that refuses a ``git log`` invocation
+    carrying a broad-history option (``--all``, ``--branches``, ``--remotes``, ``--tags``,
+    ``--glob``, ``--reflog``, ``--walk-reflogs``, ``-g``, ``--alternate-refs``).
+
+    An eval/training-run convention: stop a model from reading other branches/tags/reflogs it
+    should not have access to (task-specific hints, other agents' solutions in a shared repo).
+    Like every ``guard`` (see the module docstring), this is SHAPE-only — a pattern match on
+    tokens, not a security boundary. It refuses only ``git log`` itself; it does not restrict any
+    other git subcommand (``git branch -a`` is untouched — a deliberate, narrow scope, not a
+    general git lockdown).
+
+    **Detection**: an argv list is used as-is; a shell string is tokenized with ``shlex.split``.
+    ``tokens[0]`` must be ``git`` (or end with ``/git``); tokens after it are walked, skipping
+    recognized GLOBAL git options that legally precede the subcommand (``-C <path>`` / ``-c <k=v>``
+    consume their value token; ``--git-dir=…`` / ``--work-tree=…`` / ``--namespace=…`` and any
+    other bare ``-``-prefixed token, e.g. ``--no-pager``, are skipped on their own) until it hits
+    either the literal token ``"log"`` (the rest are ``log``'s own arguments, scanned against the
+    denylist) or a non-flag, non-``log`` token (some OTHER git subcommand — not our concern,
+    returns ``None``). Matching is token-based throughout, never a substring/``in`` search over
+    the raw text — so ``git commit -m "please git log --all this"`` is correctly left alone (its
+    second token is ``commit``, not ``log``).
+
+    **Known, deliberate non-goal — this is not a shell parser.** A compound shell string chaining
+    multiple commands (``"echo hi && git log --all"``, ``"a; git log --all"``, ``"a | git log
+    --all"``) is NOT decomposed into sub-commands: ``shlex.split`` has no concept of ``&&``/``;``/
+    ``|`` as separators, so such a string's ``tokens[0]`` is whatever precedes the chain and the
+    whole thing passes through unrefused. This is exactly why a ``guard`` is documented as
+    shape-only, never a security boundary — prefer argv-list commands (this module's own
+    preference) where there is no shell-parsing ambiguity at all.
+    """
+    tokens = command if isinstance(command, list) else shlex.split(command)
+    if not tokens:
+        return None
+    prog = tokens[0]
+    if prog != "git" and not prog.endswith("/git"):
+        return None
+
+    i = 1
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "log":
+            i += 1
+            break
+        if token in _GIT_GLOBAL_OPTS_WITH_VALUE:
+            i += 2  # consume the option AND its value token
+            continue
+        if token.startswith("-"):
+            i += 1  # a bare global flag (--no-pager, --git-dir=…, …) — skip it alone
+            continue
+        return None  # a non-flag, non-"log" token: some other git subcommand
+    else:
+        return None  # walked off the end without ever finding "log"
+
+    for arg in tokens[i:]:
+        base = arg.split("=", 1)[0]
+        if base in _GIT_LOG_DENYLIST_EXACT or base in _GIT_LOG_DENYLIST_PREFIXABLE:
+            return f"broad git-history option {arg!r} on `git log`"
+    return None
