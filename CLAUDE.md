@@ -120,6 +120,29 @@ One companion rule ships under `.claude/rules/`:
   would double-shutdown our sandbox; and a lossy fallback must be LOUD — `_build_rlm`'s `except
   TypeError` drops all three budget caps to dspy's defaults, so it `logger.warning`s rather than
   `logger.debug`s.
+- **An LM error dspy itself calls non-retryable fails the task fast — except one carve-out.**
+  `_dspy_compat.is_fast_fail_lm_error(exc)` mirrors dspy's own `is_retryable_lm_error`: an
+  auth/billing/configuration failure, an invalid request, or an unsupported model/feature is not
+  worth burning `run_with_retry`'s budget on, since every attempt re-sends the same doomed call.
+  `_retry.py:run_with_retry` gained an `is_fast_fail` predicate hook alongside the existing
+  `non_retryable` type allowlist — a predicate because "isinstance(exc, LMError) and NOT
+  ContextWindowExceededError and NOT is_retryable_lm_error(exc)" cannot be expressed as a static
+  `except (A, B, C):` tuple. A match propagates the ORIGINAL exception verbatim, consumes NO
+  attempt, and is never wrapped in `RLMTaskError` — the same contract as `non_retryable`, checked
+  second because a type match there is cheaper. `RLMTask.arun()` wires
+  `is_fast_fail=_dspy_compat.is_fast_fail_lm_error` in; `_retry.py` itself stays dspy-free, the
+  predicate is supplied by the dspy-aware caller. **The one carve-out:**
+  `ContextWindowExceededError` is a non-retryable `LMInvalidRequestError` by dspy's classification,
+  but that classification assumes a retry re-sends the identical request — `run_with_retry`
+  instead re-runs the WHOLE trajectory, which can genuinely produce a shorter prompt that fits on
+  a later attempt, so it is excluded and keeps retrying like any other exception. This was the
+  contested, previously-unresolved half of the design noted in CHANGELOG 1.2.0; it is resolved
+  now and must not be re-litigated by hardcoding `ContextWindowExceededError` back into the
+  fast-fail set. Reached through the PUBLIC `dspy.is_retryable_lm_error`, never the private
+  `dspy.utils.exceptions._RETRYABLE_LM_ERRORS` tuple it is built from — the same rule as every
+  other shim in `_dspy_compat.py`. Degrades to `False` (never fast-fail, i.e. today's pre-1.2.1
+  behavior) whenever `dspy.LMError` or `dspy.is_retryable_lm_error` is missing on the installed
+  dspy, so a future rename fails safe rather than over-eagerly killing a retryable run.
 - **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`,
   `tools/`, `trace.py`, `skills.py`, `replay.py`, `dataset.py`, `serving.py`, `harness_serve.py`,
   `_dspy_compat.py`

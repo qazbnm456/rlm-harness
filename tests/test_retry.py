@@ -159,6 +159,91 @@ async def test_default_non_retryable_matches_nothing():
     assert calls["n"] == 2  # the default () matches nothing — retried like any other exception
 
 
+# ---- is_fast_fail: a dynamic predicate gets the same treatment as non_retryable -----------
+
+
+async def test_is_fast_fail_match_propagates_verbatim_with_no_retry():
+    calls = {"n": 0}
+    original = RuntimeError("dspy says this one is hopeless")
+
+    async def runner():
+        calls["n"] += 1
+        raise original
+
+    with pytest.raises(RuntimeError) as ei:
+        await run_with_retry(
+            runner,
+            output_field="finding",
+            output_model=Finding,
+            max_retries=3,
+            is_fast_fail=lambda exc: True,
+        )
+    assert ei.value is original  # the ORIGINAL object, never wrapped in RLMTaskError
+    assert calls["n"] == 1  # no retry attempt happened
+
+
+async def test_is_fast_fail_non_match_is_retried_as_before():
+    calls = {"n": 0}
+
+    async def runner():
+        calls["n"] += 1
+        raise RuntimeError("transient")
+
+    with pytest.raises(RLMTaskError):
+        await run_with_retry(
+            runner,
+            output_field="finding",
+            output_model=Finding,
+            max_retries=3,
+            is_fast_fail=lambda exc: False,
+        )
+    assert calls["n"] == 3  # the predicate said no every time — unchanged retry behavior
+
+
+async def test_default_is_fast_fail_is_none_and_never_fires():
+    calls = {"n": 0}
+
+    async def runner():
+        calls["n"] += 1
+        raise RuntimeError("would-be-fast-failed, but no predicate was passed")
+
+    with pytest.raises(RLMTaskError):
+        await run_with_retry(
+            runner, output_field="finding", output_model=Finding, max_retries=2
+        )
+    assert calls["n"] == 2  # the default None never fires — retried like any other exception
+
+
+async def test_non_retryable_type_match_wins_over_is_fast_fail():
+    """`non_retryable` is checked first (a cheaper, static type match); a predicate that would
+    also match must not change that this still propagates via the type-based `except` clause,
+    not the predicate branch — asserted by NEVER calling the predicate at all."""
+    calls = {"n": 0}
+    predicate_calls = {"n": 0}
+    original = _Cancelled("stop now")
+
+    async def runner():
+        calls["n"] += 1
+        raise original
+
+    def is_fast_fail(exc):
+        predicate_calls["n"] += 1
+        return True
+
+    with pytest.raises(_Cancelled) as ei:
+        await run_with_retry(
+            runner,
+            output_field="finding",
+            output_model=Finding,
+            max_retries=3,
+            non_retryable=(_Cancelled,),
+            is_fast_fail=is_fast_fail,
+        )
+    assert ei.value is original
+    assert calls["n"] == 1
+    assert predicate_calls["n"] == 0  # non_retryable's `except` clause caught it first
+
+
 # ---- _short_error: bound the logged exception -----------------------------
 
 def test_short_error_leaves_a_small_message_intact():

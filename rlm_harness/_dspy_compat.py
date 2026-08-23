@@ -209,3 +209,52 @@ def terminal_interpreter_error() -> type[Exception]:
     from dspy.primitives.code_interpreter import CodeInterpreterError
 
     return CodeInterpreterError
+
+
+@lru_cache(maxsize=1)
+def _lm_error_classes() -> tuple[type[Exception] | None, type[Exception] | None]:
+    """``(dspy.LMError, dspy.ContextWindowExceededError)``, or ``None`` for either that a
+    future dspy no longer exposes under that name. Split out of :func:`is_fast_fail_lm_error`
+    so the two lookups are cached once instead of on every classified exception."""
+    import dspy
+
+    return getattr(dspy, "LMError", None), getattr(dspy, "ContextWindowExceededError", None)
+
+
+def is_fast_fail_lm_error(exc: BaseException) -> bool:
+    """True for an LM failure worth failing the whole task on immediately, not retrying.
+
+    dspy's own ``is_retryable_lm_error`` classifies an auth/billing/configuration failure, an
+    invalid request, or an unsupported model/feature as NOT retryable — a raw retry re-sends the
+    exact same doomed call ``max_retries`` times for no benefit. ``run_with_retry`` did not honor
+    that classification before this; every LM error consumed the full retry budget and was then
+    wrapped in ``RLMTaskError``, indistinguishable from a genuine validation failure. This mirrors
+    dspy's classification, with ONE deliberate carve-out.
+
+    **The carve-out:** ``ContextWindowExceededError`` is a ``LMInvalidRequestError`` and dspy
+    calls it non-retryable — correct for dspy's own LM-level retry, which resends the identical
+    request. It is NOT correct here: ``run_with_retry`` retries by re-running the WHOLE
+    trajectory, which can genuinely produce a shorter prompt on the next attempt (a different
+    turn sequence, a truncated tool result). So it is excluded and keeps retrying like any other
+    exception — this was the one contested part of the design (CHANGELOG 1.2.0) and is resolved
+    HERE, not left to whoever reads the CHANGELOG note next.
+
+    Deliberately reached through the PUBLIC ``dspy.is_retryable_lm_error`` rather than the
+    private ``dspy.utils.exceptions._RETRYABLE_LM_ERRORS`` tuple it is built from — the same
+    "introspect the public seam, never a private one" rule as every other shim here. Returns
+    ``False`` (never fast-fails) for anything that is not a ``dspy.LMError`` at all, and for
+    every case where the installed dspy is missing the classes/helper this needs — conservative
+    by construction, so a future dspy renaming these degrades to "always retry", the behaviour
+    before this existed, rather than to over-eager fast-failing.
+    """
+    lm_error, context_window_exceeded = _lm_error_classes()
+    if lm_error is None or not isinstance(exc, lm_error):
+        return False
+    if context_window_exceeded is not None and isinstance(exc, context_window_exceeded):
+        return False
+    import dspy
+
+    is_retryable = getattr(dspy, "is_retryable_lm_error", None)
+    if is_retryable is None:
+        return False
+    return not is_retryable(exc)

@@ -43,6 +43,7 @@ def _clear_caches():
         _dspy_compat.reserved_result_names,
         _dspy_compat.recoverable_interpreter_error,
         _dspy_compat.terminal_interpreter_error,
+        _dspy_compat._lm_error_classes,
     ):
         fn.cache_clear()
     yield
@@ -54,6 +55,7 @@ def _clear_caches():
         _dspy_compat.reserved_result_names,
         _dspy_compat.recoverable_interpreter_error,
         _dspy_compat.terminal_interpreter_error,
+        _dspy_compat._lm_error_classes,
     ):
         fn.cache_clear()
 
@@ -189,6 +191,76 @@ def test_terminal_error_is_not_the_recoverable_one_when_dspy_splits_them():
     terminal = _dspy_compat.terminal_interpreter_error()
     assert terminal is code_interpreter.CodeInterpreterError
     assert terminal is not _dspy_compat.recoverable_interpreter_error()
+
+
+# ---- fast-failing non-retryable LM errors -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        dspy.LMAuthError("bad key"),
+        dspy.LMBillingError("out of credit"),
+        dspy.LMConfigurationError("no model configured"),
+        dspy.LMUnsupportedModelError("unknown model"),
+        dspy.LMUnsupportedFeatureError("no such feature"),
+    ],
+)
+def test_lm_errors_dspy_calls_non_retryable_fail_fast(exc):
+    """The core contract: an LM error dspy's OWN `is_retryable_lm_error` says not to retry
+    must not burn the retry budget re-running the same doomed trajectory."""
+    assert _dspy_compat.is_fast_fail_lm_error(exc) is True
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        dspy.LMRateLimitError("slow down"),
+        dspy.LMTimeoutError("timed out"),
+        dspy.LMServerError("500"),
+        dspy.LMTransportError("connection reset"),
+    ],
+)
+def test_lm_errors_dspy_calls_retryable_keep_retrying(exc):
+    """The mirror: anything dspy's own helper calls retryable must not fast-fail here — this
+    predicate must never be STRICTER than dspy's own classification."""
+    assert _dspy_compat.is_fast_fail_lm_error(exc) is False
+
+
+def test_context_window_exceeded_is_the_one_carve_out():
+    """THE regression for the contested part of the design (CHANGELOG 1.2.0).
+    `ContextWindowExceededError` is a non-retryable `LMInvalidRequestError` by dspy's own
+    classification, but `run_with_retry` re-runs the WHOLE trajectory rather than resending the
+    identical request — a later attempt can genuinely produce a shorter prompt that fits. It must
+    keep retrying here even though dspy calls it non-retryable."""
+    exc = dspy.ContextWindowExceededError()
+    assert dspy.is_retryable_lm_error(exc) is False  # confirms the premise: dspy says no
+    assert _dspy_compat.is_fast_fail_lm_error(exc) is False  # this shim disagrees, on purpose
+
+
+def test_non_lm_exception_never_fast_fails():
+    assert _dspy_compat.is_fast_fail_lm_error(ValueError("not an LM error at all")) is False
+
+
+def test_unclassifiable_lm_error_still_gets_a_verdict():
+    """`LMUnexpectedError` is dspy's own catch-all bucket for a failure it could not classify
+    more precisely. It is still an `LMError` that `is_retryable_lm_error` calls non-retryable, so
+    it fast-fails too — trusting dspy's classification rather than second-guessing it here."""
+    assert _dspy_compat.is_fast_fail_lm_error(dspy.LMUnexpectedError("???")) is True
+
+
+def test_missing_is_retryable_helper_degrades_to_never_fast_fail(monkeypatch):
+    """A future/older dspy without `is_retryable_lm_error` must not be treated as
+    'everything fast-fails' — that would be MORE aggressive than today's behavior with no
+    classification to back it. Degrade to the pre-existing behavior: always retry."""
+    monkeypatch.delattr(dspy, "is_retryable_lm_error", raising=True)
+    assert _dspy_compat.is_fast_fail_lm_error(dspy.LMAuthError("bad key")) is False
+
+
+def test_missing_lm_error_class_degrades_to_never_fast_fail(monkeypatch):
+    """A dspy without `LMError` at all can't be classified — never fast-fail rather than guess."""
+    monkeypatch.delattr(dspy, "LMError", raising=True)
+    assert _dspy_compat.is_fast_fail_lm_error(dspy.LMAuthError("bad key")) is False
 
 
 # ---- import hygiene --------------------------------------------------------------
