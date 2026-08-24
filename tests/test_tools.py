@@ -14,7 +14,7 @@ from rlm_harness.tools.fetch import (
     parse_cidrs,
     resolved_host_is_safe,
 )
-from rlm_harness.tools.fs import make_grep_repo_tool, make_read_file_tool, resolve_within_root
+from rlm_harness.tools.fs import make_grep_files_tool, make_read_file_tool, resolve_within_root
 from rlm_harness.tools.model import (
     CAUSE_CIRCUIT_BROKEN,
     CAUSE_ENDPOINT,
@@ -732,7 +732,7 @@ def test_a_normal_exception_still_records_its_MESSAGE_not_its_type():
     assert result.errors == ["502 Bad Gateway"]
 
 
-# ---- resolve_within_root / make_read_file_tool / make_grep_repo_tool -----
+# ---- resolve_within_root / make_read_file_tool / make_grep_files_tool -----
 
 def _make_repo(tmp_path):
     (tmp_path / "main.py").write_text("def main():\n    pass\n")
@@ -809,45 +809,45 @@ def test_read_file_is_repl_safe(tmp_path):
     assert_repl_safe(make_read_file_tool(_make_repo(tmp_path)))
 
 
-def test_grep_repo_finds_matches_across_files(tmp_path):
+def test_grep_files_finds_matches_across_files(tmp_path):
     pytest.importorskip("regex")
     root = _make_repo(tmp_path)
-    tool = make_grep_repo_tool(root, ["main.py", "pkg/util.py"])
+    tool = make_grep_files_tool(root, ["main.py", "pkg/util.py"])
     result = tool("def ")
     assert "main.py" in result
     assert "pkg/util.py" in result
 
 
-def test_grep_repo_glob_narrows_scope(tmp_path):
+def test_grep_files_glob_narrows_scope(tmp_path):
     pytest.importorskip("regex")
     root = _make_repo(tmp_path)
-    tool = make_grep_repo_tool(root, ["main.py", "pkg/util.py"])
+    tool = make_grep_files_tool(root, ["main.py", "pkg/util.py"])
     result = tool("def ", glob="pkg/*")
     assert "pkg/util.py" in result
     assert "main.py" not in result
 
 
-def test_grep_repo_no_match(tmp_path):
+def test_grep_files_no_match(tmp_path):
     pytest.importorskip("regex")
     root = _make_repo(tmp_path)
-    tool = make_grep_repo_tool(root, ["main.py"])
+    tool = make_grep_files_tool(root, ["main.py"])
     assert "No matches" in tool("this_pattern_matches_nothing_xyz")
 
 
-def test_grep_repo_invalid_regex_is_an_error_string(tmp_path):
+def test_grep_files_invalid_regex_is_an_error_string(tmp_path):
     pytest.importorskip("regex")
     root = _make_repo(tmp_path)
-    tool = make_grep_repo_tool(root, ["main.py"])
+    tool = make_grep_files_tool(root, ["main.py"])
     assert "Invalid regex" in tool("(unclosed")
 
 
-def test_grep_repo_is_repl_safe(tmp_path):
+def test_grep_files_is_repl_safe(tmp_path):
     pytest.importorskip("regex")
     root = _make_repo(tmp_path)
-    assert_repl_safe(make_grep_repo_tool(root, ["main.py"]))
+    assert_repl_safe(make_grep_files_tool(root, ["main.py"]))
 
 
-def test_make_grep_repo_tool_raises_friendly_import_error_when_regex_missing(tmp_path, monkeypatch):
+def test_make_grep_files_tool_raises_friendly_import_error_when_regex_missing(tmp_path, monkeypatch):
     import builtins
 
     real_import = builtins.__import__
@@ -860,7 +860,7 @@ def test_make_grep_repo_tool_raises_friendly_import_error_when_regex_missing(tmp
     monkeypatch.setattr(builtins, "__import__", fake_import)
     root = _make_repo(tmp_path)
     with pytest.raises(ImportError, match="rlm-harness\\[grep\\]"):
-        make_grep_repo_tool(root, ["main.py"])
+        make_grep_files_tool(root, ["main.py"])
 
 
 # A real pathological pattern, built with BOTH length AND shape empirically pinned:
@@ -874,24 +874,24 @@ def test_make_grep_repo_tool_raises_friendly_import_error_when_regex_missing(tmp
 _TEST_PATHOLOGICAL_LINE = "a" * 10_000 + "!"
 
 
-def test_grep_repo_pathological_pattern_is_bounded_by_per_match_timeout(tmp_path):
+def test_grep_files_pathological_pattern_is_bounded_by_per_match_timeout(tmp_path):
     pytest.importorskip("regex")
     (tmp_path / "evil.py").write_text(_TEST_PATHOLOGICAL_LINE + "\n")
-    tool = make_grep_repo_tool(str(tmp_path), ["evil.py"], per_match_timeout_s=0.05)
+    tool = make_grep_files_tool(str(tmp_path), ["evil.py"], per_match_timeout_s=0.05)
     result = tool(r"(a+)+$")
     # The mechanism was actually exercised (not merely "returned promptly", which could pass
     # vacuously on a line too short/shaped-wrong to ever threaten the regex engine at all).
     assert "skipped" in result.lower()
 
 
-def test_grep_repo_whole_call_budget_bounds_one_large_file_of_pathological_lines(tmp_path):
+def test_grep_files_whole_call_budget_bounds_one_large_file_of_pathological_lines(tmp_path):
     # A SINGLE file containing MANY pathological lines — not spread across several files, the
     # shape a per-file-only budget check would have missed (it would only re-check the clock
     # between files, never between lines of the same file).
     pytest.importorskip("regex")
     many_lines = "\n".join([_TEST_PATHOLOGICAL_LINE] * 1000)
     (tmp_path / "evil.py").write_text(many_lines)
-    tool = make_grep_repo_tool(
+    tool = make_grep_files_tool(
         str(tmp_path), ["evil.py"], per_match_timeout_s=0.05, max_total_time_s=0.2
     )
     import time
@@ -903,10 +903,10 @@ def test_grep_repo_whole_call_budget_bounds_one_large_file_of_pathological_lines
     assert "skipped" in result.lower()
 
 
-def test_grep_repo_max_results_and_time_budget_compose(tmp_path):
+def test_grep_files_max_results_and_time_budget_compose(tmp_path):
     pytest.importorskip("regex")
     (tmp_path / "many.py").write_text("\n".join(f"def f{i}():" for i in range(20)))
-    tool = make_grep_repo_tool(str(tmp_path), ["many.py"], max_total_time_s=30.0)
+    tool = make_grep_files_tool(str(tmp_path), ["many.py"], max_total_time_s=30.0)
     result = tool(r"def f\d+", max_results=3)
     assert len(result.splitlines()) == 3
 
@@ -939,10 +939,10 @@ def test_read_file_name_override_sets_repl_identity_and_trace_tag(tmp_path):
     assert tc["payload"]["tool"] == "read_docs"
 
 
-def test_grep_repo_name_override_sets_repl_identity_and_trace_tag(tmp_path):
+def test_grep_files_name_override_sets_repl_identity_and_trace_tag(tmp_path):
     pytest.importorskip("regex")
     root = _make_repo(tmp_path)
-    tool = make_grep_repo_tool(root, ["main.py"], name="grep_docs")
+    tool = make_grep_files_tool(root, ["main.py"], name="grep_docs")
     assert tool.__name__ == "grep_docs"
     path = str(tmp_path / "t.jsonl")
     with TraceRecorder(path, run_id="r1"):
@@ -966,15 +966,15 @@ def test_name_override_fixes_the_real_multi_root_collision():
     assert_task_repl_safe(_duck_task(tools=[a2, b2]))  # must not raise
 
 
-def test_grep_repo_name_override_fixes_the_same_collision():
+def test_grep_files_name_override_fixes_the_same_collision():
     pytest.importorskip("regex")
-    a = make_grep_repo_tool("/tmp/source-root", [])
-    b = make_grep_repo_tool("/tmp/docs-root", [])
+    a = make_grep_files_tool("/tmp/source-root", [])
+    b = make_grep_files_tool("/tmp/docs-root", [])
     with pytest.raises(AssertionError, match="duplicate REPL tool name"):
         assert_task_repl_safe(_duck_task(tools=[a, b]))
 
-    a2 = make_grep_repo_tool("/tmp/source-root", [], name="grep_source")
-    b2 = make_grep_repo_tool("/tmp/docs-root", [], name="grep_docs")
+    a2 = make_grep_files_tool("/tmp/source-root", [], name="grep_source")
+    b2 = make_grep_files_tool("/tmp/docs-root", [], name="grep_docs")
     assert_task_repl_safe(_duck_task(tools=[a2, b2]))  # must not raise
 
 
@@ -993,15 +993,15 @@ def test_read_file_name_reserved_by_dspy_raises_value_error():
         make_read_file_tool("/tmp/x", name=reserved)
 
 
-def test_grep_repo_name_invalid_or_reserved_raises_value_error():
+def test_grep_files_name_invalid_or_reserved_raises_value_error():
     pytest.importorskip("regex")
     with pytest.raises(ValueError, match="not a valid tool name"):
-        make_grep_repo_tool("/tmp/x", [], name="grep-repo")
+        make_grep_files_tool("/tmp/x", [], name="grep-repo")
     from rlm_harness._dspy_compat import reserved_tool_names
 
     reserved = next(iter(reserved_tool_names()))
     with pytest.raises(ValueError, match="reserved by dspy's sandbox"):
-        make_grep_repo_tool("/tmp/x", [], name=reserved)
+        make_grep_files_tool("/tmp/x", [], name=reserved)
 
 
 def test_read_file_encoding_reads_non_utf8_file(tmp_path):
@@ -1069,10 +1069,10 @@ def test_read_file_line_numbers_with_start_line_zero_or_negative_numbers_from_on
     assert negative.startswith("     1\t")
 
 
-def test_grep_repo_output_mode_files_with_matches(tmp_path):
+def test_grep_files_output_mode_files_with_matches(tmp_path):
     pytest.importorskip("regex")
     root = _make_repo(tmp_path)
-    tool = make_grep_repo_tool(root, ["main.py", "pkg/util.py"])
+    tool = make_grep_files_tool(root, ["main.py", "pkg/util.py"])
     result = tool("def ", output_mode="files_with_matches")
     lines = result.splitlines()
     assert set(lines) == {"main.py", "pkg/util.py"}
@@ -1080,68 +1080,68 @@ def test_grep_repo_output_mode_files_with_matches(tmp_path):
     assert ":" not in result
 
 
-def test_grep_repo_output_mode_count(tmp_path):
+def test_grep_files_output_mode_count(tmp_path):
     pytest.importorskip("regex")
     root = _make_repo(tmp_path)
     (tmp_path / "pkg" / "util.py").write_text(
         "def one():\n    pass\ndef two():\n    pass\n"
     )
-    tool = make_grep_repo_tool(root, ["main.py", "pkg/util.py"])
+    tool = make_grep_files_tool(root, ["main.py", "pkg/util.py"])
     result = tool("def ", output_mode="count")
     lines = dict(line.split(": ") for line in result.splitlines())
     assert lines["pkg/util.py"] == "2"   # two "def " matches, written explicitly for this test
     assert lines["main.py"] == "1"
 
 
-def test_grep_repo_output_mode_count_omits_zero_match_files(tmp_path):
+def test_grep_files_output_mode_count_omits_zero_match_files(tmp_path):
     pytest.importorskip("regex")
     root = _make_repo(tmp_path)
-    tool = make_grep_repo_tool(root, ["main.py"])
+    tool = make_grep_files_tool(root, ["main.py"])
     result = tool("this_pattern_matches_nothing_xyz", output_mode="count")
     assert "No matches" in result  # nothing to report, not "main.py: 0"
 
 
-def test_grep_repo_output_mode_content_explicit_matches_default(tmp_path):
+def test_grep_files_output_mode_content_explicit_matches_default(tmp_path):
     pytest.importorskip("regex")
     root = _make_repo(tmp_path)
-    tool = make_grep_repo_tool(root, ["main.py", "pkg/util.py"])
+    tool = make_grep_files_tool(root, ["main.py", "pkg/util.py"])
     default_result = tool("def ")
     explicit_result = tool("def ", output_mode="content")
     assert default_result == explicit_result
 
 
-def test_grep_repo_invalid_output_mode_is_an_error_string_not_an_exception(tmp_path):
+def test_grep_files_invalid_output_mode_is_an_error_string_not_an_exception(tmp_path):
     pytest.importorskip("regex")
     root = _make_repo(tmp_path)
-    tool = make_grep_repo_tool(root, ["main.py"])
+    tool = make_grep_files_tool(root, ["main.py"])
     result = tool("def ", output_mode="bogus")
     assert "Invalid output_mode" in result
 
 
-def test_grep_repo_max_results_consistent_across_modes(tmp_path):
+def test_grep_files_max_results_consistent_across_modes(tmp_path):
     pytest.importorskip("regex")
     files = [f"f{i}.py" for i in range(5)]
     for f in files:
         (tmp_path / f).write_text("def hit():\n")
-    tool = make_grep_repo_tool(str(tmp_path), files)
+    tool = make_grep_files_tool(str(tmp_path), files)
     assert len(tool("def hit", output_mode="files_with_matches", max_results=2).splitlines()) == 2
     assert len(tool("def hit", output_mode="count", max_results=3).splitlines()) == 3
 
 
-def test_grep_repo_no_matches_with_timeouts_surfaces_skipped_suffix_in_every_mode(tmp_path):
+def test_grep_files_no_matches_with_timeouts_surfaces_skipped_suffix_in_every_mode(tmp_path):
     pytest.importorskip("regex")
     line = "a" * 10_000 + "!"
     (tmp_path / "evil.py").write_text(line + "\n")
     for mode in ("content", "files_with_matches", "count"):
-        tool = make_grep_repo_tool(str(tmp_path), ["evil.py"], per_match_timeout_s=0.05)
+        tool = make_grep_files_tool(str(tmp_path), ["evil.py"], per_match_timeout_s=0.05)
         result = tool(r"(a+)+$", output_mode=mode)
         assert "skipped" in result.lower(), f"mode={mode}"
 
 
-def test_grep_repo_ignore_case(tmp_path):
+def test_grep_files_ignore_case(tmp_path):
     pytest.importorskip("regex")
     (tmp_path / "f.py").write_text("HELLO world\n")
-    tool = make_grep_repo_tool(str(tmp_path), ["f.py"])
+    tool = make_grep_files_tool(str(tmp_path), ["f.py"])
     assert "No matches" in tool("hello")
     assert "HELLO" in tool("hello", ignore_case=True)
 
@@ -1154,11 +1154,11 @@ _TEST_PATHOLOGICAL_LINE = "a" * 10_000 + "!"
 
 @pytest.mark.parametrize("output_mode", ["content", "files_with_matches", "count"])
 @pytest.mark.parametrize("ignore_case", [False, True])
-def test_grep_repo_regex_dos_mitigation_holds_across_every_mode(tmp_path, output_mode, ignore_case):
+def test_grep_files_regex_dos_mitigation_holds_across_every_mode(tmp_path, output_mode, ignore_case):
     pytest.importorskip("regex")
     many_lines = "\n".join([_TEST_PATHOLOGICAL_LINE] * 1000)
     (tmp_path / "evil.py").write_text(many_lines)
-    tool = make_grep_repo_tool(
+    tool = make_grep_files_tool(
         str(tmp_path), ["evil.py"], per_match_timeout_s=0.05, max_total_time_s=0.2
     )
     started = _time.monotonic()

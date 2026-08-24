@@ -77,14 +77,14 @@ trace utilization metrics.
 **Reading and searching a bounded local directory (not just "a repo") — the filesystem-side
 `make_fetch_tool`, generalized beyond its first pass.**
 
-- **`make_read_file_tool` / `make_grep_repo_tool` / `resolve_within_root`** (`rlm_harness.tools`) —
+- **`make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root`** (`rlm_harness.tools`) —
   the filesystem-side analogue of `make_fetch_tool`'s SSRF-guarded `is_safe_url`: a safe, scoped,
   no-shell way to let a model read or search a bounded local directory tree — a source repository,
   a docs corpus, an extracted archive, a dataset directory, a log directory, whatever the consumer
   scopes `root` to — filling the gap between "no filesystem access" and `make_command_tool`'s
   full-shell escape hatch. `resolve_within_root` refuses `..`/absolute-path/symlink escapes via
   `realpath`+`commonpath` containment (never `normpath`, which would miss a symlink escape).
-  `make_grep_repo_tool` **requires the new optional `regex` package outright** (`pip install
+  `make_grep_files_tool` **requires the new optional `regex` package outright** (`pip install
   "rlm-harness[grep]"`, a friendly `ImportError` otherwise, no silent fallback to stdlib `re`) — an
   LM-controlled regex `pattern` matched with no bound is a catastrophic-backtracking DoS against
   the host, and stdlib `re` cannot be bounded by any pure-Python mechanism (not even
@@ -92,7 +92,7 @@ trace utilization metrics.
   per-line (`per_match_timeout_s`, default `1.0`) and for the whole call (`max_total_time_s`,
   default `30.0`, checked before every line so a single large file with many pathological lines
   can't exceed it either).
-- **`name=` on both factories** (default `"read_file"`/`"grep_repo"`) — fixes a real, reachable
+- **`name=` on both factories** (default `"read_file"`/`"grep_files"`) — fixes a real, reachable
   bug: a task wanting BOTH "read the source repo" AND "read the docs corpus" as two distinct tools
   hit a duplicate-tool-name collision at dspy's `RLM(...)` construction (dspy keys its tool dict by
   name; the collision aborts registration for EVERY tool on the task, not just the second one).
@@ -105,7 +105,7 @@ trace utilization metrics.
   number, removing the off-by-one a model can introduce computing one itself from `start_line`.
   Both `max_output_chars`/`line_numbers` are scoped to the successful-read branch only — the
   `Refused`/`Read error` strings are never numbered or truncated.
-- **`make_grep_repo_tool`** additionally takes `output_mode=` (default `"content"`, unchanged) —
+- **`make_grep_files_tool`** additionally takes `output_mode=` (default `"content"`, unchanged) —
   `"files_with_matches"` (distinct matching file paths only) and `"count"` (`path: N` per file,
   zero-match files omitted) — all three modes scan every line of every candidate file IDENTICALLY
   (no per-file early-break; the two new modes are cheaper in output/trace size only, never in scan
@@ -133,7 +133,7 @@ in a new `tools/edit.py` module** (kept separate from `fs.py`, already the large
   are refused as degenerate inputs; `new_string == ""` (delete this text) is a legitimate
   operation and is NOT refused.
 - Both factories take the same `name=`/`encoding=` parameters as `make_read_file_tool`/
-  `make_grep_repo_tool`, including the same `name=` collision fix and factory-build-time
+  `make_grep_files_tool`, including the same `name=` collision fix and factory-build-time
   validation (identifier + not dspy-reserved).
 - **A real bug in `atomic_write_text` (added last round, its first tool-level consumer) was found
   and fixed while building these two tools**: `tempfile.mkstemp` always creates its temp file at

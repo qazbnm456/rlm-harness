@@ -17,7 +17,7 @@ pitch, the quickstart, and installation — start at the
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
 | `atomic.py` | `atomic_write_text` — a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write. dspy-free. |
 | `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` — reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded `trace/v1` events. dspy-free. |
-| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_repo_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_repo` — see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
+| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` — see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
 | `optimize.py` | GEPA harness — metric templates now, compile in Phase 2. |
 | `sub_lm.py` | `intercept_sub_lm` — wrap the RLM's sub-LM to trace every escalation as a `sub_call` (+ optional validate/post-process); `model_as_tool` for LM-decided multi-model routing. |
 | `skills.py` | `load_skills_as_tools` — expose a Skills directory to the RLM as tools. |
@@ -317,7 +317,7 @@ alternative.)
 
 ## Reading and searching local files (a bounded directory, no shell)
 
-`make_read_file_tool(root)` / `make_grep_repo_tool(root, candidate_paths)` — the filesystem-side
+`make_read_file_tool(root)` / `make_grep_files_tool(root, candidate_paths)` — the filesystem-side
 analogue of `make_fetch_tool`'s SSRF-guarded `is_safe_url`, filling the gap between "no filesystem
 access at all" and `run_command`'s full-shell escape hatch. `root` is not "a repo" — it's any
 bounded local directory tree a consumer scopes it to: a source repository, a docs corpus, an
@@ -327,11 +327,11 @@ require a shell: both tools are a pure-Python scan over `resolve_within_root`-gu
 subprocess, no `rg`/`grep` binary on `PATH`.
 
 ```python
-from rlm_harness.tools import make_grep_repo_tool, make_read_file_tool
+from rlm_harness.tools import make_grep_files_tool, make_read_file_tool
 
 read_file = make_read_file_tool(repo_root)
-grep_repo = make_grep_repo_tool(repo_root, candidate_paths=my_file_list)   # a consumer-computed list
-finding = MyTask(tools=[read_file, grep_repo]).run(...)
+grep_files = make_grep_files_tool(repo_root, candidate_paths=my_file_list)   # a consumer-computed list
+finding = MyTask(tools=[read_file, grep_files]).run(...)
 ```
 
 - **`resolve_within_root(root, path)`** is the shared guard both factories build on (public, like
@@ -343,7 +343,7 @@ finding = MyTask(tools=[read_file, grep_repo]).run(...)
   `.gitignore` handling. Same base/wrap split as `make_command_tool` demanding an injected
   `Runner`: the kit owns the safety guard, the consumer decides which files are even candidates
   (walk a directory, read a manifest, whatever fits).
-- **`name=` on both factories** (default `"read_file"`/`"grep_repo"`) fixes a real collision: a
+- **`name=` on both factories** (default `"read_file"`/`"grep_files"`) fixes a real collision: a
   task with more than one bounded root (a source root AND a docs root, say) needs each one's tool
   to have a distinct REPL identity, since dspy keys its tool dict by name and two tools sharing a
   name abort registration for EVERY tool on the task, not just the second one. Validated at
@@ -356,7 +356,7 @@ finding = MyTask(tools=[read_file, grep_repo]).run(...)
   compute one itself from `start_line` — removing exactly the off-by-one a model gets wrong when
   later asked to cite or edit that line). The last two are scoped to the successful-read branch
   only — a `Refused`/`Read error` string is never numbered or truncated.
-- **`make_grep_repo_tool` requires the optional `regex` package outright** (`pip install
+- **`make_grep_files_tool` requires the optional `regex` package outright** (`pip install
   "rlm-harness[grep]"` — a friendly `ImportError` otherwise, no silent fallback to stdlib `re`).
   `pattern` is LM-controlled, unbounded regex, matched against real file lines with no wall-clock
   budget anywhere else in a tool's call path — a catastrophic-backtracking pattern (`(a+)+$`
@@ -373,7 +373,7 @@ finding = MyTask(tools=[read_file, grep_repo]).run(...)
   WHOLE call, checked before EVERY line (not merely once per file — a per-file-only check would let
   a single large file with many timeout-tripping lines blow past the budget by an arbitrary
   multiple before it ever fired again).
-- **`output_mode=` and `ignore_case=` on `grep_repo`.** `output_mode` (default `"content"`,
+- **`output_mode=` and `ignore_case=` on `grep_files`.** `output_mode` (default `"content"`,
   unchanged) adds `"files_with_matches"` (distinct matching file paths only, no line text) and
   `"count"` (`path: N`, files with zero matches omitted). All three modes scan every line of
   every candidate file IDENTICALLY — the two new modes are cheaper in OUTPUT/TRACE SIZE only,
@@ -389,14 +389,14 @@ finding = MyTask(tools=[read_file, grep_repo]).run(...)
 pair above, kept in a separate module (`fs.py` is already the largest single file in `tools/`, so
 "everything that can mutate the filesystem" stays physically distinct from "everything that only
 reads it"). Same `resolve_within_root` guard, same `name=`/`encoding=` parameters and validation
-as `make_read_file_tool`/`make_grep_repo_tool` — including the same multi-root name-collision fix.
+as `make_read_file_tool`/`make_grep_files_tool` — including the same multi-root name-collision fix.
 
 ```python
 from rlm_harness.tools import make_edit_file_tool, make_write_file_tool
 
 write_file = make_write_file_tool(repo_root)
 edit_file = make_edit_file_tool(repo_root)
-finding = MyTask(tools=[read_file, grep_repo, write_file, edit_file]).run(...)
+finding = MyTask(tools=[read_file, grep_files, write_file, edit_file]).run(...)
 ```
 
 - **`make_write_file_tool`**: creates or overwrites a whole file, atomically

@@ -1,4 +1,4 @@
-"""``resolve_within_root`` / ``make_read_file_tool`` / ``make_grep_repo_tool`` — the filesystem-side
+"""``resolve_within_root`` / ``make_read_file_tool`` / ``make_grep_files_tool`` — the filesystem-side
 analogue of ``fetch.py``'s SSRF-guarded ``is_safe_url``/``make_fetch_tool``: a safe, scoped, no-shell
 way to let a model read or search a bounded local directory tree.
 
@@ -179,18 +179,18 @@ def make_read_file_tool(
     return read_file
 
 
-def make_grep_repo_tool(
+def make_grep_files_tool(
     root: str,
     candidate_paths: Sequence[str],
     *,
-    name: str = "grep_repo",
+    name: str = "grep_files",
     per_match_timeout_s: float = 1.0,
     max_total_time_s: float = 30.0,
 ) -> Callable[..., str]:
-    """Build a ``grep_repo``-shaped tool scoped to ``root``, searching only ``candidate_paths``
+    """Build a ``grep_files``-shaped tool scoped to ``root``, searching only ``candidate_paths``
     (typically a consumer-computed file list) — per-run state, wired in a task's ``__init__``.
 
-    ``name`` (default ``"grep_repo"``): same rationale and mechanism as
+    ``name`` (default ``"grep_files"``): same rationale and mechanism as
     :func:`make_read_file_tool`'s ``name`` — lets a second bounded root coexist in one task's
     ``tools=[...]`` list without a duplicate-name collision.
 
@@ -224,12 +224,12 @@ def make_grep_repo_tool(
         import regex
     except ImportError as exc:
         raise ImportError(
-            "make_grep_repo_tool needs the optional 'regex' package for a wall-clock-bounded "
+            "make_grep_files_tool needs the optional 'regex' package for a wall-clock-bounded "
             "match (stdlib `re` has no way to bound catastrophic-backtracking cost — not even "
             "via signal.alarm). Install it with:  pip install \"rlm-harness[grep]\""
         ) from exc
 
-    def grep_repo(
+    def grep_files(
         pattern: str,
         glob: str = "*",
         max_results: int = _DEFAULT_MAX_RESULTS,
@@ -350,6 +350,6 @@ def make_grep_repo_tool(
             return f"No matches for {pattern!r} (glob {glob!r}).{suffix}"
         return "\n".join(hits)
 
-    grep_repo.__name__ = name
-    grep_repo.__qualname__ = name
-    return grep_repo
+    grep_files.__name__ = name
+    grep_files.__qualname__ = name
+    return grep_files
