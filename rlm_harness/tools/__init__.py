@@ -2,6 +2,7 @@
 
 from ._async import run_isolated
 from .command import CommandResult, make_command_tool, refuse_broad_git_history
+from .edit import make_edit_file_tool, make_write_file_tool
 from .fetch import (
     is_safe_url,
     make_fetch_tool,
@@ -41,6 +42,7 @@ __all__ = [
     "harness_from_endpoint",
     "is_safe_url",
     "make_command_tool",
+    "make_edit_file_tool",
     "make_fetch_tool",
     "make_grep_repo_tool",
     "make_harness_tool",
@@ -49,6 +51,7 @@ __all__ = [
     "make_read_file_tool",
     "make_schema_validator",
     "make_web_search_tool",
+    "make_write_file_tool",
     "normalise_search_results",
     "parse_cidrs",
     "pointer_to_invocation",
