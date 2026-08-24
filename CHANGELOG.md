@@ -107,12 +107,25 @@ trace utilization metrics.
   `Refused`/`Read error` strings are never numbered or truncated.
 - **`make_grep_files_tool`** additionally takes `output_mode=` (default `"content"`, unchanged) —
   `"files_with_matches"` (distinct matching file paths only) and `"count"` (`path: N` per file,
-  zero-match files omitted) — all three modes scan every line of every candidate file IDENTICALLY
-  (no per-file early-break; the two new modes are cheaper in output/trace size only, never in scan
-  cost, honestly stated as such); and `ignore_case=` (default `False`) for case-insensitive
-  matching as a first-class flag. `max_results` has one consistent, mode-agnostic "caps output
-  rows" definition across all three modes. The regex-DoS mitigation above is verified, via a
-  parametrized test, to hold across every `output_mode` × `ignore_case` combination.
+  zero-match files omitted); and `ignore_case=` (default `False`) for case-insensitive matching as
+  a first-class flag. The regex-DoS mitigation above is verified, via a parametrized test, to hold
+  across every `output_mode` × `ignore_case` combination.
+- **Per-file early-break, `"files_with_matches"` only** — that mode only needs to know "did this
+  file have ≥1 match," so scanning stops the instant one is found. `"count"` mode cannot do this
+  (it needs the file's exact total, so every line there is still scanned). Both
+  `"files_with_matches"`/`"count"` additionally stop OPENING further candidate files once
+  `max_results` qualifying files are already found (never skips a line of a file already being
+  scanned — only avoids starting new ones).
+- **`context_before=`/`context_after=`** (default `0`, `"content"` mode only — a silent no-op in
+  the other two modes): show that many unchanged lines immediately before/after each match, using
+  grep's own convention — a match keeps `path:line: text` (colon); a context line uses
+  `path-line- text` (hyphen); a `"--"` line separates two blocks that don't touch within the same
+  file. A line that itself matches is always emitted as a match, never as leftover context from an
+  earlier match's window — a fresh match resets the after-context countdown, it never stacks with
+  one already running. `max_results` now counts MATCHES only (context/separator lines are
+  supplementary and uncapped by it, mirroring real `grep -m`) — when both `context_before`/
+  `context_after` are `0` (the default), behavior, including the traced `result_count`, is
+  byte-identical to a build with no context support at all.
 
 **Writing and editing a bounded local directory — the write side of the read/search pair above,
 in a new `tools/edit.py` module** (kept separate from `fs.py`, already the largest single file in

@@ -1166,3 +1166,158 @@ def test_grep_files_regex_dos_mitigation_holds_across_every_mode(tmp_path, outpu
     elapsed = _time.monotonic() - started
     assert elapsed < 1.0, f"mode={output_mode} ignore_case={ignore_case} took {elapsed:.2f}s"
     assert "skipped" in result.lower(), f"mode={output_mode} ignore_case={ignore_case}"
+
+
+# ---- grep_files: per-file early-break (files_with_matches only) + context_before=/after=
+# ---- (both additive, opt-in, no-op by default -- every existing grep_files test above this
+# ---- point passes UNMODIFIED, proving the defaults reproduce the prior behavior byte-for-byte).
+
+def test_grep_files_files_with_matches_early_break_skips_rest_of_file(tmp_path):
+    pytest.importorskip("regex")
+    # Line 1 matches immediately; the 500 lines after it are catastrophic-backtracking lines that
+    # would each cost real time if actually scanned -- proving the early-break by TIMING, not
+    # merely by output shape (which could pass vacuously on a file too small to matter).
+    lines = ["def target():"] + [_TEST_PATHOLOGICAL_LINE] * 500
+    (tmp_path / "big.py").write_text("\n".join(lines))
+    tool = make_grep_files_tool(str(tmp_path), ["big.py"], per_match_timeout_s=0.05)
+    started = _time.monotonic()
+    result = tool(r"(a+)+$|def target", output_mode="files_with_matches")
+    elapsed = _time.monotonic() - started
+    assert elapsed < 1.0, f"files_with_matches did not early-break: took {elapsed:.2f}s"
+    assert result.strip() == "big.py"
+
+
+def test_grep_files_count_mode_has_no_early_break_and_scans_the_whole_file(tmp_path):
+    pytest.importorskip("regex")
+    # count mode CANNOT early-break -- it needs the exact total, so every line must still be
+    # scanned. Asserting the precise count (not just "found something") proves that happened.
+    (tmp_path / "f.py").write_text("hit\nhit\nhit\n")
+    tool = make_grep_files_tool(str(tmp_path), ["f.py"])
+    assert tool("hit", output_mode="count").strip() == "f.py: 3"
+
+
+def test_grep_files_outer_loop_early_break_stops_opening_further_files(tmp_path):
+    pytest.importorskip("regex")
+    # a.py matches instantly and satisfies max_results=1 on its own; b.py/c.py are pathological
+    # -- if the outer loop opened either of them, this call would take seconds, not milliseconds.
+    (tmp_path / "a.py").write_text("def target():\n")
+    for name in ("b.py", "c.py"):
+        (tmp_path / name).write_text("\n".join([_TEST_PATHOLOGICAL_LINE] * 500))
+    tool = make_grep_files_tool(
+        str(tmp_path), ["a.py", "b.py", "c.py"], per_match_timeout_s=0.05
+    )
+    started = _time.monotonic()
+    result = tool(r"(a+)+$|def target", output_mode="files_with_matches", max_results=1)
+    elapsed = _time.monotonic() - started
+    assert elapsed < 1.0, f"outer-loop early-break did not fire: took {elapsed:.2f}s"
+    assert result.strip() == "a.py"
+
+
+def test_grep_files_context_lines_before_and_after(tmp_path):
+    pytest.importorskip("regex")
+    content = "\n".join(f"line{i}" for i in range(1, 11))
+    (tmp_path / "f.py").write_text(content + "\n")
+    tool = make_grep_files_tool(str(tmp_path), ["f.py"])
+    result = tool("line5", context_before=2, context_after=2)
+    assert result.splitlines() == [
+        "f.py-3- line3",
+        "f.py-4- line4",
+        "f.py:5: line5",
+        "f.py-6- line6",
+        "f.py-7- line7",
+    ]
+
+
+def test_grep_files_context_before_clamped_at_file_start(tmp_path):
+    pytest.importorskip("regex")
+    content = "\n".join(f"line{i}" for i in range(1, 6))
+    (tmp_path / "f.py").write_text(content + "\n")
+    tool = make_grep_files_tool(str(tmp_path), ["f.py"])
+    result = tool("line1", context_before=3)
+    assert result.splitlines() == ["f.py:1: line1"]  # no lines before line1 exist; no crash
+
+
+def test_grep_files_context_after_ends_cleanly_at_eof(tmp_path):
+    pytest.importorskip("regex")
+    content = "\n".join(f"line{i}" for i in range(1, 6))
+    (tmp_path / "f.py").write_text(content + "\n")
+    tool = make_grep_files_tool(str(tmp_path), ["f.py"])
+    result = tool("line5", context_after=3)
+    assert result.splitlines() == ["f.py:5: line5"]  # nothing after the last line; no crash
+
+
+def test_grep_files_overlapping_match_resets_pending_after_without_stacking(tmp_path):
+    pytest.importorskip("regex")
+    content = "\n".join(f"line{i}" for i in range(1, 13))  # line1..line12
+    (tmp_path / "f.py").write_text(content + "\n")
+    tool = make_grep_files_tool(str(tmp_path), ["f.py"])
+    result = tool("line5|line7", context_after=2)
+    # line7 is itself a match (never demoted to line5's leftover after-context), and it RESETS
+    # the after-context countdown to 2 rather than STACKING onto the 1 already remaining from
+    # line5's own window -- proven by line10 being ABSENT (a stacking bug would extend through
+    # line10: 1 remaining + 2 new = 3 more lines: 8, 9, 10).
+    assert result.splitlines() == [
+        "f.py:5: line5",
+        "f.py-6- line6",
+        "f.py:7: line7",
+        "f.py-8- line8",
+        "f.py-9- line9",
+    ]
+    assert "line10" not in result
+
+
+def test_grep_files_context_separator_between_non_adjacent_blocks(tmp_path):
+    pytest.importorskip("regex")
+    content = "\n".join(f"line{i}" for i in range(1, 21))  # line1..line20
+    (tmp_path / "f.py").write_text(content + "\n")
+    tool = make_grep_files_tool(str(tmp_path), ["f.py"])
+    result = tool("line3|line15", context_before=1, context_after=1)
+    assert result.splitlines() == [
+        "f.py-2- line2",
+        "f.py:3: line3",
+        "f.py-4- line4",
+        "--",
+        "f.py-14- line14",
+        "f.py:15: line15",
+        "f.py-16- line16",
+    ]
+
+
+def test_grep_files_context_params_are_a_no_op_outside_content_mode(tmp_path):
+    pytest.importorskip("regex")
+    root = _make_repo(tmp_path)
+    tool = make_grep_files_tool(root, ["main.py", "pkg/util.py"])
+    for mode in ("files_with_matches", "count"):
+        with_context = tool("def ", output_mode=mode, context_before=2, context_after=2)
+        without_context = tool("def ", output_mode=mode)
+        assert with_context == without_context, mode
+
+
+def test_grep_files_max_results_counts_matches_not_context_lines(tmp_path):
+    pytest.importorskip("regex")
+    content = "\n".join(f"line{i}" for i in range(1, 21))
+    (tmp_path / "f.py").write_text(content + "\n")
+    tool = make_grep_files_tool(str(tmp_path), ["f.py"])
+    result = tool("line5|line10|line15", max_results=1, context_before=1, context_after=1)
+    # Exactly one MATCH is found (max_results counts matches, not "1 total output line" -- its
+    # own before-context is still included). max_results truncates the scan immediately once the
+    # cap is hit, so this match's own after-context is cut short -- the accepted, documented edge
+    # case, not a bug.
+    assert result.splitlines() == [
+        "f.py-4- line4",
+        "f.py:5: line5",
+    ]
+    assert "line10" not in result
+    assert "line15" not in result
+
+
+def test_grep_files_result_count_trace_reflects_matches_not_emitted_rows(tmp_path):
+    pytest.importorskip("regex")
+    content = "\n".join(f"line{i}" for i in range(1, 11))
+    (tmp_path / "f.py").write_text(content + "\n")
+    tool = make_grep_files_tool(str(tmp_path), ["f.py"])
+    trace_path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(trace_path, run_id="r1"):
+        tool("line5", context_before=2, context_after=2)  # 5 emitted rows, only 1 real match
+    tc = [e for e in load_events(trace_path) if e["type"] == EVENT_TOOL_CALL][0]
+    assert tc["payload"]["result_count"] == 1  # matches, never 5 (the emitted-row count)
