@@ -6,7 +6,7 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 ## [1.3.0] - 2026-08-24
 
-Thirteen new public names, plus one new optional extra (`grep`; the pre-existing `subscription`
+Fourteen new public names, plus one new optional extra (`grep`; the pre-existing `subscription`
 extra also gains new auto-routing behavior in `configure()`, but is not itself new). No
 trace-format change; every existing call site behaves byte-for-byte identically to 1.2.1.
 
@@ -159,6 +159,29 @@ in a new `tools/edit.py` module** (kept separate from `fs.py`, already the large
   torn read," never "serializes concurrent read-modify-write across processes" — two SEPARATE
   `RLMTask` runs (or two workers in a batch eval) racing an edit on the same file can silently
   lose one of the two updates. Stated here rather than omitted; not mitigated this round.
+
+**`verify_quote` — a deterministic host-side building block for the Grounded-completeness
+recipe's itemized diff (see "Grounded completeness" in the guide), closing a gap the guide itself
+already named: there was no deterministic check for CONTENT correctness, only structure/format
+validators.**
+
+- **`verify_quote(source, quote)`** (`rlm_harness.tools`) — verifies `quote` appears (verbatim, or
+  under whitespace normalization) in `source`, returning a parseable `"MATCH: ..."`/
+  `"MISMATCH: ..."` string with a line number and a context snippet on success, and a bounded
+  "closest line" diagnostic on failure (single-line `quote` only). A single plain function, no
+  factory, no `name=`, no trace call — it binds to nothing at construction time and has no
+  filesystem/network side effect, matching `make_schema_validator`/`make_json_schema_validator`'s
+  own precedent.
+- **No `regex` package needed, unlike `make_grep_files_tool`** — `quote` is matched as literal
+  text (every character either `re.escape()`d or collapsed to a flat, non-nested `\s+`), so the
+  built pattern can never exhibit catastrophic backtracking regardless of `quote`'s content;
+  verified empirically against a literal `"(a+)+"` quote, not just argued by design.
+- **Leading/trailing whitespace on `quote` is stripped before matching** — a bug caught by direct
+  testing during implementation: without stripping, incidental padding around a quote became a
+  MANDATORY `\s+` at the pattern's own edges, spuriously refusing an exact-content match whenever
+  `source` didn't happen to have matching whitespace immediately outside the quoted text.
+- A whitespace-only `quote` (not just an empty one) is refused outright — it would otherwise
+  reduce to the bare pattern `\s+`, a trivially-satisfiable, meaningless "match."
 
 ## [1.2.1] - 2026-08-23
 

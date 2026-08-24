@@ -10,6 +10,7 @@ from .fetch import (
     resolved_host_is_safe,
 )
 from .fs import make_grep_files_tool, make_read_file_tool, resolve_within_root
+from .grounding import verify_quote
 from .harness import (
     HarnessInvocation,
     HarnessInvoke,
@@ -59,4 +60,5 @@ __all__ = [
     "resolve_within_root",
     "resolved_host_is_safe",
     "run_isolated",
+    "verify_quote",
 ]

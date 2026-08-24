@@ -17,7 +17,7 @@ pitch, the quickstart, and installation — start at the
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
 | `atomic.py` | `atomic_write_text` — a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write. dspy-free. |
 | `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` — reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded `trace/v1` events. dspy-free. |
-| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` — see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
+| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` — see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `verify_quote` — a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
 | `optimize.py` | GEPA harness — metric templates now, compile in Phase 2. |
 | `sub_lm.py` | `intercept_sub_lm` — wrap the RLM's sub-LM to trace every escalation as a `sub_call` (+ optional validate/post-process); `model_as_tool` for LM-decided multi-model routing. |
 | `skills.py` | `load_skills_as_tools` — expose a Skills directory to the RLM as tools. |
@@ -547,6 +547,24 @@ trajectory as honest RL data — same reasoning as keeping tools/skills LM-decid
 new model: the main LM critiques cheaply against its own REPL state, reserving a sub-LM escalation
 for a genuine knowledge gap. A consumer uses it so the planner stops finalizing a generated artifact
 whose content only *looks* right — diffing it against the retrieved source held in the REPL.
+
+### `verify_quote` — the deterministic half of step 2's diff
+
+Step 2 above ("diff the artifact against it, itemized") is entirely model-judged — nothing backs
+the claim that a specific quote/citation actually appears in the held source. `verify_quote(source,
+quote)` (`rlm_harness.tools`) is the deterministic primitive for exactly that one checkable piece:
+it returns a parseable `"MATCH: ..."` (with a line number and a context snippet) or `"MISMATCH:
+..."` (with a bounded "closest line" hint when `quote` is single-line) — never a self-graded
+guess. A single plain function, no factory, no `name=`, no trace call (it binds to nothing at
+construction time and touches no filesystem/network, matching `make_schema_validator`'s own
+precedent). Matching is whitespace-flexible by default (`normalize_whitespace=True`) and needs no
+`regex` package — `quote` is literal text, every character either escaped or collapsed to a flat
+`\s+`, so the built pattern can never exhibit catastrophic backtracking the way an LM-controlled
+`grep_files` pattern could. Call it from within the task's own instructions before finalizing
+(closing this recipe's step-3 "regenerate on the gaps" loop with a real check instead of a
+re-read), or reuse the same function host-side, outside the REPL, to re-derive whether a SUBMITted
+citation was actually grounded — the same "derive facts from bytes, never trust the self-report"
+posture the next section establishes for validity.
 
 ## Judgement-only SUBMIT — assemble facts, don't let the policy report them
 
