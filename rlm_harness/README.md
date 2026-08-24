@@ -431,6 +431,17 @@ finding = MyTask(tools=[read_file, grep_files, write_file, edit_file]).run(...)
   text) is a legitimate operation and is NOT refused. **Known failure mode**: a file using
   different line endings than the `old_string` the model supplies fails closed with "not found"
   rather than mis-editing — not a safety bug, just worth knowing.
+- **On success, a windowed snippet of the result is appended** (`show_snippet=`, default `True`;
+  reuses `read_file`'s own `f"{lineno:>6}\t{line}"` numbering) so a model can confirm what its
+  edit actually did without a separate `read_file` round-trip — `show_snippet=False` is the escape
+  hatch back to the terse confirmation alone. `snippet_context_lines=` (default `3`) bounds each
+  shown region; an edit larger than that shows only its own head/tail with a visible "N line(s)
+  omitted" marker, never an unbounded dump regardless of how large `new_string` was.
+  `max_snippet_occurrences=` (default `3`) caps how many `replace_all=True` occurrences get their
+  own snippet block — the file is still fully edited regardless of the cap; a truncated result
+  says so explicitly ("N more occurrence(s) not shown"). Overlapping windows for closely-spaced
+  occurrences are shown independently, not merged. Scoped to the success path only — a
+  `Refused`/`Read error`/`Write error` string never gets a snippet appended.
 - **This is the kit's first file-mutation/data-loss-capable tool category** — every tool shipped
   before this was either read-only against the filesystem or delegated execution/network entirely
   to a consumer-supplied runner/fetcher. Both factories build on `atomic_write_text`, which is
