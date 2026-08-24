@@ -31,6 +31,7 @@ from ._toolname import (
 from .atomic import atomic_write_text
 from .config import RLMConfig
 from .dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
+from .isolation import run_in_subprocess
 from .metrics import RunUtilization, compute_run_utilization, compute_utilization_by_run
 from .replay import RecordedToolProvider, load_timeline, reconstruct
 from .rubric import (
@@ -136,6 +137,9 @@ __all__ = [
     "RunUtilization",
     "compute_run_utilization",
     "compute_utilization_by_run",
+    # safe, isolated-subprocess primitive for a web-facing consumer — a host-level orchestration
+    # decision, never invoked by the model, so it lives here rather than under rlm_harness.tools
+    "run_in_subprocess",
 ]
 
 __version__ = "1.3.0"

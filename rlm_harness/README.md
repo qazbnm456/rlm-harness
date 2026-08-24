@@ -17,6 +17,7 @@ pitch, the quickstart, and installation — start at the
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
 | `atomic.py` | `atomic_write_text` — a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write. dspy-free. |
 | `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` — reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded `trace/v1` events. dspy-free. |
+| `isolation.py` | `run_in_subprocess` — a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
 | `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` — see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths` — a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` — safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `verify_quote` — a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
 | `optimize.py` | GEPA harness — metric templates now, compile in Phase 2. |
 | `sub_lm.py` | `intercept_sub_lm` — wrap the RLM's sub-LM to trace every escalation as a `sub_call` (+ optional validate/post-process); `model_as_tool` for LM-decided multi-model routing. |
@@ -632,6 +633,84 @@ parameter (a closed allowlist of exception types that propagate verbatim, consum
 never wrapped in `RLMTaskError`) is what makes `SandboxCancelled` survive `RLMTask.arun()`'s own
 retry engine untouched — a caller-driven cancellation must never be silently absorbed by a retry
 that respawns the sandbox and restarts the whole trajectory from scratch.
+
+## `run_in_subprocess` — a safe, isolated-subprocess primitive (`isolation.py`)
+
+A small PRIMITIVE only: safely run one picklable callable in an isolated OS process, get its
+result or a clear error back, bounded by a timeout. Task-scheduling — how a web server actually
+queues many of these (Celery, RQ, a plain thread/process pool) — is explicitly the consumer's own
+concern, not shipped here, matching this kit's standing base/wrap posture (`make_command_tool`
+ships no executor, `make_git_clone_tool` ships no cloner) applied to "run a whole task."
+
+```python
+import functools
+from rlm_harness import run_in_subprocess
+
+def run_my_task(**inputs):          # a plain, MODULE-LEVEL function -- see "must be picklable" below
+    return MyTask().run(**inputs)
+
+result = run_in_subprocess(functools.partial(run_my_task, q="…"), timeout_s=30.0)
+```
+
+**A genuinely different gap than three things in this kit that already sound similar** — worth
+naming so this doesn't look redundant with them: `interpreter="container"` (above) isolates the
+RLM's own REPL SANDBOX in a Docker container, but the ROOT process still runs the RLM's own
+orchestration (LM calls, retries, tool dispatch) directly — a hang/crash there isn't covered.
+`rlm_harness.tools.run_isolated` bridges an async coroutine into a sync call site on a dedicated
+THREAD — same process, no OS-level isolation, solves an event-loop-nesting problem, not a
+fault-isolation one. `cancel_event` (above) stops an IN-FLIGHT run the calling code already owns
+and is watching — it doesn't hand a whole task off to a separate process in the first place. The
+actual gap: a web-facing consumer whose request handler wants to run ONE task without that run's
+own crash, hang, or resource usage taking down the request-handling process itself needs to run
+it in a SEPARATE OS PROCESS.
+
+- **Lives at the top level, not `rlm_harness.tools`** — that package's own module docstring
+  scopes it as "tools RLM tasks can expose to the model inside the REPL"; nothing here is ever
+  placed in a `tools=[...]` list or invoked by the model.
+- **`factory` MUST be picklable** — a real, easy-to-get-wrong gotcha. A local closure or
+  `lambda` is NOT picklable across the `"spawn"` boundary this uses; `functools.partial(
+  module_level_function, **kwargs)` IS — but only if every value bound into `args`/`kwargs` is
+  ALSO picklable, not merely the function reference: a live socket, open file handle, DB
+  connection, or lock bound as one of the `partial`'s own arguments hits the same class of
+  pickling failure the "avoid closures" advice was supposed to prevent.
+- **Uses `multiprocessing.get_context("spawn")`, never `"fork"`** — the calling process is very
+  plausibly a web server already running an event loop / thread pool / open file descriptors / a
+  live LM client; forking that risks a corrupted child (inherited locks held by a thread that
+  doesn't exist in the child, half-open sockets). `spawn` is itself still fork()+exec() on POSIX,
+  but exec runs BEFORE any user code executes in the freshly-forked child, which is what actually
+  avoids the corruption class a bare `fork` risks. `spawn` also requires `factory`'s entire import
+  chain to be safely re-importable in the fresh interpreter — if `factory` is defined in a script
+  run as `__main__`, guard it with `if __name__ == "__main__":`.
+- **A real bug found and fixed during design review**: `multiprocessing.Queue.put()` does not
+  pickle synchronously — a background feeder thread does, and a pickling failure there is logged
+  and silently DROPPED, never raised back to `put()`'s caller, which would leave the parent
+  hanging on `get()` forever. Fixed by having the child explicitly test-pickle its payload
+  synchronously, in its own code, BEFORE ever calling `put()` — falling back to a plain-string
+  `RuntimeError` only if that test-pickle itself fails. The parent's own `queue.get()` also
+  carries its own bounded timeout, independent of the process-level timeout below, as a backstop
+  against an out-of-band kill (e.g. the host OOM-killing the child) that bypasses this
+  primitive's own signal-based escalation entirely.
+- **`timeout_s`** (default `None` = no limit): on expiry, `process.terminate()` (SIGTERM), then a
+  `grace_period_s` (default `5.0`) wait, then `process.kill()` (SIGKILL) if still alive, followed
+  by a final reap so no zombie is left — raises `TimeoutError`. SIGTERM does NOT reliably let the
+  child's `finally`/`atexit` code run — that's only true if the child itself installs a
+  `signal.signal(SIGTERM, ...)` handler; with none (the default), the OS's default disposition
+  terminates it immediately.
+- **`max_memory_mb`/`cpu_time_limit_s`** (default `None` = no cap): opt-in, POSIX-only,
+  best-effort resource caps applied inside the child via `resource.setrlimit` before `factory()`
+  runs — silent no-ops on a platform without `resource` (Windows). `cpu_time_limit_s`
+  (`RLIMIT_CPU`) is confirmed to enforce correctly on every POSIX platform tested, including
+  macOS. `max_memory_mb` (`RLIMIT_AS`) bounds VIRTUAL address space, not resident/physical
+  memory — and on macOS specifically, the kernel refuses to lower `RLIMIT_AS` from unlimited AT
+  ALL (empirically confirmed: every attempted value, from 50 MB to 1000 MB, failed identically
+  with `ValueError: current limit exceeds maximum limit`), so this parameter is effectively
+  Linux-only in practice today. Either way it fails LOUDLY — relayed as a clear exception through
+  the same test-pickle-then-relay path as any other error — never silently leaving the cap
+  unenforced.
+- **No process pooling/reuse** — a fresh `multiprocessing.Process` per call, matching
+  `run_isolated`'s own "one thread per call, by design — simplest correct answer" precedent,
+  transplanted to the process level. A consumer wanting a persistent worker pool builds one using
+  this primitive as the per-task unit.
 
 ## Grounded completeness — the sufficiency-critic recipe
 
