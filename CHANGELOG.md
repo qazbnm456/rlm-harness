@@ -145,6 +145,14 @@ in a new `tools/edit.py` module** (kept separate from `fs.py`, already the large
   byte-for-byte untouched on every refusal path. `old_string == ""` and `old_string == new_string`
   are refused as degenerate inputs; `new_string == ""` (delete this text) is a legitimate
   operation and is NOT refused.
+- **On success, a windowed snippet of the result is appended** (`show_snippet=`, default `True`;
+  reuses `read_file`'s own numbered-line convention) so a model can confirm what its edit did
+  without a separate `read_file` round-trip. `snippet_context_lines=` (default `3`) bounds each
+  shown region — an oversized edit shows only its own head/tail with a visible "N line(s) omitted"
+  marker, never an unbounded dump. `max_snippet_occurrences=` (default `3`) caps how many
+  `replace_all=True` occurrences get their own snippet (the file is still fully edited regardless
+  — this only caps what's echoed back; a capped result says so explicitly). Scoped to the success
+  path only — refusal/error strings are never appended to.
 - Both factories take the same `name=`/`encoding=` parameters as `make_read_file_tool`/
   `make_grep_files_tool`, including the same `name=` collision fix and factory-build-time
   validation (identifier + not dspy-reserved).

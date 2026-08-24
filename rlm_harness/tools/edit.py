@@ -41,6 +41,38 @@ from .fs import _validate_tool_name, resolve_within_root
 _PREVIEW_CHARS = 1200
 
 
+def _format_edit_snippet(
+    lines: list[str], start_line: int, end_line: int, context_lines: int
+) -> str:
+    """Render a numbered window (``read_file``'s own ``f"{lineno:>6}\\t{line}"`` convention)
+    around ``lines[start_line-1:end_line]`` (1-indexed, inclusive), padded with up to
+    ``context_lines`` unchanged lines on each side, clamped to ``[1, len(lines)]``.
+
+    If the edited region ITSELF spans more than ``2 * context_lines + 1`` lines, only its own
+    head and tail (each ``context_lines`` long) are shown, with a visible ``"... N line(s)
+    omitted ..."`` marker between them — bounds the rendered size to a small, fixed multiple of
+    ``context_lines`` regardless of how large the edit was.
+    """
+    n = len(lines)
+    lo = max(1, start_line - context_lines)
+    hi = min(n, end_line + context_lines)
+
+    def numbered(lineno: int) -> str:
+        return f"{lineno:>6}\t{lines[lineno - 1]}"
+
+    region_span = end_line - start_line + 1
+    if region_span > 2 * context_lines + 1:
+        head_hi = start_line + context_lines - 1
+        tail_lo = end_line - context_lines + 1
+        omitted = tail_lo - head_hi - 1
+        rendered = [numbered(i) for i in range(lo, head_hi + 1)]
+        rendered.append(f"       ... {omitted} line(s) omitted ...\n")
+        rendered.extend(numbered(i) for i in range(tail_lo, hi + 1))
+    else:
+        rendered = [numbered(i) for i in range(lo, hi + 1)]
+    return "".join(rendered)
+
+
 def make_write_file_tool(
     root: str,
     *,
@@ -102,6 +134,9 @@ def make_edit_file_tool(
     *,
     name: str = "edit_file",
     encoding: str = "utf-8",
+    show_snippet: bool = True,
+    snippet_context_lines: int = 3,
+    max_snippet_occurrences: int = 3,
 ) -> Callable[..., str]:
     """Build an ``edit_file``-shaped tool scoped to ``root`` — wired in a task's ``__init__``
     (per-run state, never a classvar).
@@ -116,6 +151,21 @@ def make_edit_file_tool(
     bare-``\\n`` anchor), the match fails CLOSED with "not found" rather than mis-editing. Not a
     safety bug — it never silently edits the wrong thing — but worth knowing so an unexpected
     refusal on an otherwise-correct anchor isn't a surprise.
+
+    **On success, a windowed snippet of the RESULT is appended** (reusing ``read_file``'s own
+    ``f"{lineno:>6}\\t{line}"`` numbering convention) so the model can confirm what its edit
+    actually did without a separate ``read_file`` round-trip. ``show_snippet`` (default ``True``)
+    is the escape hatch back to the terse ``"Replaced N occurrence(s) in {path!r}."`` alone.
+    ``snippet_context_lines`` (default ``3``) bounds each shown region to a small window around it
+    — if the edited region itself spans more, only its own head/tail are shown with an "... N
+    line(s) omitted ..." marker, so a huge insertion never dumps an unbounded block back. With
+    ``replace_all=True`` producing many replaced occurrences, ``max_snippet_occurrences`` (default
+    ``3``) caps how many get their own snippet — the FILE is still fully edited regardless; this
+    only caps how much of it is echoed back, and the returned string says explicitly when some
+    were omitted. Scoped to the SUCCESS path only — ``Refused``/``Read error``/``Write error``
+    strings are never appended to. Overlapping windows for closely-spaced occurrences are shown
+    independently, not merged — the edited regions themselves never overlap, only their
+    surrounding context can.
     """
     _validate_tool_name(name)
 
@@ -172,6 +222,20 @@ def make_edit_file_tool(
                 f"every occurrence."
             )
 
+        # Collected BEFORE the replace, using the same non-overlapping stride str.count()/
+        # str.replace() both use (advance by len(old_string), not by 1) -- offsets computed with
+        # any other stride would desynchronize from what .replace() actually does for a
+        # self-overlapping old_string (e.g. "aa" inside "aaaa").
+        replaced = occurrences if replace_all else 1
+        shown = min(replaced, max_snippet_occurrences) if show_snippet else 0
+        old_offsets: list[int] = []
+        if shown:
+            pos = 0
+            for _ in range(shown):
+                pos = content.find(old_string, pos)
+                old_offsets.append(pos)
+                pos += len(old_string)
+
         count = -1 if replace_all else 1
         new_content = content.replace(old_string, new_string, count)
         try:
@@ -182,7 +246,6 @@ def make_edit_file_tool(
             )
             return f"Write error for {path!r}: {type(exc).__name__}"
 
-        replaced = occurrences if replace_all else 1
         record_tool_call(
             name,
             args={"path": path, "replace_all": replace_all},
@@ -191,9 +254,44 @@ def make_edit_file_tool(
             old_preview=old_string[:_PREVIEW_CHARS],
             new_preview=new_string[:_PREVIEW_CHARS],
         )
-        if replaced == 1:
-            return f"Replaced 1 occurrence in {path!r}."
-        return f"Replaced {replaced} occurrences in {path!r}."
+        summary = (
+            f"Replaced 1 occurrence in {path!r}."
+            if replaced == 1
+            else f"Replaced {replaced} occurrences in {path!r}."
+        )
+        if not show_snippet:
+            return summary
+
+        # k is 0-indexed: 0 prior replacements for the FIRST occurrence, matching how many of the
+        # earlier occurrences (strictly before this one) have already shifted everything after
+        # them by `delta` characters.
+        delta = len(new_string) - len(old_string)
+        new_lines = new_content.splitlines(keepends=True)
+        blocks = []
+        for k, old_offset in enumerate(old_offsets):
+            new_start = old_offset + k * delta
+            start_line = new_content.count("\n", 0, new_start) + 1
+            if new_string:
+                # The END line derives from the LAST character actually inside new_string
+                # (new_start + len(new_string) - 1), never from the one-past-the-end offset --
+                # using the one-past-the-end offset directly overcounts by one line whenever
+                # new_string ends with "\n" (it would land on the start of the next, untouched
+                # line and wrongly include it in the region).
+                end_line = new_content.count("\n", 0, new_start + len(new_string) - 1) + 1
+            else:
+                end_line = start_line  # a deletion: zero-length region, nothing to convert
+            blocks.append(
+                (start_line, end_line, _format_edit_snippet(
+                    new_lines, start_line, end_line, snippet_context_lines
+                ))
+            )
+
+        parts = [summary, ""]
+        for i, (start_line, end_line, text) in enumerate(blocks, start=1):
+            parts.append(f"--- snippet {i}/{shown} (lines {start_line}-{end_line}) ---\n{text}")
+        if replaced > shown:
+            parts.append(f"... {replaced - shown} more occurrence(s) not shown.")
+        return "\n".join(parts)
 
     edit_file.__name__ = name
     edit_file.__qualname__ = name
