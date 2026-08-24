@@ -59,10 +59,10 @@ jsonschema = [
 subscription = [
     "claude-agent-sdk>=0.1.60",
 ]
-# Wall-clock-bounded regex matching (make_grep_repo_tool): an LM-controlled pattern is bounded by
+# Wall-clock-bounded regex matching (make_grep_files_tool): an LM-controlled pattern is bounded by
 # a real timeout instead of a catastrophic-backtracking pattern hanging the host indefinitely —
 # stdlib `re` has no way to bound this cost by any pure-Python mechanism. Opt-in — required
-# outright by make_grep_repo_tool (a friendly ImportError otherwise), no silent unsafe fallback,
+# outright by make_grep_files_tool (a friendly ImportError otherwise), no silent unsafe fallback,
 # the same posture make_json_schema_validator already takes for its own `jsonschema` extra.
 grep = [
     "regex>=2023.0.0",

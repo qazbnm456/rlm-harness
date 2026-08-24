@@ -9,7 +9,7 @@ from .fetch import (
     parse_cidrs,
     resolved_host_is_safe,
 )
-from .fs import make_grep_repo_tool, make_read_file_tool, resolve_within_root
+from .fs import make_grep_files_tool, make_read_file_tool, resolve_within_root
 from .harness import (
     HarnessInvocation,
     HarnessInvoke,
@@ -44,7 +44,7 @@ __all__ = [
     "make_command_tool",
     "make_edit_file_tool",
     "make_fetch_tool",
-    "make_grep_repo_tool",
+    "make_grep_files_tool",
     "make_harness_tool",
     "make_json_schema_validator",
     "make_model_tool",

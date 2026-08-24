@@ -1,11 +1,11 @@
 """``make_write_file_tool`` / ``make_edit_file_tool`` — the write side of the filesystem tools,
-sitting alongside ``fs.py``'s read side (``make_read_file_tool`` / ``make_grep_repo_tool``).
+sitting alongside ``fs.py``'s read side (``make_read_file_tool`` / ``make_grep_files_tool``).
 
 Kept in a SEPARATE module from ``fs.py`` (which is already the largest single file in `tools/` —
 355 lines, ~1.6× the next-largest single file, ``command.py`` at 221 lines) so that "everything in
 this package that can mutate the filesystem" stays physically distinct from "everything that only
 reads it" — a real audit benefit, since this module introduces a genuinely new risk category the
-read-only tools don't carry: DATA LOSS. `read_file`/`grep_repo` returning wrong information is a
+read-only tools don't carry: DATA LOSS. `read_file`/`grep_files` returning wrong information is a
 bug; `write_file`/`edit_file` doing the wrong thing can destroy content. That's the one dimension
 of risk this module adds — it does NOT add a new SECURITY-boundary category: every tool in this
 kit already executes host-side outside the sandbox (true of `fetch_url`, `run_command`, and

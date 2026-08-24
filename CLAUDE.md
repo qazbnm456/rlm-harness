@@ -20,7 +20,7 @@ One companion rule ships under `.claude/rules/`:
     violation; it is NOT part of the pytest suite, so a green `pytest` is not enough on its own.
   - `uv run --group dev --extra mcp --extra grep python -m pytest -q` — the full suite (CI runs it
     on 3.11/3.12/3.13). `--extra mcp` so the MCP-client tests run instead of skipping; `--extra
-    grep` so `make_grep_repo_tool`'s timeout tests exercise a REAL `regex` timeout instead of
+    grep` so `make_grep_files_tool`'s timeout tests exercise a REAL `regex` timeout instead of
     skipping (the whole point of that suite is verifying an actual timeout fires, not that the
     code merely imports). No live LLM, network, or Deno needed: the dspy-bearing tests use
     `DummyLM` or are skipped if dspy is absent.
