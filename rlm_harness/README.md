@@ -375,13 +375,30 @@ finding = MyTask(tools=[read_file, grep_files]).run(...)
   multiple before it ever fired again).
 - **`output_mode=` and `ignore_case=` on `grep_files`.** `output_mode` (default `"content"`,
   unchanged) adds `"files_with_matches"` (distinct matching file paths only, no line text) and
-  `"count"` (`path: N`, files with zero matches omitted). All three modes scan every line of
-  every candidate file IDENTICALLY — the two new modes are cheaper in OUTPUT/TRACE SIZE only,
-  never in scan cost (no per-file early-break yet; that's a natural, separately-reviewable future
-  addition). `max_results` caps the number of output ROWS across all three modes consistently (a
-  row = a matching line in `"content"` mode, a file in the other two). `ignore_case` (default
-  `False`) is case-insensitive matching as a first-class flag rather than something baked into the
-  pattern.
+  `"count"` (`path: N`, files with zero matches omitted). `max_results` caps the number of MATCHES
+  found (not total output lines — see `context_before`/`context_after` below). `ignore_case`
+  (default `False`) is case-insensitive matching as a first-class flag rather than something baked
+  into the pattern.
+- **Per-file early-break, `"files_with_matches"` only.** That mode only needs to know "did this
+  file have ≥1 match" — scanning stops the instant one is found, moving to the next candidate
+  file. `"count"` mode cannot do this — it needs the file's exact total match count, so every line
+  there is still scanned. Both `"files_with_matches"`/`"count"` additionally stop OPENING further
+  candidate files once `max_results` qualifying files are already found (an outer-loop break — it
+  never skips a line of a file already being scanned, only avoids starting further ones).
+- **`context_before=`/`context_after=`** (default `0`, `"content"` mode only — a silent no-op,
+  never an error, in the other two modes, which have no per-line text to attach context to): show
+  that many unchanged lines immediately before/after each match, using grep's own convention — a
+  match keeps `path:line: text` (colon); a context line uses `path-line- text` (hyphen); a `"--"`
+  line separates two blocks that don't touch (a numbering gap) within the same file — never at a
+  file boundary, since the path prefix already marks that. A line that itself matches is ALWAYS
+  emitted as a match, never as leftover context from an earlier match's `context_after` window — a
+  fresh match resets the after-context countdown outright, it never stacks with one still running.
+  `max_results` counts MATCHES only — context/separator lines are supplementary and uncapped by
+  it, mirroring real `grep -m`; when a match hits the cap, its own trailing context may be
+  truncated if the file/budget ends first (an accepted, deliberate simplicity choice, the same one
+  `max_total_time_s` already makes for whatever's in-flight). When both are `0` (the default),
+  behavior — including the traced `result_count` — is byte-identical to a build of this tool with
+  no context support at all.
 
 ## Writing and editing a bounded local directory (`tools/edit.py`)
 

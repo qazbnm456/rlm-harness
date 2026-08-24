@@ -235,6 +235,8 @@ def make_grep_files_tool(
         max_results: int = _DEFAULT_MAX_RESULTS,
         output_mode: str = "content",
         ignore_case: bool = False,
+        context_before: int = 0,
+        context_after: int = 0,
     ) -> str:
         """Search for a regex ``pattern`` across files matching ``glob`` (an ``fnmatch``-style
         glob against each file's path, default ``"*"`` = every file).
@@ -243,27 +245,55 @@ def make_grep_files_tool(
         matching lines as ``path:line: text``, one per line — the original, only behavior.
         ``"files_with_matches"`` returns up to ``max_results`` DISTINCT file paths that had ≥1
         match, one per line, no line text. ``"count"`` returns up to ``max_results`` ``path: N``
-        lines (N = matching-line count in that file); a file with zero matches is omitted.
-        All three modes scan every line of every candidate file IDENTICALLY (this round adds no
-        per-file early-break) — the two non-``"content"`` modes are cheaper in OUTPUT/TRACE SIZE
-        only, never in scan cost. An unrecognized ``output_mode`` returns an
-        ``"Invalid output_mode ..."`` error string, never raises.
+        lines (N = matching-line count in that file); a file with zero matches is omitted. An
+        unrecognized ``output_mode`` returns an ``"Invalid output_mode ..."`` error string, never
+        raises.
 
-        ``max_results`` caps the number of OUTPUT ROWS returned (a row = a matching line in
-        ``"content"`` mode, a file in the other two modes). In ``"content"`` mode a row is
-        complete the instant a match is found, so the cap is checked per line, exactly as before.
-        In ``"files_with_matches"``/``"count"`` mode a row (one file's aggregated result) is only
-        complete once that file's entire line loop finishes, so the cap is checked once per
-        COMPLETED file — the same "cap on output rows" contract, just checked at the granularity
-        where a row actually becomes final.
+        **Per-file early-break, `"files_with_matches"` only.** That mode only needs to know "did
+        this file have >=1 match" — scanning stops the instant one is found, moving on to the next
+        candidate file. `"count"` mode CANNOT do this — it needs the file's exact total match
+        count, so every line is still scanned there. Both `"files_with_matches"`/`"count"`
+        additionally stop opening NEW candidate files once `max_results` qualifying files are
+        already found (an outer-loop break — it never skips a line of a file already being
+        scanned, only avoids starting further ones). One disclosed side effect of the
+        `"files_with_matches"` early-break: `timed_out_lines` (below) then reflects only the lines
+        scanned before that file's first match, not the whole file — an informational trace metric
+        only, never a `max_total_time_s` correctness issue.
+
+        ``max_results`` caps the number of MATCHES found (not total output lines — see
+        ``context_before``/``context_after`` below). In ``"content"`` mode a match is complete the
+        instant it's found, so the cap is checked per line. In ``"files_with_matches"``/``"count"``
+        mode a row (one file's aggregated result) is only complete once that file's entire line
+        loop finishes (or, for `"files_with_matches"`, its early-break fires) — checked once per
+        completed file, same "cap on output rows" contract, at the granularity where a row
+        actually becomes final.
 
         ``ignore_case`` (default ``False``): case-insensitive matching as a first-class flag,
         rather than something the caller has to bake into the pattern itself.
 
+        ``context_before``/``context_after`` (default ``0``, `"content"` mode only — silently
+        ignored, not an error, in the other two modes, which have no per-line text to attach
+        context to): show that many unchanged lines immediately before/after each match, using
+        grep's own convention — a MATCH keeps the ``path:line: text`` (colon) format; a CONTEXT
+        line uses ``path-line- text`` (hyphen) instead. A ``"--"`` line separates two blocks that
+        don't touch (a numbering gap) within the same file — never at a file boundary, since the
+        path prefix itself already marks that. A line that itself matches is ALWAYS emitted as a
+        match, never as leftover context from an earlier match's ``context_after`` window (a fresh
+        match resets the after-context countdown outright, it never stacks with a still-running
+        one). ``max_results`` counts MATCHES only — context/separator lines are supplementary and
+        uncapped by it, mirroring real `grep -m`. When a match hits the `max_results` cap, its own
+        trailing context may be truncated if the file/budget ends first — an accepted, deliberate
+        simplicity choice, the same one `max_total_time_s` already makes for whatever's in-flight.
+        When both are `0` (the default), behavior — including the traced ``result_count`` — is
+        byte-identical to a build of this tool with no context support at all.
+
         A per-line match that exceeds the configured timeout is skipped (never raises, in any
-        mode); the whole call is additionally bounded by a wall-clock budget, after which it
-        returns whatever partial results it found so far, in whichever mode was requested."""
+        mode, and still eligible as someone else's context line — a timeout means "couldn't
+        confirm a match," not "unfit as context text"); the whole call is additionally bounded by
+        a wall-clock budget, after which it returns whatever partial results it found so far, in
+        whichever mode was requested."""
         import fnmatch
+        from collections import deque
 
         if output_mode not in _OUTPUT_MODES:
             record_tool_call(
@@ -278,12 +308,20 @@ def make_grep_files_tool(
             record_tool_call(name, args={"pattern": pattern}, ok=False, note=str(exc))
             return f"Invalid regex {pattern!r}: {exc}"
 
+        # Context lines are a "content"-mode-only, opt-in feature — this flag gates ALL of the
+        # extra bookkeeping below so that context_before == context_after == 0 (the default)
+        # takes the exact same code path, with the exact same output, as before this feature
+        # existed. Never let context machinery run when both are 0.
+        use_context = output_mode == "content" and (context_before > 0 or context_after > 0)
+
         started = time.monotonic()
-        # `hits` (content mode) is one entry per matching LINE, capped at max_results directly.
-        # `file_matches` (the other two modes) accumulates one entry per COMPLETED file that had
-        # >=1 match; its own max_results cap is applied after the scan, since a file's row isn't
-        # final until its whole line loop finishes (no early-break this round).
         hits: list[str] = []
+        # `match_count` — NOT `len(hits)` — is what max_results checks in "content" mode. Once
+        # context/"--"-separator rows share `hits` with match rows, len(hits) is emitted-ROW
+        # count, not match count; conflating the two would truncate the scan before max_results
+        # real matches are found, silently contradicting the "max_results counts matches" contract
+        # documented above.
+        match_count = 0
         file_matches: list[tuple[str, int]] = []  # (rel_path, match_count), files with >=1 match
         timed_out_lines = 0
         budget_exceeded = False
@@ -291,7 +329,12 @@ def make_grep_files_tool(
         for rel_path in candidate_paths:
             if budget_exceeded:
                 break
-            if output_mode == "content" and len(hits) >= max_results:
+            if output_mode == "content" and match_count >= max_results:
+                break
+            # Outer-loop early-break for the other two modes: stop OPENING further candidate
+            # files once enough qualifying ones are already found. Never skips a line of a file
+            # already being scanned — only avoids starting new ones.
+            if output_mode != "content" and len(file_matches) >= max_results:
                 break
             if not fnmatch.fnmatch(rel_path, glob):
                 continue
@@ -299,6 +342,9 @@ def make_grep_files_tool(
             if resolved is None:
                 continue
             file_match_count = 0
+            before_buffer = deque(maxlen=context_before) if use_context and context_before else None
+            pending_after = 0
+            last_emitted_lineno = 0
             try:
                 with open(resolved, encoding="utf-8") as fh:
                     for lineno, line in enumerate(fh, start=1):
@@ -313,14 +359,53 @@ def make_grep_files_tool(
                             matched = compiled.search(line, timeout=per_match_timeout_s)
                         except TimeoutError:
                             timed_out_lines += 1
-                            continue
-                        if not matched:
-                            continue
-                        file_match_count += 1
-                        if output_mode == "content":
-                            hits.append(f"{rel_path}:{lineno}: {line.rstrip(os.linesep)}")
-                            if len(hits) >= max_results:
+                            matched = None  # unconfirmed, not a match -- still valid as context
+
+                        if matched:
+                            file_match_count += 1
+                            if output_mode == "files_with_matches":
+                                # This file's row is already fully determined -- no need to see
+                                # its other lines. `count` mode cannot do this: it needs the exact
+                                # total, so every line there is still scanned.
                                 break
+                            if output_mode == "content":
+                                match_count += 1
+                                if use_context:
+                                    before_lines = (
+                                        [
+                                            (bl_no, bl_text)
+                                            for bl_no, bl_text in before_buffer
+                                            if bl_no > last_emitted_lineno
+                                        ]
+                                        if before_buffer is not None
+                                        else []
+                                    )
+                                    block_start = before_lines[0][0] if before_lines else lineno
+                                    if last_emitted_lineno and block_start > last_emitted_lineno + 1:
+                                        hits.append("--")
+                                    for bl_no, bl_text in before_lines:
+                                        hits.append(
+                                            f"{rel_path}-{bl_no}- {bl_text.rstrip(os.linesep)}"
+                                        )
+                                        last_emitted_lineno = bl_no
+                                    hits.append(f"{rel_path}:{lineno}: {line.rstrip(os.linesep)}")
+                                    last_emitted_lineno = lineno
+                                    # A fresh match ALWAYS resets the after-context countdown --
+                                    # it never stacks with a still-running one from an earlier
+                                    # match, which is what makes a line that itself matches come
+                                    # out as a match (above), never as leftover after-context.
+                                    pending_after = context_after
+                                else:
+                                    hits.append(f"{rel_path}:{lineno}: {line.rstrip(os.linesep)}")
+                                if match_count >= max_results:
+                                    break
+                        elif use_context and pending_after > 0 and lineno > last_emitted_lineno:
+                            hits.append(f"{rel_path}-{lineno}- {line.rstrip(os.linesep)}")
+                            last_emitted_lineno = lineno
+                            pending_after -= 1
+
+                        if before_buffer is not None:
+                            before_buffer.append((lineno, line))
             except (OSError, UnicodeDecodeError):
                 continue
             if file_match_count > 0:
@@ -337,7 +422,7 @@ def make_grep_files_tool(
             name,
             args={"pattern": pattern, "glob": glob, "output_mode": output_mode},
             ok=True,
-            result_count=len(hits),
+            result_count=match_count if output_mode == "content" else len(hits),
             preview="\n".join(hits[:_PREVIEW_HITS])[:_PREVIEW_CHARS] or None,
             timed_out_lines=timed_out_lines or None,
         )
