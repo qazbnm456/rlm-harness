@@ -6,7 +6,7 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 ## [1.3.0] - 2026-08-24
 
-Seventeen new public names, plus two new optional extras (`grep`, `gitignore`; the pre-existing `subscription`
+Eighteen new public names, plus two new optional extras (`grep`, `gitignore`; the pre-existing `subscription`
 extra also gains new auto-routing behavior in `configure()`, but is not itself new). No
 trace-format change; every existing call site behaves byte-for-byte identically to 1.2.1.
 
@@ -246,6 +246,46 @@ validators.**
   `source` didn't happen to have matching whitespace immediately outside the quoted text.
 - A whitespace-only `quote` (not just an empty one) is refused outright — it would otherwise
   reduce to the bare pattern `\s+`, a trivially-satisfiable, meaningless "match."
+
+**`run_in_subprocess` — a safe, isolated-subprocess primitive, in a new top-level
+`isolation.py` module (not under `tools/` — see below).** A small primitive only: safely run
+one picklable callable in an isolated OS process, get its result or a clear error back, bounded
+by a timeout. Task-scheduling (how a web server actually queues many of these — Celery, RQ, a
+plain thread/process pool) is explicitly the consumer's own concern, not shipped here.
+
+- **A genuinely different gap than three things in this kit that already sound similar**:
+  `interpreter="container"` isolates the RLM's own REPL sandbox, but the root process still runs
+  the RLM's own orchestration directly; `tools.run_isolated` bridges an async coroutine into a
+  sync call site on a dedicated thread — same process, no OS-level isolation; `cancel_event`
+  stops an in-flight run the calling code already owns and is watching. None hand a whole task
+  off to a separate OS process in the first place.
+- **Lives at the top level, not `rlm_harness.tools`** — that package's own module docstring
+  scopes it as "tools RLM tasks can expose to the model inside the REPL"; nothing here is ever
+  placed in a `tools=[...]` list.
+- Uses `multiprocessing.get_context("spawn")`, never `"fork"` — the parent is very plausibly a
+  web server already running an event loop / thread pool / a live LM client, and forking that
+  risks inherited locks/half-open sockets. `factory` must be a picklable, module-level callable
+  (a local closure/lambda is not); every value bound into a `functools.partial`'s own arguments
+  must also be picklable, not just the function reference.
+- **A real, load-bearing bug found and fixed during design review**: `multiprocessing.Queue.put()`
+  does not pickle synchronously — a background feeder thread does, and a pickling failure there
+  is logged and silently dropped, never raised back to `put()`'s caller. Fixed by having the
+  child explicitly test-pickle its payload synchronously, in its own code, before ever calling
+  `put()` — falling back to a plain-string `RuntimeError` only if that test-pickle itself fails.
+  The parent's own `queue.get()` also carries its own bounded timeout, independent of the
+  process-level timeout, as a backstop against an out-of-band kill (e.g. host OOM) that bypasses
+  this primitive's own signal-based escalation entirely.
+- **Timeout escalation**: `terminate()` (SIGTERM), a grace period, then `kill()` (SIGKILL) if
+  still alive, followed by a final reap so no zombie is left — SIGTERM does NOT reliably let the
+  child's `finally`/`atexit` code run unless the child itself installs a handler.
+- **`max_memory_mb`/`cpu_time_limit_s`** — opt-in, POSIX-only, best-effort `resource.setrlimit`
+  caps. `cpu_time_limit_s` (`RLIMIT_CPU`) is confirmed to enforce correctly on every POSIX
+  platform tested, including macOS. `max_memory_mb` (`RLIMIT_AS`) bounds virtual address space,
+  not physical memory — and on macOS specifically, the kernel refuses to lower `RLIMIT_AS` from
+  unlimited at ALL (empirically confirmed: every attempted value failed identically with
+  `ValueError: current limit exceeds maximum limit`), so this parameter is effectively Linux-only
+  in practice today. Either way it fails loudly (relayed as a clear exception) rather than
+  silently leaving the cap unenforced.
 
 ## [1.2.1] - 2026-08-23
 
