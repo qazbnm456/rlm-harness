@@ -108,9 +108,9 @@ jobs:
         # this fails loudly instead of reporting a false pass.
         run: |
           set -euo pipefail
-          uv run --group dev --extra mcp --extra grep --with "dspy==${DSPY_LATEST}" python -c "
+          uv run --group dev --extra mcp --extra grep --extra gitignore --with "dspy==${DSPY_LATEST}" python -c "
           import dspy, os, sys
           want = os.environ['DSPY_LATEST']
           print('running against dspy', dspy.__version__)
           sys.exit(0 if dspy.__version__ == want else f'expected dspy {want}, got {dspy.__version__}')"
-          uv run --group dev --extra mcp --extra grep --with "dspy==${DSPY_LATEST}" python -m pytest -q
+          uv run --group dev --extra mcp --extra grep --extra gitignore --with "dspy==${DSPY_LATEST}" python -m pytest -q

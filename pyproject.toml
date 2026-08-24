@@ -67,6 +67,15 @@ subscription = [
 grep = [
     "regex>=2023.0.0",
 ]
+# Correct, safe .gitignore-aware directory walking (list_candidate_paths): a hand-rolled
+# .gitignore parser risks leaking files a consumer explicitly meant to exclude (.env, secrets) or
+# wrongly excluding real source -- pathspec implements git's own gitwildmatch syntax correctly.
+# Opt-in, and only actually imported when there's a real pattern to compile (a root/.gitignore
+# present, or extra_ignore_patterns given) -- a friendly ImportError otherwise, no silent
+# ignore-nothing fallback.
+gitignore = [
+    "pathspec>=0.12.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/qazbnm456/rlm-harness"

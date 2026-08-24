@@ -2,6 +2,7 @@
 
 from ._async import run_isolated
 from .command import CommandResult, make_command_tool, refuse_broad_git_history
+from .discover import CandidatePaths, list_candidate_paths
 from .edit import make_edit_file_tool, make_write_file_tool
 from .fetch import (
     is_safe_url,
@@ -31,6 +32,7 @@ from .search import make_web_search_tool, normalise_search_results
 from .validation import make_json_schema_validator, make_schema_validator
 
 __all__ = [
+    "CandidatePaths",
     "CommandResult",
     "HarnessInvocation",
     "HarnessInvoke",
@@ -42,6 +44,7 @@ __all__ = [
     "ModelToolResult",
     "harness_from_endpoint",
     "is_safe_url",
+    "list_candidate_paths",
     "make_command_tool",
     "make_edit_file_tool",
     "make_fetch_tool",

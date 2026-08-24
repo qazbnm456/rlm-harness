@@ -6,7 +6,7 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 ## [1.3.0] - 2026-08-24
 
-Fourteen new public names, plus one new optional extra (`grep`; the pre-existing `subscription`
+Sixteen new public names, plus two new optional extras (`grep`, `gitignore`; the pre-existing `subscription`
 extra also gains new auto-routing behavior in `configure()`, but is not itself new). No
 trace-format change; every existing call site behaves byte-for-byte identically to 1.2.1.
 
@@ -126,6 +126,36 @@ trace utilization metrics.
   supplementary and uncapped by it, mirroring real `grep -m`) — when both `context_before`/
   `context_after` are `0` (the default), behavior, including the traced `result_count`, is
   byte-identical to a build with no context support at all.
+
+**`list_candidate_paths` — a safe, good-default way to compute `candidate_paths`, in a new
+`tools/discover.py` module.** `candidate_paths` stays a plain, required list on
+`make_read_file_tool`/`make_grep_files_tool` (no contract change) — this is purely an additive way
+to build one, closing a gap the user explicitly flagged: safely walking a directory tree
+(respecting `.gitignore`, never escaping `root` via a symlink, never treating VCS internals as
+candidates) is exactly the kind of mechanic every consumer would otherwise reinvent for itself.
+
+- **`list_candidate_paths(root)` → `CandidatePaths(paths, truncated)`** (a frozen dataclass) — a
+  plain host-side function, no factory, no REPL exposure (called from a consumer's own setup code
+  before wiring a tool, the same role `resolve_within_root` already plays).
+- **New optional extra `gitignore` (`pathspec`)** for correct `.gitignore` (`gitwildmatch`) syntax
+  — negation, directory-only patterns, anchoring — a hand-rolled parser risks either leaking files
+  a consumer explicitly meant to exclude (`.env`, credentials) or wrongly excluding real source.
+  Lazily imported ONLY when there's an actual pattern to compile (a real root `.gitignore` present
+  and `respect_gitignore=True`, or `extra_ignore_patterns` given); a friendly `ImportError`
+  otherwise, no silent "ignore nothing" fallback.
+- **Root-level `.gitignore` only, stated honestly** — no nested per-directory merging, no global
+  gitignore. `extra_ignore_patterns` is the escape hatch for a consumer that needs more.
+- **`.git` is always excluded, unconditionally, by TWO distinct mechanisms**: a directory named
+  `.git` is pruned from the walk, and a plain FILE named `.git` (git's real submodule gitlink
+  shape — a one-line pointer file, not a directory) is also always excluded. Directory-only
+  ignore patterns (`build/`) are matched with a required trailing slash, matching `pathspec`'s own
+  `gitwildmatch` convention — omitting it would silently fail to prune such a pattern.
+  Every candidate file is re-checked through `resolve_within_root` regardless of
+  `follow_symlinks`, and `dirnames`/`filenames` are sorted at every level of the walk so which
+  files survive a `max_files` truncation is deterministic, not filesystem/OS-order-dependent.
+- `glob=` applies the same `fnmatch` semantics `make_grep_files_tool`'s own `glob` already uses,
+  so the result is directly pipeable: `make_grep_files_tool(root,
+  candidate_paths=list_candidate_paths(root).paths)`.
 
 **Writing and editing a bounded local directory — the write side of the read/search pair above,
 in a new `tools/edit.py` module** (kept separate from `fs.py`, already the largest single file in

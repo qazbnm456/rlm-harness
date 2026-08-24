@@ -18,12 +18,14 @@ One companion rule ships under `.claude/rules/`:
 - Run what CI gates on — BOTH jobs — before pushing:
   - `uvx ruff check .` — lint (ruff defaults, line-length 110). CI fails the build on any
     violation; it is NOT part of the pytest suite, so a green `pytest` is not enough on its own.
-  - `uv run --group dev --extra mcp --extra grep python -m pytest -q` — the full suite (CI runs it
-    on 3.11/3.12/3.13). `--extra mcp` so the MCP-client tests run instead of skipping; `--extra
-    grep` so `make_grep_files_tool`'s timeout tests exercise a REAL `regex` timeout instead of
-    skipping (the whole point of that suite is verifying an actual timeout fires, not that the
-    code merely imports). No live LLM, network, or Deno needed: the dspy-bearing tests use
-    `DummyLM` or are skipped if dspy is absent.
+  - `uv run --group dev --extra mcp --extra grep --extra gitignore python -m pytest -q` — the
+    full suite (CI runs it on 3.11/3.12/3.13). `--extra mcp` so the MCP-client tests run instead of
+    skipping; `--extra grep` so `make_grep_files_tool`'s timeout tests exercise a REAL `regex`
+    timeout instead of skipping (the whole point of that suite is verifying an actual timeout
+    fires, not that the code merely imports); `--extra gitignore` so `list_candidate_paths`'s
+    `.gitignore`-parsing tests exercise the real `pathspec` package instead of skipping. No live
+    LLM, network, or Deno needed: the dspy-bearing tests use `DummyLM` or are skipped if dspy is
+    absent.
 - **`.github/workflows/ci.yml` also has a `packaging` job** — builds the wheel, installs it into a
   clean environment with NO lockfile, and runs a task from it. Every other job runs from the source
   tree via `uv run`, so a module missing from the wheel would ship silently. It is the PACKAGING

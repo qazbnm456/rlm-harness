@@ -17,7 +17,7 @@ pitch, the quickstart, and installation — start at the
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
 | `atomic.py` | `atomic_write_text` — a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write. dspy-free. |
 | `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` — reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded `trace/v1` events. dspy-free. |
-| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` — see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `verify_quote` — a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
+| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` — see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths` — a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `verify_quote` — a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
 | `optimize.py` | GEPA harness — metric templates now, compile in Phase 2. |
 | `sub_lm.py` | `intercept_sub_lm` — wrap the RLM's sub-LM to trace every escalation as a `sub_call` (+ optional validate/post-process); `model_as_tool` for LM-decided multi-model routing. |
 | `skills.py` | `load_skills_as_tools` — expose a Skills directory to the RLM as tools. |
@@ -399,6 +399,52 @@ finding = MyTask(tools=[read_file, grep_files]).run(...)
   `max_total_time_s` already makes for whatever's in-flight). When both are `0` (the default),
   behavior — including the traced `result_count` — is byte-identical to a build of this tool with
   no context support at all.
+
+### `list_candidate_paths` — the recommended way to build `candidate_paths` (`tools/discover.py`)
+
+`candidate_paths` stays a plain, required list — no contract change. But safely walking a
+directory tree to build one (respecting `.gitignore`, never escaping `root` via a symlink, never
+treating VCS internals as candidates) is exactly the kind of mechanic every consumer would
+otherwise reinvent. `list_candidate_paths(root)` is a plain host-side function (no factory, not a
+REPL tool — called from a consumer's own setup code before wiring a tool, the same role
+`resolve_within_root` already plays) returning `CandidatePaths(paths, truncated)`, pipeable
+directly into `make_grep_files_tool`/`make_read_file_tool` with zero reshaping:
+
+```python
+from rlm_harness.tools import list_candidate_paths, make_grep_files_tool, make_read_file_tool
+
+candidates = list_candidate_paths(repo_root, glob="*.py")
+read_file = make_read_file_tool(repo_root)
+grep_files = make_grep_files_tool(repo_root, candidate_paths=candidates.paths)
+```
+
+- **Needs the optional `rlm-harness[gitignore]` extra (`pathspec`) ONLY when there's an actual
+  `.gitignore` pattern to compile** — a real root `.gitignore` present (with
+  `respect_gitignore=True`, the default) or a non-empty `extra_ignore_patterns`. A caller with
+  neither never needs the dependency installed. `.gitignore`'s own subtler syntax (negation,
+  directory-only patterns, anchoring) is why this uses `pathspec` rather than a hand-rolled
+  parser — slightly wrong parsing either leaks a file a consumer explicitly meant to exclude
+  (`.env`, credentials) or wrongly excludes real source; same "don't reinvent a
+  correctness-critical mechanic" reasoning behind `make_grep_files_tool`'s `regex` extra and
+  `make_json_schema_validator`'s `jsonschema` extra.
+- **Root-level `.gitignore` only, stated honestly** — no nested per-directory `.gitignore`
+  merging, no global gitignore. `extra_ignore_patterns` (same `gitwildmatch` syntax) is the escape
+  hatch for a consumer that needs more than the one root-level file covers.
+- **`.git` is always excluded, unconditionally, by two distinct mechanisms**: a directory named
+  `.git` is pruned from the walk (never descended into), and — independently — a plain FILE
+  literally named `.git` is also always excluded, since that's git's REAL submodule gitlink shape
+  (a one-line pointer file, not a directory); pruning the directory case alone would miss it.
+- **Every candidate file is re-checked through `resolve_within_root`**, independent of
+  `follow_symlinks` (which only gates whether `os.walk` descends into a symlinked directory) — a
+  symlink pointing outside `root` never surfaces as a candidate either way.
+- **`max_files`** (default `5000`) bounds the walk itself, stopping it outright rather than
+  slicing an unbounded result after the fact; `CandidatePaths.truncated` makes a partial result
+  visible, never a silent cutoff. Directory and file names are sorted at every level of the walk
+  first — `os.walk`'s own order is filesystem/OS-dependent, which would otherwise make WHICH files
+  survive a truncation non-reproducible across runs on the same tree.
+- **No REPL-tool wrapper yet** — this is a setup-time helper a consumer's own code calls, not
+  something the model calls mid-trajectory; a `make_list_files_tool` wrapper is a natural,
+  separately-reviewable future addition.
 
 ## Writing and editing a bounded local directory (`tools/edit.py`)
 
