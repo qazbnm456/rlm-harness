@@ -17,7 +17,7 @@ pitch, the quickstart, and installation — start at the
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
 | `atomic.py` | `atomic_write_text` — a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write. dspy-free. |
 | `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` — reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded `trace/v1` events. dspy-free. |
-| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` — see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths` — a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `verify_quote` — a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
+| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` — see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths` — a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` — safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `verify_quote` — a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
 | `optimize.py` | GEPA harness — metric templates now, compile in Phase 2. |
 | `sub_lm.py` | `intercept_sub_lm` — wrap the RLM's sub-LM to trace every escalation as a `sub_call` (+ optional validate/post-process); `model_as_tool` for LM-decided multi-model routing. |
 | `skills.py` | `load_skills_as_tools` — expose a Skills directory to the RLM as tools. |
@@ -445,6 +445,59 @@ grep_files = make_grep_files_tool(repo_root, candidate_paths=candidates.paths)
 - **No REPL-tool wrapper yet** — this is a setup-time helper a consumer's own code calls, not
   something the model calls mid-trajectory; a `make_list_files_tool` wrapper is a natural,
   separately-reviewable future addition.
+
+### `make_git_clone_tool` — safe git clone with fallback auth (`tools/git_clone.py`)
+
+Base/wrap, the same shape as `make_fetch_tool`/`make_command_tool` — the kit does NOT shell out to
+`git` itself. `command.py`'s own module docstring already explains why for `run_command`: a
+model-adjacent operation executed host-side needs ISOLATION, and a `git clone` is not meaningfully
+safer to run un-isolated than an arbitrary command (a malicious git server can exploit a client
+vulnerability; a cloned repo's own hooks can execute code unless disabled). So
+`make_git_clone_tool(root, cloner, *, name="git_clone", get_credentials=None, default_depth=1)`
+takes a CONSUMER-SUPPLIED, isolated `cloner`:
+
+```python
+from rlm_harness.tools import make_git_clone_tool
+
+def my_cloner(url, dest_path, depth, creds):
+    # run inside your OWN isolation (a disposable container, an E2B/Modal sandbox, ...) --
+    # the kit ships no executor here either, same posture as make_command_tool's Runner.
+    ...
+    return CommandResult(exit_code=0)
+
+git_clone = make_git_clone_tool(repo_root, my_cloner)
+finding = MyTask(tools=[git_clone]).run(...)
+```
+
+- **URL safety reuses `is_safe_url` directly** — no reinvented SSRF check. Syntactic pre-flight
+  only, same caveat `fetch.py` already documents for its own `fetcher`: a public hostname
+  resolving to a private address at actual connect time is NOT caught here, since the real
+  network connection happens inside the isolated `cloner`, not in this wrapper — the `cloner`
+  should call `resolved_host_is_safe` internally at connect time if that matters for its
+  deployment.
+- **Destination confinement reuses `resolve_within_root` directly** — `dest_dir` is resolved
+  exactly like `write_file`'s `path`.
+- **Fallback auth — a two-attempt orchestration, never a retry loop.** Tries without credentials
+  first (the common, public-repo case costs nothing extra); on failure — a nonzero exit code OR a
+  raised exception, handled identically — if a `get_credentials` provider was configured, ONE
+  retry with credentials. Never more than two `cloner` invocations per call.
+- **Credential redaction, disclosed as best-effort, not absolute.** A `get_credentials(url)`
+  provider returning a dict MUST include a `"secret"` key (the raw credential string); after a
+  credentialed attempt, that exact string is redacted (plain string replacement) from the traced
+  `stdout`/`stderr` and the model-visible return string — this does NOT catch a derived or
+  transformed leak (URL-encoding, case-folding, a truncated echo from a misconfigured credential
+  helper). A malformed dict (missing/non-string/empty `"secret"`), or a provider that itself
+  raises, fails CLOSED — treated exactly like a decline, no retry attempted, never crashes the
+  call.
+- **`default_depth=1`** (shallow clone by default) is passed through to the `cloner` as a plain
+  argument — the "avoid being tricked into cloning an enormous repository" mitigation;
+  `default_depth=None` opts out for a caller that explicitly wants full history.
+- **On success**: `"Cloned {url!r} into {dest_dir!r}."` — terse, matching `write_file`'s own
+  success-string convention. A consumer wanting to see what landed already has
+  `list_candidate_paths`/`read_file`/`grep_files` for that.
+- **Accepted, disclosed gap**: no cleanup of a partially-cloned directory on failure — making the
+  whole clone atomic would require dictating how the `cloner` itself writes to disk, contradicting
+  the base/wrap split this design is built on.
 
 ## Writing and editing a bounded local directory (`tools/edit.py`)
 
