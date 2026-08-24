@@ -11,6 +11,7 @@ from .fetch import (
     resolved_host_is_safe,
 )
 from .fs import make_grep_files_tool, make_read_file_tool, resolve_within_root
+from .git_clone import make_git_clone_tool
 from .grounding import verify_quote
 from .harness import (
     HarnessInvocation,
@@ -48,6 +49,7 @@ __all__ = [
     "make_command_tool",
     "make_edit_file_tool",
     "make_fetch_tool",
+    "make_git_clone_tool",
     "make_grep_files_tool",
     "make_harness_tool",
     "make_json_schema_validator",

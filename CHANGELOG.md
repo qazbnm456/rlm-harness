@@ -6,7 +6,7 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 ## [1.3.0] - 2026-08-24
 
-Sixteen new public names, plus two new optional extras (`grep`, `gitignore`; the pre-existing `subscription`
+Seventeen new public names, plus two new optional extras (`grep`, `gitignore`; the pre-existing `subscription`
 extra also gains new auto-routing behavior in `configure()`, but is not itself new). No
 trace-format change; every existing call site behaves byte-for-byte identically to 1.2.1.
 
@@ -156,6 +156,29 @@ candidates) is exactly the kind of mechanic every consumer would otherwise reinv
 - `glob=` applies the same `fnmatch` semantics `make_grep_files_tool`'s own `glob` already uses,
   so the result is directly pipeable: `make_grep_files_tool(root,
   candidate_paths=list_candidate_paths(root).paths)`.
+
+**`make_git_clone_tool` — safe git clone with fallback auth, in a new `tools/git_clone.py`
+module.** Base/wrap, the same shape as `make_fetch_tool`/`make_command_tool`: the kit does not
+shell out to `git` itself (a `git clone` is not meaningfully safer to execute un-isolated than an
+arbitrary command), so a CONSUMER-SUPPLIED, isolated `cloner` does the actual clone.
+
+- URL safety reuses `is_safe_url` directly (a syntactic pre-flight only — the same
+  DNS-rebinding-at-connect-time caveat `fetch.py` already documents for its own `fetcher` applies
+  here, delegated to the `cloner`). Destination confinement reuses `resolve_within_root` directly.
+- **Fallback auth**: tries without credentials first; on failure (a bad exit code OR a raised
+  exception, handled identically), if a credentials provider is configured, ONE retry with
+  credentials — never more than two clone attempts, no retry loop.
+- **Credential redaction, best-effort, disclosed as such** — the raw secret string a credentials
+  provider supplies is redacted (exact-string match) from the trace and the model-visible return
+  string, including `stdout` as well as `stderr`; this does NOT catch a derived/transformed leak
+  (URL-encoding, case-folding, a truncated echo). A malformed credentials dict (missing or
+  non-string `"secret"`) — or a credentials provider that itself raises — fails CLOSED: treated
+  exactly like a decline, never crashes the tool call.
+- **`default_depth=1`** (shallow clone by default) — the "avoid being tricked into cloning an
+  enormous repository" mitigation, a factory parameter passed through to the `cloner`.
+- No cleanup of a partially-cloned directory on failure — stated as an accepted gap, not silently
+  assumed away (making the whole clone atomic would require dictating how the `cloner` writes to
+  disk, contradicting the base/wrap split this design is built on).
 
 **Writing and editing a bounded local directory — the write side of the read/search pair above,
 in a new `tools/edit.py` module** (kept separate from `fs.py`, already the largest single file in
