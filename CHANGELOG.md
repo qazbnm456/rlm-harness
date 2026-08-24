@@ -169,8 +169,11 @@ arbitrary command), so a CONSUMER-SUPPLIED, isolated `cloner` does the actual cl
   exception, handled identically), if a credentials provider is configured, ONE retry with
   credentials — never more than two clone attempts, no retry loop.
 - **Credential redaction, best-effort, disclosed as such** — the raw secret string a credentials
-  provider supplies is redacted (exact-string match) from the trace and the model-visible return
-  string, including `stdout` as well as `stderr`; this does NOT catch a derived/transformed leak
+  provider supplies is redacted (exact-string match) before it can reach anything model/trace-
+  visible: the returned string, and `stderr_preview` in the trace. `stdout` is redacted too before
+  its (post-redaction) length feeds the trace's `stdout_len` — `stdout` content itself is never
+  traced verbatim, only that length, matching `run_command`'s own existing "lengths + a preview,
+  not the full stream" trace-size posture. This does NOT catch a derived/transformed leak
   (URL-encoding, case-folding, a truncated echo). A malformed credentials dict (missing or
   non-string `"secret"`) — or a credentials provider that itself raises — fails CLOSED: treated
   exactly like a decline, never crashes the tool call.

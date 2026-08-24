@@ -483,12 +483,14 @@ finding = MyTask(tools=[git_clone]).run(...)
   retry with credentials. Never more than two `cloner` invocations per call.
 - **Credential redaction, disclosed as best-effort, not absolute.** A `get_credentials(url)`
   provider returning a dict MUST include a `"secret"` key (the raw credential string); after a
-  credentialed attempt, that exact string is redacted (plain string replacement) from the traced
-  `stdout`/`stderr` and the model-visible return string — this does NOT catch a derived or
-  transformed leak (URL-encoding, case-folding, a truncated echo from a misconfigured credential
-  helper). A malformed dict (missing/non-string/empty `"secret"`), or a provider that itself
-  raises, fails CLOSED — treated exactly like a decline, no retry attempted, never crashes the
-  call.
+  credentialed attempt, that exact string is redacted (plain string replacement) before it can
+  reach the traced `stderr_preview` or the model-visible return string. `stdout` is redacted too
+  before its (post-redaction) length feeds the trace's `stdout_len` — `stdout` content itself is
+  never traced verbatim, only that length, matching `run_command`'s own existing "lengths + a
+  preview, not the full stream" posture. This does NOT catch a derived or transformed leak
+  (URL-encoding, case-folding, a truncated echo from a misconfigured credential helper). A
+  malformed dict (missing/non-string/empty `"secret"`), or a provider that itself raises, fails
+  CLOSED — treated exactly like a decline, no retry attempted, never crashes the call.
 - **`default_depth=1`** (shallow clone by default) is passed through to the `cloner` as a plain
   argument — the "avoid being tricked into cloning an enormous repository" mitigation;
   `default_depth=None` opts out for a caller that explicitly wants full history.
