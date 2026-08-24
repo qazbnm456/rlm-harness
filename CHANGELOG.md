@@ -6,9 +6,16 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 ## [1.3.0] - 2026-08-24
 
-Eleven new public names, plus one new optional extra (`grep`; the pre-existing `subscription`
+Thirteen new public names, plus one new optional extra (`grep`; the pre-existing `subscription`
 extra also gains new auto-routing behavior in `configure()`, but is not itself new). No
 trace-format change; every existing call site behaves byte-for-byte identically to 1.2.1.
+
+**This batch introduces the kit's first file-mutation/data-loss-capable tools**
+(`make_write_file_tool` / `make_edit_file_tool`, described in their own section below) — every
+tool shipped before this was either read-only against the filesystem or delegated
+execution/network entirely to a consumer-supplied runner/fetcher. A bug in either of the two new
+tools can destroy content, not just return wrong information; see that section for how this is
+mitigated and what remains explicitly out of scope.
 
 **Harness delegation, made lighter-weight and consumer-name-agnostic.**
 
@@ -106,6 +113,39 @@ trace utilization metrics.
   matching as a first-class flag. `max_results` has one consistent, mode-agnostic "caps output
   rows" definition across all three modes. The regex-DoS mitigation above is verified, via a
   parametrized test, to hold across every `output_mode` × `ignore_case` combination.
+
+**Writing and editing a bounded local directory — the write side of the read/search pair above,
+in a new `tools/edit.py` module** (kept separate from `fs.py`, already the largest single file in
+`tools/`, so "everything that can mutate the filesystem" stays physically distinct from
+"everything that only reads it").
+
+- **`make_write_file_tool`** — create or overwrite a whole file, atomically
+  (`atomic.atomic_write_text`), scoped by the same `resolve_within_root` guard as the read side.
+  Unconditional overwrite (no create-only mode) and no `max_content_chars` cap in this round —
+  both are stated, considered choices, not oversights (see the module's own docstring for the
+  reasoning and the one accepted gap: a model looping on this tool can still fill the host's disk
+  with many individually-bounded files).
+- **`make_edit_file_tool`** — exact-string-anchor replacement, mirroring the same
+  uniqueness-checked contract Claude Code's own `Edit` tool and `nano-rlm`'s `edit` skill both use
+  independently: refuses (never mis-edits) if `old_string` isn't found, or is found more than
+  once and `replace_all` (a per-call, not factory-level, flag) is `False` — the file is left
+  byte-for-byte untouched on every refusal path. `old_string == ""` and `old_string == new_string`
+  are refused as degenerate inputs; `new_string == ""` (delete this text) is a legitimate
+  operation and is NOT refused.
+- Both factories take the same `name=`/`encoding=` parameters as `make_read_file_tool`/
+  `make_grep_repo_tool`, including the same `name=` collision fix and factory-build-time
+  validation (identifier + not dspy-reserved).
+- **A real bug in `atomic_write_text` (added last round, its first tool-level consumer) was found
+  and fixed while building these two tools**: `tempfile.mkstemp` always creates its temp file at
+  mode `0600`, and `os.replace` does not carry the destination's mode across — so overwriting an
+  existing file through `atomic_write_text` previously reset its permissions to `0600` silently
+  (e.g. stripping the executable bit off a script). Fixed in the shared primitive itself: the
+  destination's existing mode is preserved across an overwrite, `stat`-then-`chmod`-then-`replace`,
+  so there is never a window where the file at the final path has the wrong mode.
+- **Known, accepted, out-of-scope-for-this-round risk**: `atomic_write_text`'s guarantee is "no
+  torn read," never "serializes concurrent read-modify-write across processes" — two SEPARATE
+  `RLMTask` runs (or two workers in a batch eval) racing an edit on the same file can silently
+  lose one of the two updates. Stated here rather than omitted; not mitigated this round.
 
 ## [1.2.1] - 2026-08-23
 

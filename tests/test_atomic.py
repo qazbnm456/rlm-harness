@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import stat
 
 import pytest
 
@@ -74,3 +75,20 @@ def test_atomic_write_text_replace_only_called_after_content_is_complete(tmp_pat
     atomic_write_text(path, "complete-content")
     assert seen["content_at_replace_time"] == "complete-content"
     assert _read(path) == "complete-content"
+
+
+def test_atomic_write_text_preserves_permission_bits_on_overwrite(tmp_path):
+    # tempfile.mkstemp always creates its temp file at mode 0600 regardless of umask, and
+    # os.replace does NOT carry the destination's mode across -- without the fix, overwriting an
+    # existing file through atomic_write_text silently resets it to 0600, stripping e.g. the
+    # executable bit off a script. This is the exact regression the fix in atomic.py exists to
+    # prevent.
+    path = str(tmp_path / "script.sh")
+    atomic_write_text(path, "#!/bin/sh\necho hi\n")
+    os.chmod(path, 0o755)
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o755
+
+    atomic_write_text(path, "#!/bin/sh\necho bye\n")
+
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o755
+    assert _read(path) == "#!/bin/sh\necho bye\n"
