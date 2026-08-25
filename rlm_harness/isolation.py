@@ -162,6 +162,20 @@ def run_in_subprocess(
     relay path as any other error) — a caller passing ``max_memory_mb`` on macOS should expect
     this raised outright, NOT a silently-unenforced cap and NOT actual memory enforcement.
     Effectively, `max_memory_mb` is Linux-only in practice today; `cpu_time_limit_s` is not.
+
+    **A second real, empirically-confirmed edge case (found via a real Linux CI run, not
+    reasoning alone) — an aggressively low ``max_memory_mb`` can starve the relay mechanism
+    itself.** On a platform where ``RLIMIT_AS`` genuinely enforces (Linux), the child correctly
+    hits ``MemoryError`` — but by that point it may be so memory-constrained that
+    ``multiprocessing.Queue.put()``'s own internal feeder thread fails to even START
+    (``RuntimeError: can't start new thread``), crashing the child before ANYTHING can be
+    relayed. There is no viable fallback for this: a resource-exhausted process cannot reliably
+    report its own resource exhaustion through a mechanism (spawning a thread) that itself needs
+    spare resources. This is handled correctly, not silently — it degrades to the exact same
+    safety net an external kill would (the parent's own bounded ``queue.get()`` times out and
+    raises the generic "child exited without delivering a result" error) — but a caller should
+    expect THIS outcome, not a specific ``MemoryError``, as one real possibility when
+    ``max_memory_mb`` is set low enough to matter.
     """
     ctx = multiprocessing.get_context("spawn")
     result_queue = ctx.Queue()
