@@ -285,7 +285,14 @@ plain thread/process pool) is explicitly the consumer's own concern, not shipped
   unlimited at ALL (empirically confirmed: every attempted value failed identically with
   `ValueError: current limit exceeds maximum limit`), so this parameter is effectively Linux-only
   in practice today. Either way it fails loudly (relayed as a clear exception) rather than
-  silently leaving the cap unenforced.
+  silently leaving the cap unenforced. **A second edge case, confirmed on real Linux CI**: an
+  aggressively low `max_memory_mb` can starve the relay mechanism itself — the child correctly
+  hits `MemoryError`, but is by then so memory-constrained that `multiprocessing.Queue.put()`'s
+  own feeder thread fails to start, crashing the child before anything relays. No fallback is
+  possible for this (a resource-exhausted process can't reliably report its own exhaustion
+  through a mechanism that itself needs resources) — it degrades to the same safety net an
+  external kill would (the parent's bounded `queue.get()` times out with a generic error), which
+  is the correct, accepted outcome, not a bug.
 
 ## [1.2.1] - 2026-08-23
 

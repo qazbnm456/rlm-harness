@@ -706,7 +706,16 @@ it in a SEPARATE OS PROCESS.
   with `ValueError: current limit exceeds maximum limit`), so this parameter is effectively
   Linux-only in practice today. Either way it fails LOUDLY — relayed as a clear exception through
   the same test-pickle-then-relay path as any other error — never silently leaving the cap
-  unenforced.
+  unenforced. **A second edge case, confirmed on real Linux CI, not just reasoned about**: an
+  aggressively low `max_memory_mb` can starve the relay mechanism itself — the child correctly
+  hits `MemoryError`, but by then is so memory-constrained that `multiprocessing.Queue.put()`'s
+  own internal feeder thread fails to even start (`RuntimeError: can't start new thread`),
+  crashing the child before anything can be relayed. No fallback is possible for this — a
+  resource-exhausted process can't reliably report its own exhaustion through a mechanism
+  (spawning a thread) that itself needs spare resources — so it degrades to the exact same
+  safety net an external kill would (the parent's own bounded `queue.get()` times out and raises
+  a generic "child exited without delivering a result" error). This is the correct, accepted
+  outcome for this scenario, not a bug — the cap was still genuinely enforced.
 - **No process pooling/reuse** — a fresh `multiprocessing.Process` per call, matching
   `run_isolated`'s own "one thread per call, by design — simplest correct answer" precedent,
   transplanted to the process level. A consumer wanting a persistent worker pool builds one using
