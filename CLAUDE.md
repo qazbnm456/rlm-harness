@@ -26,6 +26,23 @@ One companion rule ships under `.claude/rules/`:
     `.gitignore`-parsing tests exercise the real `pathspec` package instead of skipping. No live
     LLM, network, or Deno needed: the dspy-bearing tests use `DummyLM` or are skipped if dspy is
     absent.
+- **That local `pytest` run is ONE of CI's three interpreter axes — 3.11 is the one worth
+  repeating by hand.** `uv run` without `--python` takes the project's default interpreter (3.12
+  today; `requires-python` is `>=3.11`), so a stdlib behavior that changed between 3.11 and 3.12 is
+  invisible locally and reddens exactly one matrix cell AFTER the push. Not hypothetical:
+  `make_extract_archive_tool` let a raw `IndexError` escape its own refusal path because CPython
+  3.11's `ZipInfo.is_dir()` indexes `filename[-1]` where 3.12+ uses `endswith("/")` — a green local
+  run plus green 3.12/3.13 jobs said nothing about it (CHANGELOG 1.3.0). So when a change leans on
+  stdlib behavior (`zipfile`/`tarfile`, `resource`, `multiprocessing`, `asyncio`), also run the
+  suite with `--python 3.11` — the matrix FLOOR is where a "the stdlib does X" assumption breaks
+  first. Then pin the lesson in a test that fails on EVERY version (a stub whose accessor raises
+  the way the old stdlib does), never one that only reproduces on 3.11.
+- **The OS axis a local run cannot see at all.** CI is Linux; macOS is not. `run_in_subprocess`'s
+  `max_memory_mb` (`RLIMIT_AS`) genuinely enforces on Linux and is refused outright by the macOS
+  kernel, so its edge cases are Linux-only by nature and the relay-starvation one was found by a
+  red CI run, not by local testing or by an independent review (CHANGELOG 1.3.0). When the
+  PLATFORM is what differs, widen the TEST's accepted outcomes and disclose it; don't bend the
+  production behavior toward whichever host you happen to be on.
 - **`.github/workflows/ci.yml` also has a `packaging` job** — builds the wheel, installs it into a
   clean environment with NO lockfile, and runs a task from it. Every other job runs from the source
   tree via `uv run`, so a module missing from the wheel would ship silently. It is the PACKAGING
