@@ -4,7 +4,7 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
-## [1.3.0] - 2026-08-24
+## [1.3.0] - 2026-08-25
 
 Twenty new public names, plus two new optional extras (`grep`, `gitignore`; the pre-existing `subscription`
 extra also gains new auto-routing behavior in `configure()`, but is not itself new). No

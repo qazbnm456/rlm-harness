@@ -144,9 +144,11 @@ See `CLAUDE.md` for invariants when modifying the kit.
 
 ## Status
 
-**v1.2.1** — the current release. Scaffold + harness-engineering layer (sub-LM hook,
+**v1.3.0** — the current release. Scaffold + harness-engineering layer (sub-LM hook,
 skills-as-tools, trajectory recording, replay, dataset export, harness delegation on both the client
-and server side), plus fast-failing non-retryable LM errors. Hardened by dogfooding against real
+and server side), plus fast-failing non-retryable LM errors and a filesystem/process layer: reading,
+searching, writing and editing a bounded directory, safe git clone and archive extraction, an
+isolated-subprocess primitive, and deterministic quote grounding. Hardened by dogfooding against real
 downstream consumers; the changes that surfaced are in
 [`CHANGELOG.md`](https://github.com/qazbnm456/rlm-harness/blob/main/CHANGELOG.md).
 
