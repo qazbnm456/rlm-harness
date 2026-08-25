@@ -6,7 +6,7 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 ## [1.3.0] - 2026-08-24
 
-Eighteen new public names, plus two new optional extras (`grep`, `gitignore`; the pre-existing `subscription`
+Twenty new public names, plus two new optional extras (`grep`, `gitignore`; the pre-existing `subscription`
 extra also gains new auto-routing behavior in `configure()`, but is not itself new). No
 trace-format change; every existing call site behaves byte-for-byte identically to 1.2.1.
 
@@ -293,6 +293,51 @@ plain thread/process pool) is explicitly the consumer's own concern, not shipped
   through a mechanism that itself needs resources) — it degrades to the same safety net an
   external kill would (the parent's bounded `queue.get()` times out with a generic error), which
   is the correct, accepted outcome, not a bug.
+
+**`make_extract_archive_tool` — safe zip/tar extraction, in a new `tools/archive.py`, plus a new
+`atomic_write_stream` primitive in `atomic.py`.** `zipfile.extractall()`/`tarfile.extractall()`
+are not safe by default — a malicious entry can carry an absolute path, a `..`-traversal path, or
+(tar) a symlink/hardlink pointing outside the extraction target ("zip slip"). This is the same
+`resolve_within_root` reasoning `read_file`/`write_file` already apply to a single path argument,
+generalized to every entry of an archive.
+
+- **Two-pass extraction, matching this kit's "refuse outright, never partially mutate" posture**:
+  Pass 1 validates every entry's metadata ONLY (name, type, declared size, and — zip-only — the
+  encryption/compression-method header fields) and refuses the WHOLE operation upfront on any
+  violation, before a single byte is written; Pass 2 (only reached once Pass 1 fully passes)
+  streams each entry's real bytes via `atomic_write_stream`, bounding peak memory to a small,
+  fixed chunk size regardless of that entry's own size.
+- **A declared size cannot smuggle more decompressed output than it promises** — confirmed
+  empirically, not just reasoned about: `ZipExtFile.read()`/`TarFile.extractfile()`'s reader are
+  both hard-ceilinged by the entry's own declared size field, so a "lying header" memory bomb does
+  not exist via either stdlib read API. Pass 1's cumulative declared-size check is therefore what
+  actually bounds a decompression-bomb-shaped archive; the streaming design exists for a separate,
+  still-real reason — bounding peak memory for a single large (but honestly declared) entry.
+- **Exception handling: one shared, broad-but-bounded tuple, wrapped at every point this design
+  calls into the archive/compression machinery** (the initial open, Pass 1's entry-enumeration
+  loop, and Pass 2's per-entry read), covering `zipfile.BadZipFile`/`tarfile.TarError`/`EOFError`/
+  `RuntimeError`/`NotImplementedError`/`UnicodeError` — closing a whole category (encrypted
+  entries, an unsupported `compress_type`, a local-vs-central-directory header field mismatch, a
+  malformed version field raised during the archive's own constructor) rather than one exception
+  type at a time. **`zipfile`/`tarfile` further delegate decompression to `zlib`/`bz2`/`lzma`
+  internally, and neither module translates those libraries' own exception types on the way
+  through** — confirmed empirically with a structurally intact archive whose compressed PAYLOAD
+  (not header) is corrupted: `zlib.error`/`lzma.LZMAError` are also now in the shared tuple, and
+  plain `OSError` (what `bz2` itself raises for corrupted data) is too — made safe to add only
+  because the budget-exceeded signal from `atomic_write_stream` is its own dedicated
+  `_ExtractionBudgetExceeded` (an `OSError` subclass), caught first and separately, so it can
+  never collide with — or be misreported as — an ordinary `OSError` a compression library raises
+  for corrupted data.
+- **No password-protected/encrypted archives** — refused upfront in Pass 1 via the entry's own
+  header flag bits, with a clear reason, never a crash. **No nested-archive recursion** — an
+  archive found inside the extracted output is not itself auto-extracted. **Unconditional
+  overwrite** of existing files at the destination, matching `make_write_file_tool`'s own posture.
+- `atomic_write_stream(path, chunks, *, max_bytes=None)` — a new, additive primitive alongside
+  the already-shipped `atomic_write_text` (not a refactor of it, zero regression risk to that
+  primitive's own tested behavior): the same same-directory-temp-file/`fsync`/`os.replace`/
+  permission-preservation idiom, but for a caller with an iterable of `bytes` chunks rather than
+  one already-in-memory blob, aborting the moment a running total exceeds `max_bytes` — checked
+  after every chunk, not merely once at the end.
 
 ## [1.2.1] - 2026-08-23
 

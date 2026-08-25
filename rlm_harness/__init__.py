@@ -9,7 +9,7 @@ Public surface::
     from rlm_harness import TraceRecorder, current_recorder, record_tool_call  # tracing
     from rlm_harness import load_skills_as_tools                       # skills-as-tools
     from rlm_harness import load_timeline, export_sft_turns, export_rl  # replay + dataset
-    from rlm_harness import atomic_write_text                          # atomic filesystem write
+    from rlm_harness import atomic_write_text, atomic_write_stream      # atomic filesystem write
     from rlm_harness import compute_run_utilization, RunUtilization    # trace utilization metrics
 
 ``config``, ``trace``, ``sub_lm``, ``skills``, ``replay``, ``dataset``, ``atomic``, ``metrics`` and
@@ -28,7 +28,7 @@ from ._toolname import (
     signature_from_json_schema,
     unique_tool_names,
 )
-from .atomic import atomic_write_text
+from .atomic import atomic_write_stream, atomic_write_text
 from .config import RLMConfig
 from .dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
 from .isolation import run_in_subprocess
@@ -133,6 +133,7 @@ __all__ = [
     "SUBSCRIPTION_PREFIX",
     # atomic filesystem write — never a partial file visible mid-write
     "atomic_write_text",
+    "atomic_write_stream",
     # trace utilization metrics — how a run's activity was distributed (reward-free, like rubric)
     "RunUtilization",
     "compute_run_utilization",

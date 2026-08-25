@@ -15,10 +15,10 @@ pitch, the quickstart, and installation — start at the
 | `task.py` | `RLMTask` base class. |
 | `_retry.py` | Validation + retry engine (dspy-free, unit-tested). |
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
-| `atomic.py` | `atomic_write_text` — a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write. dspy-free. |
+| `atomic.py` | `atomic_write_text` / `atomic_write_stream` — a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write; `atomic_write_stream` takes an iterable of `bytes` chunks instead of one in-memory blob, aborting once a running total exceeds an optional `max_bytes`. dspy-free. |
 | `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` — reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded `trace/v1` events. dspy-free. |
 | `isolation.py` | `run_in_subprocess` — a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
-| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` — see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths` — a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` — safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `verify_quote` — a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
+| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` — see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths` — a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` — safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `make_extract_archive_tool` — safe `zip`/tar extraction in `tools/archive.py` (see below), `verify_quote` — a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
 | `optimize.py` | GEPA harness — metric templates now, compile in Phase 2. |
 | `sub_lm.py` | `intercept_sub_lm` — wrap the RLM's sub-LM to trace every escalation as a `sub_call` (+ optional validate/post-process); `model_as_tool` for LM-decided multi-model routing. |
 | `skills.py` | `load_skills_as_tools` — expose a Skills directory to the RLM as tools. |
@@ -557,6 +557,48 @@ finding = MyTask(tools=[read_file, grep_files, write_file, edit_file]).run(...)
   (`tempfile.mkstemp` always creates its temp file at that mode, and `os.replace` doesn't carry
   the destination's mode across) — now the destination's existing mode is preserved across an
   overwrite.
+
+## Extracting archives safely (`tools/archive.py`)
+
+`make_extract_archive_tool(root)` — a safe `zip`/tar extraction tool. `zipfile.extractall()`/
+`tarfile.extractall()` are not safe by default: a malicious entry can carry an absolute path, a
+`..`-traversal path, or (tar) a symlink/hardlink pointing outside the extraction target ("zip
+slip") — the same `resolve_within_root` reasoning `read_file`/`write_file` already apply to a
+single path argument, generalized here to every entry of an archive.
+
+```python
+from rlm_harness.tools import make_extract_archive_tool
+
+extract_archive = make_extract_archive_tool(repo_root)
+finding = MyTask(tools=[extract_archive, read_file, write_file]).run(...)
+```
+
+- Supports `.zip` and tar variants (`.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/
+  `.txz`), dispatched by extension — an unrecognized extension returns an error string, never
+  raises, never sniffs content.
+- **Two-pass extraction, matching this kit's "refuse outright, never partially mutate" posture**:
+  Pass 1 validates every entry's metadata ONLY (name, type, declared size, and — zip-only — the
+  encryption/compression-method header fields) and refuses the WHOLE operation upfront on any
+  violation, before a single byte is written — a zip-slip path, a symlink/hardlink/device entry,
+  an encrypted entry, or an unsupported compression method all fail here, with nothing landing on
+  disk. Pass 2 (only reached once Pass 1 fully passes) streams each entry's real bytes via the new
+  `atomic_write_stream` primitive (below), bounding peak memory to a small, fixed chunk size
+  regardless of that entry's own size.
+- **A declared size cannot smuggle more decompressed output than it promises** — confirmed
+  empirically: both stdlib read APIs hard-ceiling their output at the entry's own declared size
+  field, so a "lying header" memory bomb does not exist via either. Pass 1's cumulative
+  declared-size check (`max_extracted_bytes`, default 200 MiB) and entry-count check
+  (`max_entries`, default 10,000) are factory (operator) parameters, never model-controlled — same
+  posture `make_grep_files_tool`'s timeouts and `list_candidate_paths`'s `max_files` already take.
+- **No password-protected/encrypted archives** — refused upfront in Pass 1, with a clear reason,
+  never a crash. **No nested-archive recursion** — an archive found inside the extracted output is
+  not itself auto-extracted; call the tool again on it, subject to the same checks a second time.
+  **Unconditional overwrite** of existing files at the destination, matching `make_write_file_tool`.
+- **`atomic_write_stream(path, chunks, *, max_bytes=None)`** (new, in `atomic.py`) — a separate,
+  additive primitive alongside `atomic_write_text` (not a refactor of it): the same
+  same-directory-temp-file/`fsync`/`os.replace`/permission-preservation idiom, but for a caller
+  with an iterable of `bytes` chunks rather than one already-in-memory blob, aborting the moment a
+  running total exceeds `max_bytes` — checked after every chunk, not merely once at the end.
 
 ## Environment interpreter (`interpreter="container"`)
 
