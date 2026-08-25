@@ -16,7 +16,7 @@ import pytest
 from rlm_harness.atomic import _ExtractionBudgetExceeded, atomic_write_stream
 from rlm_harness.testing import assert_repl_safe, assert_task_repl_safe
 from rlm_harness.tools import make_extract_archive_tool
-from rlm_harness.tools.archive import _pass2_extract, _SafeEntry
+from rlm_harness.tools.archive import _pass1_validate, _pass2_extract, _SafeEntry
 from rlm_harness.trace import EVENT_TOOL_CALL, TraceRecorder, load_events
 
 # ---- archive-building helpers ---------------------------------------------------------------
@@ -27,7 +27,18 @@ def _make_zip(path, entries, compress_type=zipfile.ZIP_DEFLATED):
     with zipfile.ZipFile(path, "w", compression=compress_type) as zf:
         for entry in entries:
             name, data = entry[0], entry[1]
-            zf.writestr(name, data)
+            if name == "":
+                # An empty name is exactly what the empty-name refusal test needs to build, but
+                # CPython 3.11's ZipFile.writestr() detects a trailing "/" with `filename[-1]`
+                # and so raises IndexError on an empty name before writing anything (3.12+ uses
+                # `filename.endswith("/")` and accepts it). Handing writestr an explicit ZipInfo
+                # skips that branch on every version; compress_type is carried over so the entry
+                # still matches what the string path would have produced.
+                info = zipfile.ZipInfo(filename=name)
+                info.compress_type = compress_type
+                zf.writestr(info, data)
+            else:
+                zf.writestr(name, data)
 
 
 def _make_tar(path, entries, mode="w:gz"):
@@ -387,6 +398,39 @@ def test_empty_name_entry_refused_not_isadirectoryerror(tmp_path):
     result = tool("a.zip", "out")
     assert result.startswith("Refused:")
     assert os.listdir(dest) == []
+
+
+class _EmptyNameZipInfo:
+    """A zip entry whose name-derived accessor behaves the way CPython 3.11's `ZipInfo.is_dir()`
+    does on an empty name (`filename[-1]` -> IndexError). 3.12+ returns False instead, so the
+    real-archive test above only exercises this on 3.11 -- this stub pins the ordering on EVERY
+    version, and would go red again the moment a metadata accessor is read before the name is
+    refused."""
+
+    filename = ""
+    file_size = 1
+    external_attr = 0
+    flag_bits = 0
+    compress_type = zipfile.ZIP_STORED
+
+    def is_dir(self):
+        raise IndexError("string index out of range")
+
+
+class _StubZipArchive:
+    def __init__(self, entries):
+        self._entries = entries
+
+    def infolist(self):
+        return self._entries
+
+
+def test_empty_name_refused_before_any_name_derived_accessor(tmp_path):
+    safe_entries, refusal = _pass1_validate(
+        _StubZipArchive([_EmptyNameZipInfo()]), "zip", str(tmp_path), 100, 10_000
+    )
+    assert safe_entries == []
+    assert refusal == "Refused: an archive entry has an empty or '.' name."
 
 
 def test_backslash_name_normalized_to_nested_path(tmp_path):

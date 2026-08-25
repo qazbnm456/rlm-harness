@@ -152,8 +152,19 @@ def _pass1_validate(
     raw_iter = archive.infolist() if fmt == "zip" else archive
 
     for count, raw in enumerate(raw_iter, start=1):
+        # The entry's NAME is read and refused FIRST, before any other piece of its metadata is
+        # touched. A degenerate name is not merely invalid input to the checks below -- it can
+        # break the archive library's own metadata accessors: CPython 3.11's `ZipInfo.is_dir()`
+        # detects a trailing "/" with `filename[-1]` and so raises IndexError on an empty name
+        # (3.12+ tests it with `endswith("/")` and returns False). Calling `is_dir()` before this
+        # check let an empty-name entry escape as a raw IndexError instead of the refusal here.
+        # Ordering is what closes that class -- not another exception type in the caught tuple.
+        raw_name = raw.filename if fmt == "zip" else raw.name
+        normalized = raw_name.replace("\\", "/")
+        if normalized in ("", "."):
+            return [], "Refused: an archive entry has an empty or '.' name."
+
         if fmt == "zip":
-            raw_name = raw.filename
             declared_size = raw.file_size
             is_dir = raw.is_dir()
             mode = raw.external_attr >> 16
@@ -183,14 +194,10 @@ def _pass1_validate(
                     f"({raw.compress_type!r})."
                 )
         else:
-            raw_name = raw.name
             declared_size = raw.size
             is_dir = raw.isdir()
             is_special = raw.issym() or raw.islnk() or raw.isdev()
 
-        normalized = raw_name.replace("\\", "/")
-        if normalized in ("", "."):
-            return [], "Refused: an archive entry has an empty or '.' name."
         if is_special:
             return [], (
                 f"Refused: {raw_name!r} is a symlink, hardlink, device, or other non-regular, "

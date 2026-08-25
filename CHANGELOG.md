@@ -338,6 +338,21 @@ generalized to every entry of an archive.
   permission-preservation idiom, but for a caller with an iterable of `bytes` chunks rather than
   one already-in-memory blob, aborting the moment a running total exceeds `max_bytes` — checked
   after every chunk, not merely once at the end.
+- **A Python 3.11-only crash in that very refusal, caught by CI's own 3.11 job** — the 3.12/3.13
+  jobs and a full local run were all green. Pass 1 read each zip entry's `is_dir()` *before*
+  checking its name, and CPython 3.11's `ZipInfo.is_dir()` detects a trailing `/` with
+  `filename[-1]`: an entry with an EMPTY name therefore raised a raw `IndexError` out of the tool
+  instead of returning the intended `Refused:` string — the exact "a stdlib exception escapes as
+  itself" class the two-pass design already closed twice elsewhere, reintroduced through an
+  accessor rather than through a read. (3.12+ tests it with `endswith("/")` and returns `False`,
+  which is why exactly one job in the matrix went red.) **Fixed by ORDERING, not by another entry
+  in the caught-exception tuple**: an entry's name is now read and refused first, before any other
+  piece of its metadata is touched, so no name-derived accessor can ever see a degenerate name.
+  Pinned on EVERY version — not just the one whose stdlib raises — by a stub-entry test whose
+  `is_dir()` raises unconditionally, so the ordering cannot regress silently on a developer machine
+  running 3.12+. The test suite's own zip fixture builder needed the same treatment for the same
+  underlying reason (`ZipFile.writestr()` indexes a string name identically on 3.11): it now writes
+  an empty-name entry through an explicit `ZipInfo`, which skips that branch on every version.
 
 ## [1.2.1] - 2026-08-23
 
