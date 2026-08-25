@@ -1,6 +1,7 @@
 """Reusable tools that RLM tasks can expose to the model inside the REPL."""
 
 from ._async import run_isolated
+from .archive import make_extract_archive_tool
 from .command import CommandResult, make_command_tool, refuse_broad_git_history
 from .discover import CandidatePaths, list_candidate_paths
 from .edit import make_edit_file_tool, make_write_file_tool
@@ -48,6 +49,7 @@ __all__ = [
     "list_candidate_paths",
     "make_command_tool",
     "make_edit_file_tool",
+    "make_extract_archive_tool",
     "make_fetch_tool",
     "make_git_clone_tool",
     "make_grep_files_tool",
