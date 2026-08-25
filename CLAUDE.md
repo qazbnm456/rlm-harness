@@ -202,7 +202,12 @@ One companion rule ships under `.claude/rules/`:
   come from a runtime JSON Schema), stamp `call.__signature__` from the schema — required-first,
   KEYWORD_ONLY — so the proxy exposes real names. Enforce it in a test with
   `rlm_harness.testing.assert_repl_safe(tool)` (see `tests/test_repl_safety.py`, which sweeps every shipped
-  factory); a consumer exposing its own tools should assert the same.
+  factory). Register a NEW factory in that file's `_REPL_FACTORIES` table, not only in the new tool's own
+  test file: the table is hand-built because every factory takes different arguments, but
+  `test_sweep_covers_every_shipped_repl_factory` fails the moment a `make_*` reaches
+  `rlm_harness.tools.__all__` without an entry there (or an argued exemption in `_NOT_REPL_FACTORIES`).
+  Six factories shipped in 1.3.0 before that guard existed and none reached the sweep — each was safe,
+  but only because its author happened to remember. A consumer exposing its own tools should assert the same.
 - **A tool's NAME is derived data too — sanitize it, and keep the raw name for the wire and the
   trace.** dspy validates the name at `RLM(...)` construction (identifier, not a keyword, unique
   across the task) and a failure aborts registration for EVERY tool, so one bad name silently takes

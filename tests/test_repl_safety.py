@@ -13,8 +13,26 @@ import pytest
 pytest.importorskip("dspy")
 
 import dspy
+from pydantic import BaseModel
 
+from rlm_harness.mcp import _make_tool
+from rlm_harness.skills import load_skills_as_tools
+from rlm_harness.sub_lm import model_as_tool
 from rlm_harness.testing import assert_repl_safe
+from rlm_harness.tools import (
+    make_command_tool,
+    make_edit_file_tool,
+    make_extract_archive_tool,
+    make_fetch_tool,
+    make_git_clone_tool,
+    make_grep_files_tool,
+    make_harness_tool,
+    make_model_tool,
+    make_read_file_tool,
+    make_schema_validator,
+    make_web_search_tool,
+    make_write_file_tool,
+)
 
 # ---- assert_repl_safe itself ---------------------------------------------
 
@@ -52,42 +70,95 @@ def test_assert_repl_safe_rejects_required_after_default():
 
 # ---- every shipped REPL-tool factory -------------------------------------
 
-def test_all_shipped_repl_factories_are_safe(tmp_path):
-    from pydantic import BaseModel
 
-    from rlm_harness.mcp import _make_tool
-    from rlm_harness.skills import load_skills_as_tools
-    from rlm_harness.sub_lm import model_as_tool
-    from rlm_harness.tools import (
-        make_command_tool,
-        make_fetch_tool,
-        make_model_tool,
-        make_schema_validator,
-        make_web_search_tool,
+class _M(BaseModel):
+    x: int
+
+
+def _build_grep_files_tool(tmp_path):
+    # The one factory with a hard optional-extra dependency: it refuses to build without `regex`,
+    # because bounding an LM-controlled pattern needs a REAL timeout and stdlib `re` cannot give
+    # one. Skipping is scoped to this ONE parametrized case, so the rest of the sweep still runs
+    # for someone without the extra installed.
+    pytest.importorskip("regex")
+    return make_grep_files_tool(str(tmp_path), ["a.py"])
+
+
+# Every shipped factory that produces a REPL-injected tool, with the minimal arguments it needs.
+# Inner runners/searchers/fetchers/cloners are never called at construction — only the RETURNED
+# tool's signature is under test, so their own signatures don't matter. Keyed by the factory's
+# EXPORTED NAME so `test_sweep_covers_every_shipped_repl_factory` can check this table against
+# `rlm_harness.tools.__all__` itself.
+_REPL_FACTORIES = {
+    "make_command_tool": lambda tmp_path: make_command_tool(
+        lambda *a, **k: {"exit_code": 0, "stdout": "", "stderr": ""}
+    ),
+    "make_edit_file_tool": lambda tmp_path: make_edit_file_tool(str(tmp_path)),
+    "make_extract_archive_tool": lambda tmp_path: make_extract_archive_tool(str(tmp_path)),
+    "make_fetch_tool": lambda tmp_path: make_fetch_tool(lambda *a, **k: "body"),
+    "make_git_clone_tool": lambda tmp_path: make_git_clone_tool(str(tmp_path), lambda *a, **k: None),
+    "make_grep_files_tool": _build_grep_files_tool,
+    "make_harness_tool": lambda tmp_path: make_harness_tool(
+        lambda src: types.SimpleNamespace(content="x"),
+        lambda raw: types.SimpleNamespace(ok=True, errors=[]),
+    ),
+    "make_model_tool": lambda tmp_path: make_model_tool(
+        lambda spec: "x", lambda raw: types.SimpleNamespace(ok=True, errors=[])
+    ),
+    "make_read_file_tool": lambda tmp_path: make_read_file_tool(str(tmp_path)),
+    "make_schema_validator": lambda tmp_path: make_schema_validator(_M),
+    "make_web_search_tool": lambda tmp_path: make_web_search_tool(lambda *a, **k: []),
+    "make_write_file_tool": lambda tmp_path: make_write_file_tool(str(tmp_path)),
+}
+
+# `make_*` exports of `rlm_harness.tools` that do NOT produce a REPL-injected tool, and so are
+# outside this sweep. Named one at a time, with the reason, rather than pattern-matched: the guard
+# below is only worth having if each exemption has to be argued for.
+_NOT_REPL_FACTORIES = {
+    # Returns a HOST-SIDE validator — it takes an already-parsed object and returns a list of
+    # violation strings, for a consumer's own parse step or `make_model_tool`'s `validate=`.
+    # Never placed in a `tools=[...]` list, so the REPL's signature rules don't apply to it.
+    "make_json_schema_validator",
+}
+
+
+@pytest.mark.parametrize("factory", sorted(_REPL_FACTORIES))
+def test_shipped_repl_factory_is_safe(factory, tmp_path):
+    assert_repl_safe(_REPL_FACTORIES[factory](tmp_path))
+
+
+def test_sweep_covers_every_shipped_repl_factory():
+    """What actually backs CLAUDE.md's "sweeps every shipped factory" claim.
+
+    The table above is hand-built — each factory takes different arguments, so it cannot be driven
+    generically — but NOTICING a new one is automatic: a `make_*` added to
+    `rlm_harness.tools.__all__` with no entry above (and no argued exemption) fails HERE, at the
+    moment it ships, rather than the first time a model can't call it. Six factories landed in
+    1.3.0 before this guard existed and not one of them reached the sweep; each was covered only
+    by an `assert_repl_safe` in its own test file, which is real coverage but not a convention
+    anything enforced."""
+    import rlm_harness.tools as tools_pkg
+
+    shipped = {name for name in tools_pkg.__all__ if name.startswith("make_")}
+    unswept = shipped - set(_REPL_FACTORIES) - _NOT_REPL_FACTORIES
+    assert not unswept, (
+        f"shipped but not swept: {sorted(unswept)} — add a builder to _REPL_FACTORIES, or list it "
+        f"in _NOT_REPL_FACTORIES with the reason it is not a REPL-injected tool."
     )
 
-    class M(BaseModel):
-        x: int
 
-    # inner runners/searchers/fetchers are never called at construction — only the RETURNED tool's
-    # signature is under test, so their own signatures don't matter.
-    tools = {
-        "fetch_url": make_fetch_tool(lambda *a, **k: "body"),
-        "web_search": make_web_search_tool(lambda *a, **k: []),
-        "run_command": make_command_tool(lambda *a, **k: {"exit_code": 0, "stdout": "", "stderr": ""}),
-        "model_tool": make_model_tool(lambda spec: "x", lambda raw: types.SimpleNamespace(ok=True, errors=[])),
-        "schema_validator": make_schema_validator(M),
-        "query_model": model_as_tool("m", None, description="d"),
-    }
-    for tool in tools.values():
-        assert_repl_safe(tool)
+def test_other_repl_tool_producers_are_safe(tmp_path):
+    """REPL tools that do NOT come from a `rlm_harness.tools` factory, and so cannot be reached by
+    the table above: progressive-disclosure skills, the sub-LM query tool, and the MCP bridge —
+    the site that HAD the kwargs bug."""
+    assert_repl_safe(model_as_tool("m", None, description="d"))
 
     # progressive-disclosure skills: list_skills() + read_skill(name)
     (tmp_path / "s.md").write_text("---\nname: s\ndescription: d\n---\nbody")
     for tool in load_skills_as_tools(tmp_path, discovery="inject"):
         assert_repl_safe(tool)
 
-    # the MCP path — the site that HAD the kwargs bug — via a fake bridge (no live server)
+    # the MCP path, via a fake bridge (no live server)
     fake_tool = types.SimpleNamespace(
         name="get_vulnerability", description="d",
         inputSchema={"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
@@ -112,10 +183,6 @@ from rlm_harness._toolname import (
     sanitize_tool_name,
     unique_tool_names,
 )
-from rlm_harness.mcp import _make_tool
-from rlm_harness.sub_lm import model_as_tool
-from rlm_harness.tools import make_model_tool, make_schema_validator
-from rlm_harness.tools.harness import make_harness_tool
 
 _ok = lambda raw: types.SimpleNamespace(ok=True, errors=[])
 
