@@ -75,6 +75,14 @@ jobs:
         with:
           python-version: "3.13"
           enable-cache: true
+          # RESTORE the cache, never save it. This job and `test (py3.13)` derive the SAME setup-uv
+          # cache key (same interpreter, same `uv.lock` hash) and run concurrently, so both tried to
+          # reserve it and the loser warned on every run. A shared key is the RIGHT outcome -- one
+          # copy, both restore -- so the fix is to stop the second job racing to write it rather than
+          # to give it a `cache-suffix` and store the same thing twice. The test job is also the
+          # honest owner of that key: what it caches IS the locked dependency set the key names,
+          # while this job deliberately resolves fresh without the lockfile.
+          save-cache: false
       - name: Build the wheel and run a task from it
         run: |
           set -euo pipefail
