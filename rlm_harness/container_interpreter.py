@@ -182,6 +182,42 @@ def _spawn_subprocess(agent_src: str, config: ContainerConfig | None = None) -> 
 class ContainerInterpreter:
     """dspy ``CodeInterpreter`` backed by a persistent isolated container."""
 
+    @property
+    def execution_instructions(self) -> str:
+        """What the model is told its REPL can do, in the action prompt.
+
+        dspy renders this (via `_dspy_compat.interpreter_instructions_kwargs`); without it dspy
+        describes EVERY run as Pyodide, i.e. tells this interpreter's model that subprocesses are
+        unavailable — the one capability this interpreter exists to provide.
+
+        Derived from `self._config`, not a fixed string: `network`, `read_only` and `workdir` are
+        all operator-configurable, so a constant would eventually assert the opposite of what was
+        built. Telling the model a capability is absent when it is present is the same class of
+        defect as the Pyodide default this exists to replace — it just costs turns instead of
+        failing loudly.
+        """
+        cfg = self._config
+        network = (
+            "There is NO network access of any kind."
+            if cfg.network == "none"
+            else f"Network access is enabled (docker --network={cfg.network})."
+        )
+        root = (
+            "The root filesystem is READ-ONLY; write only under /tmp."
+            if cfg.read_only
+            else "The container's own filesystem is writable."
+        )
+        workspace = (
+            " A host directory is mounted READ-ONLY at /workspace."
+            if cfg.workdir
+            else " No host directory is mounted; writes never reach the host."
+        )
+        return (
+            "Python runs in an isolated Docker container. State persists across executions. "
+            "Subprocesses and native extensions ARE available, and the standard library is "
+            f"complete. {network} {root}{workspace}"
+        )
+
     def __init__(
         self,
         config: ContainerConfig | None = None,

@@ -227,10 +227,19 @@ class RLMTask:
         # The caller's interpreter goes to forward()/aforward() as the first POSITIONAL
         # argument (dspy >= 3.3.0), not to the constructor — so stash it for `arun`.
         # OWNERSHIP stays ours: dspy shuts down only an interpreter it created itself, which
-        # is what keeps `_teardown_interpreter` correct. (Do NOT reach for
+        # is what keeps `_teardown_interpreter` correct. So never SUPPLY the interpreter via
         # `interpreter_factory=`: dspy DOES shut down whatever that factory returns, which
-        # would double-shutdown our sandbox.)
+        # would double-shutdown our sandbox.
         self._forward_interpreter = interpreter
+
+        # ...which is why the kwargs below need reading carefully: from dspy 3.3.1 they MAY
+        # contain an `interpreter_factory`, and it is NOT a way of supplying an interpreter.
+        # dspy sources the prompt's "Execution environment:" text from that object's
+        # `execution_instructions` attribute, so this passes a metadata CARRIER dspy only ever
+        # reads — never calls, and it raises if it ever is. Without it every run is described to
+        # the model as Pyodide, including a `container` run that can genuinely spawn
+        # subprocesses. See `_dspy_compat.interpreter_instructions_kwargs`.
+        kwargs.update(_dspy_compat.interpreter_instructions_kwargs(interpreter))
 
         # Budget caps are mapped onto the names the installed dspy accepts (3.3.x renamed
         # `max_iterations` to `max_iters`). The `except TypeError` below is now only a

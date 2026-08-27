@@ -263,6 +263,14 @@ class ScriptedInterpreter:
     missing method turns into a ``TypeError`` at run time rather than anything a type checker catches.
     """
 
+    #: Rendered into the action prompt by dspy when a real LM is driving this double (an offline
+    #: test usually pairs it with a scripted LM, which ignores prompts entirely). Says what this
+    #: actually is, rather than inheriting dspy's default Pyodide description.
+    execution_instructions = (
+        "This REPL is scripted for testing: submitted code is recorded but not executed, and "
+        "each execution returns a pre-arranged result."
+    )
+
     def __init__(self, steps: Sequence[Step] = ()) -> None:
         self.tools: dict[str, Callable[..., Any]] = {}
         self.steps: list[Step] = list(steps)
