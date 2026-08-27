@@ -43,6 +43,10 @@ KNOWN_ADAPTERS = frozenset({"chat", "json", "default"})
 # Default per-call generation cap. Generous on purpose so a reasoning model's
 # chain-of-thought + answer both fit, rather than relying on a server's small default
 # cap (which truncates reasoning before the answer → empty content). See max_tokens.
+#
+# A FLOOR, not a ceiling: a consumer whose turns are long (a reasoning root, or one that
+# assembles a large structured result in a single turn) will need more, and the symptom
+# is NOT the empty-content one this default exists to prevent — see ``max_tokens``.
 _DEFAULT_MAX_TOKENS = 8192
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
@@ -158,6 +162,17 @@ class RLMConfig:
     # answer (``content``), so a turn whose reasoning exceeds that small cap is truncated
     # mid-thought and ``content`` comes back EMPTY → "empty or null response". Sending a generous
     # cap leaves room for reasoning + answer on any endpoint. Set ``None`` to defer to the server.
+    #
+    # **The default is a floor, and overrunning it presents as a DIFFERENT failure.** 8192 must
+    # hold one turn's chain-of-thought AND its structured answer. A long turn that overruns it is
+    # cut off mid-JSON, so the adapter cannot parse the reply and the run surfaces as
+    # ``RLMTaskError: Failed to produce a valid '<field>'`` caused by ``AdapterParseError`` — a
+    # truncation, not a model that cannot follow the schema, and repeatedly misdiagnosed as the
+    # latter because the quoted response looks well-formed right up to where it stops. Reading the
+    # END of that quoted text tells them apart: a truncated one has no closing brace. A reasoning
+    # root and a turn that assembles a large structured result compound the risk; more than one
+    # consumer has settled on 16384. Raising it costs nothing on turns that do not need the room,
+    # since this bounds generation rather than reserving it.
     max_tokens: int | None = _DEFAULT_MAX_TOKENS
 
     # Budget controls — passed best-effort to dspy.RLM.

@@ -1095,7 +1095,28 @@ model:
 `RLM_MAX_TOKENS` (default `8192`) is the per-call generation cap. It defaults generous rather
 than deferring to the server: a **reasoning model** emits its chain-of-thought before the answer,
 so a server's small default cap (e.g. 1000) truncates the thinking and returns **empty content**.
-Set it higher for very verbose reasoning models, or `RLMConfig(max_tokens=None)` to defer to the server.
+Set `RLMConfig(max_tokens=None)` to defer to the server.
+
+**The default is a floor, not a ceiling, and running into it looks like a different bug.** 8192 has
+to hold the chain-of-thought AND the structured answer of the same turn. When a long turn overruns
+it, the reply is cut off *mid-JSON* — so the adapter cannot parse what came back and the run dies as
+
+```
+RLMTaskError: Failed to produce a valid '<field>' after N attempts
+  — caused by AdapterParseError: ... failed to parse the LM response
+```
+
+That is a **truncation**, not a model that cannot follow the schema, and it is easy to misdiagnose
+as one: the text in the error often looks like well-formed output right up to where it stops.
+Tell the two apart by reading the END of the quoted `LM Response` — a truncated one simply stops,
+mid-string or mid-object, with no closing brace.
+
+Two things make it more likely, and they compound: a **reasoning** model (the thinking is spent
+before the answer starts) and a task whose one turn is genuinely long (assembling a large
+structured result, or a REPL turn that both reasons and writes a big code block). More than one
+consumer has hit this and settled on **16384** for the planner; that is a reasonable first move
+when the symptom above appears, and it costs nothing on turns that do not need the headroom, since
+the cap bounds generation rather than reserving it.
 
 A **reasoning model can be the RLM root**, not just an instruct one: some reasoning servers emit the
 *whole* structured turn into the `reasoning_content` channel and return `content` null. `_LenientJSONAdapter`
