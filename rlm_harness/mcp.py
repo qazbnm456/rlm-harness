@@ -46,6 +46,7 @@ import contextlib
 import json
 import logging
 import threading
+import time
 from collections.abc import Iterator
 from typing import Any
 
@@ -437,10 +438,12 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str,
         # omitted, sent as None. Drop None so an unset optional isn't posted as JSON null into a strict
         # (additionalProperties:false / typed) server schema.
         args = {k: v for k, v in kwargs.items() if v is not None}
+        t0 = time.perf_counter()   # an MCP call leaves this process; that wait is the whole cost
         try:
             result = bridge.call(mcp_tool.name, args)     # WIRE name — unprefixed, unsanitised
         except Exception as exc:
-            record_tool_call(name, args=args, ok=False, note=f"error: {type(exc).__name__}",
+            record_tool_call(name, args=args, ok=False, duration_s=time.perf_counter() - t0,
+                             note=f"error: {type(exc).__name__}",
                              **_repl_alias(name, repl))
             # Model-facing text uses the name the model can actually call.
             return f"MCP tool {repl!r} error: {type(exc).__name__}: {str(exc)[:200]}"
@@ -450,7 +453,8 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str,
         # non-result in the trace as a success — and spend the one-shot rename warning saying so.
         ok = _is_tool_result(result) and not _tool_reported_error(result)
         record_tool_call(
-            name, args=args, ok=ok, preview=text[:_PREVIEW],
+            name, args=args, ok=ok, duration_s=time.perf_counter() - t0,
+            preview=text[:_PREVIEW],
             note="ok" if ok else "tool reported an error",
             **_repl_alias(name, repl),
         )

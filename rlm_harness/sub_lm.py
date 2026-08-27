@@ -26,6 +26,7 @@ logic stays unit-testable) without a full dspy install.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -191,9 +192,14 @@ def model_as_tool(name: str, lm: Any, *, description: str = "") -> Callable[[str
     """
 
     def query_model(prompt: str) -> str:
+        # The one model-backed tool the KIT itself records (`make_model_tool` and
+        # `make_harness_tool` are side-effect-free bases whose consumer owns the recording), so
+        # it is also the one whose duration the kit can supply without the consumer doing it.
+        t0 = time.perf_counter()
         outputs = lm(prompt=prompt)
         text = outputs[0] if isinstance(outputs, (list, tuple)) and outputs else str(outputs)
-        record_tool_call(f"model:{name}", args={"prompt": prompt}, result=text)
+        record_tool_call(f"model:{name}", args={"prompt": prompt},
+                         duration_s=time.perf_counter() - t0, result=text)
         return text
 
     # SANITISED, because `name` is a model id and a real one is not an identifier:

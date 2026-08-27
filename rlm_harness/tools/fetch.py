@@ -24,6 +24,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import socket
+import time
 from collections.abc import Callable
 from urllib.parse import urlparse
 
@@ -160,11 +161,15 @@ def make_fetch_tool(fetcher: Fetcher) -> Callable[[str], str]:
                 note="refused: not a permitted external http(s) URL",
             )
             return f"Refused: {url!r} is not a permitted external http(s) URL."
+        # Timed around the OUTBOUND call only — the refusal above never touched the network, and
+        # charging it a duration would put a meaningless ~0 into the wall-clock attribution.
+        t0 = time.perf_counter()
         try:
             result = fetcher(url)
         except Exception as exc:
             record_tool_call(
                 "fetch_url", args={"url": url}, ok=False,
+                duration_s=time.perf_counter() - t0,
                 note=f"error: {type(exc).__name__}",
             )
             return f"Fetch error for {url!r}: {type(exc).__name__}: {str(exc)[:160]}"
@@ -172,7 +177,8 @@ def make_fetch_tool(fetcher: Fetcher) -> Callable[[str], str]:
         # a REPL variable the model slices itself, so the body is bulk content that would
         # bloat the JSONL source-of-truth for no RL value (mirrors ``read_skill`` and
         # a consumer's fetch tool). Replay therefore serves this length, not the bytes.
-        record_tool_call("fetch_url", args={"url": url}, ok=True, result_len=len(result))
+        record_tool_call("fetch_url", args={"url": url}, ok=True,
+                         duration_s=time.perf_counter() - t0, result_len=len(result))
         return result
 
     return fetch_url

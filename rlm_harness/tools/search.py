@@ -21,6 +21,7 @@ drop internal-looking result URLs before they reach the model.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -79,6 +80,7 @@ def make_web_search_tool(
         if not q:
             record_tool_call("web_search", args={"query": q}, ok=False, note="empty query")
             return "Refused: empty search query."
+        t0 = time.perf_counter()   # the outbound call only; the empty-query refusal above is free
         try:
             results = normalise_search_results(
                 searcher(q), max_results=max_results, drop_unsafe_urls=drop_unsafe_urls
@@ -86,10 +88,12 @@ def make_web_search_tool(
         except Exception as exc:
             record_tool_call(
                 "web_search", args={"query": q}, ok=False,
+                duration_s=time.perf_counter() - t0,
                 note=f"error: {type(exc).__name__}",
             )
             return f"Search error for {q!r}: {type(exc).__name__}: {str(exc)[:160]}"
-        record_tool_call("web_search", args={"query": q}, ok=True, results=results)
+        record_tool_call("web_search", args={"query": q}, ok=True,
+                         duration_s=time.perf_counter() - t0, results=results)
         return results
 
     return web_search
