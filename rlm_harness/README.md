@@ -649,6 +649,20 @@ to `pyodide`/`deno`:
   than the container analogy implies). Firing raises dspy's own RECOVERABLE
   `CodeInterpreterError` — the model sees an `"[Error] ..."` string and gets to retry next turn
   against a freshly-respawned sandbox.
+- **`RLM_REQUEST_TIMEOUT`** (seconds; `RLMConfig.request_timeout_s`) — a wall-clock cap on ONE
+  model HTTP request, handed to `dspy.LM(timeout=...)` and from there to litellm. **Unset by
+  default**, which means no cap at all: the client waits as long as the connection stays open.
+  This is `RLM_SANDBOX_TURN_TIMEOUT`'s sibling on the other side of a turn, and the asymmetry is
+  what motivated it — a run could bound its sandbox and nothing at all on the model. Observed
+  against a self-hosted OpenAI-compatible endpoint: one request went out and never came back, the
+  socket stayed `ESTABLISHED` with both queues empty, and the worker slept in `epoll_wait` for 38
+  minutes at 0.3% CPU while the same endpoint answered unrelated requests in half a second. No
+  layer noticed, because none was watching — the only thing that eventually freed it was the
+  consumer's own per-call budget, and spending a whole one of those on a dead request turns a slow
+  job into a wedged one. Left unset rather than given a default because a legitimately long turn
+  exists (a reasoning model assembling a large structured answer; single calls measured at 900s),
+  and cutting off a live generation is worse than waiting on a dead one. Set it to something
+  comfortably above your own longest real turn.
 - **`cancel_event`** (`RLMTask(cancel_event=a_threading.Event)`) — for a caller that wants to stop
   an in-flight run NOW (e.g. a "Cancel" button in a UI driving `arun()` from a worker thread). Set
   the event from another thread; the current sandbox turn is killed and `SandboxCancelled` (exported
@@ -1043,7 +1057,8 @@ All via env (`RLMConfig.from_env()`): `RLM_MAIN_MODEL` (or `AI_MODEL_NAME`),
 `RLM_SUB_MODEL` (or `SUB_AI_MODEL_NAME`), `RLM_API_KEY` (or `AI_API_KEY`),
 `RLM_BASE_URL` (or `AI_BASE_URL`), `RLM_INTERPRETER`, `RLM_ADAPTER`,
 `RLM_MAX_TOKENS`, `RLM_MAX_OUTPUT_CHARS`, `RLM_ALLOW_INSECURE_SANDBOX`,
-`RLM_MAX_ITERATIONS`, `RLM_MAX_LLM_CALLS`, `RLM_MAX_RETRIES`, `RLM_OBSERVE`.
+`RLM_MAX_ITERATIONS`, `RLM_MAX_LLM_CALLS`, `RLM_MAX_RETRIES`, `RLM_REQUEST_TIMEOUT`,
+`RLM_OBSERVE`.
 
 The `AI_*` fallbacks let the kit drop into projects already keyed on those vars
 without re-keying env; the `RLM_*` form wins when both are set.

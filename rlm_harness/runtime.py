@@ -197,6 +197,12 @@ def configure(
         # id their endpoint serves (matching the generator's bare-name convention), with no ugly
         # "openai/" prefix. A still-prefixed "openai/..." name keeps working (litellm strips it).
         lm_kwargs["custom_llm_provider"] = "openai"
+    if cfg.request_timeout_s is not None:
+        # Handed straight through: dspy.LM keeps kwargs it does not recognise and merges them into
+        # the litellm call, and `litellm.completion` takes `timeout`. Set ONLY when the consumer
+        # asked for one — sending `timeout=None` explicitly is not the same as sending nothing on
+        # every client, and the default must stay "behave exactly as before".
+        lm_kwargs["timeout"] = cfg.request_timeout_s
     # Both LMs are plain dspy.LM. In "json" mode it's _LenientJSONAdapter (not the LM) that
     # forces the json_schema response_format, so the LM needs no special capability flag.
     # An injected main_lm/sub_lm (explicit, or resolved above via subscription auto-routing) is
