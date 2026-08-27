@@ -150,6 +150,61 @@ def test_configure_lm_kwargs_never_forwarded_into_the_subscription_lm(monkeypatc
     assert kwargs == {}
 
 
+def test_request_timeout_is_not_forwarded_into_the_subscription_lm(monkeypatch):
+    """`request_timeout_s` bounds ONE HTTP request (dspy and litellm each retry around it);
+    `ClaudeAgentLM.timeout_s` is an END-TO-END per-call deadline that includes time queued
+    behind the SDK's semaphore. Mapping one onto the other would make queued sub-LM calls under
+    `llm_query_batched` time out from waiting alone — so the knob stays litellm-only."""
+    monkeypatch.setattr(rt, "_try_instrument", lambda: None)
+    stub = _stub_claude_agent_lm(monkeypatch)
+    rt.configure(
+        RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="x", observe=False,
+                  request_timeout_s=45.0)
+    )
+    assert stub.calls[0][1] == {}                          # not forwarded...
+    assert rt.get_sub_lm().kwargs.get("timeout") == 45.0   # ...but still applied to the LM that can use it
+
+
+def test_configure_warns_when_a_timeout_cannot_reach_an_auto_routed_role(monkeypatch, caplog):
+    """The silent no-op is the actual defect: a consumer sets RLM_REQUEST_TIMEOUT, sees no
+    error, and believes the route is bounded to that number."""
+    monkeypatch.setattr(rt, "_try_instrument", lambda: None)
+    _stub_claude_agent_lm(monkeypatch)
+    with caplog.at_level("WARNING", logger="rlm_harness.runtime"):
+        rt.configure(
+            RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="x", observe=False,
+                      request_timeout_s=45.0)
+        )
+    msg = "\n".join(r.getMessage() for r in caplog.records)
+    assert "main_lm" in msg and "ClaudeAgentLM" in msg
+    assert "timeout_s" in msg          # names the seam that DOES let you choose the number
+
+
+def test_no_warning_when_no_role_was_auto_routed(monkeypatch, caplog):
+    """A plain litellm setup consumes the knob fully — warning there would be noise, and noise
+    is how a real warning gets ignored."""
+    monkeypatch.setattr(rt, "_try_instrument", lambda: None)
+    with caplog.at_level("WARNING", logger="rlm_harness.runtime"):
+        rt.configure(RLMConfig(main_model="openai/x", sub_model="openai/x", observe=False,
+                               request_timeout_s=45.0))
+    assert not [r for r in caplog.records if "request_timeout_s" in r.getMessage()]
+
+
+def test_no_warning_for_an_explicitly_injected_lm(monkeypatch, caplog):
+    """A caller who built the LM themselves owns its deadline and does not need telling."""
+    from dspy.utils.dummies import DummyLM
+
+    monkeypatch.setattr(rt, "_try_instrument", lambda: None)
+    injected = DummyLM([{"answer": "a"}])
+    with caplog.at_level("WARNING", logger="rlm_harness.runtime"):
+        rt.configure(
+            RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="claude-agent-sdk/haiku",
+                      observe=False, request_timeout_s=45.0),
+            main_lm=injected, sub_lm=injected,
+        )
+    assert not [r for r in caplog.records if "request_timeout_s" in r.getMessage()]
+
+
 def test_configure_bare_subscription_prefix_raises_value_error_not_system_exit(monkeypatch):
     monkeypatch.setattr(rt, "_try_instrument", lambda: None)
     _stub_claude_agent_lm(monkeypatch)

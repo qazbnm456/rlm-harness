@@ -167,12 +167,27 @@ def configure(
     None of these three can collide with this function's own unrelated ``except RuntimeError``
     ownership-error swallow below — the LM-construction step happens entirely BEFORE that
     ``try:`` block starts, so control flow cannot reach it from here regardless of message text.
+
+    ``cfg.request_timeout_s`` is deliberately in that "never forwarded" set too, and it is the
+    one whose absence is worth stating: it becomes ``dspy.LM(timeout=…)``, a bound on ONE HTTP
+    request that dspy and litellm each retry around. ``ClaudeAgentLM`` has its own deadline
+    instead — end-to-end per call, INCLUDING time queued behind the SDK's concurrency semaphore
+    — so the two are not the same number and mapping one onto the other would make queued
+    sub-LM calls time out from waiting alone. An auto-routed role therefore stays on
+    ``ClaudeAgentLM``'s default; ``configure(main_lm=ClaudeAgentLM(model, timeout_s=…))`` is how
+    you choose it. Setting ``request_timeout_s`` with an auto-routed role logs a warning saying
+    exactly this, because a silently-ignored timeout reads as a bounded route that is not.
     """
     cfg = config or RLMConfig.from_env()
+    auto_routed: list[str] = []
     if main_lm is None:
         main_lm = _maybe_subscription_lm(cfg.main_model)
+        if main_lm is not None:
+            auto_routed.append("main_lm")
     if sub_lm is None:
         sub_lm = _maybe_subscription_lm(cfg.sub_model)
+        if sub_lm is not None:
+            auto_routed.append("sub_lm")
 
     # litellm (dspy.LM's backend) defaults to an aiohttp transport whose pooled ClientSession is bound to
     # the current asyncio loop. A driver that runs each task in its own short-lived `asyncio.run` loop
@@ -203,6 +218,26 @@ def configure(
         # asked for one — sending `timeout=None` explicitly is not the same as sending nothing on
         # every client, and the default must stay "behave exactly as before".
         lm_kwargs["timeout"] = cfg.request_timeout_s
+        if auto_routed:
+            # It reaches `dspy.LM` and nothing else, so on a subscription-routed role it is a
+            # NO-OP — and a silent one is how a consumer ends up believing a route is bounded
+            # when it is not. Deliberately NOT forwarded as `ClaudeAgentLM(timeout_s=…)`: that
+            # is a different quantity (an END-TO-END per-call deadline that INCLUDES time queued
+            # behind the SDK's concurrency semaphore, not a per-HTTP-request bound that dspy and
+            # litellm each retry around), so one number cannot mean both. Under
+            # `llm_query_batched`'s thread fan-out a value that is generous per request would
+            # make queued sub-LM calls time out from waiting alone.
+            logger.warning(
+                "request_timeout_s=%s bounds litellm-backed model requests only; %s "
+                "auto-routed to ClaudeAgentLM and %s unaffected by it. That route is still "
+                "bounded, by ClaudeAgentLM's own end-to-end per-call deadline (600s by "
+                "default) — a DIFFERENT quantity, which is why this knob does not drive it. "
+                "To choose that number, build the LM yourself: "
+                "configure(main_lm=ClaudeAgentLM(model, timeout_s=...)).",
+                cfg.request_timeout_s,
+                " and ".join(auto_routed),
+                "is" if len(auto_routed) == 1 else "are",
+            )
     # Both LMs are plain dspy.LM. In "json" mode it's _LenientJSONAdapter (not the LM) that
     # forces the json_schema response_format, so the LM needs no special capability flag.
     # An injected main_lm/sub_lm (explicit, or resolved above via subscription auto-routing) is
