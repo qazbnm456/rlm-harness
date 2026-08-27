@@ -20,7 +20,7 @@ _DEFAULT_LOG = logging.getLogger(__name__)
 _ERR_LOG_CAP = 600
 
 
-def _short_error(exc: BaseException, limit: int = _ERR_LOG_CAP) -> str:
+def short_error(exc: BaseException, limit: int = _ERR_LOG_CAP) -> str:
     """Render a caught exception for a single log line, keeping the head AND tail.
 
     A failed attempt is logged with the exception's message, but some exceptions carry
@@ -28,13 +28,44 @@ def _short_error(exc: BaseException, limit: int = _ERR_LOG_CAP) -> str:
     which for a degenerate/repetitive model is thousands of lines that then flood the
     terminal. The useful diagnostics live at the ends (the exception type + adapter at the
     head, the expected/actual field summary at the tail), so keep both and elide the middle.
-    The full completion is not lost for debugging: it is on the wire in the model call."""
-    text = f"{type(exc).__name__}: {exc}"
+    The full completion is not lost for debugging: it is on the wire in the model call.
+
+    PUBLIC and SemVer-frozen since 1.5.0, re-exported from ``rlm_harness.__all__``. It was
+    promoted because two independent consumers had reached into ``_retry`` for it — the kit's
+    own signal that an internal seam should become a named hook rather than stay private.
+
+    What is frozen is the BEHAVIOUR, not the string. Callers may rely on: a rendering already
+    within ``limit`` is returned unchanged and begins ``f"{type(exc).__name__}: "``; a longer one
+    keeps BOTH ends and states how much was dropped in between; the result is never longer than
+    ``limit`` plus the elision marker; and it never raises for an ``Exception`` whose ``__str__``
+    raises one (a ``BaseException`` such as ``KeyboardInterrupt`` from ``__str__`` still
+    propagates, deliberately — that is not an error to render, it is an interrupt to honour).
+    NOT frozen: the exact elision marker, how the budget is split between head and tail, the
+    value of the default ``limit`` (only that a positive default exists), and — for a ``limit``
+    too small to hold even the type name — anything beyond the length bound. Parse the output at
+    your own risk; it is for humans and logs."""
+    try:
+        text = f"{type(exc).__name__}: {exc}"
+    except Exception:
+        # Every call site is an `except` block, so raising here would REPLACE a diagnosable
+        # failure with an undiagnosable one. An exception whose own __str__ raises is rare but
+        # real (a pydantic/adapter error holding a half-built object); the type name alone is
+        # still the single most useful thing in the log line.
+        text = f"{type(exc).__name__}: <unprintable: its __str__ raised>"
     if len(text) <= limit:
         return text
     head = (limit * 2) // 3
-    tail = limit - head
+    # `max(1, ...)`: at limit<=1 the split leaves tail==0, and `text[-0:]` slices the WHOLE
+    # string — turning the one call whose entire job is bounding output into an amplifier.
+    tail = max(1, limit - head)
     return f"{text[:head]}... [{len(text) - limit} chars elided] ...{text[-tail:]}"
+
+
+#: Pre-1.5.0 spelling, kept because consumers were importing it from here before it was public.
+#: Not documented, not in ``__all__``, and not covered by the SemVer promise — use
+#: ``rlm_harness.short_error``. Costs nothing to keep, and dropping it would break the very
+#: callers whose need justified promoting the function.
+_short_error = short_error
 
 
 class RLMTaskError(RuntimeError):
@@ -124,7 +155,7 @@ async def run_with_retry(
                 raise
             last_error = exc
             log.warning(
-                "RLM attempt %d/%d failed: %s", attempt, max_retries, _short_error(exc)
+                "RLM attempt %d/%d failed: %s", attempt, max_retries, short_error(exc)
             )
 
     raise RLMTaskError(
