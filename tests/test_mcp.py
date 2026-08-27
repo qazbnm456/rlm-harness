@@ -1,5 +1,6 @@
 """MCP client tests — the async->sync bridge is the load-bearing mechanic, so these run a REAL
-stdio MCP server (a tiny FastMCP echo) as a subprocess and drive it through ``mcp_tools``. Skips
+stdio MCP server (a tiny echo, built against whichever SDK major is installed) as a subprocess and
+drive it through ``mcp_tools``. Skips
 when the optional ``mcp`` extra (or dspy) is absent, like the other dspy-bearing tests."""
 
 import contextlib
@@ -33,11 +34,32 @@ def _force_direct_connection(monkeypatch):
     monkeypatch.setenv("NO_PROXY", "*")
     monkeypatch.setenv("no_proxy", "*")
 
-# A minimal stdio MCP server: one `echo` tool. Written to a temp file and spawned per test.
-_ECHO_SERVER = '''
-from mcp.server.fastmcp import FastMCP
+# Every fixture server below runs on BOTH mcp SDK majors, because `pyproject.toml` declares a
+# floor and no cap and `dspy-latest.yml`'s mcp job resolves whatever is newest. 2.0 renamed the
+# server class (`mcp.server.fastmcp.FastMCP` -> `mcp.server.mcpserver.MCPServer`) and moved
+# streamable-HTTP's host/port off the constructor onto `run()`. `@srv.tool()` and
+# `run(transport=...)` are unchanged. Pinning these to 1.x is what let the 2.x client break ship.
+_PREAMBLE = '''
+try:
+    from mcp.server.mcpserver import MCPServer as _Server   # mcp >= 2
+    _V2 = True
+except ImportError:                                          # pragma: no cover - depends on SDK major
+    from mcp.server.fastmcp import FastMCP as _Server        # mcp < 2
+    _V2 = False
 
-mcp = FastMCP("echo-test")
+
+def _build(name, host=None, port=None):
+    """(server, run_kwargs) — host/port belong to the constructor on 1.x, to run() on 2.x."""
+    if host is None:
+        return _Server(name), {}
+    if _V2:
+        return _Server(name), {"host": host, "port": port}
+    return _Server(name, host=host, port=port), {}
+'''
+
+# A minimal stdio MCP server: one `echo` tool. Written to a temp file and spawned per test.
+_ECHO_SERVER = _PREAMBLE + '''
+mcp, _run_kw = _build("echo-test")
 
 
 @mcp.tool()
@@ -47,7 +69,7 @@ def echo(text: str) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    mcp.run(transport="stdio", **_run_kw)
 '''
 
 
@@ -77,6 +99,51 @@ def test_result_text_joins_text_blocks_and_flags_errors():
     assert result_text(err).startswith("[tool reported an error]")
     structured = types.SimpleNamespace(content=[], structuredContent={"n": 1}, isError=False)
     assert '"n": 1' in result_text(structured)
+
+
+def test_result_text_reads_the_snake_case_spelling_too():
+    """mcp 2.0 renamed every one of these fields. The camelCase cases above are the 1.x shape;
+    without these the 2.x shape is untested and a released version reported failures as ok."""
+    import types
+
+    block = types.SimpleNamespace(text="hello")
+    ok = types.SimpleNamespace(content=[block], structured_content=None, is_error=False)
+    assert result_text(ok) == "hello"
+    err = types.SimpleNamespace(content=[block], structured_content=None, is_error=True)
+    assert result_text(err).startswith("[tool reported an error]")
+    structured = types.SimpleNamespace(content=[], structured_content={"n": 1}, is_error=False)
+    assert '"n": 1' in result_text(structured)
+
+
+def test_result_text_keeps_a_falsy_structured_value():
+    """`structured_content` is typed `Any` on 2.x, so {}/0/False are legitimate VALUES. An
+    `or`-chain over the two spellings would discard them; the sentinel keeps them."""
+    import types
+
+    for value, expected in (({}, "{}"), (0, "0"), (False, "false")):
+        r = types.SimpleNamespace(content=[], structured_content=value, is_error=False)
+        assert result_text(r) == expected
+
+
+def test_a_result_missing_the_error_flag_entirely_warns_and_does_not_claim_success(caplog):
+    """The next rename must land in a log, not silently in the model's context."""
+    import types
+
+    import rlm_harness.mcp as mcp_mod
+
+    mcp_mod._warned_no_error_flag = False
+    r = types.SimpleNamespace(content=[types.SimpleNamespace(text="x")])
+    with caplog.at_level("WARNING", logger="rlm_harness.mcp"):
+        assert result_text(r) == "x"
+    assert any("renamed the field again" in rec.message for rec in caplog.records)
+
+
+def test_a_non_tool_result_is_named_rather_than_flattened_to_empty():
+    """mcp 2.x widened `call_tool` to a union; the other arms carry no `content`, and returning
+    "" for them would read as a successful empty tool call."""
+    import types
+
+    assert result_text(types.SimpleNamespace(foo=1)).startswith("[not a tool result:")
 
 
 # ---- _make_tool: the REPL sandbox proxy exposes the schema's param NAMES --
@@ -237,13 +304,94 @@ def test_bad_server_spec_raises_and_cleans_up():
     assert "rlm-harness-mcp" not in ({t.name for t in threading.enumerate()} - before)
 
 
+# ---- the error flag, against a LIVE server on whichever SDK major is installed ----
+#
+# The flag is what tells the model and the trace that a tool FAILED. It was covered only by
+# SimpleNamespace fakes spelling it `isError`, so when the SDK renamed it to `is_error` every
+# failed call started reading as a success and nothing went red. A live server that actually
+# raises is the only thing that pins it on both majors.
+
+_SHAPES_SERVER = _PREAMBLE + '''
+mcp, _run_kw = _build("shapes-test")
+
+
+@mcp.tool()
+def boom(text: str) -> str:
+    """Always raises — the server turns this into an error result."""
+    raise RuntimeError(f"exploded on {text}")
+
+
+@mcp.tool()
+def structured(n: int) -> dict:
+    """Returns a dict, which the server reports as structured content."""
+    return {"n": n, "ok": True}
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio", **_run_kw)
+'''
+
+
+def _shapes_server(tmp_path):
+    server = tmp_path / "shapes_server.py"
+    server.write_text(_SHAPES_SERVER)
+    return {"command": sys.executable, "args": [str(server)]}
+
+
+def test_live_error_result_is_reported_as_an_error(tmp_path):
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r"), mcp_tools(_shapes_server(tmp_path), timeout=30) as tools:
+        out = {t.name: t for t in tools}["boom"](text="hi")
+    assert out.startswith("[tool reported an error]"), out   # the MODEL must see the failure
+    calls = [e for e in load_events(str(p), "r") if e["type"] == "tool_call"]
+    assert calls and calls[0]["payload"]["ok"] is False       # ...and so must the TRACE
+    assert calls[0]["payload"]["note"] == "tool reported an error"
+
+
+def test_the_result_fields_we_probe_exist_on_a_live_result(tmp_path):
+    """The rename risk, stated as a property of the INSTALLED SDK rather than of a fake.
+
+    A live server cannot exercise the `structured_content` READ path here — a dict-returning
+    tool is serialised to text content on both majors, so `result_text` returns before it looks
+    (checked, on 1.28.0 and 2.1.1). What a live result CAN prove is the thing that actually
+    broke: that each field this module reads is present on a real object under at least one of
+    the two spellings it knows. `_sdk_field` returning the sentinel here means the SDK renamed
+    something again and `result_text`/`_tool_reported_error` are about to guess."""
+    from rlm_harness.mcp import _MISSING, _sdk_field
+
+    def _reachable(obj, snake, camel):
+        """The field is either genuinely absent from this SDK version, or we can read it.
+
+        Absent is legitimate: `structuredContent` postdates mcp 1.8.1 entirely, which is exactly
+        why `_sdk_field` returns a sentinel instead of guessing. What must NEVER happen is the
+        model DECLARING the field under a spelling neither of ours matches — that is the rename,
+        and it is what made a failed tool call read as a success.
+        """
+        declared = {
+            name for name in getattr(type(obj), "model_fields", {})
+            if name.replace("_", "").lower() == snake.replace("_", "").lower()
+        }
+        return not declared or _sdk_field(obj, snake, camel) is not _MISSING
+
+    conn = McpConnection(_shapes_server(tmp_path), timeout=30)
+    conn.start()
+    try:
+        result = conn.call("structured", {"n": 7})
+        # Load-bearing on every supported version: without it we cannot tell failure from success.
+        assert _sdk_field(result, "is_error", "isError") is not _MISSING
+        assert _reachable(result, "structured_content", "structuredContent")
+        tool = next(t for t in conn.tools if t.name == "structured")
+        assert _sdk_field(tool, "input_schema", "inputSchema") is not _MISSING
+    finally:
+        conn.close()
+
+
 # ---- HTTP transport: real streamable-HTTP server, sync call --------------
 
-_HTTP_SERVER = '''
+_HTTP_SERVER = _PREAMBLE + '''
 import sys
-from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("echo-http", host="127.0.0.1", port=int(sys.argv[1]))
+mcp, _run_kw = _build("echo-http", host="127.0.0.1", port=int(sys.argv[1]))
 
 
 @mcp.tool()
@@ -252,7 +400,7 @@ def echo(text: str) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    mcp.run(transport="streamable-http", **_run_kw)
 '''
 
 
@@ -266,18 +414,29 @@ def _free_port() -> int:
     return port
 
 
-def _wait_port(port: int, timeout: float = 20.0) -> None:
+def _wait_port(port: int, timeout: float = 20.0, proc=None) -> None:
     import socket
     import time
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            break                                  # the child is already dead; stop waiting on it
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                 return
         except OSError:
             time.sleep(0.1)
-    raise TimeoutError(f"HTTP MCP server did not start on :{port}")
+    # Say WHY. With the child's stderr on DEVNULL this raised a bare "did not start", which is
+    # what made an SDK-major import failure in the fixture look like a flaky port.
+    detail = ""
+    if proc is not None:
+        with contextlib.suppress(Exception):
+            proc.kill()
+            _, err = proc.communicate(timeout=5)
+            if err:
+                detail = f"\nserver stderr:\n{err.decode(errors='replace').strip()[-2000:]}"
+    raise TimeoutError(f"HTTP MCP server did not start on :{port}{detail}")
 
 
 @contextlib.contextmanager
@@ -290,10 +449,10 @@ def _running_http_server(tmp_path):
     server.write_text(_HTTP_SERVER)
     proc = subprocess.Popen(
         [sys.executable, str(server), str(port)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
     try:
-        _wait_port(port)
+        _wait_port(port, proc=proc)
         yield f"http://127.0.0.1:{port}/mcp"
     finally:
         proc.terminate()
@@ -304,36 +463,18 @@ def _running_http_server(tmp_path):
 
 
 def test_mcp_tools_streamable_http(tmp_path):
-    import subprocess
-
-    port = _free_port()
-    server = tmp_path / "http_server.py"
-    server.write_text(_HTTP_SERVER)
-    proc = subprocess.Popen(
-        [sys.executable, str(server), str(port)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    try:
-        _wait_port(port)
-        # exercises the streamable-HTTP transport (3-tuple streams) end-to-end, not just stdio.
-        with mcp_tools({"url": f"http://127.0.0.1:{port}/mcp"}, timeout=20) as tools:
-            assert [t.name for t in tools] == ["echo"]
-            assert tools[0](text="hi") == "echo: hi"
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except Exception:
-            proc.kill()
+    # exercises the streamable-HTTP transport (3-tuple streams) end-to-end, not just stdio.
+    with _running_http_server(tmp_path) as url, mcp_tools({"url": url}, timeout=20) as tools:
+        assert [t.name for t in tools] == ["echo"]
+        assert tools[0](text="hi") == "echo: hi"
 
 
 # ---- per-call timeout + cancel (a hung tool must not wedge the session) ---
 
-_SLOW_SERVER = '''
+_SLOW_SERVER = _PREAMBLE + '''
 import asyncio
-from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("slow-test")
+mcp, _run_kw = _build("slow-test")
 
 
 @mcp.tool()
@@ -348,7 +489,7 @@ def echo(text: str) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    mcp.run(transport="stdio", **_run_kw)
 '''
 
 
@@ -382,7 +523,11 @@ def test_mcp_catalog_progressive_surface(tmp_path):
         cat.load("echo")                                  # no-op under eager
         assert cat.tool_names("echo") == ["echo"]
         tool = cat.tools("echo")[0]                       # RAW mcp Tool object, not a dspy.Tool
-        assert tool.name == "echo" and hasattr(tool, "inputSchema")
+        # Deliberately asserted on the RAW object, so the field is whatever the installed SDK
+        # major calls it (2.0 renamed `inputSchema` -> `input_schema`). Accepting either keeps
+        # the "not a dspy.Tool" intent without pinning this test to one major.
+        assert tool.name == "echo"
+        assert hasattr(tool, "input_schema") or hasattr(tool, "inputSchema")
         assert cat.call("echo", "echo", {"text": "hi"}) == "echo: hi"   # flattened result TEXT
     finally:
         cat.close()
