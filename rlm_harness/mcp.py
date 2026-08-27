@@ -18,6 +18,13 @@ SECURITY: MCP tools execute HOST-SIDE — *outside* the sandbox. A stdio server 
 process spawns; an HTTP server is a remote you trust. Treat an MCP server as a trusted dependency,
 and its tool OUTPUT as untrusted LM context (a prompt-injection surface, like fetched web content).
 
+SDK VERSION TOLERANCE: the ``mcp`` extra declares a floor and no cap, so a consumer's fresh
+install picks up whatever major is current — and the SDK renames across majors. Two classes so
+far, both handled HERE rather than at the call sites: MODEL FIELDS (camelCase -> snake_case at
+2.0) go through :func:`_sdk_field`, and MODULE-LEVEL SYMBOLS (``streamablehttp_client`` ->
+``streamable_http_client``) are resolved by name probe in :meth:`McpConnection._transport`.
+Neither degrades silently — see ``_sdk_field``'s docstring for why a sentinel, not a default.
+
 Two public surfaces:
 
 - ``mcp_tools(server)`` — the SINGLE-server convenience: one server's tools as ``dspy.Tool``s for
@@ -37,12 +44,15 @@ import asyncio
 import concurrent.futures
 import contextlib
 import json
+import logging
 import threading
 from collections.abc import Iterator
 from typing import Any
 
 from ._toolname import signature_from_json_schema, unique_tool_names
 from .trace import record_tool_call
+
+logger = logging.getLogger(__name__)
 
 # Head of a tool result recorded for inspection (a replay UI shows it) — like read_skill / fetch,
 # the trace keeps only a preview, not the full (possibly bulk) output that goes to the RLM's REPL.
@@ -66,9 +76,76 @@ def _require_mcp() -> None:
         ) from exc
 
 
+_MISSING = object()
+_warned_no_error_flag = False
+
+
+def _sdk_field(obj: Any, snake: str, camel: str) -> Any:
+    """Read one MCP SDK model field under BOTH spellings, or return ``_MISSING``.
+
+    The SDK renamed its model fields camelCase -> snake_case at 2.0 (``Tool.inputSchema`` ->
+    ``input_schema``, ``CallToolResult.isError`` -> ``is_error``, ``.structuredContent`` ->
+    ``.structured_content``). The old names survive only as pydantic serialization aliases, so
+    ATTRIBUTE access under the old spelling raises on 2.x — and this package declares no upper
+    bound on ``mcp``, so one process may hold either major. Read both, newest first.
+
+    Returns the sentinel rather than a default because a caller must be able to tell "the field
+    is absent under every spelling this kit knows" (a rename we have not learned yet) from "the
+    field is present and falsy". ``structured_content`` is typed ``Any`` on 2.x, so ``{}``,
+    ``0`` and ``False`` are all legitimate VALUES — an ``or``-chain would silently discard them,
+    and a plain ``getattr(obj, name, default)`` would silently turn the next rename into a
+    wrong answer. That is exactly how the 2.x break reached a released version unnoticed.
+    """
+    for name in (snake, camel):
+        if hasattr(obj, name):
+            return getattr(obj, name)
+    return _MISSING
+
+
+def _is_tool_result(result: Any) -> bool:
+    """True if ``result`` is a tool RESULT at all, rather than another arm of the union.
+
+    mcp 2.x widened ``ClientSession.call_tool`` to
+    ``CallToolResult | InputRequiredResult | Result``. Only the first carries ``content``, and
+    only the first carries an error flag — so the other arms must be recognised BEFORE
+    :func:`_tool_reported_error` is asked about them. Otherwise they take its "no error flag
+    under either spelling" branch, which both reports the call as a SUCCESS (the exact failure
+    this module was just fixed for) and burns the one-shot rename warning on a false alarm, so a
+    genuine future rename would then never warn at all.
+    """
+    return hasattr(result, "content")
+
+
+def _tool_reported_error(result: Any) -> bool:
+    """``CallToolResult``'s error flag under either spelling.
+
+    Absent under BOTH spellings is NOT treated as silent success: that is the failure this
+    function exists to prevent (a renamed flag made every failed tool call read as ``ok`` to
+    the model and to the trace). It degrades to ``False`` — refusing the call outright on a
+    field we merely failed to find would be worse — but says so once, loudly, so the next
+    rename shows up in a log instead of in the model's context.
+    """
+    global _warned_no_error_flag
+    flag = _sdk_field(result, "is_error", "isError")
+    if flag is _MISSING:
+        if not _warned_no_error_flag:
+            _warned_no_error_flag = True
+            logger.warning(
+                "MCP result %s carries neither `is_error` nor `isError`; treating every call as "
+                "successful. The installed mcp SDK has probably renamed the field again — a "
+                "failed tool call is now indistinguishable from a successful one.",
+                type(result).__name__,
+            )
+        return False
+    return bool(flag)
+
+
 def result_text(result: Any) -> str:
-    """Flatten a ``CallToolResult`` to text: join the ``TextContent`` blocks; fall back to
-    ``structuredContent`` (as JSON) when there is no text; prefix an error marker if ``isError``."""
+    """Flatten a ``CallToolResult`` to text: join the ``TextContent`` blocks; fall back to the
+    structured content (as JSON) when there is no text; prefix an error marker on failure."""
+    # Flattening a non-result would yield "" with no error marker: a silent empty success.
+    if not _is_tool_result(result):
+        return f"[not a tool result: {type(result).__name__}]"
     parts = [
         block.text
         for block in (getattr(result, "content", None) or [])
@@ -76,19 +153,19 @@ def result_text(result: Any) -> str:
     ]
     out = "\n".join(parts).strip()
     if not out:
-        structured = getattr(result, "structuredContent", None)
-        if structured is not None:
+        structured = _sdk_field(result, "structured_content", "structuredContent")
+        if structured is not _MISSING and structured is not None:
             try:
                 out = json.dumps(structured, ensure_ascii=False, default=str)
             except Exception:
                 out = str(structured)
-    if getattr(result, "isError", False):
+    if _tool_reported_error(result):
         out = f"[tool reported an error] {out}".strip()
     return out
 
 
 def _args_from_schema(input_schema: Any) -> dict:
-    """Map an MCP tool's ``inputSchema`` (a JSON Schema object) to ``dspy.Tool``'s ``args``
+    """Map an MCP tool's input schema (a JSON Schema object) to ``dspy.Tool``'s ``args``
     (a dict of {arg: schema-fragment}) — i.e. its ``properties``, or ``{}`` if absent."""
     if isinstance(input_schema, dict):
         props = input_schema.get("properties")
@@ -157,7 +234,7 @@ class McpConnection:
             import mcp.client.streamable_http as _sh
 
             # The SDK renamed streamablehttp_client → streamable_http_client (the old name is now
-            # deprecated). Prefer the new name, fall back to the old so the mcp>=1.0 floor keeps
+            # deprecated). Prefer the new name, fall back to the old so the declared floor keeps
             # working; both accept a bare url and yield the same (read, write, get_session_id)
             # transport, so the call site is unchanged.
             streamable_client = getattr(_sh, "streamable_http_client", None) or _sh.streamablehttp_client
@@ -230,7 +307,7 @@ class McpCatalog:
     PROGRESSIVE tool surface (list servers → load one on demand → read its tools → call one). Each
     server runs behind its own :class:`McpConnection` (a background-thread session). The catalog
     records NOTHING (the consumer's own tool wrapper owns any ``tool_call``) and returns RAW MCP
-    ``Tool`` objects (name / description / ``inputSchema``), not ``dspy.Tool``s — so it stays
+    ``Tool`` objects (name / description / input schema), not ``dspy.Tool``s — so it stays
     dspy-free and the consumer maps tools to its own shape.
 
     ``specs`` is a list of dicts, each ``{"name", "description", ...connection...}`` where the
@@ -351,7 +428,8 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str,
     name = f"{prefix}{mcp_tool.name}"
     repl = repl_name or name
     desc = mcp_tool.description or f"MCP tool {name}"
-    schema = mcp_tool.inputSchema if isinstance(mcp_tool.inputSchema, dict) else None
+    raw_schema = _sdk_field(mcp_tool, "input_schema", "inputSchema")
+    schema = raw_schema if isinstance(raw_schema, dict) else None
     props = _args_from_schema(schema)
 
     def call(**kwargs: Any) -> str:
@@ -367,7 +445,10 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str,
             # Model-facing text uses the name the model can actually call.
             return f"MCP tool {repl!r} error: {type(exc).__name__}: {str(exc)[:200]}"
         text = result_text(result)
-        ok = not getattr(result, "isError", False)
+        # A non-`CallToolResult` arm is not a successful call. Checked here rather than left to
+        # `_tool_reported_error`, which would find no flag on it, report `ok` — recording a
+        # non-result in the trace as a success — and spend the one-shot rename warning saying so.
+        ok = _is_tool_result(result) and not _tool_reported_error(result)
         record_tool_call(
             name, args=args, ok=ok, preview=text[:_PREVIEW],
             note="ok" if ok else "tool reported an error",
@@ -385,7 +466,7 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str,
     # own tools from `McpCatalog` names uses the SAME derivation rather than re-deriving it.
     #
     # UNCONDITIONAL — no `if schema is not None` guard. A schema-less tool used to keep the broken
-    # ``**kwargs`` proxy while the comment here claimed otherwise; the SDK makes `inputSchema` a
+    # ``**kwargs`` proxy while the comment here claimed otherwise; the SDK makes the input schema a
     # required dict so that branch is not reachable through `mcp_tools`, but a caller constructing
     # `_make_tool` directly could hit it, and a zero-parameter signature is right for a genuinely
     # no-argument tool either way.
