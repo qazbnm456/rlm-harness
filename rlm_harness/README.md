@@ -13,7 +13,7 @@ pitch, the quickstart, and installation — start at the
 | `config.py` | Single source of truth; `RLMConfig.from_env()`. No dspy import. |
 | `runtime.py` | `configure()` — wires dspy + optional observability once, including auto-routing a `claude-agent-sdk/`-prefixed model string onto `ClaudeAgentLM`. |
 | `task.py` | `RLMTask` base class. |
-| `_retry.py` | Validation + retry engine (dspy-free, unit-tested). |
+| `_retry.py` | Validation + retry engine (dspy-free, unit-tested). Mostly private, but `short_error` is public — head-and-tail elision for a caught exception, so a giant `AdapterParseError` (which embeds the whole raw completion) becomes one readable log line instead of thousands. |
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
 | `atomic.py` | `atomic_write_text` / `atomic_write_stream` — a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write; `atomic_write_stream` takes an iterable of `bytes` chunks instead of one in-memory blob, aborting once a running total exceeds an optional `max_bytes`. dspy-free. |
 | `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` — reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded `trace/v1` events. dspy-free. |
@@ -38,7 +38,7 @@ pitch, the quickstart, and installation — start at the
 
 ## RLM as Harness Engineering (sub-LM hook + tracing)
 
-`dspy.RLM` exposes no hook to intercept a sub-LLM response, and (as of dspy 3.3.0) no
+`dspy.RLM` exposes no hook to intercept a sub-LLM response, and (as of dspy 3.3.1) no
 multi-sub-model or depth>1 recursion. The clean lever is to **wrap a `dspy.LM`**:
 
 ```python
@@ -247,7 +247,7 @@ cat = McpCatalog([{"name": "docs", "url": "https://mcp.example.com/mcp"},
 try:
     cat.servers()                      # [(name, description), ...] — every declared server
     cat.load("docs")                   # connect one on demand (a no-op under the eager default)
-    for tool in cat.tools("docs"):     # RAW mcp Tool objects (name / description / inputSchema)
+    for tool in cat.tools("docs"):     # RAW mcp Tool objects (name / description / input schema)
         ...                            # map them onto YOUR own tool shape
     text = cat.call("docs", "search", {"q": "..."})   # flattened result text
 finally:
@@ -696,6 +696,67 @@ parameter (a closed allowlist of exception types that propagate verbatim, consum
 never wrapped in `RLMTaskError`) is what makes `SandboxCancelled` survive `RLMTask.arun()`'s own
 retry engine untouched — a caller-driven cancellation must never be silently absorbed by a retry
 that respawns the sandbox and restarts the whole trajectory from scratch.
+
+## Timeouts — what bounds what
+
+Six different things can end a stuck run, on three different clocks, and no single one of them
+bounds a run's wall time. This is the whole map; reach for it before adding a seventh.
+
+| Knob | Env | Default | Bounds | On expiry |
+|---|---|---|---|---|
+| `RLMConfig.request_timeout_s` | `RLM_REQUEST_TIMEOUT` | unset → litellm's own 600s | **one HTTP request attempt** to a litellm-backed LM | `LMTimeoutError`, which dspy classifies as RETRYABLE — so it is retried, not fatal |
+| `ClaudeAgentLM(timeout_s=…)` | — (constructor only) | 600s | **one whole call**, INCLUDING time queued behind the SDK's concurrency semaphore | `TimeoutError` |
+| `RLMConfig.sandbox_turn_timeout_s` | `RLM_SANDBOX_TURN_TIMEOUT` | unset (disabled) | one whole `execute()` (`pyodide`/`deno`) — host-side tool and sub-LM dispatch time INCLUDED, which is why it is off by default | dspy's **recoverable** interpreter error — the model gets another turn |
+| `ContainerConfig.timeout_s` | `RLM_CONTAINER_TIMEOUT` | 120s | one `execute()`'s sandbox compute (`container`; host tool time excluded) | recoverable, same as above |
+| `RLMTask(cancel_event=…)` | — | unset | anything the caller decides | `SandboxCancelled` — **never** retried, never wrapped |
+| `RLMConfig.max_retries` | `RLM_MAX_RETRIES` | 1 (no retry) | the whole trajectory, in attempts not seconds | `RLMTaskError` |
+
+Three things about this table are easy to get wrong.
+
+**`request_timeout_s` does not bound a run to its own value.** An attempt is not a request: dspy's
+`LM` passes `num_retries=3` and litellm hands the OpenAI SDK `max_retries=2` of its own, so a dead
+endpoint is retried and the run-level wait is a MULTIPLE of this number plus backoff. Size a
+caller-side budget on the multiple. Leaving it unset is not "no cap" either — litellm then applies
+its own `COMPLETION_HTTP_FALLBACK_SECONDS` of 600s, so this field REPLACES that number rather than
+introducing a bound where none existed. A consumer whose turns legitimately run longer must set it
+UP, not leave it alone.
+
+**The two 600s defaults are not the same quantity.** `request_timeout_s` bounds one HTTP request
+with retries around it; `ClaudeAgentLM`'s bounds one whole call including queueing, with nothing
+around it. Which one you get depends on the model string, and `request_timeout_s` deliberately does
+NOT drive the subscription route — under `llm_query_batched`'s thread fan-out, a value that is
+generous per request would make queued sub-LM calls time out from waiting alone. `configure()` warns
+when you set the knob and a role was auto-routed, and
+`configure(main_lm=ClaudeAgentLM(model, timeout_s=…))` is how you choose that number.
+
+**A sandbox timeout and a cancel are opposite outcomes, on purpose.** The turn timeout is a
+safety net: it raises the error dspy CATCHES, so the model sees a dead turn and writes different
+code. A `cancel_event` is a decision: it raises `SandboxCancelled`, which stands outside dspy's
+exception hierarchy entirely and is on `run_with_retry`'s `non_retryable` list, so it ends the run.
+Never let a cancel degrade into the first kind.
+
+**Worked example.** `RLM_REQUEST_TIMEOUT=120`, `RLM_MAX_ITERATIONS=30`, `RLM_MAX_RETRIES=1`,
+against a litellm-backed model on an endpoint that has stopped answering:
+
+```
+one attempt      120s              the value you set
+  x ~3-4         dspy's LM(num_retries=3) re-sends the request
+  x ~3           litellm hands the OpenAI SDK max_retries=2 of its own
+one turn       ~20min + backoff    for ONE wedged model call
+  x 30 turns   ~10 hours           the iteration cap is the only thing that ends the run
+```
+
+The two retry layers are counts of RETRIES, not attempts, so read those multipliers as lower
+bounds. The point is the shape, not the digits: a "2-minute request timeout" is a wall-clock
+worst case measured in hours, and lowering `max_iterations` moves that number far more than
+lowering the timeout does. `max_retries` multiplies it again — which
+is why it defaults to 1. If you need a real wall-clock bound on a run, put it in your own
+driver (`asyncio.wait_for` around `arun`, or a `cancel_event`); no knob here is one.
+
+> These semantics assume non-streaming model requests, which is what the kit issues today. A
+> streamed request changes what a per-request HTTP timeout means — an inter-chunk read timeout does
+> not bound a whole generation — so anything that turns streaming on owes this page a revision and
+> a deadline of its own.
 
 ## `run_in_subprocess` — a safe, isolated-subprocess primitive (`isolation.py`)
 

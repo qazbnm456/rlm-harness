@@ -1,6 +1,6 @@
 [project]
 name = "rlm-harness"
-version = "1.4.0"
+version = "1.5.0"
 description = "A clean, reusable harness for building tasks on DSPy Recursive Language Models (RLMs)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,13 +29,20 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # FLOOR 3.3.0 since rlm-harness 1.2.0. 3.2.x is strictly worse for users — it accepts
-    # DUPLICATE tool names and silently keeps only one, does not reject a keyword tool name
-    # at construction, and has no CodeExecutionError, so the kit's own guarantees differed by
-    # whichever dspy a consumer happened to resolve. No upper bound: a cap propagates through
-    # pinned consumers and blocks them from dspy fixes; `.github/workflows/dspy-latest.yml` is
-    # the defence instead.
-    "dspy>=3.3.0",
+    # FLOOR 3.3.1 since rlm-harness 1.5.0 (3.3.0 since 1.2.0). 3.2.x is strictly worse for
+    # users — it accepts DUPLICATE tool names and silently keeps only one, does not reject a
+    # keyword tool name at construction, and has no CodeExecutionError, so the kit's own
+    # guarantees differed by whichever dspy a consumer happened to resolve.
+    #
+    # 3.3.1 is required, not merely preferred: `_dspy_compat.interpreter_instructions_kwargs`
+    # needs `interpreter_factory.execution_instructions`, which 3.3.1 introduced — without it a
+    # `container` run is told it cannot spawn subprocesses, which is the one thing that
+    # interpreter exists to allow. 3.3.1 also re-parents `CodeInterpreterError` under
+    # `DSPyError`, the hierarchy the cancel-is-never-recoverable invariant reads.
+    #
+    # No upper bound: a cap propagates through pinned consumers and blocks them from dspy
+    # fixes; `.github/workflows/dspy-latest.yml` is the defence instead.
+    "dspy>=3.3.1",
     "pydantic>=2.9",
 ]
 
@@ -45,8 +52,16 @@ observe = [
     "langfuse>=4.6.1",
     "openinference-instrumentation-dspy>=0.1.36",
 ]
+# MCP client (mcp_tools / McpCatalog). FLOOR 1.8.1 since rlm-harness 1.5.0: `>=1.0` was wrong
+# from the start — `mcp.client.streamable_http` does not exist at 1.0.0, so the HTTP transport
+# could not work at the declared floor. 1.8.1 rather than 1.8.0 because the floor is only
+# meaningful if the suite PASSES on it, and it does not on 1.8.0: a refused connect takes ~16s
+# there, against the <10s this kit asserts for fail-fast. Measured, not assumed. No upper bound, for the same reason dspy has none; the
+# `mcp-latest` job in `.github/workflows/dspy-latest.yml` is the compensating control, and
+# `ci.yml` additionally carries a PINNED 2.x leg so a major that is already out stays covered
+# on every PR. Both majors are supported: see `rlm_harness/mcp.py`'s SDK VERSION TOLERANCE note.
 mcp = [
-    "mcp>=1.0",
+    "mcp>=1.8.1",
 ]
 # JSON-Schema validation (make_json_schema_validator): validate a parsed object against a
 # vendored, version-pinned upstream JSON schema. Opt-in — the core scaffold runs without it.

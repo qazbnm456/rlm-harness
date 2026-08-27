@@ -4,6 +4,149 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.5.0] - 2026-08-27
+
+One new public name and two corrected dependency floors. **The headline is a correctness fix, not a
+feature**: on the MCP SDK major a fresh install resolves today, a FAILED MCP tool call was reported
+to the model — and recorded in the trace — as a SUCCESS. Every other item here is a gap the same
+investigation exposed. No trace-format change; `trace/v1` is untouched.
+
+Both floors move: `dspy>=3.3.1` (was `>=3.3.0`) and `mcp>=1.8.1` (was `>=1.0`). Neither is a
+breaking change for a consumer — nothing pins dspy or mcp directly — but both are deliberate; see
+below for why `>=1.0` was never a floor the code could actually run on.
+
+### Fixed
+
+- **An MCP tool failure read as a success (mcp SDK 2.x).** The SDK renamed its model fields
+  camelCase -> snake_case at 2.0 and kept the old spellings only as pydantic *serialization*
+  aliases, so attribute access under the old names no longer resolves. `rlm_harness/mcp.py` read
+  three of them:
+
+  | read | on 2.x | consequence |
+  |---|---|---|
+  | `Tool.inputSchema` | `input_schema` | `AttributeError` — `mcp_tools()` died outright |
+  | `getattr(result, "isError", False)` | `is_error` | **every failed tool call reported `ok`** |
+  | `getattr(result, "structuredContent", None)` | `structured_content` | structured results dropped |
+
+  Only the first failed loudly. The second is the one that matters: the model was told a failing
+  tool had succeeded, and `record_tool_call` wrote `ok=True` into the trace, so a dataset built
+  from those rollouts learned from them.
+
+  A fourth shape had to be handled with them: 2.x widened `call_tool`'s return type to
+  `CallToolResult | InputRequiredResult | Result`, and only the first carries `content` or an
+  error flag. `_is_tool_result` recognises the other arms BEFORE the flag is consulted, so they
+  are neither flattened to `""` nor recorded as `ok=True` — which would have been the same
+  "a call that did not succeed reads as a success" defect, reintroduced by the fix for it.
+
+  All three renames now go through one `_sdk_field` accessor that reads both spellings. It returns a
+  `_MISSING` sentinel rather than a default, deliberately: `structured_content` is typed `Any` on
+  2.x, so `{}` / `0` / `False` are legitimate VALUES an `or`-chain would silently discard — and,
+  more importantly, a `getattr(obj, name, False)` is exactly what turned the NEXT rename into a
+  wrong answer instead of an error. A result carrying no error flag under either spelling now
+  logs a warning once instead of being assumed successful. `result_text` also names a
+  non-`CallToolResult` rather than flattening it to `""`, since 2.x widened `call_tool`'s return
+  type to a union whose other arms carry no `content`.
+
+  **Why no test caught it:** the three fixture servers in `tests/test_mcp.py` imported
+  `mcp.server.fastmcp.FastMCP`, which does not exist on 2.x, so the whole suite could only ever
+  run against 1.x — and the error flag was covered exclusively by `SimpleNamespace` fakes
+  spelling it `isError`. Both are fixed: the fixtures build against whichever major is installed,
+  and a live server that actually raises now pins the error path end to end. `structured_content`
+  is the one half a live server still cannot exercise — a dict-returning tool is serialised to
+  text content on both majors, so `result_text` returns before it looks — so it is pinned the
+  only way that is honest instead: a live result must carry each field this module reads, under
+  at least one of the two spellings it knows.
+
+- **`RLM_REQUEST_TIMEOUT` was a silent no-op on the Claude-subscription route.** It becomes
+  `dspy.LM(timeout=...)`, which an auto-routed `ClaudeAgentLM` never sees, so a consumer could set
+  it, see no error, and believe a route was bounded to that number. `configure()` now warns,
+  naming `configure(main_lm=ClaudeAgentLM(model, timeout_s=...))` as the seam that does choose it.
+
+  It is deliberately NOT forwarded as `ClaudeAgentLM(timeout_s=...)`, which was the obvious fix
+  and is wrong: `request_timeout_s` bounds one HTTP request with dspy (`num_retries=3`) and
+  litellm (`max_retries=2`) retrying around it, while `ClaudeAgentLM.timeout_s` is an end-to-end
+  per-call deadline that INCLUDES time queued behind that SDK's concurrency semaphore. Under
+  `llm_query_batched`'s thread fan-out, a value that is generous per request would make queued
+  sub-LM calls time out from waiting alone. One number cannot mean both.
+
+- **The action prompt described the wrong runtime for every non-Pyodide interpreter.** dspy 3.3.1
+  renders an "Execution environment:" section sourced from `interpreter_factory.execution_instructions`.
+  The kit supplies its interpreter POSITIONALLY (which is what keeps ownership), so dspy read the
+  attribute off its own default `PythonInterpreter` and told every run that "subprocesses and
+  native extensions are unavailable" — including a `container` run, whose entire reason to exist
+  is that they are available. Nothing went red; the model simply stopped trying.
+
+  `_dspy_compat.interpreter_instructions_kwargs` now passes an `interpreter_factory` that is a
+  metadata CARRIER only: dspy reads one attribute off it and never invokes it (`_validate_interpreter_factory`
+  validates without calling, `_interpreter_context` returns early for a caller-owned interpreter,
+  and `_build_rlm` always resolves one). It raises if ever invoked, so a future dspy that moves
+  the positional seam fails loudly rather than double-shutting-down the sandbox. This does not
+  contradict the standing "`interpreter_factory=` is the wrong seam" rule — that rule is about
+  SUPPLYING an interpreter — and `CLAUDE.md`, `_dspy_compat.py` and `task.py` all say so now.
+
+### Added
+
+- **`short_error`** — head-and-tail elision for a caught exception, so a giant `AdapterParseError`
+  (which embeds the entire raw LM completion) becomes one readable log line. It already existed
+  as `_retry._short_error`; it is public because two independent consumers had reached into the
+  private module for it, which is this project's own stated trigger for promoting a named hook.
+  Its BEHAVIOUR is frozen, not its output string — see the docstring for exactly which properties
+  are part of the promise. The private spelling still resolves, as an undocumented alias.
+  It also no longer raises when an exception's own `__str__` does: every call site is an `except`
+  block, where blowing up replaces a diagnosable failure with an undiagnosable one. And the
+  length bound it now promises is one it actually keeps — at `limit <= 1` the head/tail split
+  left `tail == 0`, and `text[-0:]` slices the WHOLE string, so the smallest budgets produced the
+  longest output. Found by holding the code to the contract the docstring had just frozen.
+
+- **`mcp-latest`, a second job in `.github/workflows/dspy-latest.yml`** (now named "newest deps"),
+  and **`mcp-major`, a pinned 2.x leg in `ci.yml`**. The uncapped `mcp` extra had no defence at
+  all, which is why the bug above shipped; dspy has had one since 1.0.1. The assert in the new job
+  reads `importlib.metadata`, not `mcp.__version__` — the package exposes no `__version__` on
+  either major, so copying the dspy job verbatim would have crashed rather than verified.
+
+- **`execution_instructions` on the kit's own interpreters** — `ContainerInterpreter`,
+  the `mock` interpreter, and `testing.ScriptedInterpreter` each now describe their real runtime.
+  The container's is DERIVED from its `ContainerConfig`, not a constant: `network`, `read_only`
+  and `workdir` are all operator-configurable, and a fixed string would eventually tell the model
+  a capability is absent when it is present — the same defect class as the Pyodide default it
+  replaces, just quieter.
+
+### Changed
+
+- **Floor `dspy>=3.3.1`.** Required, not preferred: `execution_instructions` does not exist in
+  3.3.0. 3.3.1 also re-parents `CodeInterpreterError` under `DSPyError`, the hierarchy the
+  cancel-is-never-recoverable invariant reads — now pinned by a test that asserts
+  `SandboxCancelled` is a subclass of neither the recoverable nor the terminal class, nor of the
+  new root. Note 3.3.1 hard-gates Deno to `>=2.0.0,<3.0.0` and adds `pip install "dspy[deno]"`;
+  the docs say so now.
+
+- **Floor `mcp>=1.8.1`.** `>=1.0` was never runnable: `mcp.client.streamable_http` does not exist
+  at 1.0.0, so the HTTP transport could not work at the declared floor. 1.8.1 rather than 1.8.0
+  because a floor is only meaningful if the suite passes on it — on 1.8.0 a refused connect takes
+  ~16s, against the <10s this kit asserts for fail-fast. Still no upper bound — a cap propagates
+  through pinned consumers — with the two new jobs as the compensating control.
+
+### Documentation
+
+- **A new guide section, "Timeouts — what bounds what"** (`rlm_harness/README.md`). Six bounds on
+  three clocks, and none of them bounds a run's wall time on its own. It states the three things
+  that are easy to get wrong: `request_timeout_s` is per ATTEMPT and dspy/litellm retry around it,
+  so the run-level wait is a multiple; the two 600s defaults are different quantities selected by
+  a model string; and a sandbox turn timeout is recoverable while a cancel deliberately is not.
+  It also records that these semantics assume non-streaming requests, so a future change that
+  turns streaming on owes the page a revision.
+
+Suite: 758 passed, 1 skipped on dspy 3.3.1 — on Python 3.11 and 3.13, and on mcp 1.8.1 (the declared
+floor), 1.28.0 (the lock) and 2.1.1 (the newest).
+
+Two independent agents reviewed this release. The PLAN was audited before any code was written:
+six blocking defects came back, three of them places where this changelog's first draft would
+have been wrong — the `interpreter_factory` kwarg surviving `_build_rlm`'s lossy fallback, three
+tests claimed to go red that would not have, and a fixture assertion on a raw SDK object that no
+accessor could fix. The IMPLEMENTATION was then reviewed before merge, which is where the
+non-result-reads-as-success bug, the `short_error` length bound, the config-dependent container
+text, and a floor of `mcp>=1.8` that the suite does not actually pass on all came from.
+
 ## [1.4.0] - 2026-08-27
 
 One new public name, additive and off by default. **MINOR, not PATCH** — `RLMConfig.request_timeout_s`
