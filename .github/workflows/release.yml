@@ -8,7 +8,12 @@ name: Release
 # Then publishing a GitHub Release (from a `vX.Y.Z` tag) builds + uploads automatically.
 # Supply-chain: the two third-party actions are SHA-pinned — setup-uv, and (highest blast radius, it
 # uploads to PyPI) pypi-publish. Bump a SHA and its trailing version comment together. GitHub-owned
-# checkout/*-artifact stay on major tags.
+# checkout/*-artifact stay on major tags -- setup-uv stopped publishing major tags at v8, so it can only
+# be named by full version or SHA now. Every action here targets Node 24: GitHub deprecated Node 20 and was
+# force-running the v4 actions on 24 anyway, warning on every build. The one behaviour change that came with
+# it is worth knowing rather than rediscovering: setup-uv v10 DISABLES its cache by default on a `release`
+# event (cache poisoning -- a release build is the highest-value thing in this repo to poison). This job
+# passes no `enable-cache`, so it takes that default deliberately and builds uncached, once per release.
 
 on:
   release:
@@ -21,12 +26,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - name: Build sdist + wheel
         run: uv build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -44,7 +49,7 @@ jobs:
     permissions:
       id-token: write          # OIDC token for PyPI Trusted Publishing
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
