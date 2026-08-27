@@ -125,8 +125,11 @@ One companion rule ships under `.claude/rules/`:
   `except Exception` would retry a cancel (transparently respawning the sandbox and restarting the
   whole trajectory from scratch) or wrap it in `RLMTaskError`, defeating the entire mechanism. Both
   knobs are `None`/unset by default and must stay a true no-op then: `execute()`'s FIRST check
-  (`if self._turn_timeout_s is None and self._cancel_event is None:`) must keep calling
-  `super().execute(...)` directly with no watcher thread ever created — this guard was accidentally
+  (`if self._turn_timeout_s is None and self._cancel_event is None:`) must keep reaching
+  `super().execute(...)` with no watcher thread ever created (since 1.6.0 both branches pass
+  through a `perf_counter()` timing shell that stages the turn's duration for the trace — it
+  creates no thread, and timing wraps the BRANCHES rather than the method precisely so this check
+  stays first) — this guard was accidentally
   dropped once during this feature's own design revision and only caught by a second adversarial
   review pass; keep it isolated and commented so it cannot be dropped silently again.
 - **Every dspy API difference is resolved in `_dspy_compat.py` — one place, by introspection.**
