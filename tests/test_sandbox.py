@@ -313,3 +313,110 @@ def test_mock_interpreter_runs_a_task_end_to_end():
     with pytest.raises(Exception) as excinfo:
         T().run(q="hi")
     assert "must implement CodeInterpreter" not in str(excinfo.value)
+
+
+# ---- the turn's sandbox time is staged, on BOTH branches of execute() ------------------------
+#
+# `sandbox.py` is the DEFAULT interpreter, so this is the half of `exec_duration_s` that matters
+# most. It had no test at all when first written: reverting both call sites to a bare
+# `super().execute(...)` left the whole suite green.
+
+
+class _StagingRecorder:
+    """Captures what the interpreter wrapper stages, without a real TraceRecorder."""
+
+    def __init__(self):
+        self.staged: list[tuple[float, object]] = []
+
+    def note_exec_duration(self, seconds, code=None):
+        self.staged.append((seconds, code))
+
+
+@_needs_dspy
+def test_the_fast_path_still_stages_a_duration(monkeypatch):
+    """The disabled-by-default branch is the one nearly every run takes."""
+    from dspy.primitives.python_interpreter import PythonInterpreter
+
+    from rlm_harness.trace import recorder_scope
+
+    monkeypatch.setattr(PythonInterpreter, "execute", lambda self, code, variables=None: "fast")
+    rec = _StagingRecorder()
+    interp = build_interpreter("pyodide")
+    with recorder_scope(rec):
+        assert interp.execute("1+1") == "fast"
+    assert len(rec.staged) == 1
+    seconds, code = rec.staged[0]
+    assert seconds >= 0.0
+    assert code == "1+1"          # keyed by the code, so the turn match cannot shift
+
+
+@_needs_dspy
+def test_the_guarded_path_also_stages_a_duration(monkeypatch):
+    """A knob set means `_execute_guarded` runs instead — it must not be the untimed branch."""
+    from dspy.primitives.python_interpreter import PythonInterpreter
+
+    from rlm_harness.trace import recorder_scope
+
+    monkeypatch.setattr(PythonInterpreter, "execute", lambda self, code, variables=None: "guarded")
+    rec = _StagingRecorder()
+    interp = build_interpreter("pyodide", turn_timeout_s=30.0)
+    with recorder_scope(rec):
+        assert interp.execute("2+2") == "guarded"
+    assert [c for _, c in rec.staged] == ["2+2"]
+
+
+@_needs_dspy
+def test_a_turn_that_raises_is_still_timed(monkeypatch):
+    """dspy keeps the turn in the trajectory either way, so dropping its duration would leave a
+    staged value the turn-match can never consume."""
+    from dspy.primitives.python_interpreter import PythonInterpreter
+
+    from rlm_harness.trace import recorder_scope
+
+    def _boom(self, code, variables=None):
+        raise RuntimeError("sandbox died")
+
+    monkeypatch.setattr(PythonInterpreter, "execute", _boom)
+    rec = _StagingRecorder()
+    interp = build_interpreter("pyodide")
+    with recorder_scope(rec), pytest.raises(RuntimeError):
+        interp.execute("boom()")
+    assert [c for _, c in rec.staged] == ["boom()"]
+
+
+@_needs_dspy
+def test_a_recorder_that_raises_never_breaks_the_turn(monkeypatch):
+    """Observability is best-effort here as everywhere else in this kit."""
+    from dspy.primitives.python_interpreter import PythonInterpreter
+
+    from rlm_harness.trace import recorder_scope
+
+    class _Hostile:
+        def note_exec_duration(self, seconds, code=None):
+            raise RuntimeError("observability exploded")
+
+    monkeypatch.setattr(PythonInterpreter, "execute", lambda self, code, variables=None: "ok")
+    interp = build_interpreter("pyodide")
+    with recorder_scope(_Hostile()):
+        assert interp.execute("1+1") == "ok"
+
+
+@_needs_dspy
+def test_timing_did_not_disturb_the_no_watcher_guarantee(monkeypatch):
+    """Belt and braces beside the guard test above: timing wraps both BRANCHES, not the method,
+    so the disabled-by-default path must still create no thread even with a recorder active."""
+    from dspy.primitives.python_interpreter import PythonInterpreter
+
+    from rlm_harness.trace import recorder_scope
+
+    monkeypatch.setattr(PythonInterpreter, "execute", lambda self, code, variables=None: "fast")
+    created = {"n": 0}
+    real_thread = threading.Thread
+    monkeypatch.setattr(
+        threading, "Thread",
+        lambda *a, **kw: (created.__setitem__("n", created["n"] + 1), real_thread(*a, **kw))[1],
+    )
+    interp = build_interpreter("pyodide")
+    with recorder_scope(_StagingRecorder()):
+        interp.execute("1+1")
+    assert created["n"] == 0

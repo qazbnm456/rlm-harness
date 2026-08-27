@@ -447,3 +447,174 @@ def test_an_explicitly_recorded_cause_wins_over_the_derivation(tmp_path):
                   if a["kind"] == "tool"]
 
     assert outcome["cause"] == CAUSE_ENDPOINT
+
+
+# ---- 1.6.0: the three fields that make a trace measurable ------------------------------
+#
+# All three are ADDITIVE within trace/v1 — no new event type, nothing removed or re-typed. They
+# exist because an analysis of ~400 real traces could not answer three basic questions: which kit
+# wrote this, how long did that tool take, and was a turn's wall-clock the model generating or the
+# sandbox executing.
+
+def test_run_start_names_the_kit_that_wrote_the_trace(tmp_path):
+    """`schema` is the FORMAT version and says nothing about the producer, so a corpus spanning
+    several releases is un-attributable — you cannot tell a behaviour change from a version
+    change. Asserted against a REAL recorder: nothing else pins the actual run_start payload."""
+    import rlm_harness
+
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r"):
+        pass
+    start = [json.loads(x) for x in p.read_text().splitlines()][0]
+    assert start["type"] == "run_start"
+    assert start["payload"]["rlm_harness"] == rlm_harness.__version__
+    assert start["schema"] == "rlm-harness/trace/v1"        # the FORMAT version, unchanged
+
+
+def test_the_version_sits_beside_meta_never_inside_it(tmp_path):
+    """`meta` is the caller's namespace (`rubric_to_meta` writes there); the kit must not squat
+    in it, and both readers of it must keep resolving."""
+    from rlm_harness.dataset import _run_meta
+
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r", meta={"source": "S"}):
+        pass
+    events = [json.loads(x) for x in p.read_text().splitlines()]
+    assert events[0]["payload"]["meta"] == {"source": "S"}   # untouched, no kit key inside
+    assert _run_meta(events) == {"source": "S"}
+
+
+def test_tool_call_duration_is_conditional_and_rounded(tmp_path):
+    """Written only when given, like `args` — an unconditional null would land on every tool_call
+    of every trace forever."""
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r"):
+        record_tool_call("a", args={})
+        record_tool_call("b", args={}, duration_s=1.23456789)
+    calls = [json.loads(x) for x in p.read_text().splitlines() if '"tool_call"' in x]
+    assert "duration_s" not in calls[0]["payload"]
+    assert calls[1]["payload"]["duration_s"] == 1.234568
+
+
+def test_exec_duration_lands_on_the_turn_that_produced_it(tmp_path):
+    """Matched on the code that ran, never on position."""
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r") as rec:
+        rec.note_exec_duration(0.5, "c0")
+        rec.note_exec_duration(2.5, "c1")
+        rec.record_main_trajectory(types.SimpleNamespace(
+            trajectory=[{"reasoning": "r0", "code": "c0"}, {"reasoning": "r1", "code": "c1"}],
+            final_reasoning="done",
+        ))
+    steps = [json.loads(x) for x in p.read_text().splitlines() if '"main_step"' in x]
+    assert [s["payload"]["exec_duration_s"] for s in steps] == [0.5, 2.5]
+
+
+def test_a_turn_dspy_never_executed_does_not_steal_the_next_turns_duration(tmp_path):
+    """THE regression, and it is reachable by the model any time it tags a fence ```json.
+
+    dspy raises SyntaxError out of `_strip_code_fences` for an explicitly non-Python fence and
+    records that turn from the UNSTRIPPED text without calling execute() at all. A positional zip
+    then credits the skipped turn with the next turn's time and shifts every later one — a
+    confidently WRONG attribution with nothing to signal it, which is worse than none."""
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r") as rec:
+        # only turns 1 and 2 reached the sandbox
+        rec.note_exec_duration(5.0, "heavy()")
+        rec.note_exec_duration(0.1, "cheap()")
+        rec.record_main_trajectory(types.SimpleNamespace(
+            trajectory=[
+                {"reasoning": "r0", "code": "```json\n{}\n```"},   # never executed
+                {"reasoning": "r1", "code": "heavy()"},
+                {"reasoning": "r2", "code": "cheap()"},
+            ],
+            final_reasoning="done",
+        ))
+    steps = [json.loads(x) for x in p.read_text().splitlines() if '"main_step"' in x]
+    assert "exec_duration_s" not in steps[0]["payload"]      # never ran → absent, not 5.0
+    assert steps[1]["payload"]["exec_duration_s"] == 5.0     # its own time, not shifted
+    assert steps[2]["payload"]["exec_duration_s"] == 0.1     # not lost off the end
+
+
+def test_two_turns_running_identical_code_each_get_their_own_duration(tmp_path):
+    """Earliest-unused, the same rule the `reasoning` timestamp match already uses."""
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r") as rec:
+        rec.note_exec_duration(1.0, "same()")
+        rec.note_exec_duration(2.0, "same()")
+        rec.record_main_trajectory(types.SimpleNamespace(
+            trajectory=[{"reasoning": "a", "code": "same()"}, {"reasoning": "b", "code": "same()"}],
+            final_reasoning="d",
+        ))
+    steps = [json.loads(x) for x in p.read_text().splitlines() if '"main_step"' in x]
+    assert [s["payload"]["exec_duration_s"] for s in steps] == [1.0, 2.0]
+
+
+def test_a_turn_with_no_recorded_execution_has_the_key_ABSENT(tmp_path):
+    """An interpreter the kit does not wrap (a caller-injected one, `ScriptedInterpreter`) stages
+    nothing. Absent is the honest answer; a 0.0 would read as "measured and found instant"."""
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r") as rec:
+        rec.note_exec_duration(0.5, "c0")                 # only turn 0 ran in a wrapped sandbox
+        rec.record_main_trajectory(types.SimpleNamespace(
+            trajectory=[{"reasoning": "r0", "code": "c0"}, {"reasoning": "r1", "code": "c1"}],
+            final_reasoning="d",
+        ))
+    steps = [json.loads(x) for x in p.read_text().splitlines() if '"main_step"' in x]
+    assert steps[0]["payload"]["exec_duration_s"] == 0.5
+    assert "exec_duration_s" not in steps[1]["payload"]
+
+
+def test_exec_durations_reset_per_attempt(tmp_path):
+    """`run_with_retry` re-runs the RLM and only the FINAL attempt is recorded, so the buffer
+    clears with the ts buffer — otherwise attempt 1's durations would shift attempt 2's onto the
+    wrong turns."""
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r") as rec:
+        rec.note_exec_duration(99.0, "c0")                # attempt 1, discarded
+        rec.begin_main_capture()
+        rec.note_exec_duration(1.0, "c0")                 # attempt 2, the one recorded
+        rec.record_main_trajectory(types.SimpleNamespace(
+            trajectory=[{"reasoning": "r0", "code": "c0"}], final_reasoning="d",
+        ))
+    steps = [json.loads(x) for x in p.read_text().splitlines() if '"main_step"' in x]
+    assert steps[0]["payload"]["exec_duration_s"] == 1.0
+
+
+def test_a_shipped_outbound_tool_records_its_own_duration(tmp_path):
+    """End-to-end, not just the plumbing: the tools whose cost is a WAIT on something outside this
+    process must actually carry `duration_s`, or `compute_tool_waste` is blind to exactly the
+    calls it exists to account for."""
+    from rlm_harness.metrics import compute_tool_waste
+    from rlm_harness.tools import make_fetch_tool
+
+    def _slow_fetcher(url):
+        import time as _t
+
+        _t.sleep(0.02)
+        return "body"
+
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r"):
+        make_fetch_tool(_slow_fetcher)("https://example.com/x")
+    events = [json.loads(x) for x in p.read_text().splitlines()]
+    call = next(e for e in events if e["type"] == "tool_call")
+    assert call["payload"]["duration_s"] >= 0.02
+
+    # ...and it reaches the metric as measured time, not as "unknown"
+    waste = compute_tool_waste(events)["fetch_url"]
+    assert waste.measured_calls == 1 and waste.total_seconds >= 0.02
+    assert waste.wasted_seconds == 0.0          # it succeeded
+
+
+def test_a_refusal_that_never_left_the_process_records_no_duration(tmp_path):
+    """A blocked URL never touched the network. Charging it a ~0 duration would put noise into the
+    wall-clock attribution; absent is the honest answer."""
+    from rlm_harness.tools import make_fetch_tool
+
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r"):
+        make_fetch_tool(lambda u: "body")("http://127.0.0.1/admin")
+    call = next(json.loads(x) for x in p.read_text().splitlines() if '"tool_call"' in x)
+    assert call["payload"]["ok"] is False
+    assert "duration_s" not in call["payload"]

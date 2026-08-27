@@ -19,6 +19,7 @@ cross the pipe). This is the OPPOSITE of the refused ``local`` interpreter, not 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -487,6 +488,30 @@ class ContainerInterpreter:
     # ---- the CodeInterpreter entry point -------------------------------------
 
     def execute(self, code: str, variables: dict[str, Any] | None = None) -> Any:
+        """Run one turn's code in the container, staging how long it took.
+
+        A thin timing shell over :meth:`_execute_inner`, whose body is untouched. The duration is
+        what tells a trace reader whether a turn's wall-clock was the root LM GENERATING or the
+        sandbox EXECUTING — two things with completely different fixes that `trace/v1` could not
+        separate before 1.6.0. `sandbox.py` does the same for the pyodide/deno interpreter, so the
+        `container` kind is not the one blind spot.
+
+        Observability never breaks a run: an absent recorder, a caller's own duck-typed one, or one
+        that raises all degrade to "no duration recorded". A failed turn is still timed — the
+        sandbox really did spend that time, and dspy keeps the turn in the trajectory either way.
+        """
+        from .trace import current_recorder
+
+        t0 = time.perf_counter()
+        try:
+            return self._execute_inner(code, variables)
+        finally:
+            note = getattr(current_recorder(), "note_exec_duration", None)
+            if callable(note):
+                with contextlib.suppress(Exception):
+                    note(time.perf_counter() - t0, code)
+
+    def _execute_inner(self, code: str, variables: dict[str, Any] | None = None) -> Any:
         from dspy.primitives.code_interpreter import CodeInterpreterError, FinalOutput
 
         from ._dspy_compat import recoverable_interpreter_error

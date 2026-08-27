@@ -111,7 +111,7 @@ def payload_cause(payload: dict) -> str:
 
 
 def record_tool_call(
-    tool: str, *, args: dict | None = None, **fields: Any
+    tool: str, *, args: dict | None = None, duration_s: float | None = None, **fields: Any
 ) -> dict | None:
     """Record a ``tool_call`` event on the active recorder; return it, or ``None``.
 
@@ -143,6 +143,17 @@ def record_tool_call(
 
     Passing ``cause=result.cause`` explicitly is the cheapest way to be sure — the derivation is
     then done once, by the code that knows, rather than re-derived by every reader.
+
+    **``duration_s`` — how long the tool actually took, in seconds.** An explicit parameter rather
+    than one more ``**fields`` entry so the name and the unit are documented in ONE place; written
+    only when given, like ``args``, so a caller that does not measure adds no key. Measure with
+    a MONOTONIC clock around the work itself — ``time.perf_counter()``, or ``time.monotonic()`` as
+    ``make_command_tool`` already uses — never with wall-clock.
+
+    Worth the two lines at every call site: without it a trace's only clock is the envelope ``ts``,
+    stamped when the event is RECORDED, so the sole way to attribute wall-clock is the gap between
+    consecutive events — which charges a whole turn's model generation to that turn's first tool
+    call. Every attribution made against this kit's own corpus before 1.6.0 had that error in it.
     """
     recorder = current_recorder()
     if recorder is None:
@@ -150,6 +161,8 @@ def record_tool_call(
     payload: dict[str, Any] = {"tool": tool}
     if args is not None:
         payload["args"] = args
+    if duration_s is not None:
+        payload["duration_s"] = round(float(duration_s), 6)
     payload.update(fields)
     return recorder.record(EVENT_TOOL_CALL, payload)
 
@@ -194,6 +207,9 @@ class TraceRecorder:
         # real ts — keeping the full {reasoning,code,output} payload, only correcting the timestamp.
         # Empty (no callback wired, or replay) → record_main_trajectory falls back to clock().
         self._main_ts: list[tuple[Any, float]] = []
+        # Sandbox execute() durations, staged by the interpreter wrappers the kit owns and matched
+        # onto turns in `record_main_trajectory`. Same lifecycle as `_main_ts`: reset per attempt.
+        self._exec_s: list[tuple[Any, float]] = []
         # llm_query_batched fans sub_lm calls across threads; a wrapped sub_lm
         # records a sub_call per thread. Serialise step assignment + the JSONL
         # write so concurrent escalations can't race step_ids or interleave lines
@@ -206,7 +222,18 @@ class TraceRecorder:
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         self._fh = open(self.path, "a", encoding="utf-8")
         self._token = _active.set(self)
-        self.record(EVENT_RUN_START, {"meta": self._meta})
+        # `rlm_harness` sits BESIDE `meta`, never inside it: `meta` is the caller's namespace
+        # (`rubric_to_meta` writes there) and the kit must not squat in it. Deferred import
+        # because `trace.py` is imported BY `__init__.py` — at module top this is circular, and
+        # by the time a recorder is entered the package is fully imported.
+        #
+        # Why at all: `schema` is the FORMAT version (`trace/v1`), which says nothing about which
+        # kit wrote the file. A corpus spanning several releases is then un-attributable — you
+        # cannot tell a behaviour change from a version change, which is exactly the wall this
+        # release's own measurement work hit.
+        from . import __version__
+
+        self.record(EVENT_RUN_START, {"meta": self._meta, "rlm_harness": __version__})
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -269,6 +296,7 @@ class TraceRecorder:
         """
         with self._lock:
             self._main_ts = []
+            self._exec_s = []
 
     def note_main_step(self, reasoning: Any, ts: float | None = None) -> None:
         """Buffer that a ROOT planner turn was parsed LIVE at ``ts`` (default: now).
@@ -280,6 +308,33 @@ class TraceRecorder:
         stamp = self._clock() if ts is None else ts
         with self._lock:
             self._main_ts.append((reasoning, stamp))
+
+    def note_exec_duration(self, seconds: float, code: Any = None) -> None:
+        """Buffer how long ONE sandbox ``execute()`` took, keyed by the CODE it ran.
+
+        The gap before a ``main_step`` is the single biggest bucket in a real trace, and it mixes
+        two things with completely different fixes: the root LM GENERATING the turn, and the
+        sandbox EXECUTING it. Nothing in ``trace/v1`` separated them, so "99.8% of wall-clock is
+        the root LM turn" was as far as any analysis could get.
+
+        Called by the interpreter wrappers the kit owns (``sandbox.py``'s guarded ``execute`` and
+        ``ContainerInterpreter.execute``). An interpreter a caller injects directly is NOT wrapped,
+        so its turns carry no ``exec_duration_s`` at all — absent, rather than a wrong zero.
+
+        **Matched by ``code``, never by position.** A turn does NOT always reach the sandbox: dspy
+        raises ``SyntaxError`` out of ``_strip_code_fences`` for an explicitly non-Python fence
+        (```` ```json ````, ```` ```bash ````) and records that turn from the *unstripped* text
+        without calling ``execute()`` at all. Zipping positionally therefore shifts every later
+        turn's duration by one and silently drops the last — a confidently WRONG attribution with
+        nothing to signal it, which is worse than having no attribution. Matching on the code that
+        actually ran makes the skipped turn match nothing, so its key is simply absent. Same
+        earliest-unused rule ``note_main_step``'s ``reasoning`` match uses, for the same reason.
+
+        Thread-safe and never touches the JSONL; like ``note_main_step`` it only stages a value for
+        reconciliation in ``record_main_trajectory``.
+        """
+        with self._lock:
+            self._exec_s.append((code, float(seconds)))
 
     def record_main_trajectory(self, prediction: Any) -> None:
         """Extract the RLM ``Prediction`` trajectory into ``main_step`` events.
@@ -302,7 +357,19 @@ class TraceRecorder:
             trajectory = []
         with self._lock:
             live = list(self._main_ts)
+            execs = list(self._exec_s)
         used = [False] * len(live)
+        used_exec = [False] * len(execs)
+
+        def _match_exec(code: Any) -> float | None:
+            """The earliest unused duration staged for exactly this code, or None."""
+            if not isinstance(code, str):
+                return None
+            for i, (ran, secs) in enumerate(execs):
+                if not used_exec[i] and ran == code:
+                    used_exec[i] = True
+                    return secs
+            return None
 
         def _match_ts(reasoning: Any) -> float | None:
             for i, (r, t) in enumerate(live):
@@ -314,14 +381,23 @@ class TraceRecorder:
         for turn, entry in enumerate(trajectory):
             entry = entry if isinstance(entry, dict) else {"raw": entry}
             reasoning = entry.get("reasoning")
+            payload = {
+                "turn": turn,
+                "reasoning": reasoning,
+                "code": entry.get("code"),
+                "output": entry.get("output"),
+            }
+            # Matched on the CODE that ran, never on position — see `note_exec_duration`. A turn
+            # dspy recorded without executing (a non-Python fence tag) matches nothing and the key
+            # is ABSENT, instead of stealing the next turn's duration and shifting every one after
+            # it. Conditional for the same reason `args` is: an unconditional null would land on
+            # every main_step of every trace forever.
+            ran_for = _match_exec(entry.get("code"))
+            if ran_for is not None:
+                payload["exec_duration_s"] = round(ran_for, 6)
             self.record(
                 EVENT_MAIN_STEP,
-                {
-                    "turn": turn,
-                    "reasoning": reasoning,
-                    "code": entry.get("code"),
-                    "output": entry.get("output"),
-                },
+                payload,
                 ts=_match_ts(reasoning),   # live per-turn ts, or None → clock() fallback
             )
         self.record(
