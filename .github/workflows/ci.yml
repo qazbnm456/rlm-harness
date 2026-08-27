@@ -49,6 +49,31 @@ jobs:
         # `pathspec` package rather than skip.
         run: uv run --group dev --extra mcp --extra grep --extra gitignore python -m pytest -q
 
+  mcp-major:
+    # The `mcp` extra is UNCAPPED, and `uv.lock` can only hold one version — so the suite above
+    # proves nothing about the OTHER published major. It went unnoticed once: SDK 2.0 renamed the
+    # result fields camelCase -> snake_case and every FAILED MCP tool call started reading as a
+    # SUCCESS to the model, with CI fully green (CHANGELOG 1.5.0).
+    #
+    # PINNED, and hand-bumped like `uvx ruff@...` below: this runs on `pull_request`, so a
+    # floating version would let an upstream release redden a contributor's unrelated PR — the
+    # exact reason `dspy-latest.yml` is kept off that trigger. The moving target is covered there;
+    # this job covers "the other major still works", which is a property of OUR code.
+    name: test (mcp 2.x)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          # Same key as `test (py3.13)`, which runs concurrently and writes it. See `packaging`.
+          save-cache: false
+      - name: Run the suite against the other MCP major
+        run: uv run --group dev --extra mcp --extra grep --extra gitignore --with "mcp==2.1.1" python -m pytest -q
+
   packaging:
     name: packaging (fresh install)
     runs-on: ubuntu-latest

@@ -1,8 +1,12 @@
-name: dspy latest
+name: newest deps
 
 # EARLY WARNING for an upstream dspy release — a SEPARATE workflow from `ci.yml` on purpose.
 #
-# Why this exists: `rlm-harness` declares only a FLOOR on dspy (>=3.3.0) while consumers pin the KIT, so a
+# ...and, in a second job, for an upstream `mcp` SDK release. Same shape, same reasoning; the
+# MCP one was added in 1.5.0 after SDK 2.0's camelCase->snake_case field rename made every FAILED
+# MCP tool call read as a SUCCESS to the model, with the whole suite green on the locked 1.x.
+#
+# Why this exists: `rlm-harness` declares only a FLOOR on dspy (>=3.3.1) while consumers pin the KIT, so a
 # consumer's fresh install resolves whatever dspy is current. `ci.yml` resolves dspy from
 # `uv.lock`, so it tests a version nobody installing from PyPI necessarily gets. dspy 3.3.0
 # renamed three things at once (see CHANGELOG 1.0.1) and the whole suite stayed green while
@@ -114,3 +118,58 @@ jobs:
           print('running against dspy', dspy.__version__)
           sys.exit(0 if dspy.__version__ == want else f'expected dspy {want}, got {dspy.__version__}')"
           uv run --group dev --extra mcp --extra grep --extra gitignore --with "dspy==${DSPY_LATEST}" python -m pytest -q
+
+  mcp-latest:
+    name: test (mcp latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          # Same single-Python reasoning as the dspy job above: this varies the MCP-SDK axis.
+          python-version: "3.13"
+          enable-cache: true
+          # This job derives the SAME cache key as `test (dspy latest)` (same OS, same Python,
+          # same lockfile) and runs CONCURRENTLY with it, so both would race to reserve it and
+          # one would log "Unable to reserve cache". One writer is enough; this is the reader.
+          save-cache: false
+
+      - name: Resolve the newest published mcp SDK
+        id: mcp
+        # Same design as the dspy step: ask PyPI, and treat `latest == locked` as a NOTICE rather
+        # than a failure — equality is the normal state right after a lock bump.
+        run: |
+          set -euo pipefail
+          LATEST=$(curl --retry 3 --retry-all-errors --retry-delay 5 --max-time 60 -fsSL \
+            https://pypi.org/pypi/mcp/json \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["info"]["version"])')
+          LOCKED=$(python3 -c '
+          import re, pathlib
+          m = re.search(r"name = \"mcp\"\nversion = \"([^\"]+)\"", pathlib.Path("uv.lock").read_text())
+          print(m.group(1) if m else "unknown")')
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "PyPI latest: $LATEST | uv.lock pins: $LOCKED"
+          if [ "$LATEST" = "$LOCKED" ]; then
+            echo "::notice::uv.lock is already on the newest mcp ($LATEST) — this run duplicates the main suite."
+          else
+            echo "::notice::Testing against mcp $LATEST, which is NEWER than the locked $LOCKED."
+          fi
+
+      - name: Run the suite against it
+        env:
+          MCP_LATEST: ${{ steps.mcp.outputs.latest }}
+        # NOTE the assert reads `importlib.metadata`, NOT `mcp.__version__` — the mcp package
+        # exposes no `__version__` on either major, so copying the dspy job's line verbatim would
+        # crash rather than verify. The assert itself is the point: `--with "mcp==<exact>"` is
+        # what overrides the lock, and a silent fallback to the locked version would make this
+        # job decorative.
+        run: |
+          set -euo pipefail
+          uv run --group dev --extra mcp --extra grep --extra gitignore --with "mcp==${MCP_LATEST}" python -c "
+          import importlib.metadata as m, os, sys
+          want, got = os.environ['MCP_LATEST'], m.version('mcp')
+          print('running against mcp', got)
+          sys.exit(0 if got == want else f'expected mcp {want}, got {got}')"
+          uv run --group dev --extra mcp --extra grep --extra gitignore --with "mcp==${MCP_LATEST}" python -m pytest -q
