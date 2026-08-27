@@ -53,9 +53,15 @@ One companion rule ships under `.claude/rules/`:
   a contributor's unrelated PR — which is the very reason the job below is kept off that trigger.
 - **`.github/workflows/dspy-latest.yml` runs the same suite against the NEWEST published dspy —
   and since the 1.2.0 floor bump it is the ONLY dspy axis** (the floor and `uv.lock` are both on
-  3.3.0, so `ci.yml` no longer covers a second version; the workflow says so in a `::notice::`
-  and restores real two-version coverage by itself the day dspy 3.4 ships). Separate workflow, on a weekly cron + `workflow_dispatch` + push-to-main, never
-  on a PR (an upstream break is not a contributor's problem). It exists because the two jobs above
+  3.3.1 since 1.5.0, so `ci.yml` no longer covers a second version; the workflow says so in a
+  `::notice::` and restores real two-version coverage by itself the day a newer dspy ships).
+  **It carries a SECOND job on the same triggers, `mcp-latest`**, for the same reason and for the
+  dependency that had no such defence: the `mcp` extra is uncapped, `uv.lock` held 1.x, and SDK
+  2.0's camelCase→snake_case field rename made every failed MCP tool call read as a SUCCESS to the
+  model (CHANGELOG 1.5.0). `ci.yml` additionally carries a PINNED 2.x leg, so a major that is
+  already published stays covered on every PR without an upstream release being able to redden one.
+  Both jobs live in that separate workflow, on a weekly cron + `workflow_dispatch` +
+  push-to-main, never on a PR (an upstream break is not a contributor's problem). It exists because the two jobs above
   resolve dspy from `uv.lock`, so they test a version nobody installing from PyPI necessarily gets:
   dspy 3.3.0 renamed three things at once and the whole suite stayed green while the kit was
   completely unrunnable on a fresh install — one break loud, two silent (CHANGELOG 1.0.1). It
@@ -70,7 +76,9 @@ One companion rule ships under `.claude/rules/`:
   `uv run --group dev --extra mcp --extra grep --with "dspy==<newest>" python -m pytest -q` — it leaves
   `uv.lock` untouched.
 - A *live* `dspy.RLM` run needs real model credentials **and** a Deno sandbox
-  (`brew install deno`). Don't run it in CI; it costs money. `examples/` show it.
+  (`brew install deno`, or `pip install "dspy[deno]"`; dspy 3.3.1 hard-gates the version to
+  `>=2.0.0,<3.0.0` and raises at startup otherwise). Don't run it in CI; it costs money.
+  `examples/` show it.
 - Before claiming done, actually run the two commands above and paste the output. (The
   newest-dspy workflow is NOT one of them — it needs network, and CI runs it for you.)
 
@@ -122,7 +130,8 @@ One companion rule ships under `.claude/rules/`:
   dropped once during this feature's own design revision and only caught by a second adversarial
   review pass; keep it isolated and commented so it cannot be dropped silently again.
 - **Every dspy API difference is resolved in `_dspy_compat.py` — one place, by introspection.**
-  The kit declares only a FLOOR on dspy (`>=3.3.0` since 1.2.0) while consumers pin the KIT, so a
+  The kit declares only a FLOOR on dspy (`>=3.3.1` since 1.5.0, `>=3.3.0` since 1.2.0) while
+  consumers pin the KIT, so a
   consumer's fresh install picks up whatever dspy is current and the kit must survive dspy's
   renames without them noticing. The 1.2.0 floor bump deleted the 3.2.x BRANCHES but deliberately
   kept this module: its value was never "supports two versions", it is that every dspy fact lives
@@ -137,9 +146,17 @@ One companion rule ships under `.claude/rules/`:
   is `_`-private and dspy-free at module top (every lookup imports dspy lazily, `lru_cache`d because
   the installed dspy cannot change mid-process). Two rules the shims encode and that must not drift:
   interpreter OWNERSHIP stays the kit's on every version (dspy shuts down only an interpreter it
-  built itself, so `RLMTask._teardown_interpreter` stays correct) — which is exactly why 3.3.0's
-  `interpreter_factory=` is the WRONG seam, dspy *does* shut down whatever that factory returns and
-  would double-shutdown our sandbox; and a lossy fallback must be LOUD — `_build_rlm`'s `except
+  built itself, so `RLMTask._teardown_interpreter` stays correct) — which is exactly why
+  `interpreter_factory=` is the WRONG seam **for SUPPLYING an interpreter**, dspy *does* shut down
+  whatever that factory returns and would double-shutdown our sandbox. Since 1.5.0 `_build_rlm` does
+  pass an `interpreter_factory`, and that is not a contradiction: it is a metadata CARRIER dspy only
+  READS (`execution_instructions`, the prompt's "Execution environment:" text) and never invokes —
+  never invoked because `_validate_interpreter_factory` validates without calling,
+  `_interpreter_context` returns early for a caller-owned interpreter, and `_build_rlm` always
+  resolves one. It raises if invoked, so a future dspy that moves the positional seam fails loudly
+  rather than double-shutting-down. Without it EVERY run is described to the model as Pyodide,
+  including a `container` run that can genuinely spawn subprocesses — see
+  `_dspy_compat.interpreter_instructions_kwargs`. And a lossy fallback must be LOUD — `_build_rlm`'s `except
   TypeError` drops all three budget caps to dspy's defaults, so it `logger.warning`s rather than
   `logger.debug`s.
 - **An LM error dspy itself calls non-retryable fails the task fast — except one carve-out.**

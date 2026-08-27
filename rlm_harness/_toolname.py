@@ -159,7 +159,7 @@ def unique_tool_names(
 
 def signature_from_json_schema(schema: Any) -> inspect.Signature:
     """Build the ``inspect.Signature`` to stamp on a ``**kwargs`` tool wrapper, from a JSON
-    Schema object (an MCP tool's ``inputSchema``, or any equivalent).
+    Schema object (an MCP tool's input schema, or any equivalent).
 
     **Why a wrapper needs this at all.** ``dspy.RLM`` builds its in-sandbox tool proxy from
     ``inspect.signature(tool.func)`` — NOT from ``dspy.Tool.args`` — on both the Deno and the
