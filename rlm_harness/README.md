@@ -650,19 +650,26 @@ to `pyodide`/`deno`:
   `CodeInterpreterError` — the model sees an `"[Error] ..."` string and gets to retry next turn
   against a freshly-respawned sandbox.
 - **`RLM_REQUEST_TIMEOUT`** (seconds; `RLMConfig.request_timeout_s`) — a wall-clock cap on ONE
-  model HTTP request, handed to `dspy.LM(timeout=...)` and from there to litellm. **Unset by
-  default**, which means no cap at all: the client waits as long as the connection stays open.
-  This is `RLM_SANDBOX_TURN_TIMEOUT`'s sibling on the other side of a turn, and the asymmetry is
-  what motivated it — a run could bound its sandbox and nothing at all on the model. Observed
-  against a self-hosted OpenAI-compatible endpoint: one request went out and never came back, the
-  socket stayed `ESTABLISHED` with both queues empty, and the worker slept in `epoll_wait` for 38
-  minutes at 0.3% CPU while the same endpoint answered unrelated requests in half a second. No
-  layer noticed, because none was watching — the only thing that eventually freed it was the
-  consumer's own per-call budget, and spending a whole one of those on a dead request turns a slow
-  job into a wedged one. Left unset rather than given a default because a legitimately long turn
-  exists (a reasoning model assembling a large structured answer; single calls measured at 900s),
-  and cutting off a live generation is worse than waiting on a dead one. Set it to something
-  comfortably above your own longest real turn.
+  model HTTP request ATTEMPT, handed to `dspy.LM(timeout=...)` and from there to litellm. This is
+  `RLM_SANDBOX_TURN_TIMEOUT`'s sibling on the other side of a turn: the sandbox side was bounded
+  and the model side was not settable at all.
+
+  **Unset is not "no cap".** With nothing passed, litellm applies its own
+  `COMPLETION_HTTP_FALLBACK_SECONDS` of **600 s** per attempt. So this setting *replaces* that
+  number rather than introducing a bound where there was none — and a consumer whose turns
+  legitimately run longer than ten minutes must set it **up**, not leave it alone.
+
+  **It does not bound a run to its own value.** dspy passes `num_retries=3`, and litellm's first
+  call hands the OpenAI SDK `max_retries=2`, so a dead endpoint is retried: the run-level wait is a
+  MULTIPLE of this value plus backoff. Size a caller-side budget on the multiple.
+
+  What prompted it, and an honest reading of it: against a self-hosted OpenAI-compatible endpoint
+  one request never came back — the socket stayed `ESTABLISHED` with both queues empty and the
+  worker slept in `epoll_wait` for 38 minutes at 0.3% CPU, while that same endpoint answered
+  unrelated requests in half a second. 600 s across four attempts is about forty minutes, so that
+  observation fits "litellm's own default, retried" at least as well as "nothing was watching";
+  no attempt counter was captured at the time. Either way the consumer could not choose the
+  number, and now it can.
 - **`cancel_event`** (`RLMTask(cancel_event=a_threading.Event)`) — for a caller that wants to stop
   an in-flight run NOW (e.g. a "Cancel" button in a UI driving `arun()` from a worker thread). Set
   the event from another thread; the current sandbox turn is killed and `SandboxCancelled` (exported
@@ -1057,8 +1064,11 @@ All via env (`RLMConfig.from_env()`): `RLM_MAIN_MODEL` (or `AI_MODEL_NAME`),
 `RLM_SUB_MODEL` (or `SUB_AI_MODEL_NAME`), `RLM_API_KEY` (or `AI_API_KEY`),
 `RLM_BASE_URL` (or `AI_BASE_URL`), `RLM_INTERPRETER`, `RLM_ADAPTER`,
 `RLM_MAX_TOKENS`, `RLM_MAX_OUTPUT_CHARS`, `RLM_ALLOW_INSECURE_SANDBOX`,
-`RLM_MAX_ITERATIONS`, `RLM_MAX_LLM_CALLS`, `RLM_MAX_RETRIES`, `RLM_REQUEST_TIMEOUT`,
-`RLM_OBSERVE`.
+`RLM_MAX_ITERATIONS`, `RLM_MAX_LLM_CALLS`, `RLM_MAX_RETRIES`, `RLM_SANDBOX_TURN_TIMEOUT`,
+`RLM_REQUEST_TIMEOUT`, `RLM_OBSERVE`.
+
+(`RLM_REQUEST_TIMEOUT` is this kit's own name. litellm separately reads a bare `REQUEST_TIMEOUT`
+for its global default — setting that one moves litellm, not this.)
 
 The `AI_*` fallbacks let the kit drop into projects already keyed on those vars
 without re-keying env; the `RLM_*` form wins when both are set.
@@ -1129,9 +1139,24 @@ mid-string or mid-object, with no closing brace.
 Two things make it more likely, and they compound: a **reasoning** model (the thinking is spent
 before the answer starts) and a task whose one turn is genuinely long (assembling a large
 structured result, or a REPL turn that both reasons and writes a big code block). More than one
-consumer has hit this and settled on **16384** for the planner; that is a reasonable first move
-when the symptom above appears, and it costs nothing on turns that do not need the headroom, since
-the cap bounds generation rather than reserving it.
+consumer has hit this and settled on **16384** for the planner, which is a reasonable first move
+when the symptom above appears.
+
+It is not free, though, so raise it deliberately rather than reflexively: an OpenAI-compatible
+server commonly validates `prompt_tokens + max_tokens` against the context window, so a bigger cap
+removes usable PROMPT budget — and an RLM planner's prompt grows every turn, which is exactly the
+workload where that bites. You are trading one failure (a truncated answer) against another (a
+context-window refusal), not buying headroom for nothing.
+
+There is also a case where the 8192 default fails immediately rather than mid-run: OpenAI's own
+reasoning models reject it outright, and `dspy.LM("openai/o3", max_tokens=8192)` raises
+`LMConfigurationError: ... require passing temperature=1.0 or None and max_tokens >= 16000 or
+None` before a single request is sent. That is the loudest instance of this whole class, and it is
+why 16000+ is the right floor for those models specifically.
+
+A deterministic confirmation, when you want one rather than eyeballing the quoted response: dspy
+logs `LM response was truncated due to exceeding max_tokens=...` at WARNING whenever the provider
+reports `finish_reason == "length"`.
 
 A **reasoning model can be the RLM root**, not just an instruct one: some reasoning servers emit the
 *whole* structured turn into the `reasoning_content` channel and return `content` null. `_LenientJSONAdapter`

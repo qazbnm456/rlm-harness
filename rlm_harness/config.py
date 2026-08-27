@@ -163,6 +163,11 @@ class RLMConfig:
     # mid-thought and ``content`` comes back EMPTY → "empty or null response". Sending a generous
     # cap leaves room for reasoning + answer on any endpoint. Set ``None`` to defer to the server.
     #
+    # Raising it is NOT free on every endpoint: an OpenAI-compatible server commonly validates
+    # ``prompt_tokens + max_tokens`` against the context window, so a bigger cap removes usable
+    # PROMPT budget — and an RLM planner's prompt grows every turn, which is exactly where that
+    # bites. Weigh it against the failure below rather than raising it reflexively.
+    #
     # **The default is a floor, and overrunning it presents as a DIFFERENT failure.** 8192 must
     # hold one turn's chain-of-thought AND its structured answer. A long turn that overruns it is
     # cut off mid-JSON, so the adapter cannot parse the reply and the run surfaces as
@@ -197,25 +202,30 @@ class RLMConfig:
     # unnecessary one. See `sandbox.py`'s `_build_sandboxed_interpreter` for the mechanism.
     sandbox_turn_timeout_s: float | None = None
 
-    # Wall-clock cap on ONE model HTTP request (passed to ``dspy.LM(timeout=...)``, which hands it
-    # to litellm). ``None`` (the default) means no cap: the kit sends nothing and the client waits
-    # as long as the connection stays open.
+    # Wall-clock cap on ONE model HTTP request ATTEMPT (passed to ``dspy.LM(timeout=...)``, which
+    # hands it to litellm). ``None`` (the default) sends nothing — which is NOT the same as no cap:
+    # litellm then applies its own ``COMPLETION_HTTP_FALLBACK_SECONDS`` of 600.0
+    # (``litellm_core_utils/completion_timeout.py``; verified by execution, not read off the docs).
+    # So the real default is 600s per attempt, and this field REPLACES that number rather than
+    # introducing a bound where there was none.
     #
-    # The asymmetry that motivated this: ``sandbox_turn_timeout_s`` already bounds the OTHER side
-    # of a turn, and a run had no bound at all on the model side. Observed on a real deployment
-    # against a self-hosted OpenAI-compatible endpoint: a request went out, the socket stayed
-    # ESTABLISHED with nothing in either queue, and the worker slept in ``epoll_wait`` for 38
-    # minutes with the process idle. The endpoint answered an unrelated request in half a second
-    # throughout — it was that ONE request that never came back. Nothing in the stack noticed,
-    # because nothing was watching: the only thing that would eventually free it was the
-    # CONSUMER's own per-call budget, and spending a whole one of those on a dead request is the
-    # difference between a slow job and a wedged one.
+    # **It does not bound a run to its own value, because an attempt is not a request.** dspy
+    # passes ``num_retries=3`` and litellm's first call hands the OpenAI SDK ``max_retries=2``, so
+    # a dead endpoint is retried — the run-level wait is a MULTIPLE of this, plus backoff. Size a
+    # caller-side budget on the multiple, not on this number.
     #
-    # Left at ``None`` rather than given a default, deliberately. A legitimately long turn exists
-    # — a reasoning model assembling a large structured answer takes minutes, and this project
-    # measured single calls at 900s — so any default this kit picked would be wrong for someone,
-    # and cutting off a live generation is worse than waiting for a dead one. It is the consumer,
-    # who knows its own turns, that can set it.
+    # Why it exists at all: ``sandbox_turn_timeout_s`` bounds the sandbox side of a turn and
+    # nothing here bounded the model side, so a consumer could not choose the number. Observed on
+    # a real deployment against a self-hosted OpenAI-compatible endpoint: one request never came
+    # back, the socket stayed ESTABLISHED with both queues empty, and the worker slept in
+    # ``epoll_wait`` for 38 minutes at 0.3% CPU while that same endpoint answered unrelated
+    # requests in half a second. Note 600s x 4 attempts is about 40 minutes, so that observation
+    # is consistent with the litellm default being retried rather than with nothing being
+    # watching — an honest reading of it, since no attempt counter was captured at the time.
+    #
+    # Left at ``None`` so the default stays exactly what it was before this field existed. A
+    # legitimately long turn does exist (a reasoning model assembling a large structured answer),
+    # and a consumer whose turns exceed 600s must set this UP, not merely leave it alone.
     request_timeout_s: float | None = None
 
     # Retry policy in _retry.py: how many times to run the WHOLE task (a full RLM trajectory) until

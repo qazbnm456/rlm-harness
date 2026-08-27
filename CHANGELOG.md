@@ -4,44 +4,66 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
-## [1.3.1] - 2026-08-27
+## [1.4.0] - 2026-08-27
 
-One new config field, additive and off by default. No trace-format change; with the field unset
-every call site behaves byte-for-byte identically to 1.3.0.
+One new public name, additive and off by default. **MINOR, not PATCH** — `RLMConfig.request_timeout_s`
+is public, documented, consumer-facing surface, and this project's rule is that adding a public name
+is a minor bump. (1.2.1 is the only prior patch with an `### Added` section, and it opens by saying
+everything it added was private.) With the field unset every call site behaves exactly as in 1.3.0.
+No public surface removal, no trace-format change.
 
 ### Added
 
-- **`RLMConfig.request_timeout_s` / `RLM_REQUEST_TIMEOUT`** — a wall-clock cap on ONE model HTTP
-  request, handed to `dspy.LM(timeout=...)` and from there to litellm. `sandbox_turn_timeout_s`
-  already bounded the sandbox side of a turn and nothing bounded the model side, so a request that
-  never came back had no bound anywhere in this kit.
+- **`RLMConfig.request_timeout_s` / `RLM_REQUEST_TIMEOUT`** (seconds) — a wall-clock cap on ONE
+  model HTTP request ATTEMPT, handed to `dspy.LM(timeout=...)` and from there to litellm. A
+  pass-through rather than new machinery: `dspy.LM` keeps kwargs it does not recognise and merges
+  them into the litellm call, and `litellm.completion` takes `timeout`.
 
-  Observed on a real deployment against a self-hosted OpenAI-compatible endpoint: a request went
-  out, the socket stayed `ESTABLISHED` with both queues empty, and the worker slept in
-  `epoll_wait` for 38 minutes at 0.3% CPU — while the same endpoint answered unrelated requests in
-  half a second throughout. Nothing in the stack noticed, because nothing was watching. The only
-  thing that would eventually free it was the CONSUMER's own per-call budget, and spending a whole
-  one of those on a dead request is the difference between a slow job and a wedged one.
+  **Unset is not "no cap", and this is worth reading before you size anything.** With nothing
+  passed, litellm applies its own `COMPLETION_HTTP_FALLBACK_SECONDS` of **600 s** per attempt. So
+  this field REPLACES that number rather than introducing a bound where there was none, and a
+  consumer whose turns legitimately exceed ten minutes must set it UP rather than leave it alone.
 
-  **Unset by default, and deliberately so.** A legitimately long turn exists — a reasoning model
-  assembling a large structured answer, with single calls measured at 900s — so any default this
-  kit picked would cut somebody's live generation off, and cutting a live one is worse than
-  waiting for a dead one. The consumer knows its own turns; it sets the number. When unset the key
-  is ABSENT from the LM kwargs rather than present-and-`None`, since clients differ on what an
-  explicit null means.
+  **It also does not bound a run to its own value.** dspy passes `num_retries=3` and litellm's
+  first call hands the OpenAI SDK `max_retries=2`, so a dead endpoint is retried and the run-level
+  wait is a MULTIPLE of this plus backoff. Size a caller-side budget on the multiple.
+
+  What prompted it: `sandbox_turn_timeout_s` bounded the sandbox side of a turn and the model side
+  was not settable at all. Against a self-hosted OpenAI-compatible endpoint one request never came
+  back — socket `ESTABLISHED`, both queues empty, the worker asleep in `epoll_wait` for 38 minutes
+  at 0.3% CPU, while that same endpoint answered unrelated requests in half a second. Stated
+  honestly: 600 s across four attempts is about forty minutes, so that observation fits "litellm's
+  own default, retried" at least as well as "nothing was watching", and no attempt counter was
+  captured at the time. Either way the consumer could not choose the number, and now it can.
+
+  When unset the key is ABSENT from the LM kwargs rather than present-and-`None`, since clients
+  differ on what an explicit null means. Both roles get it — the sub-LM as well as the planner,
+  which matters because `dspy.RLM` fans the sub-LM across a thread pool where a wedged request is
+  less visible.
 
 ### Documentation
 
 - **`max_tokens` now names the failure consumers keep misdiagnosing.** Its docs covered only the
-  `None` case (defer to the server, a small server-side cap truncates a reasoning model's
-  chain-of-thought, `content` comes back empty). Running into the DEFAULT presents completely
+  `None` case (defer to the server; a small server-side cap truncates a reasoning model's
+  chain-of-thought and `content` comes back empty). Running into the DEFAULT presents completely
   differently: 8192 must hold one turn's chain-of-thought AND its structured answer, and a long
   turn that overruns it is cut off mid-JSON, so the adapter cannot parse the reply and the run
   surfaces as `RLMTaskError: Failed to produce a valid '<field>'` caused by `AdapterParseError`.
   That is a truncation, not a model failing a schema, and it is repeatedly diagnosed as the latter
   because the quoted response looks well-formed right up to where it stops. The guide now names
   the symptom, how to tell the two apart (read the END of the quoted response — a truncated one
-  has no closing brace), what makes it likely, and a number to try.
+  has no closing brace, and dspy separately logs `LM response was truncated due to exceeding
+  max_tokens=...` at WARNING), and a number to try.
+- Also states what raising it costs, which the first draft of this text did not: an
+  OpenAI-compatible server commonly validates `prompt_tokens + max_tokens` against the context
+  window, so a bigger cap removes usable PROMPT budget — and an RLM planner's prompt grows every
+  turn. And that OpenAI's own reasoning models reject the 8192 default outright at `configure()`
+  time (`LMConfigurationError: ... max_tokens >= 16000 or None`), which is the loudest instance of
+  this whole class and the reason 16000+ is the right floor for them specifically.
+
+Suite: 726 passed, 1 skipped on dspy 3.3.0. Reviewed by an independent agent before release; its
+findings are why this is 1.4.0 rather than 1.3.1 and why the two claims above are stated as they
+are — the first draft of both said "unset means no cap at all", which execution disproved.
 
 ## [1.3.0] - 2026-08-25
 
