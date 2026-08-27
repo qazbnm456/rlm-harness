@@ -291,7 +291,8 @@ class RLMConfig:
         - ``RLM_MAX_LLM_CALLS`` (default ``30``).
         - ``RLM_MAX_OUTPUT_CHARS`` (default ``10000``) — head+tail character cap on REPL
           output fed back to the planner (distinct from ``RLM_MAX_TOKENS``).
-        - ``RLM_REQUEST_TIMEOUT`` (default: unset, i.e. no cap) — wall-clock seconds for ONE
+        - ``RLM_REQUEST_TIMEOUT`` (default: unset, which is NOT no cap — litellm then applies
+          its own 600s) — wall-clock seconds for ONE
           model HTTP request. Its sibling on the model side of a turn; see
           ``RLMConfig.request_timeout_s`` for the hang it exists to bound and why it has no
           default.

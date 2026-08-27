@@ -103,6 +103,17 @@ def test_construction_sets_the_trace_label(fake_sdk, monkeypatch):
     assert lm._alias == "opus"
 
 
+def test_the_call_deadline_is_a_constructor_choice_with_a_default(fake_sdk, monkeypatch):
+    """This LM's bound on a model call, and it had NO test at all. It is deliberately not driven
+    by `RLMConfig.request_timeout_s`: that knob is a per-HTTP-request bound which dspy and
+    litellm each retry around, whereas this is END-TO-END for one call and includes time queued
+    behind the module-level semaphore. `configure(main_lm=...)` is the seam for choosing it —
+    see `runtime.configure`, which warns when the knob cannot reach an auto-routed role."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert rlm_harness.ClaudeAgentLM("opus")._timeout_s == 600.0
+    assert rlm_harness.ClaudeAgentLM("opus", timeout_s=45.0)._timeout_s == 45.0
+
+
 def test_construction_refuses_a_leftover_api_key(fake_sdk, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-not-bill")
     with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
