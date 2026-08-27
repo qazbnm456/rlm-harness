@@ -106,7 +106,7 @@ def test_public_surface_includes_the_consumer_contract():
     # the load-bearing names a consumer imports — a representative subset, not the whole list (which
     # may GROW). Removing any breaks a downstream consumer / its UI / the trainer.
     must_export = {
-        "RLMTask", "RLMConfig", "configure", "get_config", "RLMTaskError",
+        "RLMTask", "RLMConfig", "configure", "get_config", "RLMTaskError", "short_error",
         "intercept_sub_lm", "model_as_tool", "get_sub_lm", "load_skills_as_tools",
         "TraceRecorder", "current_recorder", "record_tool_call", "load_events", "group_by_run",
         "export_sft_turns", "export_rl", "export_actions", "run_label_bundle",

@@ -3,7 +3,14 @@ import types
 import pytest
 from pydantic import BaseModel
 
-from rlm_harness._retry import RLMTaskError, _short_error, coerce_output, run_with_retry
+import rlm_harness
+from rlm_harness._retry import (
+    RLMTaskError,
+    _short_error,
+    coerce_output,
+    run_with_retry,
+    short_error,
+)
 
 
 class Finding(BaseModel):
@@ -244,21 +251,61 @@ async def test_non_retryable_type_match_wins_over_is_fast_fail():
     assert predicate_calls["n"] == 0  # non_retryable's `except` clause caught it first
 
 
-# ---- _short_error: bound the logged exception -----------------------------
+# ---- short_error: bound the logged exception ------------------------------
 
 def test_short_error_leaves_a_small_message_intact():
-    assert _short_error(ValueError("nope")) == "ValueError: nope"
+    assert short_error(ValueError("nope")) == "ValueError: nope"
 
 
 def test_short_error_caps_a_huge_exception_and_keeps_head_and_tail():
     # dspy's AdapterParseError embeds the ENTIRE raw LM completion; a degenerate model makes it
-    # thousands of lines. _short_error keeps the head (type + start) and tail, elides the middle.
+    # thousands of lines. short_error keeps the head (type + start) and tail, elides the middle.
     huge = "HEAD-marker " + ("loop " * 5000) + "TAIL-marker"
-    out = _short_error(RuntimeError(huge))
+    out = short_error(RuntimeError(huge))
     assert len(out) < 700                                # bounded, not the ~25k-char original
     assert out.startswith("RuntimeError: HEAD-marker")   # head kept
     assert out.endswith("TAIL-marker")                   # tail kept
     assert "chars elided" in out
+
+
+def test_short_error_honours_an_explicit_limit():
+    out = short_error(RuntimeError("x" * 500), limit=80)
+    assert out.startswith("RuntimeError: xxx")
+    assert "chars elided" in out
+    assert len(out) < 500
+
+
+def test_short_error_stays_bounded_at_every_limit():
+    """The frozen contract promises a length bound, and it is the ONE property the function
+    exists for. At limit<=1 the head/tail split left tail==0, and `text[-0:]` slices the WHOLE
+    string — so the smallest budgets produced the LONGEST output."""
+    huge = "x" * 5000
+    for limit in (0, 1, 2, 5, 30, 600):
+        out = short_error(RuntimeError(huge), limit=limit)
+        assert len(out) < len(huge), f"limit={limit} amplified instead of bounding"
+        assert len(out) <= limit + 60, f"limit={limit} exceeded the bound: {len(out)}"
+
+
+def test_short_error_never_raises_on_a_hostile_exception():
+    """It renders exceptions from anywhere, including a model-shaped payload whose __str__ is
+    itself broken. Blowing up inside the error path would replace a diagnosable failure with an
+    undiagnosable one."""
+    class _Hostile(RuntimeError):
+        def __str__(self):
+            raise ValueError("no string for you")
+
+    out = short_error(_Hostile())
+    assert out.startswith("_Hostile: ")
+    assert "unprintable" in out
+
+
+def test_short_error_is_public_and_the_old_private_name_still_resolves():
+    """Promoted in 1.5.0 because two independent consumers had reached into `_retry` for it.
+    The private spelling must keep working or the promotion breaks the callers that motivated
+    it — it is an alias, not a copy."""
+    assert rlm_harness.short_error is short_error
+    assert "short_error" in rlm_harness.__all__
+    assert _short_error is short_error
 
 
 async def test_retry_log_does_not_flood_on_huge_exception(caplog):
