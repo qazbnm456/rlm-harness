@@ -4,6 +4,138 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.6.0] - 2026-08-27
+
+Three new public names and three new optional `trace/v1` payload fields, all additive. No behaviour
+change to any existing call path: every field is written only when there is something to write, and
+every reader that has never seen them keeps working.
+
+**This release is the groundwork a measurement asked for before the feature it was scoping.**
+1.6.0 was going to be speculative programmatic tool calling — parse the REPL code as the Root LM
+streams it, pre-launch the tool calls it contains, serve them from cache. Before writing any of it,
+the idea was measured against ~400 real runs from the downstream fleet, and an independent audit
+re-derived the numbers. Both said the same thing: on THIS fleet's current workloads there is almost
+nothing to speculate, so the engine is deferred rather than dropped — and what it needs first is
+the ability to tell whether that is still true.
+
+- The fleet's dominant tool — 80% of its wall-clock — is a **serial repair loop**: one call per
+  turn, each spec built from the previous call's result. 913 call sites in the corpus; exactly
+  **one cell** ever contains two independent ones. Speculation ceiling there: **0.06–0.62%**.
+- The newest and heaviest consumer (76 runs, 17.9 turns/run) records **zero `sub_call` events, in
+  every run** — the model never escalates to the sub-LM at all.
+
+Neither workload has parallel calls to collapse, which was the entire premise. These are numbers
+about two workloads at one point in time, not a verdict on the technique: a workload that fans out
+— the map-reduce-over-chunks shape the RLM paper describes — would read completely differently, and
+the fields added below are what would show it.
+
+What the same investigation found instead is that **this kit cannot be measured from its own
+traces**, and that is this release:
+
+- 99.8% of the heaviest consumer's wall-clock landed in one opaque bucket — the gap before a
+  `main_step` — which mixes root-LM GENERATION with sandbox EXECUTION. Those have completely
+  different fixes and nothing separated them.
+- Not one of the 3,329 `tool_call` payloads in the corpus carried a duration. The only clock was
+  the envelope `ts`, stamped when the event is *recorded*, so every wall-clock attribution had to
+  infer durations from inter-event gaps — which charges a whole turn's model generation to that
+  turn's first tool call. Every number produced against this corpus before 1.6.0 had that error.
+- No trace said which kit wrote it. `schema` is the FORMAT version. Most of the corpus predates the
+  fleet's move to a released version and there is no way to tell which parts.
+
+### Added
+
+- **`run_start.payload["rlm_harness"]`** — the kit version that wrote the trace, beside `meta`
+  rather than inside it (`meta` is the caller's namespace; `rubric_to_meta` writes there). Resolved
+  by a deferred import because `trace.py` is imported *by* `__init__.py`.
+
+- **`tool_call.payload["duration_s"]`** — an explicit optional parameter on `record_tool_call`,
+  written only when given, so the name and unit are documented in one place. The shipped tools whose
+  cost is a WAIT on something outside this process now pass it: `fetch_url`, `web_search`,
+  `run_command`, `git_clone` (spanning both attempts when the credentialed fallback runs), the
+  `model:<id>` tool from `model_as_tool`, and every MCP tool. A local read/grep/edit does not — sub-millisecond work and
+  refusal paths that never touch anything would add noise, not signal, and the metric says "not
+  recorded" rather than "free". `run_command` keeps its runner-owned `duration_ms` alongside; they
+  are different quantities and only the wrapper's wall-clock is comparable across tools.
+
+  Enforced, not remembered: `tests/test_tool_durations.py` requires every `make_*` in
+  `rlm_harness.tools.__all__` to be classified as outbound-and-timed or exempt WITH a written
+  reason, so a new outbound tool that forgets fails at the moment it ships. That table exists
+  because `git_clone` and `model_as_tool` both shipped without a duration in this release's own
+  first draft — the same failure mode `tests/test_repl_safety.py`'s sweep was built for.
+
+  The tool that dominates a real run is usually the consumer's own model-backed one, and for the
+  two BASE factories the kit cannot record it: `make_model_tool` / `make_harness_tool` are
+  deliberately side-effect-free, so the consumer's wrapper owns the `record_tool_call`. One
+  `duration_s=` from that wrapper is what makes the 80% visible. (`model_as_tool` is the exception
+  — a model-backed tool the kit does record — and it now carries its own duration.)
+
+- **`main_step.payload["exec_duration_s"]`** — how long the sandbox spent on that turn, so the
+  biggest bucket in a real trace stops being opaque. Reuses the mechanism that already backfills
+  per-turn timestamps: a `note_exec_duration` sibling to `note_main_step`, staged by the two
+  interpreter wrappers the kit owns (`sandbox.py`'s guarded `execute` — on both branches, leaving
+  its isolated disabled-by-default guard literally first — and `ContainerInterpreter.execute`) and
+  matched onto turns by the CODE that ran, in `record_main_trajectory`. An interpreter a caller injects
+  directly is not wrapped, so its turns carry the key ABSENT rather than a wrong zero. Resets per
+  attempt with the timestamp buffer.
+
+  **Matched by the CODE that ran, never by position.** A turn does not always reach the sandbox:
+  dspy raises `SyntaxError` out of `_strip_code_fences` for an explicitly non-Python fence tag
+  (` ```json `, ` ```bash `) and records that turn from the unstripped text without calling
+  `execute()`. A positional zip therefore credits the skipped turn with the NEXT turn's time and
+  shifts every one after it — a confidently wrong attribution with nothing to signal it, which is
+  worse than having none. Caught by a pre-merge review after the first implementation shipped
+  exactly that bug; pinned by a test now.
+
+- **`compute_tool_waste` / `compute_tool_waste_by_run` / `ToolWaste`** — per tool: calls split by
+  outcome, and what each outcome cost. The number nobody had: on this corpus **57% of all tool
+  wall-clock produced output the consumer's own validator rejected**. For scale, a
+  `max_consecutive_invalid` of 2 instead of 5 — a knob `make_model_tool` already ships — would have
+  saved 4.53h of 20.6h there, which is ~2000× the speculation ceiling, available today by changing
+  one number.
+
+  Two things it refuses to do. It never reads `ok` directly — outcomes come from `payload_cause`,
+  because `ok` is frequently ABSENT on an endpoint-failure payload and `payload.get("ok")` then
+  returns `None`, so a naive counter absorbs infrastructure failures as content declines (a mistake
+  that has shipped four times). And it never infers a duration from event gaps: `*_seconds` is
+  `None` — "not recorded" — for anything unmeasured, because `0.0` would read as "measured and
+  found to be free" and inferring is the exact error this release exists to stop.
+
+### Deferred to 1.7.0, with what was learned
+
+Speculation itself, and the `speculatable()` marker that goes with it: a public marker with no
+engine is dead surface, and post-1.0 it would be SemVer-frozen from the day it ships.
+
+**Scope note, because an earlier draft of this entry got it wrong.** The upstream technique is NOT
+sub-LM-only. Its gate is SIDE EFFECTS — "as long as all inputs are safe (i.e. pure functions, no
+side effects), they can be speculated" — and it names *search APIs* alongside sub-agents as the
+canonical high-latency target, with a mail-sending tool as the counter-example. So `fetch_url` and
+`web_search` are squarely in the intended set on the author's own terms.
+
+What excluded them HERE was a stricter, separate concern: a speculation that is launched and then
+discarded has already been observed by the remote end, and nothing at commit time unsends it. That
+is a real cost — it is someone else's server, someone else's rate limit, and a request the policy
+never chose — but it is a POLICY judgement that belongs to the consumer, expressed through an
+explicit opt-in, not a technical impossibility. `make_harness_tool` is the one genuine permanent
+exclusion: its own source documents "one-call-at-a-time, so the slot is race-free", a cached result
+would replay a `child_run_id` pointing at a different child rollout, and each call spawns a whole
+child rollout rather than a cache lookup.
+
+Streaming is deferred with it.
+
+Four defects in that path were verified while scoping it, two of
+which silently break documented invariants: `dspy.streamify` runs the program under an anyio task
+group and anyio does not unwrap a single child exception, so `SandboxCancelled` arrives as an
+`ExceptionGroup`, `_retry.py`'s `except non_retryable:` stops matching, and a caller-driven cancel
+gets RETRIED; `is_fast_fail_lm_error`'s `isinstance` fails the same way. Also: `StreamListener`
+defaults `allow_reuse=False` and so streams turn 1 only; setting `send_stream` hijacks a consumer's
+own `dspy.streamify`; and `streamify` captures `settings.callbacks` at construction, dropping
+`_MainStepTimer` so every `main_step` silently reverts to a flush timestamp. All four are written
+down here so 1.7.0 starts from them rather than rediscovering them.
+
+Suite: 791 passed, 1 skipped on dspy 3.3.1, on all three CI interpreter cells (3.11, 3.12, 3.13). Plan reviewed by an
+independent agent before implementation; its objection to shipping the engine on these numbers is
+why this release is the measurement rather than the feature.
+
 ## [1.5.0] - 2026-08-27
 
 One new public name and two corrected dependency floors. **The headline is a correctness fix, not a

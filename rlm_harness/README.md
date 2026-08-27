@@ -16,7 +16,7 @@ pitch, the quickstart, and installation — start at the
 | `_retry.py` | Validation + retry engine (dspy-free, unit-tested). Mostly private, but `short_error` is public — head-and-tail elision for a caught exception, so a giant `AdapterParseError` (which embeds the whole raw completion) becomes one readable log line instead of thousands. |
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
 | `atomic.py` | `atomic_write_text` / `atomic_write_stream` — a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write; `atomic_write_stream` takes an iterable of `bytes` chunks instead of one in-memory blob, aborting once a running total exceeds an optional `max_bytes`. dspy-free. |
-| `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` — reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded `trace/v1` events. dspy-free. |
+| `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` — reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded `trace/v1` events. dspy-free. |
 | `isolation.py` | `run_in_subprocess` — a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
 | `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` — see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths` — a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` — safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `make_extract_archive_tool` — safe `zip`/tar extraction in `tools/archive.py` (see below), `verify_quote` — a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
 | `optimize.py` | GEPA harness — metric templates now, compile in Phase 2. |
@@ -691,7 +691,7 @@ except SandboxCancelled:
 ```
 
 Both knobs are `None` by default and cost nothing when unset: no watcher thread is ever created, and
-`execute()` is byte-identical to before either knob existed. `run_with_retry`'s `non_retryable`
+`execute()` takes the same direct path it did before either knob existed. `run_with_retry`'s `non_retryable`
 parameter (a closed allowlist of exception types that propagate verbatim, consuming no attempt and
 never wrapped in `RLMTaskError`) is what makes `SandboxCancelled` survive `RLMTask.arun()`'s own
 retry engine untouched — a caller-driven cancellation must never be silently absorbed by a retry
@@ -1105,11 +1105,58 @@ print(u.tool_call_rate, u.sub_call_rate)   # per root-LM turn taken; None if mai
 ```
 
 `compute_utilization_by_run(events)` computes every run's `RunUtilization` in one call, for a
-batch/dataset-level view. Reads ONLY already-frozen `trace/v1` fields (`event["type"]`,
-`event["payload"]["tool"]`) — no new event type, no new payload field, nothing the trace contract
-needs to change for.
+batch/dataset-level view. Reads only already-frozen `trace/v1` fields — `event["type"]`,
+`payload["tool"]`, the optional `payload["duration_s"]`, and (through `payload_cause`, never
+directly) `circuit_broken` / `endpoint_error` / `error` / `ok`. No new event type, nothing the
+trace contract needs to change for.
 
-Both rates are denominated over `main_steps` (root-LM turns) — "how many tool calls / sub-LM
+### `compute_tool_waste` — which calls produced nothing usable, and what they cost
+
+The sibling question, and the one nobody could answer before 1.6.0: **how much of a run's time went
+into tool calls that produced nothing?**
+
+```python
+from rlm_harness import compute_tool_waste, group_by_run, load_events
+
+runs = group_by_run(load_events("traces/run.jsonl"))
+for name, w in compute_tool_waste(runs["r1"]).items():   # ...or compute_tool_waste_by_run(events)
+    print(name, w.calls, w.invalid, w.endpoint_errors, w.circuit_broken)
+    print("  declined:", w.invalid_rate, " time wasted:", w.wasted_seconds, w.wasted_share)
+```
+
+Two things it refuses to do, both deliberate:
+
+- **It never reads `ok` directly.** Outcomes come from `payload_cause`, because `ok` is frequently
+  ABSENT on an endpoint-failure payload — `payload.get("ok")` then returns `None`, which is falsy,
+  so a naive counter silently absorbs infrastructure failures as content declines. That mistake has
+  shipped four times. `invalid_rate` is likewise denominated over the calls that actually reached a
+  validator, not over every call: a circuit break ran no validator and an endpoint failure produced
+  no output to judge.
+- **It never infers a duration from the gap between events.** `*_seconds` is `None` — meaning "not
+  recorded" — for any tool that did not pass `duration_s`, including every trace written before
+  1.6.0. `0.0` would read as "measured and found to be free", and inferring from event gaps charges
+  a whole turn's model generation to that turn's first tool call. Every wall-clock attribution made
+  against this kit's own corpus before 1.6.0 had exactly that error in it.
+
+**Which shipped tools carry a duration.** The ones whose cost is a WAIT on something outside this
+process: `fetch_url`, `web_search`, `run_command`, `git_clone`, the `model:<id>` tool from
+`model_as_tool`, and every MCP tool. A local read/grep/edit is
+sub-millisecond and its refusal paths never touch anything, so timing them would add noise to the
+attribution rather than signal — those record no `duration_s` and the metric says "not recorded"
+rather than "free".
+
+The tool that dominates a real run is usually the consumer's own model-backed one, and for the two
+BASE factories the kit cannot record it: `make_model_tool` and `make_harness_tool` are deliberately
+side-effect-free (no tracing, no messages), so the consumer's wrapper owns the `record_tool_call`.
+(`model_as_tool` is the exception — a model-backed tool the kit *does* record — and it carries its
+own duration.) **Pass
+`duration_s=time.perf_counter() - t0` from it** (any monotonic clock) — that one line is what
+makes the 80% of a run's
+wall-clock visible.
+
+### Denominators
+
+Both `RunUtilization` rates are denominated over `main_steps` (root-LM turns) — "how many tool calls / sub-LM
 escalations happened per root-LM turn taken." This is a judgment call, not a uniquely correct
 answer: the raw counts are exposed alongside the rates, so a consumer wanting a different
 denominator can recompute one from the same fields. A rate is `None` (not `0.0`) when
