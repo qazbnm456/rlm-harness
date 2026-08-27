@@ -281,6 +281,11 @@ def test_mcp_tool_call_is_traced(tmp_path):
              if e["type"] == "tool_call" and e["payload"]["tool"] == "echo"]
     assert calls and calls[0]["payload"]["ok"] is True
     assert "echo: hi" in calls[0]["payload"]["preview"]
+    # An MCP call leaves this process, so that wait is the whole cost of the tool — and both the
+    # README and the CHANGELOG claim "every MCP tool" carries a duration. The `make_*` sweep in
+    # tests/test_tool_durations.py structurally cannot reach here (`mcp_tools` is not a
+    # `tools.__all__` factory), so this is the only thing pinning that claim.
+    assert calls[0]["payload"]["duration_s"] >= 0.0
 
 
 def test_mcp_tools_teardown_leaves_no_live_thread(tmp_path):

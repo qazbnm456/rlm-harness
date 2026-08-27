@@ -124,6 +124,7 @@ def make_command_tool(
         except Exception as exc:
             record_tool_call(
                 "run_command", args={"command": command}, ok=False,
+                duration_s=time.monotonic() - started,
                 note=f"error: {type(exc).__name__}",
             )
             return f"Command error for {command!r}: {type(exc).__name__}: {str(exc)[:160]}"
@@ -131,11 +132,16 @@ def make_command_tool(
         # startup included); fall back to the wrapper's wall-clock only when it left it None.
         elapsed_ms = (time.monotonic() - started) * 1000.0
         duration_ms = result.duration_ms if result.duration_ms is not None else elapsed_ms
+        # TWO durations, deliberately, and they are not the same quantity. `duration_ms` is the
+        # RUNNER's own figure — it alone sees the real spawn→exit window — and stays the precise
+        # answer for this tool. `duration_s` is the wrapper's wall-clock, which is what
+        # `metrics.compute_tool_waste` compares ACROSS tools; a metric mixing a runner-reported
+        # spawn window with other tools' wall-clock would be comparing two different things.
         record_tool_call(
             "run_command", args={"command": command},
             ok=(result.exit_code == 0), exit_code=result.exit_code,
             stdout_len=len(result.stdout), stderr_preview=result.stderr[:_STDERR_PREVIEW],
-            duration_ms=duration_ms,
+            duration_ms=duration_ms, duration_s=elapsed_ms / 1000.0,
         )
         # Return a dict (not the dataclass): dspy JSON-bridges list/dict into a real REPL
         # value; any other type reaches the model only as str(repr), unsliceable.

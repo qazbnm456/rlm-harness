@@ -32,6 +32,7 @@ the cloner ever runs.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 
 from ..trace import record_tool_call
@@ -125,6 +126,7 @@ def make_git_clone_tool(
             )
             return f"Refused: {dest_dir!r} is not a path inside this root."
 
+        _t0 = time.perf_counter()   # spans BOTH attempts; see the record below
         result = _attempt(url, resolved_dest, None)
         used_fallback_auth = False
         secret = None
@@ -143,6 +145,9 @@ def make_git_clone_tool(
         record_tool_call(
             name,
             args={"url": url, "dest_dir": dest_dir},
+            # Covers BOTH attempts when the credentialed fallback ran — that is the honest total
+            # this tool cost the turn, and on a large repo it is routinely the slowest call in it.
+            duration_s=time.perf_counter() - _t0,
             ok=(result.exit_code == 0),
             exit_code=result.exit_code,
             used_fallback_auth=used_fallback_auth,
