@@ -29,9 +29,13 @@ full dspy install.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
+import time
 from typing import Any
+
+from .trace import current_recorder  # dspy-free, like this module
 
 logger = logging.getLogger(__name__)
 
@@ -175,10 +179,13 @@ def _build_sandboxed_interpreter(
       ``SandboxCancelled`` — NOT recoverable, not caught by
       ``RLM._execute_code``, propagates as a genuine run-ending failure.
 
-    Both are ``None`` by default and cost nothing when unset: ``execute()``'s very
-    first check calls ``super().execute(...)`` directly with no watcher thread
-    started at all, so every existing caller (every downstream consumer today) is
-    byte-identical to before this existed.
+    Both are ``None`` by default and cost nothing when unset: ``execute()``'s very first check
+    reaches ``super().execute(...)`` by the same direct path it took before either knob existed,
+    with NO WATCHER THREAD started at all — which is the guarantee that matters for every
+    downstream consumer today. (Since 1.6.0 both branches pass through a ``perf_counter()`` timing
+    shell that stages the turn's duration for the trace, so the path is no longer byte-identical;
+    it creates no thread, and timing wraps the BRANCHES rather than the method precisely so the
+    disabled-by-default check stays first.)
     """
     global _sandboxed_interpreter_cls
     if _sandboxed_interpreter_cls is None:
@@ -194,6 +201,21 @@ def _build_sandboxed_interpreter(
         # the model another turn — into a run-ending failure, with nothing going red to show it.
         _RecoverableExecError = recoverable_interpreter_error()
 
+        # Timing is applied to BOTH branches of `execute` below rather than wrapped around the
+        # method, so the disabled-by-default guard stays literally the first statement it runs.
+        # Observability must never break a run: a recorder that is absent, is a caller's own
+        # duck-typed object, or raises, all degrade to "no duration recorded".
+        def _timed(fn, code, merged):
+            t0 = time.perf_counter()
+            try:
+                return fn(code, merged)
+            finally:
+                rec = current_recorder()
+                note = getattr(rec, "note_exec_duration", None)
+                if callable(note):
+                    with contextlib.suppress(Exception):
+                        note(time.perf_counter() - t0, code)
+
         class _JsonLiteralInterpreter(PythonInterpreter):
             _JSON_ALIASES = _JSON_LITERAL_ALIASES
             _turn_timeout_s: float | None = None
@@ -202,17 +224,19 @@ def _build_sandboxed_interpreter(
             def execute(self, code: str, variables: dict | None = None) -> Any:
                 merged = {**self._JSON_ALIASES, **(variables or {})}
                 # The ENTIRE disabled-by-default guarantee: when neither knob is
-                # set, no watcher thread is ever created and this is byte-identical
-                # to the pre-watchdog behavior. Keep this the FIRST thing this
-                # method does — it was accidentally dropped once already during a
-                # design revision, so it is deliberately isolated and commented.
+                # set, NO WATCHER THREAD is ever created. Keep this the FIRST thing
+                # this method does — it was accidentally dropped once already during
+                # a design revision, so it is deliberately isolated and commented.
+                # (Since 1.6.0 both branches go through `_timed`, which stages the
+                # turn's duration for the trace. That is a `perf_counter()` pair and
+                # one attribute lookup — it creates no thread, so the guarantee this
+                # guard exists for is untouched. Timing wraps the BRANCHES rather
+                # than the method precisely so this check stays first.)
                 if self._turn_timeout_s is None and self._cancel_event is None:
-                    return super().execute(code, merged)
-                return self._execute_guarded(code, merged)
+                    return _timed(super().execute, code, merged)
+                return _timed(self._execute_guarded, code, merged)
 
             def _execute_guarded(self, code: str, merged: dict) -> Any:
-                import time
-
                 fired: dict = {"reason": None}  # ONE field, ONE write per trigger
                 stop = threading.Event()
 

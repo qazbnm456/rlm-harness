@@ -330,3 +330,54 @@ def test_container_isolation_real_docker():
     finally:
         interp.shutdown()
         os.environ.pop("RLM_TEST_SECRET_XYZ", None)
+
+
+# ---- 1.6.0: the turn's sandbox time is staged for the trace ----------------------------
+
+def test_execute_stages_its_duration_on_the_active_recorder():
+    """The `container` kind must not be the one blind spot in a trace: `sandbox.py` times the
+    pyodide/deno interpreter, this times its own. End-to-end through the real broker (a bare
+    subprocess, no Docker), so it exercises the actual `execute` shell rather than a stub."""
+    from rlm_harness.trace import recorder_scope
+
+    staged: list[float] = []
+
+    class _Rec:
+        def note_exec_duration(self, seconds, code=None):
+            staged.append((seconds, code))
+
+    with _interp() as interp, recorder_scope(_Rec()):
+        interp.execute("import time; time.sleep(0.05); print('x')")
+    assert len(staged) == 1
+    assert staged[0][0] >= 0.05       # it really timed the work, not a constant
+    assert "time.sleep" in staged[0][1]   # keyed by the code, so the turn match cannot shift
+
+
+def test_a_failing_turn_is_still_timed():
+    """The sandbox really did spend that time, and dspy keeps the turn in the trajectory either
+    way — so dropping the duration would silently misalign every later turn's."""
+    from rlm_harness.trace import recorder_scope
+
+    staged: list[float] = []
+
+    class _Rec:
+        def note_exec_duration(self, seconds, code=None):
+            staged.append((seconds, code))
+
+    # RECOVERABLE — the model's own code raised, so dspy catches this and hands it another turn.
+    # The turn still exists in the trajectory, so its duration must still be staged.
+    with _interp() as interp, recorder_scope(_Rec()), pytest.raises(CodeInterpreterError):
+        interp.execute("raise ValueError('boom')")
+    assert len(staged) == 1
+
+
+def test_a_recorder_that_raises_never_breaks_a_turn():
+    """Observability is best-effort everywhere else in this kit; it is here too."""
+    from rlm_harness.trace import recorder_scope
+
+    class _Hostile:
+        def note_exec_duration(self, seconds, code=None):
+            raise RuntimeError("observability exploded")
+
+    with _interp() as interp, recorder_scope(_Hostile()):
+        assert "ok" in interp.execute("print('ok')")
