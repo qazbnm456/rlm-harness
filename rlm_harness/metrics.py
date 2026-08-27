@@ -5,9 +5,10 @@ against a caller-supplied lens; this module COMPUTES fixed counts/rates directly
 ``trace/v1`` event stream, with no caller input beyond the events themselves. Reward-free, like
 every other trace-derived module here: raw counts and rates, never a score.
 
-Reads ONLY already-frozen ``trace/v1`` fields (``event["type"]``, ``event["payload"]["tool"]``) —
-no new event type, no new payload field, nothing the trace contract needs to change for. dspy-free,
-stdlib only.
+Reads only already-frozen ``trace/v1`` fields — ``event["type"]``, ``payload["tool"]``, the
+optional ``payload["duration_s"]``, and (through :func:`rlm_harness.trace.payload_cause`, never
+directly) ``circuit_broken`` / ``endpoint_error`` / ``error`` / ``ok``. No new event type, nothing
+the trace contract needs to change for. dspy-free, stdlib only.
 """
 
 from __future__ import annotations
@@ -15,7 +16,17 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from .trace import EVENT_MAIN_STEP, EVENT_SUB_CALL, EVENT_TOOL_CALL, group_by_run
+from .trace import (
+    CAUSE_CIRCUIT_BROKEN,
+    CAUSE_ENDPOINT,
+    CAUSE_INVALID,
+    CAUSE_OK,
+    EVENT_MAIN_STEP,
+    EVENT_SUB_CALL,
+    EVENT_TOOL_CALL,
+    group_by_run,
+    payload_cause,
+)
 
 
 @dataclass(frozen=True)
@@ -78,5 +89,116 @@ def compute_utilization_by_run(events: Iterable[dict]) -> dict[str, RunUtilizati
     each run's :class:`RunUtilization` in one call — a batch/dataset-level view across many runs."""
     return {
         run_id: compute_run_utilization(run_events)
+        for run_id, run_events in group_by_run(events).items()
+    }
+
+
+@dataclass(frozen=True)
+class ToolWaste:
+    """One tool's calls, split by OUTCOME and by the wall-clock each outcome cost.
+
+    The question this answers: how much of a run's time went into tool calls that produced nothing
+    usable? On the corpus that motivated it, 57% of all tool wall-clock produced output the
+    consumer's own validator rejected — a number nobody could see, because a trace carried no
+    durations and ``ok`` alone cannot tell a rejection from an endpoint failure.
+
+    Outcomes come from :func:`rlm_harness.trace.payload_cause`, never from raw ``ok``: ``ok`` is
+    frequently ABSENT on an endpoint-failure payload, so ``payload.get("ok")`` reads ``None`` and
+    every naive counter absorbs infrastructure failures as content declines. That mistake has
+    shipped four times.
+
+    ``*_seconds`` are ``None``, not ``0.0``, when the events carry no ``duration_s`` — i.e. a trace
+    written before 1.6.0, or a tool that does not measure. ``None`` means "not recorded"; ``0.0``
+    would read as "measured and found to be free". Deliberately NOT inferred from the gaps between
+    events: that charges a whole turn's model generation to the turn's first tool call, which is
+    the exact error this class exists to stop people making.
+
+    Reward-free, like every other module here: counts, seconds and rates — never a score.
+    """
+
+    tool: str
+    calls: int
+    invalid: int = 0            # the validator ran and rejected
+    endpoint_errors: int = 0    # the call itself failed; the validator never ran
+    circuit_broken: int = 0     # short-circuited; nothing was called at all
+    ok: int = 0
+    total_seconds: float | None = None
+    wasted_seconds: float | None = None   # spent on invalid + endpoint outcomes
+    measured_calls: int = 0     # how many of `calls` carried a duration
+
+    @property
+    def invalid_rate(self) -> float | None:
+        """Declines as a share of calls that actually reached the validator.
+
+        Denominated over ``invalid + ok`` rather than ``calls``: a circuit-broken call never ran a
+        validator and an endpoint failure never got an output to judge, so counting either in the
+        denominator understates how often the model's output was actually rejected. ``None`` when
+        the validator never ran — undefined, not zero.
+        """
+        judged = self.invalid + self.ok
+        return (self.invalid / judged) if judged else None
+
+    @property
+    def wasted_share(self) -> float | None:
+        """``wasted_seconds`` over ``total_seconds``.
+
+        ``None`` when nothing was measured — and also when everything measured summed to exactly
+        zero, which is indistinguishable from unmeasured here and would otherwise divide by zero.
+        """
+        if self.total_seconds is None or not self.total_seconds:
+            return None
+        return (self.wasted_seconds or 0.0) / self.total_seconds
+
+
+def compute_tool_waste(events: Iterable[dict]) -> dict[str, ToolWaste]:
+    """Per-tool outcome and cost breakdown for one run's events, keyed by tool name.
+
+    Pure function over ``trace/v1`` events, same shape as :func:`compute_run_utilization` — pass
+    one run's events, or use :func:`compute_tool_waste_by_run` across many.
+    """
+    calls: dict[str, int] = {}
+    by_cause: dict[str, dict[str, int]] = {}
+    secs: dict[str, float] = {}
+    wasted: dict[str, float] = {}
+    measured: dict[str, int] = {}
+
+    for event in events:
+        if event.get("type") != EVENT_TOOL_CALL:
+            continue
+        payload = event.get("payload") or {}
+        name = payload.get("tool", "?")
+        calls[name] = calls.get(name, 0) + 1
+        cause = payload_cause(payload)
+        by_cause.setdefault(name, {})[cause] = by_cause.setdefault(name, {}).get(cause, 0) + 1
+
+        duration = payload.get("duration_s")
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+            secs[name] = secs.get(name, 0.0) + float(duration)
+            measured[name] = measured.get(name, 0) + 1
+            if cause in (CAUSE_INVALID, CAUSE_ENDPOINT):
+                wasted[name] = wasted.get(name, 0.0) + float(duration)
+
+    out: dict[str, ToolWaste] = {}
+    for name, n in calls.items():
+        causes = by_cause.get(name, {})
+        has_time = name in measured
+        out[name] = ToolWaste(
+            tool=name,
+            calls=n,
+            invalid=causes.get(CAUSE_INVALID, 0),
+            endpoint_errors=causes.get(CAUSE_ENDPOINT, 0),
+            circuit_broken=causes.get(CAUSE_CIRCUIT_BROKEN, 0),
+            ok=causes.get(CAUSE_OK, 0),
+            total_seconds=secs.get(name) if has_time else None,
+            wasted_seconds=wasted.get(name, 0.0) if has_time else None,
+            measured_calls=measured.get(name, 0),
+        )
+    return out
+
+
+def compute_tool_waste_by_run(events: Iterable[dict]) -> dict[str, dict[str, ToolWaste]]:
+    """Convenience: group ``events`` by ``run_id`` and compute each run's tool breakdown."""
+    return {
+        run_id: compute_tool_waste(run_events)
         for run_id, run_events in group_by_run(events).items()
     }

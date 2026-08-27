@@ -102,6 +102,33 @@ def test_run_label_bundle_shape():
     assert bundle == {"labels": {"r": {"n": 4}}}
 
 
+def test_the_1_6_0_payload_additions_are_all_OPTIONAL():
+    """`rlm_harness` on run_start, `duration_s` on tool_call, `exec_duration_s` on main_step are
+    ADDITIVE within v1 — which only holds if a reader that has never seen them still works. Pinned
+    by reading a trace shaped like one written BEFORE they existed: every exporter must produce the
+    same records it always did. A future change that starts REQUIRING one of these keys goes red
+    here, which is the moment it would otherwise start breaking nine consumers' stored corpora."""
+    legacy = _synthetic_run()          # payloads carry none of the three
+    for events in legacy.values():
+        for e in events:
+            assert "duration_s" not in (e["payload"] or {})
+            assert "exec_duration_s" not in (e["payload"] or {})
+            assert "rlm_harness" not in (e["payload"] or {})
+
+    # the exporters and metrics all still resolve
+    assert len(export_actions(legacy)) == 3
+    assert len(export_sft_turns(legacy)) == 1
+    assert len(export_rl(legacy)) == 1
+
+    from rlm_harness.metrics import compute_tool_waste
+
+    waste = compute_tool_waste(next(iter(legacy.values())))
+    assert waste["gen"].calls == 1
+    # ...and the un-measurable cost reports as UNKNOWN, never as free
+    assert waste["gen"].total_seconds is None
+    assert waste["gen"].wasted_seconds is None
+
+
 def test_public_surface_includes_the_consumer_contract():
     # the load-bearing names a consumer imports — a representative subset, not the whole list (which
     # may GROW). Removing any breaks a downstream consumer / its UI / the trainer.
