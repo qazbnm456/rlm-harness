@@ -19,6 +19,10 @@ ENV_VARS = [
     "RLM_MAX_LLM_CALLS",
     "RLM_MAX_OUTPUT_CHARS",
     "RLM_SANDBOX_TURN_TIMEOUT",
+    # Every knob this kit reads belongs here, and this one especially: it is the variable the
+    # guide tells consumers to SET, so a maintainer who followed their own advice would otherwise
+    # get a red suite with no obvious cause.
+    "RLM_REQUEST_TIMEOUT",
     "RLM_MAX_RETRIES",
     "RLM_OBSERVE",
 ]

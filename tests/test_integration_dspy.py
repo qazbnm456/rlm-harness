@@ -467,13 +467,20 @@ def test_configure_default_sends_generous_max_tokens():
     assert dspy.settings.lm.kwargs.get("max_tokens") == 8192
 
 
-def test_configure_passes_request_timeout_through_to_the_lm():
+def test_configure_passes_request_timeout_through_to_both_lms():
     """The knob is only worth anything if it reaches litellm. dspy.LM keeps kwargs it does not
     recognise and merges them into the call, and `litellm.completion` takes `timeout` — so the
-    assertion is that the value lands in `lm.kwargs` under that exact name."""
+    assertion is that the value lands in `lm.kwargs` under that exact name.
+
+    BOTH roles, not just the main one. The sub-LM is the recursion seat and `dspy.RLM` fans it
+    across a thread pool, where a wedged request is LESS visible — a batched worker's failure is
+    swallowed into an `"[ERROR] ..."` string for the model rather than surfacing. A mutation that
+    popped the key between the two `dspy.LM(...)` constructions left the main-LM-only version of
+    this test green."""
     rt.configure(RLMConfig(main_model="openai/x", sub_model="openai/x", interpreter="mock",
                            request_timeout_s=600.0))
     assert dspy.settings.lm.kwargs.get("timeout") == 600.0
+    assert rt.get_sub_lm().kwargs.get("timeout") == 600.0
 
 
 def test_configure_sends_no_timeout_when_unset():
