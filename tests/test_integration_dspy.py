@@ -467,6 +467,23 @@ def test_configure_default_sends_generous_max_tokens():
     assert dspy.settings.lm.kwargs.get("max_tokens") == 8192
 
 
+def test_configure_passes_request_timeout_through_to_the_lm():
+    """The knob is only worth anything if it reaches litellm. dspy.LM keeps kwargs it does not
+    recognise and merges them into the call, and `litellm.completion` takes `timeout` — so the
+    assertion is that the value lands in `lm.kwargs` under that exact name."""
+    rt.configure(RLMConfig(main_model="openai/x", sub_model="openai/x", interpreter="mock",
+                           request_timeout_s=600.0))
+    assert dspy.settings.lm.kwargs.get("timeout") == 600.0
+
+
+def test_configure_sends_no_timeout_when_unset():
+    """The default must behave EXACTLY as before this field existed. Sending `timeout=None`
+    explicitly is not the same as sending nothing — clients differ on what an explicit null means
+    — so the key must be absent, not present-and-None."""
+    rt.configure(RLMConfig(main_model="openai/x", sub_model="openai/x", interpreter="mock"))
+    assert "timeout" not in dspy.settings.lm.kwargs
+
+
 def test_configure_pins_openai_provider_when_base_url_set():
     """With a base_url (a custom OpenAI-compatible endpoint), the LM pins
     custom_llm_provider="openai" so a BARE model id ("qwen/qwen3-next") routes to base_url —

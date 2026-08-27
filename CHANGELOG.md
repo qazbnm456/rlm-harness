@@ -4,6 +4,45 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.3.1] - 2026-08-27
+
+One new config field, additive and off by default. No trace-format change; with the field unset
+every call site behaves byte-for-byte identically to 1.3.0.
+
+### Added
+
+- **`RLMConfig.request_timeout_s` / `RLM_REQUEST_TIMEOUT`** — a wall-clock cap on ONE model HTTP
+  request, handed to `dspy.LM(timeout=...)` and from there to litellm. `sandbox_turn_timeout_s`
+  already bounded the sandbox side of a turn and nothing bounded the model side, so a request that
+  never came back had no bound anywhere in this kit.
+
+  Observed on a real deployment against a self-hosted OpenAI-compatible endpoint: a request went
+  out, the socket stayed `ESTABLISHED` with both queues empty, and the worker slept in
+  `epoll_wait` for 38 minutes at 0.3% CPU — while the same endpoint answered unrelated requests in
+  half a second throughout. Nothing in the stack noticed, because nothing was watching. The only
+  thing that would eventually free it was the CONSUMER's own per-call budget, and spending a whole
+  one of those on a dead request is the difference between a slow job and a wedged one.
+
+  **Unset by default, and deliberately so.** A legitimately long turn exists — a reasoning model
+  assembling a large structured answer, with single calls measured at 900s — so any default this
+  kit picked would cut somebody's live generation off, and cutting a live one is worse than
+  waiting for a dead one. The consumer knows its own turns; it sets the number. When unset the key
+  is ABSENT from the LM kwargs rather than present-and-`None`, since clients differ on what an
+  explicit null means.
+
+### Documentation
+
+- **`max_tokens` now names the failure consumers keep misdiagnosing.** Its docs covered only the
+  `None` case (defer to the server, a small server-side cap truncates a reasoning model's
+  chain-of-thought, `content` comes back empty). Running into the DEFAULT presents completely
+  differently: 8192 must hold one turn's chain-of-thought AND its structured answer, and a long
+  turn that overruns it is cut off mid-JSON, so the adapter cannot parse the reply and the run
+  surfaces as `RLMTaskError: Failed to produce a valid '<field>'` caused by `AdapterParseError`.
+  That is a truncation, not a model failing a schema, and it is repeatedly diagnosed as the latter
+  because the quoted response looks well-formed right up to where it stops. The guide now names
+  the symptom, how to tell the two apart (read the END of the quoted response — a truncated one
+  has no closing brace), what makes it likely, and a number to try.
+
 ## [1.3.0] - 2026-08-25
 
 Twenty new public names, plus two new optional extras (`grep`, `gitignore`; the pre-existing `subscription`

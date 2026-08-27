@@ -197,6 +197,27 @@ class RLMConfig:
     # unnecessary one. See `sandbox.py`'s `_build_sandboxed_interpreter` for the mechanism.
     sandbox_turn_timeout_s: float | None = None
 
+    # Wall-clock cap on ONE model HTTP request (passed to ``dspy.LM(timeout=...)``, which hands it
+    # to litellm). ``None`` (the default) means no cap: the kit sends nothing and the client waits
+    # as long as the connection stays open.
+    #
+    # The asymmetry that motivated this: ``sandbox_turn_timeout_s`` already bounds the OTHER side
+    # of a turn, and a run had no bound at all on the model side. Observed on a real deployment
+    # against a self-hosted OpenAI-compatible endpoint: a request went out, the socket stayed
+    # ESTABLISHED with nothing in either queue, and the worker slept in ``epoll_wait`` for 38
+    # minutes with the process idle. The endpoint answered an unrelated request in half a second
+    # throughout — it was that ONE request that never came back. Nothing in the stack noticed,
+    # because nothing was watching: the only thing that would eventually free it was the
+    # CONSUMER's own per-call budget, and spending a whole one of those on a dead request is the
+    # difference between a slow job and a wedged one.
+    #
+    # Left at ``None`` rather than given a default, deliberately. A legitimately long turn exists
+    # — a reasoning model assembling a large structured answer takes minutes, and this project
+    # measured single calls at 900s — so any default this kit picked would be wrong for someone,
+    # and cutting off a live generation is worse than waiting for a dead one. It is the consumer,
+    # who knows its own turns, that can set it.
+    request_timeout_s: float | None = None
+
     # Retry policy in _retry.py: how many times to run the WHOLE task (a full RLM trajectory) until
     # its output coerces into output_model. Default 1 = no retry, because a retry re-runs the entire
     # RLM from scratch — silently MULTIPLYING the max_iterations budget (3 retries ⇒ up to 3×
@@ -260,6 +281,10 @@ class RLMConfig:
         - ``RLM_MAX_LLM_CALLS`` (default ``30``).
         - ``RLM_MAX_OUTPUT_CHARS`` (default ``10000``) — head+tail character cap on REPL
           output fed back to the planner (distinct from ``RLM_MAX_TOKENS``).
+        - ``RLM_REQUEST_TIMEOUT`` (default: unset, i.e. no cap) — wall-clock seconds for ONE
+          model HTTP request. Its sibling on the model side of a turn; see
+          ``RLMConfig.request_timeout_s`` for the hang it exists to bound and why it has no
+          default.
         - ``RLM_SANDBOX_TURN_TIMEOUT`` (default: unset, i.e. disabled) — a per-``execute()``
           sandbox-compute safety-net timeout in seconds for the pyodide/deno interpreter. See
           ``RLMConfig.sandbox_turn_timeout_s`` for why this defaults to disabled rather than a
@@ -292,6 +317,7 @@ class RLMConfig:
             max_llm_calls=_env_int("RLM_MAX_LLM_CALLS", 30),
             max_output_chars=_env_int("RLM_MAX_OUTPUT_CHARS", 10_000),
             sandbox_turn_timeout_s=_env_optional_float("RLM_SANDBOX_TURN_TIMEOUT"),
+            request_timeout_s=_env_optional_float("RLM_REQUEST_TIMEOUT"),
             max_retries=_env_int("RLM_MAX_RETRIES", 1),
             observe=_env_bool("RLM_OBSERVE", False),
         )
