@@ -326,6 +326,14 @@ def _build_mock_interpreter() -> Any:
     """
 
     class _MockInterpreter:
+        #: Honest about being a stub. Only reaches a prompt if a caller pairs interpreter="mock"
+        #: with a real LM, which is not what the mock is for — but silently claiming Pyodide's
+        #: capabilities would be worse than saying so.
+        execution_instructions = (
+            "This REPL is a stub: code is NOT executed and every execution returns an empty "
+            "result. Do not rely on computing anything here."
+        )
+
         def __init__(self) -> None:
             # RLM mutates this dict in place to inject the run's execution tools.
             self.tools: dict[str, Any] = {}

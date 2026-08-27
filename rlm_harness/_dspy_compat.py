@@ -11,7 +11,8 @@ error (the new ``CodeExecutionError`` took that role) — and only the first fai
 kit was completely unrunnable on a fresh install while its whole suite stayed green
 (CHANGELOG 1.0.1).
 
-Since 1.2.0 the floor is ``dspy>=3.3.0`` and the 3.2.x branches are gone, so most of these
+Since 1.2.0 the floor is ``dspy>=3.3.0`` (``>=3.3.1`` since 1.5.0, which needs
+``interpreter_factory.execution_instructions``) and the 3.2.x branches are gone, so most of these
 now resolve a single answer. **They are kept anyway**: the module's value was never "supports
 two versions", it is that every dspy fact lives at ONE introspected call site, so the NEXT
 rename is a one-line change here plus a red test in ``tests/test_dspy_compat.py`` — instead of
@@ -76,12 +77,93 @@ def forward_interpreter_args(interpreter: Any) -> tuple:
     seam: dspy shuts down only an interpreter it created itself, never one the caller supplied
     ("Pass an existing interpreter as the first positional argument when calling the module"),
     so ``RLMTask._teardown_interpreter`` stays correct. Do NOT switch to ``interpreter_factory=``
-    — dspy DOES shut down whatever that factory returns, which would double-shutdown the kit's
-    sandbox.
+    as the way to SUPPLY an interpreter — dspy DOES shut down whatever that factory returns,
+    which would double-shutdown the kit's sandbox. (``interpreter_instructions_kwargs`` below
+    does pass an ``interpreter_factory``, but only as a metadata CARRIER that dspy never calls;
+    see its docstring for why that is not the same thing.)
 
     Empty when there is no caller-owned interpreter at all.
     """
     return () if interpreter is None else (interpreter,)
+
+
+def _raise_carrier_invoked() -> None:
+    raise RuntimeError(
+        "rlm-harness passed dspy an interpreter_factory as a metadata carrier only — it must "
+        "never be INVOKED, because dspy would then own and shut down what it returns while "
+        "RLMTask._teardown_interpreter also shuts down its own sandbox. Reaching here means the "
+        "caller-owned interpreter stopped being passed positionally to forward()/aforward()."
+    )
+
+
+@lru_cache(maxsize=1)
+def _dspy_reads_execution_instructions() -> bool:
+    """True if the installed dspy renders ``interpreter_factory.execution_instructions``.
+
+    Probed off ``PythonInterpreter``, which grew the attribute in the same release that taught
+    ``RLM._build_signatures`` to read it. Introspected rather than version-gated, like every
+    other answer in this module.
+    """
+    try:
+        from dspy.primitives.python_interpreter import PythonInterpreter
+
+        return isinstance(getattr(PythonInterpreter, "execution_instructions", None), str)
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def interpreter_instructions_kwargs(interpreter: Any) -> dict[str, Any]:
+    """``RLM(...)`` kwargs that describe ``interpreter``'s runtime to the model, or ``{}``.
+
+    THE PROBLEM. From dspy 3.3.1 the action prompt carries an "Execution environment:" section,
+    and dspy sources it from ``self._interpreter_factory.execution_instructions``. The kit does
+    not set ``interpreter_factory`` — it supplies the interpreter POSITIONALLY, which is what
+    keeps ownership (see ``forward_interpreter_args``) — so the attribute is read off dspy's
+    DEFAULT factory, ``PythonInterpreter``. Every run is therefore told "Python runs in
+    Pyodide/WebAssembly … subprocesses and native extensions are unavailable" no matter what is
+    actually executing the code. For the ``container`` interpreter that is false in the one way
+    that matters: spawning subprocesses is the entire reason it exists. Nothing goes red; the
+    model simply stops trying.
+
+    THE FIX, and why it does not reopen the ownership hole. The returned factory is a metadata
+    CARRIER: dspy reads an attribute off it and never calls it. That is not an assumption —
+    ``_validate_interpreter_factory`` validates without invoking, ``_interpreter_context``
+    returns the caller-owned interpreter and returns early, and ``RLMTask._build_rlm`` always
+    resolves a non-``None`` interpreter, so the factory is unreachable by construction. It still
+    raises if invoked, so a future dspy that changes the positional seam fails loudly here
+    instead of silently double-shutting-down the sandbox.
+
+    Returns ``{}`` — changing nothing — unless ALL of:
+
+    * the installed dspy actually renders the text (``_dspy_reads_execution_instructions``);
+    * ``RLM.__init__`` really accepts ``interpreter_factory``. Load-bearing, and NOT redundant
+      with the check above: ``_build_rlm``'s ``except TypeError`` fallback re-passes the same
+      kwargs, so an unknown kwarg raises on BOTH constructions and takes the run down rather
+      than degrading. It is also what "never hardcode a dspy kwarg name" requires;
+    * ``interpreter`` exposes a non-empty ``execution_instructions`` string;
+    * ``interpreter`` is not a dspy ``PythonInterpreter`` — dspy's own default already describes
+      those correctly, so carrying its text back to it would be pure noise.
+    """
+    if not _dspy_reads_execution_instructions():
+        return {}
+    if "interpreter_factory" not in _rlm_init_params() and not _rlm_init_takes_var_keyword():
+        return {}
+    text = getattr(interpreter, "execution_instructions", None)
+    if not isinstance(text, str) or not text.strip():
+        return {}
+    try:
+        from dspy.primitives.python_interpreter import PythonInterpreter
+
+        if isinstance(interpreter, PythonInterpreter):
+            return {}
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+    def carrier():
+        _raise_carrier_invoked()
+
+    carrier.execution_instructions = text
+    return {"interpreter_factory": carrier}
 
 
 def rlm_budget_kwargs(

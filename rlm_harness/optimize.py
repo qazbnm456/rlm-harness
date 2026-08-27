@@ -86,6 +86,12 @@ def compile_task(
         compiled = optimizer.compile(program, trainset=list(trainset))
         return CompileResult(program=compiled)
 
+    ONE THING TO FIX WHEN ENABLING IT: `optimizer.compile` calls the program WITHOUT a positional
+    interpreter, so dspy builds one from `interpreter_factory` — and since 1.5.0 `_build_rlm` may
+    pass a metadata CARRIER there that deliberately raises when invoked (see
+    `_dspy_compat.interpreter_instructions_kwargs`). This is the one code path that breaks that
+    function's "never invoked" premise, and it must supply a real interpreter of its own.
+
     It is intentionally not active yet: compiling without a representative,
     labelled trainset produces a confidently-wrong program, which is worse than
     none. Supply the trainset + metric, then swap this stub for the body above.

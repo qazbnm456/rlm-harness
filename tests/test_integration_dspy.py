@@ -71,6 +71,75 @@ def test_rlmtask_builds_real_dspy_rlm():
     assert _budget_attr(rlm, "max_output_chars") == 10_000
 
 
+def test_build_rlm_describes_a_custom_interpreters_runtime_to_the_model(monkeypatch):
+    """`_dspy_compat` tests prove the SHIM resolves a carrier; this proves `_build_rlm` actually
+    EMITS it. Without this the wiring could be dropped and every dspy_compat test stays green
+    while the model keeps being told it is running in Pyodide.
+
+    Captured off the constructor rather than read back off the built RLM, because
+    `rlm._interpreter_factory` is a dspy internal and asserting on those is exactly what
+    `_dspy_compat` exists to avoid.
+    """
+    _configure_with_dummy()
+    captured = {}
+    real_init = dspy.RLM.__init__
+
+    def _spy(self, signature, **kwargs):
+        captured.update(kwargs)
+        real_init(self, signature, **kwargs)
+
+    monkeypatch.setattr(dspy.RLM, "__init__", _spy)
+
+    class _Interp:
+        execution_instructions = "Runs in a container. Subprocesses ARE available."
+        tools: dict = {}
+
+        def start(self): ...
+        def execute(self, code, variables=None): return ""
+        def shutdown(self): ...
+
+    class T(RLMTask):
+        signature = "doc: str -> answer: str"
+        output_field = "answer"
+
+    T(interpreter=_Interp())._build_rlm()
+    factory = captured.get("interpreter_factory")
+    assert factory is not None, (
+        "_build_rlm dropped the execution-instructions carrier; the model will be told it is "
+        "running in Pyodide regardless of the real interpreter"
+    )
+    assert factory.execution_instructions == _Interp.execution_instructions
+
+
+def test_build_rlm_passes_no_factory_for_an_interpreter_that_describes_nothing(monkeypatch):
+    """The mirror image, and the compatibility half: an interpreter that says nothing about
+    itself — a consumer's own, predating this feature — must leave the constructor call exactly
+    as it was before 1.5.0. Passing a factory at all is the risky side of this change."""
+    _configure_with_dummy()
+    captured = {}
+    real_init = dspy.RLM.__init__
+
+    def _spy(self, signature, **kwargs):
+        captured.update(kwargs)
+        real_init(self, signature, **kwargs)
+
+    monkeypatch.setattr(dspy.RLM, "__init__", _spy)
+
+    class _Silent:                      # no execution_instructions at all
+        tools: dict = {}
+
+        def start(self): ...
+        def execute(self, code, variables=None): return ""
+        def shutdown(self): ...
+
+    class T(RLMTask):
+        signature = "doc: str -> answer: str"
+        output_field = "answer"
+
+    T(interpreter=_Silent())._build_rlm()
+    assert "interpreter_factory" not in captured
+
+
 def test_custom_output_type_resolves_without_frame_help():
     """_build_rlm must resolve the signature's custom output type via custom_types,
     not by dspy walking the call stack. We use a dynamically-built model whose NAME

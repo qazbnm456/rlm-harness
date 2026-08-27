@@ -25,6 +25,37 @@ def _interp(**cfg_kw) -> ContainerInterpreter:
     return ContainerInterpreter(ContainerConfig(**cfg_kw), spawn=_spawn_subprocess)
 
 
+# ---- what the model is TOLD this REPL is (dspy renders it into the action prompt) ----
+
+def test_execution_instructions_say_subprocesses_are_available():
+    """THE motivating case for the whole `execution_instructions` seam. dspy sources the action
+    prompt's "Execution environment:" text from the interpreter factory, which defaults to
+    PythonInterpreter — so without this attribute a container run is told "subprocesses and
+    native extensions are unavailable", which is the one capability it exists to provide."""
+    text = _interp().execution_instructions
+    assert "Subprocesses" in text and "ARE available" in text
+    assert "Pyodide" not in text
+
+
+@pytest.mark.parametrize(
+    ("cfg_kw", "present", "absent"),
+    [
+        ({}, "NO network access", "docker --network"),
+        ({"network": "bridge"}, "docker --network=bridge", "NO network access"),
+        ({"read_only": True}, "READ-ONLY", "filesystem is writable"),
+        ({"workdir": "/tmp"}, "mounted READ-ONLY at /workspace", "No host directory"),
+    ],
+    ids=["default-no-egress", "network-on", "read-only-root", "host-mount"],
+)
+def test_execution_instructions_describe_the_container_the_config_builds(cfg_kw, present, absent):
+    """`network` / `read_only` / `workdir` are all operator-configurable, so a FIXED string would
+    eventually assert the opposite of what was built — telling the model a capability is absent
+    when it is present, which is the same defect class as the Pyodide default this replaces."""
+    text = _interp(**cfg_kw).execution_instructions
+    assert present in text
+    assert absent not in text
+
+
 # ---- broker end-to-end via the stdlib-only agent as a bare subprocess (CI-safe) ----
 
 def test_execute_captures_stdout_and_persists_state():

@@ -44,6 +44,7 @@ def _clear_caches():
         _dspy_compat.recoverable_interpreter_error,
         _dspy_compat.terminal_interpreter_error,
         _dspy_compat._lm_error_classes,
+        _dspy_compat._dspy_reads_execution_instructions,
     ):
         fn.cache_clear()
     yield
@@ -56,6 +57,7 @@ def _clear_caches():
         _dspy_compat.recoverable_interpreter_error,
         _dspy_compat.terminal_interpreter_error,
         _dspy_compat._lm_error_classes,
+        _dspy_compat._dspy_reads_execution_instructions,
     ):
         fn.cache_clear()
 
@@ -183,6 +185,11 @@ def test_sandbox_cancelled_is_never_caught_as_an_interpreter_error():
 
     assert not issubclass(SandboxCancelled, CodeInterpreterError)
     assert not issubclass(SandboxCancelled, _dspy_compat.recoverable_interpreter_error())
+    assert not issubclass(SandboxCancelled, _dspy_compat.terminal_interpreter_error())
+    # dspy 3.3.1 re-parented CodeInterpreterError under DSPyError. `SandboxCancelled` stands
+    # OUTSIDE dspy's hierarchy entirely, and that is what makes it non-recoverable on every
+    # version — so pin the new root too, not just the leaf that moved.
+    assert not issubclass(SandboxCancelled, dspy.DSPyError)
 
 
 def test_terminal_error_is_not_the_recoverable_one_when_dspy_splits_them():
@@ -191,6 +198,115 @@ def test_terminal_error_is_not_the_recoverable_one_when_dspy_splits_them():
     terminal = _dspy_compat.terminal_interpreter_error()
     assert terminal is code_interpreter.CodeInterpreterError
     assert terminal is not _dspy_compat.recoverable_interpreter_error()
+
+
+# ---- the interpreter's execution instructions -------------------------------------
+
+
+class _Descriptive:
+    """A caller-owned interpreter that describes its own runtime, like the kit's own do."""
+
+    execution_instructions = "Runs in a container. Subprocesses ARE available."
+    tools: dict = {}
+
+    def start(self): ...
+    def execute(self, code, variables=None): return ""
+    def shutdown(self): ...
+
+
+def test_the_carrier_puts_our_text_in_the_prompt_not_dspys_pyodide_default():
+    """THE regression. Without this the action prompt tells a container run that subprocesses
+    are unavailable — dspy reads the text off `_interpreter_factory`, which defaults to
+    PythonInterpreter no matter what is actually executing the code."""
+    kwargs = _dspy_compat.interpreter_instructions_kwargs(_Descriptive())
+    assert set(kwargs) == {"interpreter_factory"}
+
+    rlm = dspy.RLM(dspy.Signature("doc: str -> answer: str"), **kwargs)
+    instructions = rlm.generate_action.signature.instructions
+    assert "Subprocesses ARE available" in instructions
+    assert "Pyodide" not in instructions
+
+
+def test_the_carrier_raises_if_dspy_ever_invokes_it():
+    """It is a metadata carrier, never a constructor: dspy shuts down whatever a factory
+    RETURNS, which would double-shutdown the kit's sandbox. Fail loudly instead."""
+    factory = _dspy_compat.interpreter_instructions_kwargs(_Descriptive())["interpreter_factory"]
+    with pytest.raises(RuntimeError, match="never be INVOKED"):
+        factory()
+
+
+def test_a_module_carrying_the_factory_still_copies_and_serialises():
+    """dspy copies and dumps modules (optimizers do it constantly). A factory object that broke
+    `deepcopy` or `dump_state` would turn this shim into a landmine far from its call site.
+
+    (That the factory is never INVOKED rests on the positional seam, which
+    `test_the_interpreter_seam_still_exists_on_this_dspy` above pins unconditionally.)"""
+    import copy
+
+    rlm = dspy.RLM(
+        dspy.Signature("doc: str -> answer: str"),
+        **_dspy_compat.interpreter_instructions_kwargs(_Descriptive()),
+    )
+    assert copy.deepcopy(rlm) is not rlm
+    assert isinstance(rlm.dump_state(), dict)
+
+
+def test_a_pyodide_interpreter_gets_no_carrier():
+    """dspy's own default already describes those correctly; carrying its text back would be
+    noise, and would mean passing a factory for no reason."""
+    from dspy.primitives.python_interpreter import PythonInterpreter
+
+    interp = PythonInterpreter.__new__(PythonInterpreter)   # no Deno subprocess spawned
+    assert _dspy_compat.interpreter_instructions_kwargs(interp) == {}
+
+
+@pytest.mark.parametrize("interp", [object(), None], ids=["no-attribute", "none"])
+def test_an_interpreter_that_describes_nothing_changes_nothing(interp):
+    assert _dspy_compat.interpreter_instructions_kwargs(interp) == {}
+
+
+def test_blank_instructions_are_treated_as_absent():
+    class _Blank:
+        execution_instructions = "   "
+
+    assert _dspy_compat.interpreter_instructions_kwargs(_Blank()) == {}
+
+
+def test_no_carrier_when_dspy_does_not_accept_the_kwarg(monkeypatch):
+    """Load-bearing, and NOT redundant with the render probe: `_build_rlm`'s `except TypeError`
+    fallback re-passes the same kwargs, so an unknown kwarg raises on BOTH constructions and
+    takes the whole run down instead of degrading to dspy's defaults."""
+    def _init(self, signature, sub_lm=None, tools=None):   # no interpreter_factory, no **kwargs
+        ...
+
+    monkeypatch.setattr(dspy.RLM, "__init__", _init)
+    _dspy_compat._rlm_init_signature.cache_clear()
+    _dspy_compat._rlm_init_params.cache_clear()
+    _dspy_compat._rlm_init_takes_var_keyword.cache_clear()
+    assert _dspy_compat.interpreter_instructions_kwargs(_Descriptive()) == {}
+
+
+def test_every_interpreter_the_kit_ships_describes_itself():
+    """A sweep, so a NEW kit interpreter cannot silently inherit dspy's Pyodide description —
+    and so deleting one of these attributes goes red. `_JsonLiteralInterpreter` is deliberately
+    absent: it subclasses PythonInterpreter, whose own text is already correct."""
+    from rlm_harness.sandbox import build_interpreter
+    from rlm_harness.testing import ScriptedInterpreter
+
+    for interp in (build_interpreter("mock"), ScriptedInterpreter()):
+        text = getattr(interp, "execution_instructions", "")
+        assert isinstance(text, str) and text.strip(), f"{type(interp).__name__} describes nothing"
+        assert "Pyodide" not in text
+        # ...and the shim actually carries it, rather than the attribute being decorative.
+        kwargs = _dspy_compat.interpreter_instructions_kwargs(interp)
+        assert kwargs["interpreter_factory"].execution_instructions == text
+
+
+def test_no_carrier_when_dspy_does_not_render_the_text(monkeypatch):
+    """A dspy that never renders it gets nothing — the shim resolves the answer by
+    introspection, so an older dspy degrades to exactly today's behaviour."""
+    monkeypatch.setattr(_dspy_compat, "_dspy_reads_execution_instructions", lambda: False)
+    assert _dspy_compat.interpreter_instructions_kwargs(_Descriptive()) == {}
 
 
 # ---- fast-failing non-retryable LM errors -----------------------------------------
