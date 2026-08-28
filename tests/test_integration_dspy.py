@@ -574,3 +574,168 @@ def test_configure_no_provider_pin_without_base_url():
     provider — let litellm parse the model's own provider prefix."""
     rt.configure(RLMConfig(main_model="openai/gpt-4o", sub_model="openai/gpt-4o", interpreter="mock"))
     assert "custom_llm_provider" not in dspy.settings.lm.kwargs
+
+
+# ---- the parse callback must stage ONE stamp per root turn -------------------------------------
+#
+# dspy wraps `parse` with `with_callbacks` once per class that DEFINES it, and the kit's own
+# `_LenientJSONAdapter.parse` calls `super().parse(...)`. Under the kit's DEFAULT adapter
+# (`config.adapter == "json"`) that made every root turn fire the callback twice with identical
+# outputs. Two stamps per turn made the trace's earliest-unused match order-unsafe whenever a model
+# repeated a `reasoning` string across turns, and a consumer rendered the result as a -338.7s turn.
+
+
+def _timer_and_captured():
+    from rlm_harness.task import _MainStepTimer
+
+    captured: list = []
+
+    class _Rec:
+        def note_main_step(self, reasoning, ts=None):
+            captured.append(reasoning)
+
+    return _MainStepTimer(_Rec()), captured
+
+
+def test_main_step_timer_stages_once_for_a_NESTED_parse():
+    """The regression. A nested parse pair (the kit adapter delegating to super()) must stage the
+    OUTERMOST frame only — one stamp, not two."""
+    timer, captured = _timer_and_captured()
+    outputs = {"reasoning": "plan A", "code": "x = 1"}
+    timer.on_adapter_parse_start("outer", instance=None, inputs={})
+    timer.on_adapter_parse_start("inner", instance=None, inputs={})
+    timer.on_adapter_parse_end("inner", outputs)
+    timer.on_adapter_parse_end("outer", outputs)
+    assert captured == ["plan A"]
+
+
+def test_main_step_timer_degrades_to_the_old_behaviour_without_parse_start():
+    """Deliberate degrade path: if a future dspy stops firing `on_adapter_parse_start`, the depth
+    never rises and every end is treated as outermost — i.e. exactly the pre-fix behaviour. It must
+    NOT degrade to staging nothing, which would silently send every main_step ts back to the
+    flush-time fallback with no test going red."""
+    timer, captured = _timer_and_captured()
+    outputs = {"reasoning": "plan A", "code": "x = 1"}
+    timer.on_adapter_parse_end("c1", outputs)
+    timer.on_adapter_parse_end("c2", outputs)
+    assert captured == ["plan A", "plan A"]
+
+
+def test_main_step_timer_depth_does_not_leak_between_turns():
+    """An orphan END (no matching start) must not drive the counter NEGATIVE and desynchronise
+    every later turn — that is the direction `max(0, ...)` guards.
+
+    The opposite direction, an orphan START, is deliberately NOT guarded and would silence every
+    later turn. It is unreachable through dspy: `dspy.utils.callback.with_callbacks` runs its end
+    handlers from a `finally`, so an exception inside `parse` still fires the end. Stated here
+    rather than left implied, because "the counter can only be wrong in one direction, and here is
+    why" is the sort of claim this release exists to stop taking on trust."""
+    timer, captured = _timer_and_captured()
+    outputs = {"reasoning": "r", "code": "c"}
+    # dspy's own call shape — BaseCallback declares (call_id, instance, inputs) with no defaults.
+    timer.on_adapter_parse_end("orphan-end", outputs)          # end with no start
+    timer.on_adapter_parse_start("t1", instance=None, inputs={})
+    timer.on_adapter_parse_end("t1", outputs)
+    timer.on_adapter_parse_start("t2", instance=None, inputs={})
+    timer.on_adapter_parse_end("t2", outputs)
+    assert captured == ["r", "r", "r"]
+
+
+def test_main_step_timer_stages_once_through_the_REAL_kit_adapter():
+    """End to end against the installed dspy and the kit's own default adapter — the path that
+    actually double-fired. Pinned for the stock adapter too, so a future dspy that stops nesting
+    does not silently halve the stamps."""
+    import json as _json
+
+    from rlm_harness.task import _MainStepTimer
+
+    sig = dspy.Signature("q -> reasoning, code")
+    completion = _json.dumps({"reasoning": "R1", "code": "c1"})
+    class _Rec:
+        def __init__(self):
+            self.captured: list = []
+
+        def note_main_step(self, reasoning, ts=None):
+            self.captured.append(reasoning)
+
+    for adapter in (rt._LenientJSONAdapter(), dspy.JSONAdapter()):
+        rec = _Rec()
+        with dspy.context(callbacks=[_MainStepTimer(rec)]):
+            adapter.parse(sig, completion)
+        assert rec.captured == ["R1"], f"{type(adapter).__name__} staged {len(rec.captured)}"
+
+
+def test_main_step_timer_depth_is_per_thread():
+    """dspy may parse on a worker thread. A shared integer counter would let one thread's nested
+    parse suppress another thread's outermost one — losing a turn's stamp entirely, which sends its
+    main_step ts back to the flush-time fallback. Only visible with real concurrency."""
+    from rlm_harness.task import _MainStepTimer
+
+    lock = threading.Lock()
+    captured: list = []
+
+    class _Rec:
+        def note_main_step(self, reasoning, ts=None):
+            with lock:
+                captured.append(reasoning)
+
+    timer = _MainStepTimer(_Rec())
+    started = threading.Barrier(4)
+
+    def one_turn(name):
+        started.wait()
+        outputs = {"reasoning": name, "code": "c"}
+        timer.on_adapter_parse_start(name, instance=None, inputs={})   # outer
+        timer.on_adapter_parse_start(name, instance=None, inputs={})   # the kit adapter's super()
+        timer.on_adapter_parse_end(name, outputs)
+        timer.on_adapter_parse_end(name, outputs)
+
+    threads = [threading.Thread(target=one_turn, args=(f"t{i}",)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(captured) == ["t0", "t1", "t2", "t3"]
+
+
+def test_adjacent_duplicate_turns_get_distinct_ts_end_to_end(tmp_path):
+    """THE end-to-end regression, and the one that distinguishes the two candidate designs.
+
+    A retry loop emits the SAME reasoning on consecutive turns. Driven through the real callback
+    dispatch into a real recorder, both turns must keep their own stamp. Deduplicating in the
+    callback achieves that; the trace-side forward-only cursor CANNOT (turn 1 would take turn 0's
+    spare stamp — no longer negative, so the symptom hides while the value stays ~0.1s wrong).
+    """
+    import types as _types
+
+    from rlm_harness.task import _MainStepTimer
+    from rlm_harness.trace import EVENT_MAIN_STEP, TraceRecorder, load_events
+
+    path = str(tmp_path / "trace.jsonl")
+    # A clock that ticks 0.1s per READ, so a turn parsed twice produces two DIFFERENT stamps —
+    # which is what made the surplus one claimable by a later turn.
+    now = [0.0]
+
+    def clock():
+        now[0] = round(now[0] + 0.1, 3)
+        return now[0]
+
+    with TraceRecorder(path, run_id="r1", clock=clock) as rec:
+        rec.begin_main_capture()
+        timer = _MainStepTimer(rec)
+        outputs = {"reasoning": "Retrying tool call - previous attempt failed", "code": "c"}
+        for base in (5.0, 9.0):                               # two ADJACENT turns, same reasoning
+            now[0] = base
+            timer.on_adapter_parse_start("outer", instance=None, inputs={})
+            timer.on_adapter_parse_start("inner", instance=None, inputs={})
+            timer.on_adapter_parse_end("inner", outputs)
+            timer.on_adapter_parse_end("outer", outputs)
+        rec.record_main_trajectory(
+            _types.SimpleNamespace(
+                trajectory=[dict(outputs, output="o"), dict(outputs, output="o")],
+                final_reasoning=None,
+            )
+        )
+
+    ts = [e["ts"] for e in load_events(path) if e["type"] == EVENT_MAIN_STEP]
+    assert ts == [5.1, 9.1], f"turn 1 inherited turn 0's spare stamp: {ts}"
