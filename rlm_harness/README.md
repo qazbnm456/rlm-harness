@@ -883,8 +883,11 @@ guess. A single plain function, no factory, no `name=`, no trace call (it binds 
 construction time and touches no filesystem/network, matching `make_schema_validator`'s own
 precedent). Matching is whitespace-flexible by default (`normalize_whitespace=True`) and needs no
 `regex` package — `quote` is literal text, every character either escaped or collapsed to a flat
-`\s+`, so the built pattern can never exhibit catastrophic backtracking the way an LM-controlled
-`grep_files` pattern could. Call it from within the task's own instructions before finalizing
+`\s+`/`\s*`, so the built pattern can never exhibit catastrophic backtracking the way an
+LM-controlled `grep_files` pattern could. Normalization is junction-aware: whitespace between two
+word characters must be present in the source (so `foo bar` never verifies against `foobar`),
+whitespace anywhere else — beside a bracket, a quote mark, punctuation — is optional (so a quote
+that reflowed a line break still verifies). Call it from within the task's own instructions before finalizing
 (closing this recipe's step-3 "regenerate on the gaps" loop with a real check instead of a
 re-read), or reuse the same function host-side, outside the REPL, to re-derive whether a SUBMITted
 citation was actually grounded — the same "derive facts from bytes, never trust the self-report"
@@ -1089,6 +1092,26 @@ SEPARATE downstream project that installs the trainer. A prompt/policy rule that
 BETTER is in scope; a reward or penalty is not. Keep the trace clean training data and let the
 trainer score it.
 
+## Reading a trace — the ordering rules
+
+Three facts a reader needs and cannot infer from the file. A downstream consumer got this wrong,
+concluded "file order is unreliable, sort by `ts`", and reordered its turns.
+
+- **`main_step` events are written in one block AFTER the run.** `record_main_trajectory` runs once
+  `aforward()` has returned, because dspy.RLM only exposes its trajectory post-hoc. So a `tool_call`
+  recorded mid-run appears EARLIER in the file than the `main_step` of the turn that made it, while
+  being chronologically later. Measured at 70 of 76 real traces. By design, not a defect.
+- **`payload["turn"]` is authoritative for ordering**, and file order among `main_step` events
+  already matches it (72 of 72 traces). **Never sort `main_step` events by `ts`** — a `ts` is
+  backfilled from a live stamp and, for a turn whose stamp could not be matched, falls back to the
+  flush time, so sorting by it moves turns.
+- **`ts` is for placing a turn against the tool calls around it**, and nothing else. A per-turn
+  duration computed as `t[i] - t[i-1]` is an estimate that also contains the model's generation
+  time; `exec_duration_s` (1.6.0) is the measured sandbox half, and `duration_s` on a `tool_call`
+  is the measured tool half. Prefer a measured field over a gap wherever one exists — and treat a
+  NEGATIVE gap as unknown rather than as data (traces written before 1.6.1 can contain them; see
+  that entry in `CHANGELOG.md`).
+
 ## Trace utilization metrics
 
 `rlm_harness.metrics` answers "how was this run's activity distributed" — a sibling question to
@@ -1140,10 +1163,17 @@ Two things it refuses to do, both deliberate:
 
 **Which shipped tools carry a duration.** The ones whose cost is a WAIT on something outside this
 process: `fetch_url`, `web_search`, `run_command`, `git_clone`, the `model:<id>` tool from
-`model_as_tool`, and every MCP tool. A local read/grep/edit is
-sub-millisecond and its refusal paths never touch anything, so timing them would add noise to the
-attribution rather than signal — those record no `duration_s` and the metric says "not recorded"
-rather than "free".
+`model_as_tool`, and every MCP tool. A local read/edit is sub-millisecond and its refusal paths
+never touch anything, so timing them would add noise to the attribution rather than signal — those
+record no `duration_s` and the metric says "not recorded" rather than "free".
+
+`grep_files` is the honest exception to that reasoning and is documented rather than fixed: it
+ships `per_match_timeout_s=1.0` per line and `max_total_time_s=30.0` per call, so it is *not*
+sub-millisecond in principle, and `compute_tool_waste` is blind to exactly its worst case. It stays
+untimed because it is sub-millisecond in PRACTICE on the corpora measured so far — n=146, median
+0.029s, max 0.746s, not one call over a second. Two caveats stand against that number: it does not
+identify which backend served those calls, and it contains no pathological regex over a large tree,
+which is the only shape that would approach the budget. New evidence of either reopens this.
 
 The tool that dominates a real run is usually the consumer's own model-backed one, and for the two
 BASE factories the kit cannot record it: `make_model_tool` and `make_harness_tool` are deliberately
