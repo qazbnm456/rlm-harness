@@ -739,3 +739,51 @@ def test_adjacent_duplicate_turns_get_distinct_ts_end_to_end(tmp_path):
 
     ts = [e["ts"] for e in load_events(path) if e["type"] == EVENT_MAIN_STEP]
     assert ts == [5.1, 9.1], f"turn 1 inherited turn 0's spare stamp: {ts}"
+
+
+def test_main_step_timer_stages_once_at_ANY_adapter_nesting_depth():
+    """`Adapter.__init_subclass__` re-wraps `parse` with `with_callbacks` for every subclass,
+    unconditionally — so the fire count is a property of the caller's adapter hierarchy, not a
+    fixed double. A consumer subclassing the kit's adapter and overriding NOTHING already gets
+    three fires. Pinned because a fix that divided by two, or that special-cased the kit's own
+    adapter, would pass every other test in this file and still lose that consumer's stamps."""
+    import json as _json
+
+    from rlm_harness.task import _MainStepTimer
+
+    class _ConsumerSubclass(rt._LenientJSONAdapter):
+        """Overrides nothing — the subclassing alone adds a wrapper."""
+
+    class _ConsumerSubclassCallingSuper(_ConsumerSubclass):
+        def parse(self, signature, completion):
+            return super().parse(signature, completion)
+
+    class _CountFires(dspy.utils.callback.BaseCallback):
+        n = 0
+
+        def on_adapter_parse_end(self, call_id, outputs, exception=None):
+            type(self).n += 1
+
+    sig = dspy.Signature("q -> reasoning, code")
+    completion = _json.dumps({"reasoning": "R1", "code": "c1"})
+
+    class _Rec:
+        def __init__(self):
+            self.captured: list = []
+
+        def note_main_step(self, reasoning, ts=None):
+            self.captured.append(reasoning)
+
+    expected_fires = {
+        dspy.JSONAdapter: 1,
+        rt._LenientJSONAdapter: 2,
+        _ConsumerSubclass: 3,
+        _ConsumerSubclassCallingSuper: 4,
+    }
+    for adapter_cls, fires in expected_fires.items():
+        _CountFires.n = 0
+        rec = _Rec()
+        with dspy.context(callbacks=[_CountFires(), _MainStepTimer(rec)]):
+            adapter_cls().parse(sig, completion)
+        assert _CountFires.n == fires, f"{adapter_cls.__name__} fired {_CountFires.n}, not {fires}"
+        assert rec.captured == ["R1"], f"{adapter_cls.__name__} staged {len(rec.captured)}"
