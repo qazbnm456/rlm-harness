@@ -13,7 +13,11 @@ stands behind structural validation.
 
 ``verify_quote`` is the deterministic primitive for the one thing that IS checkable without a
 domain-specific parser: does this specific claimed quote/citation actually appear (verbatim, or
-under whitespace normalization) in the held source text? It does not replace the model-judged
+under whitespace normalization) in the held source text? "Normalization" is junction-aware rather
+than uniform: whitespace between two word characters must be present in the source, everywhere else
+it may be absent — so a quote that reflowed a line break beside a bracket or a quote mark still
+verifies, while ``foo bar`` can never verify against ``foobar``. See ``_whitespace_joiner``.
+It does not replace the model-judged
 itemized diff — it gives that diff a deterministic building block a model can call BEFORE
 finalizing (closing the loop in-trajectory, matching the recipe's "regenerate on the gaps" step),
 and that a consumer can ALSO call AFTER the fact, host-side, to re-derive whether a SUBMITted
@@ -40,6 +44,40 @@ _DEFAULT_SNIPPET_CHARS = 120
 _CLOSE_MATCH_CUTOFF = 0.4
 
 
+def _whitespace_joiner(before: str, after: str) -> str:
+    """The pattern a whitespace run in the quote becomes: ``\\s+`` or ``\\s*``.
+
+    ``\\s+`` at every junction is what a naive normalization does, and it REFUSES a correct
+    citation wherever the source has no whitespace at that point — e.g. quoting a closing ``\"\"\"``
+    onto its own line when the source keeps it on the previous one. Demonstrated on shipped code:
+
+        source  x = \"\"\"One line.\\nAnd another.\"\"\"
+        quote   \"\"\"One line.\\nAnd another.\\n\"\"\"      -> MISMATCH, wrongly
+
+    ``\\s*`` everywhere would fix that and introduce the opposite, worse failure: whitespace
+    DELETION, so ``foo bar`` would verify against ``foobar`` — an invented claim passing. The
+    junction decides. Whitespace between two WORD characters is load-bearing (removing it glues
+    two words into one that was never written), so it stays mandatory; anywhere else — beside a
+    quote mark, a bracket, an operator, punctuation — it is layout the model reflowed, and is
+    optional.
+
+    Word-ness is tested with Python's UNICODE ``\\w``, never an ASCII class: CJK characters are word
+    characters, so ``你好 世界`` keeps requiring the space against ``你好世界`` exactly as it does
+    today. An ASCII class would silently start accepting it — the same trap CLAUDE.md's
+    ``sanitize_tool_name`` rule names for identifier validity.
+
+    Both neighbours are guaranteed non-empty: the quote is stripped before splitting, so no empty
+    literal can sit at either edge, and ``\\s+`` is greedy so no two delimiters are adjacent. That
+    is also what keeps the pattern free of adjacent or nested quantifiers.
+    """
+    tight = bool(before) and bool(after) and _is_word(before[-1]) and _is_word(after[0])
+    return r"\s+" if tight else r"\s*"
+
+
+def _is_word(ch: str) -> bool:
+    return re.match(r"\w", ch, re.UNICODE) is not None
+
+
 def verify_quote(
     source: str,
     quote: str,
@@ -57,8 +95,11 @@ def verify_quote(
     (which would lose position info this doesn't need to lose): ``quote`` is split on whitespace
     runs, each literal chunk is ``re.escape()``d (any metacharacter it contains — ``.``, ``(``,
     ``$`` — is matched as a literal, never as regex syntax) and each whitespace run becomes
-    ``\\s+`` (when ``normalize_whitespace=True``, the default) or its own escaped self (when
-    ``False``, for a caller that wants byte-exact whitespace too). The resulting pattern runs
+    ``\\s+`` or ``\\s*`` by junction (when ``normalize_whitespace=True``, the default — see
+    ``_whitespace_joiner``) or its own escaped self (when ``False``, for a caller that wants
+    byte-exact whitespace too). So the match is whitespace-INSENSITIVE where whitespace is layout
+    and whitespace-REQUIRING between two word characters, which is the only place its absence
+    would change what was written. The resulting pattern runs
     directly against the ORIGINAL, un-normalized ``source`` — a real match has a real ``.start()``
     offset in ``source``, no position-remapping needed.
 
@@ -66,7 +107,11 @@ def verify_quote(
     ``pattern``: that tool's catastrophic-backtracking risk exists because the model supplies the
     PATTERN'S STRUCTURE directly. Here, the model supplies ``quote`` — literal text, not regex
     syntax — and every character of it is either escaped or collapsed to a flat, non-nested
-    ``\\s+``. The resulting pattern can never contain nested/adjacent quantifiers or overlapping
+    ``\\s+``/``\\s*``. Neither can ever end up adjacent to the other or nested: the quote is
+    stripped before splitting (so no empty literal sits at either edge) and ``\\s+`` is greedy (so
+    no two whitespace delimiters are adjacent), which means every quantifier is separated by a
+    non-empty escaped literal that cannot itself contain whitespace — disjoint first-sets, no
+    ambiguity. The resulting pattern can never contain nested/adjacent quantifiers or overlapping
     alternation — the shapes that exhibit catastrophic backtracking — so stdlib ``re`` is provably
     safe here regardless of what ``quote`` contains.
 
@@ -101,16 +146,19 @@ def verify_quote(
         return "MISMATCH: quote must be non-empty (an empty or whitespace-only quote is not a claim)."
 
     # Leading/trailing whitespace in `quote` is incidental padding, not a claim about what
-    # precedes/follows the quoted text in `source` -- stripped BEFORE pattern-building so it never
-    # turns into a mandatory `\s+` at the pattern's own edges (which would wrongly require `source`
-    # to also have whitespace immediately before/after the quoted content, even when the quote is
-    # simply the entire source or sits at a string boundary with nothing there at all).
+    # precedes/follows the quoted text in `source` -- stripped BEFORE pattern-building.
+    # NOTE the ORIGINAL reason no longer applies: it was that an edge whitespace run would become a
+    # mandatory `\s+` at the pattern's own edges, wrongly requiring `source` to have whitespace
+    # around the quoted content. Since 1.6.1 `_whitespace_joiner` would give an edge run `\s*`
+    # instead (its outward neighbour is the empty string), which is harmless. The strip stays
+    # load-bearing for a DIFFERENT reason: it is what guarantees the joiner never sees an empty
+    # neighbour on the inside, the premise this function's ReDoS-safety argument rests on.
     pieces = re.split(r"(\s+)", stripped_quote)
     pattern_parts = []
     for i, piece in enumerate(pieces):
         is_whitespace_run = i % 2 == 1  # re.split with a capturing group alternates literal/delim
         if is_whitespace_run and normalize_whitespace:
-            pattern_parts.append(r"\s+")
+            pattern_parts.append(_whitespace_joiner(pieces[i - 1], pieces[i + 1]))
         else:
             pattern_parts.append(re.escape(piece))
     pattern = "".join(pattern_parts)

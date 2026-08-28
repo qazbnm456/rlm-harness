@@ -62,6 +62,11 @@ def _build_git_clone(tmp_path):
 _NOT_OUTBOUND = {
     # Local filesystem work: sub-millisecond, and their refusal paths never touch anything, so a
     # duration would add noise to the wall-clock attribution rather than signal.
+    # `make_grep_files_tool` is the exception to that ARGUMENT and keeps its exemption on a
+    # MEASUREMENT instead: it ships per_match_timeout_s=1.0 and max_total_time_s=30.0, so it is not
+    # sub-millisecond in principle, but measured on a real consumer's corpus it is n=146, median
+    # 0.029s, max 0.746s, not one call over a second. The two caveats that would reopen it are in
+    # README's "Which shipped tools carry a duration".
     "make_read_file_tool": "local fs read",
     "make_write_file_tool": "local fs write",
     "make_edit_file_tool": "local fs edit",

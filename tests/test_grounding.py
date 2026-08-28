@@ -114,3 +114,60 @@ def test_verify_quote_importable_from_tools_package():
     from rlm_harness.tools import verify_quote as vq
 
     assert vq is verify_quote
+
+
+# ---- junction-aware whitespace normalization ---------------------------------------------------
+#
+# Uniform `\s+` REFUSES correct citations wherever the source has no whitespace at a junction;
+# uniform `\s*` would accept invented ones by gluing words. The junction decides which applies.
+
+
+def test_a_quote_that_reflowed_a_break_beside_a_delimiter_verifies():
+    """The reproducer, found in shipped code. The quote puts the closing delimiter on its own
+    line; the source keeps it on the previous one. Nothing about the claim is wrong."""
+    source = 'x = """One line.\nAnd another."""'
+    quote = '"""One line.\nAnd another.\n"""'
+    assert verify_quote(source, quote).startswith("MATCH")
+
+
+def test_whitespace_between_two_word_characters_stays_mandatory():
+    """The false-positive direction, which matters more than the false-negative one: an invented
+    claim must never verify. `\\s*` everywhere would make each of these pass."""
+    assert verify_quote("foobar", "foo bar").startswith("MISMATCH")
+    assert verify_quote("returnvalue", "return value").startswith("MISMATCH")
+    assert verify_quote("a1", "a 1").startswith("MISMATCH")
+
+
+def test_word_ness_is_unicode_so_cjk_still_requires_its_whitespace():
+    """Pinned deliberately: an ASCII `[A-Za-z0-9_]` class would treat CJK as non-word and silently
+    start accepting a space the source never had. Same trap CLAUDE.md names for tool-name validity.
+    """
+    assert verify_quote("你好世界", "你好 世界").startswith("MISMATCH")
+    assert verify_quote("你好 世界", "你好 世界").startswith("MATCH")
+
+
+def test_junctions_beside_punctuation_and_brackets_are_optional():
+    for source, quote in [
+        ("f(a, b)", "f( a, b )"),
+        ("x=1", "x = 1"),
+        ("[1,2]", "[ 1, 2 ]"),
+        ("end.\nNext", "end.\n\nNext"),
+    ]:
+        assert verify_quote(source, quote).startswith("MATCH"), (source, quote)
+
+
+def test_normalize_whitespace_false_is_unaffected():
+    """The junction rule lives entirely inside the normalizing branch."""
+    assert verify_quote("a  b", "a  b", normalize_whitespace=False).startswith("MATCH")
+    assert verify_quote("a  b", "a b", normalize_whitespace=False).startswith("MISMATCH")
+
+
+def test_reported_match_position_is_the_leftmost_occurrence():
+    """Loosening a junction makes an EARLIER occurrence match where only a later one did before,
+    which MOVES the reported character offset — `a . b` used to be found at char 8 and is now
+    found at char 0. A consumer parsing "found at line N (char M)" sees that directly, so it is
+    pinned. Note the LINE number is unchanged here, which is why asserting on it alone would pass
+    both before and after and pin nothing."""
+    out = verify_quote("a.b ... a . b", "a . b")
+    assert out.startswith("MATCH")
+    assert "char 0" in out, out
