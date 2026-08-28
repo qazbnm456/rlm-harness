@@ -139,7 +139,11 @@ def test_main_step_ts_falls_back_to_clock_without_capture(tmp_path):
 
 
 def test_main_step_double_parse_resolves_to_first_stamp(tmp_path):
-    # dspy fires the parse callback twice per turn (same reasoning) → consume the EARLIEST stamp.
+    # Two stamps staged for one turn → consume the EARLIEST. This USED to be the production
+    # shape: the kit's own `_LenientJSONAdapter.parse` calls `super().parse(...)` and dspy wraps
+    # `parse` per defining class, so each turn fired the callback twice. `_MainStepTimer` dedupes
+    # that at source since 1.6.1 — NOT dspy's behaviour, ours. The recorder-level rule is kept and
+    # pinned anyway: any caller staging two stamps for one turn still gets the true (first) time.
     path = str(tmp_path / "trace.jsonl")
     pred = types.SimpleNamespace(
         trajectory=[{"reasoning": "r", "code": "c", "output": "o"}], final_reasoning=None)
@@ -618,3 +622,100 @@ def test_a_refusal_that_never_left_the_process_records_no_duration(tmp_path):
     call = next(json.loads(x) for x in p.read_text().splitlines() if '"tool_call"' in x)
     assert call["payload"]["ok"] is False
     assert "duration_s" not in call["payload"]
+
+
+# ---- monotonic matching: a later turn must never claim an earlier turn's staged entry ---------
+#
+# The bug these pin was found in SHIPPED 1.6.0 and had already reached a consumer's rendered UI
+# (a -338.7s turn duration). Root cause was two stamps staged per turn (`task.py:_MainStepTimer`,
+# fixed there); the cursor here is the second line of defence. See `record_main_trajectory`.
+
+
+def _traj(*reasonings, code_for=lambda r: f"code-{r}"):
+    return types.SimpleNamespace(
+        trajectory=[{"reasoning": r, "code": code_for(r), "output": "o"} for r in reasonings],
+        final_reasoning=None,
+    )
+
+
+def test_a_surplus_staged_stamp_cannot_drag_a_later_turn_backwards(tmp_path):
+    """THE cursor regression. Stages TWO stamps per turn — what production did before
+    `_MainStepTimer` learned to dedupe — with a reasoning repeated at a non-adjacent turn. Under
+    the old scan-from-zero rule the last turn claimed the FIRST turn's spare stamp and the emitted
+    ts went BACKWARDS, which is what rendered as a negative per-turn duration downstream."""
+    path = str(tmp_path / "trace.jsonl")
+    with TraceRecorder(path, run_id="r1", clock=_counter()) as rec:
+        rec.begin_main_capture()
+        for r, t in [("A", 1.0), ("X", 5.0), ("B", 7.0), ("X", 9.0)]:
+            rec.note_main_step(r, ts=t)
+            rec.note_main_step(r, ts=t + 0.1)   # the surplus fire
+        rec.record_main_trajectory(_traj("A", "X", "B", "X"))
+    ts = [e["ts"] for e in load_events(path) if e["type"] == EVENT_MAIN_STEP]
+    assert ts == sorted(ts), f"a turn was handed an earlier turn's stamp: {ts}"
+    assert ts == [1.0, 5.0, 7.0, 9.0]
+
+
+def test_one_stamp_per_turn_is_what_makes_ADJACENT_duplicates_correct(tmp_path):
+    """The cursor CANNOT fix an adjacent duplicate — with two stamps staged, turn 1 takes turn 0's
+    spare and lands ~0.1s early: no longer negative, so the symptom hides while the value stays
+    wrong. Correctness here comes only from staging ONE stamp per turn, which is why the real fix
+    lives in `task.py:_MainStepTimer` and not in this matcher. Both halves are asserted so the
+    trade-off cannot be silently re-litigated."""
+    def _run(name, stamps):
+        path = str(tmp_path / f"{name}.jsonl")
+        with TraceRecorder(path, run_id="r1", clock=_counter()) as rec:
+            rec.begin_main_capture()
+            for r, t in stamps:
+                rec.note_main_step(r, ts=t)
+            rec.record_main_trajectory(_traj("X", "X"))
+        return [e["ts"] for e in load_events(path) if e["type"] == EVENT_MAIN_STEP]
+
+    assert _run("deduped", [("X", 5.0), ("X", 9.0)]) == [5.0, 9.0]
+    # ...and the pre-fix staging, kept as documentation of what the cursor does NOT buy:
+    doubled = _run("doubled", [("X", 5.0), ("X", 5.1), ("X", 9.0), ("X", 9.1)])
+    assert doubled == [5.0, 5.1] and doubled == sorted(doubled)
+
+
+def test_matched_turns_ts_is_non_decreasing_for_every_duplicate_shape(tmp_path):
+    """The general invariant, asserted ONLY over turns whose stamp was matched: an unmatched turn
+    falls back to clock() at flush time, which is later than every live stamp and would break
+    monotonicity for reasons that are not this bug."""
+    shapes = [
+        ["X", "X", "X"],
+        ["A", "A", "B", "A"],
+        ["A", "B", "A", "B"],
+        ["A", "B", "B", "A", "A"],
+    ]
+    for i, shape in enumerate(shapes):
+        path = str(tmp_path / f"t{i}.jsonl")
+        stamps = [10.0 * (n + 1) for n in range(len(shape))]
+        with TraceRecorder(path, run_id="r", clock=_counter()) as rec:
+            rec.begin_main_capture()
+            for r, t in zip(shape, stamps):
+                rec.note_main_step(r, ts=t)
+            rec.record_main_trajectory(_traj(*shape))
+        ts = [e["ts"] for e in load_events(path) if e["type"] == EVENT_MAIN_STEP]
+        assert ts == stamps, f"{shape}: {ts}"
+
+
+def test_a_setup_execution_cannot_be_claimed_by_a_later_turn(tmp_path):
+    """dspy runs a setup `execute()` BEFORE the turn loop, so its duration is staged ahead of every
+    turn. A turn whose code collides with it must not claim it — the cursor is what stops that."""
+    path = str(tmp_path / "trace.jsonl")
+    with TraceRecorder(path, run_id="r1", clock=_counter()) as rec:
+        rec.begin_main_capture()
+        rec.note_exec_duration(99.0, "setup")     # dspy's pre-loop execute
+        rec.note_exec_duration(1.0, "turn-0")
+        rec.note_exec_duration(2.0, "setup")      # a turn that happens to run the same source
+        rec.record_main_trajectory(
+            types.SimpleNamespace(
+                trajectory=[
+                    {"reasoning": "r0", "code": "turn-0", "output": "o"},
+                    {"reasoning": "r1", "code": "setup", "output": "o"},
+                ],
+                final_reasoning=None,
+            )
+        )
+    main = [e for e in load_events(path) if e["type"] == EVENT_MAIN_STEP]
+    assert main[0]["payload"]["exec_duration_s"] == 1.0
+    assert main[1]["payload"]["exec_duration_s"] == 2.0, "claimed the pre-loop setup duration"
