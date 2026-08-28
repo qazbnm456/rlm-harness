@@ -4,6 +4,80 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.6.1] - 2026-08-29
+
+Two correctness fixes in shipped code. No new public name, no new payload field, no schema change.
+
+### Fixed
+
+- **A root turn's recorded `ts` could come from an earlier turn, and it reached a rendered UI.**
+  dspy wraps `parse` with `with_callbacks` once per class that DEFINES it, and this kit's own
+  `runtime._LenientJSONAdapter.parse` calls `super().parse(...)` — so under the DEFAULT adapter
+  (`config.adapter == "json"`) every root turn fired `task._MainStepTimer` TWICE with identical
+  outputs, where the stock `JSONAdapter` fires once. `trace.record_main_trajectory` matches a turn
+  to its live stamp by `reasoning`, so the surplus stamp was claimable by any LATER turn repeating
+  that string — which a retry loop does (`"Retrying tool call - …"`, `"Placeholder before real …"`).
+  Measured across 85 real traces: all 12 traces with a `ts` inversion had a duplicated reasoning
+  and none of the 58 with unique reasoning did; 2.1% of per-turn deltas came out NEGATIVE. A
+  consumer rendered one as a **-338.7s** turn duration.
+
+  `_MainStepTimer` now stages the OUTERMOST parse only, via a per-thread depth from the public
+  `on_adapter_parse_start`/`on_adapter_parse_end` pair — one stamp per turn, which makes the match
+  an identity map. Fixing it in the matcher instead was tried and rejected: it cannot repair the
+  case where the duplicate turns are ADJACENT, where it merely stops the delta going negative while
+  the stamp stays ~0.1s wrong — trading a loud failure for a silent one. If a future dspy stops
+  firing `on_adapter_parse_start` the depth never rises and behaviour degrades to exactly what it
+  was before this change, never to staging nothing.
+
+- **`record_main_trajectory`'s two matchers now scan forward only** (defence in depth, not the fix
+  above). Trajectory order is chronological order, so a cursor parked past the previous match makes
+  that an enforced property. `_match_exec` had no demonstrated defect — it stages one entry per
+  `execute()` from dspy's sequential loop — but gains the same rule for symmetry and for one real
+  case: dspy runs a setup `execute()` before the turn loop whose duration a turn with a colliding
+  code string could otherwise claim.
+
+- **`verify_quote` refused correct citations at non-word junctions.** Whitespace runs were joined
+  with `\s+` uniformly, so a quote that reflowed a line break beside a delimiter failed:
+
+      source  x = """One line.\nAnd another."""
+      quote   """One line.\nAnd another.\n"""      -> MISMATCH, wrongly
+
+  The joiner is now junction-aware: `\s+` between two word characters (so `foo bar` still cannot
+  verify against `foobar` — the false-positive direction is the worse one and stays closed), `\s*`
+  elsewhere. Word-ness uses Python's UNICODE `\w`, deliberately: `你好 世界` keeps requiring its
+  space against `你好世界`, which an ASCII character class would have silently started accepting.
+  The pattern's ReDoS-safety argument survives and has been restated rather than left to imply the
+  old mechanic. Found by inspection, not by a failure: across ~479 real citations the old and new
+  rules never disagreed, so this is a confirmed-real but confirmed-harmless defect on today's
+  corpora — it ships here because it is small and saves a second release.
+
+### Changed
+
+- **`exec_duration_s` coverage may move slightly.** Under the forward-only cursor a turn whose only
+  matching entry sits before the cursor loses its match, so the field can be ABSENT where it was
+  previously present, and a `ts` can fall back to flush time where it was a live stamp. Both fields
+  are optional in `trace/v1` and no reader breaks — but a consumer tracking coverage will see the
+  number change.
+
+- **`verify_quote` can now report an EARLIER occurrence.** Loosening a junction lets a match start
+  where it previously could not, so the character offset in the `MATCH: found at line N (char M)`
+  string moves — `a . b` against `a.b ... a . b` reported char 8 and now reports char 0. A consumer
+  parsing that string, or re-deriving grounding host-side from a recorded tool call, sees it
+  directly. The line number is often unchanged, so this is not visible from a line-level check.
+
+### Docs
+
+- **New "Reading a trace — the ordering rules" section** in the guide. `main_step` events are
+  written in one block after the run, so a `tool_call` precedes them in file order while being
+  chronologically later (70 of 76 traces); `payload["turn"]` is authoritative and file order already
+  matches it (72 of 72); `ts` places turns against tool calls and nothing else. Written because a
+  consumer reading these traces concluded "sort by `ts`", which reorders turns.
+- **Corrected the claim that every local tool is sub-millisecond.** `make_grep_files_tool` ships
+  `per_match_timeout_s=1.0` and `max_total_time_s=30.0`, so it is not sub-millisecond in principle
+  and `compute_tool_waste` is blind to its worst case. It stays untimed because it is
+  sub-millisecond in practice where measured (n=146, median 0.029s, max 0.746s, zero calls over a
+  second), with the two caveats that number carries now written down beside it.
+
 ## [1.6.0] - 2026-08-27
 
 Three new public names and three new optional `trace/v1` payload fields, all additive. No behaviour
@@ -573,7 +647,7 @@ validators.**
   filesystem/network side effect, matching `make_schema_validator`/`make_json_schema_validator`'s
   own precedent.
 - **No `regex` package needed, unlike `make_grep_files_tool`** — `quote` is matched as literal
-  text (every character either `re.escape()`d or collapsed to a flat, non-nested `\s+`), so the
+  text (every character either `re.escape()`d or collapsed to a flat, non-nested `\s+`/`\s*`), so the
   built pattern can never exhibit catastrophic backtracking regardless of `quote`'s content;
   verified empirically against a literal `"(a+)+"` quote, not just argued by design.
 - **Leading/trailing whitespace on `quote` is stripped before matching** — a bug caught by direct
