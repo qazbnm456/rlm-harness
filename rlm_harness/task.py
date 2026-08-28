@@ -54,11 +54,20 @@ class _MainStepTimer(BaseCallback):  # type: ignore[misc, valid-type]
     contextvar) so it works regardless of which thread dspy parses on; the recorder's note_main_step
     is itself thread-safe.
 
-    **Stages the OUTERMOST parse only, and that is load-bearing.** dspy wraps ``parse`` with
-    ``with_callbacks`` once per class that defines it, and ``runtime._LenientJSONAdapter.parse``
-    calls ``super().parse(...)`` — so under the kit's own DEFAULT adapter (``config.adapter ==
-    "json"``) every root turn fires this callback TWICE with the same outputs, where the stock
-    ``JSONAdapter`` fires once. Two stamps per turn made ``record_main_trajectory``'s
+    **Stages the OUTERMOST parse only, and that is load-bearing.** ``Adapter.__init_subclass__``
+    re-wraps ``format`` and ``parse`` with ``with_callbacks`` for EVERY subclass — unconditionally,
+    whether or not that subclass redefines them — so each subclass level adds a callback fire that
+    a ``super().parse(...)`` call then traverses. Measured, one root turn:
+
+        stock ``JSONAdapter``                     1 fire
+        ``runtime._LenientJSONAdapter`` (DEFAULT) 2   (it calls ``super().parse``)
+        a consumer subclass overriding NOTHING    3
+        ...that also calls ``super().parse``      4
+
+    So this is not a fixed double to divide by two: the depth is a property of the caller's adapter
+    hierarchy, which is why the fix counts nesting rather than assuming a count. A consumer
+    subclassing the kit's adapter — a plausible thing to do — was affected before this and needed
+    no change to be covered by it. Two stamps per turn made ``record_main_trajectory``'s
     earliest-unused match order-unsafe: when a model repeats a ``reasoning`` string across turns
     (a retry loop emitting ``"Retrying tool call - …"`` does exactly this), a later turn consumed
     an earlier turn's spare stamp and inherited a time from several turns back. Measured on 85 real
