@@ -53,12 +53,42 @@ class _MainStepTimer(BaseCallback):  # type: ignore[misc, valid-type]
     filter a streaming consumer's callback uses. Holds a DIRECT recorder reference (not the
     contextvar) so it works regardless of which thread dspy parses on; the recorder's note_main_step
     is itself thread-safe.
+
+    **Stages the OUTERMOST parse only, and that is load-bearing.** dspy wraps ``parse`` with
+    ``with_callbacks`` once per class that defines it, and ``runtime._LenientJSONAdapter.parse``
+    calls ``super().parse(...)`` — so under the kit's own DEFAULT adapter (``config.adapter ==
+    "json"``) every root turn fires this callback TWICE with the same outputs, where the stock
+    ``JSONAdapter`` fires once. Two stamps per turn made ``record_main_trajectory``'s
+    earliest-unused match order-unsafe: when a model repeats a ``reasoning`` string across turns
+    (a retry loop emitting ``"Retrying tool call - …"`` does exactly this), a later turn consumed
+    an earlier turn's spare stamp and inherited a time from several turns back. Measured on 85 real
+    traces: every trace with a ts inversion had a duplicated reasoning, none of the 58 with unique
+    reasoning inverted, and 2.1% of per-turn deltas came out NEGATIVE — one of them -338.7s, which
+    a consumer rendered. Deduplicating HERE keeps the staged list 1:1 with turns, which is what
+    makes the match an identity map; fixing it in the matcher instead cannot repair the case where
+    the duplicate turns are ADJACENT (it merely stops the delta going negative while the stamp
+    stays wrong, trading a loud failure for a silent one).
+
+    The nesting depth is per-THREAD (dspy may parse on a worker thread) and read BEFORE the
+    decrement, so ``n == 1`` is the outermost frame. ``n <= 1`` rather than ``n == 1`` is the
+    deliberate degrade path: if a future dspy stops firing ``on_adapter_parse_start`` the counter
+    never rises, every fire is treated as outermost, and behaviour falls back to exactly what it
+    was before this change — not to staging NOTHING, which would silently return every main_step ts
+    to the flush-time fallback with no test going red.
     """
 
     def __init__(self, recorder: Any) -> None:
         self._recorder = recorder
+        self._depth = threading.local()
+
+    def on_adapter_parse_start(self, call_id, instance=None, inputs=None):
+        self._depth.n = getattr(self._depth, "n", 0) + 1
 
     def on_adapter_parse_end(self, call_id, outputs, exception=None):
+        depth = getattr(self._depth, "n", 0)
+        self._depth.n = max(0, depth - 1)
+        if depth > 1:
+            return  # a nested parse (the kit's own adapter calling super()) — the outer one stages
         if isinstance(outputs, dict) and "reasoning" in outputs and "code" in outputs:
             self._recorder.note_main_step(outputs.get("reasoning"))
 
