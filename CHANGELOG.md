@@ -11,10 +11,22 @@ Two correctness fixes in shipped code. No new public name, no new payload field,
 ### Fixed
 
 - **A root turn's recorded `ts` could come from an earlier turn, and it reached a rendered UI.**
-  dspy wraps `parse` with `with_callbacks` once per class that DEFINES it, and this kit's own
-  `runtime._LenientJSONAdapter.parse` calls `super().parse(...)` — so under the DEFAULT adapter
-  (`config.adapter == "json"`) every root turn fired `task._MainStepTimer` TWICE with identical
-  outputs, where the stock `JSONAdapter` fires once. `trace.record_main_trajectory` matches a turn
+  `Adapter.__init_subclass__` re-wraps `format` and `parse` with `with_callbacks` for EVERY
+  subclass — unconditionally, whether or not that subclass redefines them — so each subclass level
+  adds a callback fire that a `super()` call then traverses. Measured, one root turn:
+
+      stock `JSONAdapter`                          1 fire
+      `runtime._LenientJSONAdapter` (the DEFAULT)  2   (it calls `super().parse`)
+      a consumer subclass overriding NOTHING       3
+      ...that also calls `super().parse`           4
+
+  **The three-fire row is the one to read.** Subclassing the kit's adapter to set a single class
+  attribute — overriding no method at all — was enough to add a fire, which is not what anyone
+  would predict from "it calls `super().parse`", and gives that consumer no reason to suspect the
+  adapter. A fix that divided by two would have left them broken while passing every test.
+
+  So under the DEFAULT adapter every root turn fired `task._MainStepTimer` TWICE with identical
+  outputs. `trace.record_main_trajectory` matches a turn
   to its live stamp by `reasoning`, so the surplus stamp was claimable by any LATER turn repeating
   that string — which a retry loop does (`"Retrying tool call - …"`, `"Placeholder before real …"`).
   Measured across 85 real traces: all 12 traces with a `ts` inversion had a duplicated reasoning
