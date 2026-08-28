@@ -304,6 +304,12 @@ class TraceRecorder:
         Matched back to the post-hoc trajectory (by ``reasoning``) in ``record_main_trajectory`` to
         backfill the event ts. Thread-safe (a dspy callback may fire from a worker thread). Never
         touches the JSONL — it only stages a timestamp for later reconciliation.
+
+        **Callers must stage exactly ONE entry per turn.** The match is by ``reasoning``, and a
+        model that repeats a reasoning string across turns (a retry loop does) makes any surplus
+        entry claimable by the wrong turn. ``task.py:_MainStepTimer`` is the in-kit caller and
+        deduplicates dspy's nested parse callbacks for precisely this reason; see its docstring for
+        why there were two, and what a -338.7s rendered duration looked like when there were.
         """
         stamp = self._clock() if ts is None else ts
         with self._lock:
@@ -328,7 +334,13 @@ class TraceRecorder:
         turn's duration by one and silently drops the last — a confidently WRONG attribution with
         nothing to signal it, which is worse than having no attribution. Matching on the code that
         actually ran makes the skipped turn match nothing, so its key is simply absent. Same
-        earliest-unused rule ``note_main_step``'s ``reasoning`` match uses, for the same reason.
+        earliest-unused-at-or-after-the-cursor rule ``note_main_step``'s ``reasoning`` match uses.
+
+        Unlike ``note_main_step`` this stages ONE entry per ``execute()`` call from dspy's strictly
+        sequential loop, so the staged list is already 1:1 with the turns that ran and in their
+        order — a duplicated code cell is NOT a defect here. The cursor is symmetry plus one real
+        if unlikely guard: dspy runs a setup ``execute()`` before the loop, whose staged entry a
+        turn with a colliding code string could otherwise claim.
 
         Thread-safe and never touches the JSONL; like ``note_main_step`` it only stages a value for
         reconciliation in ``record_main_trajectory``.
@@ -342,11 +354,22 @@ class TraceRecorder:
         Each turn's ``ts`` is the LIVE time it was parsed (from ``note_main_step``), matched by
         ``reasoning`` — so a re-rendered trace reflects when turns actually happened, not when the
         trajectory was flushed. The match consumes the earliest unused live stamp with the same
-        reasoning (so dspy's double parse-callback per turn resolves to the first/true time); a turn
-        with no live stamp (no callback wired, or replay) falls back to ``clock()`` — unchanged from
-        before. Payload shape, ``step_id`` and file order are identical either way; only the ts value
+        reasoning AT OR AFTER the previous match (see the cursor comment below); a turn with no live
+        stamp (no callback wired, or replay) falls back to ``clock()`` — unchanged from before.
+        Payload shape, ``step_id`` and file order are identical either way; only the ts value
         of a main_step improves, which leaves step_id-ordered readers (RL dataset, replay) and the
         ``max(ts)-min(ts)`` elapsed metric untouched.
+
+        **How a reader must order these events** — a downstream consumer got this wrong, so it is
+        written down here rather than left to be inferred:
+
+        * ``main_step`` events are emitted in ONE BLOCK once ``aforward()`` has returned, so a
+          ``tool_call`` recorded mid-run precedes them in FILE order while being chronologically
+          LATER. Measured at 70 of 76 real traces. This is by design, not a defect.
+        * ``payload["turn"]`` is AUTHORITATIVE for ordering, and file order among ``main_step``
+          events already matches it (72 of 72 traces). **Never sort main_steps by ``ts`` to
+          "recover" their order** — that reorders turns.
+        * ``ts`` is for placing a turn against the tool calls around it, and nothing else.
 
         Tolerant of shape drift: a missing/oddly-typed ``trajectory`` is recorded
         as empty rather than raising, so a dspy minor-version change degrades to a
@@ -358,23 +381,42 @@ class TraceRecorder:
         with self._lock:
             live = list(self._main_ts)
             execs = list(self._exec_s)
-        used = [False] * len(live)
-        used_exec = [False] * len(execs)
+        # Both matches scan FORWARD ONLY, from a cursor parked just past the previous match.
+        # The cursor alone is what makes each entry single-use: it only ever advances to `i + 1`
+        # after consuming index `i`, and every scan starts AT the cursor, so no index can be
+        # revisited. (A separate `used` flag list lived here until 1.6.1 and became provably dead
+        # the moment the cursor arrived — every index the loop can reach is, by construction,
+        # past everything already consumed.)
+        # Trajectory order IS chronological order, so consuming staged entries in non-decreasing
+        # index order is true by construction — and enforcing it means a later turn can never be
+        # handed a stamp/duration that belongs to an earlier one. Each cursor is a single-element
+        # list so the closures can advance it. Note the cursor advances ONLY on a match: a turn
+        # that matches nothing must not push the cursor past a LATER turn's entry (that would
+        # break `test_a_turn_dspy_never_executed_does_not_steal_the_next_turns_duration`).
+        #
+        # This is defence in depth, NOT the fix for the ts inversions — those are fixed at source
+        # by `task.py:_MainStepTimer` staging one entry per turn instead of two. A cursor alone
+        # cannot repair ADJACENT duplicate keys (turn 1 would still take turn 0's spare entry),
+        # which merely hides the symptom while leaving the value wrong.
+        ts_cursor = [0]
+        exec_cursor = [0]
 
         def _match_exec(code: Any) -> float | None:
-            """The earliest unused duration staged for exactly this code, or None."""
+            """The earliest unused duration staged for exactly this code AT OR AFTER the cursor."""
             if not isinstance(code, str):
                 return None
-            for i, (ran, secs) in enumerate(execs):
-                if not used_exec[i] and ran == code:
-                    used_exec[i] = True
+            for i in range(exec_cursor[0], len(execs)):
+                ran, secs = execs[i]
+                if ran == code:
+                    exec_cursor[0] = i + 1
                     return secs
             return None
 
         def _match_ts(reasoning: Any) -> float | None:
-            for i, (r, t) in enumerate(live):
-                if not used[i] and r == reasoning:
-                    used[i] = True
+            for i in range(ts_cursor[0], len(live)):
+                r, t = live[i]
+                if r == reasoning:
+                    ts_cursor[0] = i + 1
                     return t
             return None
 
