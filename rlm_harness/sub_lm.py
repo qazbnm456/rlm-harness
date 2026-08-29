@@ -6,7 +6,11 @@ call ``self.sub_lm(prompt)``. So the ONLY interception point is the sub_lm objec
 itself. ``intercept_sub_lm`` wraps a ``dspy.LM``: ``RLM`` only sees "a sub_lm", but
 inside we emit a ``sub_call`` trace event for every escalation and (optionally) run
 a deterministic pipeline — call the base model, validate the format, post-process.
-Tracing is the always-on job; validators/postprocessors are opt-in.
+**Since 1.7.0 a consumer no longer has to reach for this to get the event**: ``RLMTask`` wraps a
+plain ``sub_lm`` for recording at the seam that binds the recorder, because an escalation that is
+invisible is indistinguishable from one that never happened. Call it yourself for the
+validators/postprocessors, or to opt out by declaring ``records_sub_call = True`` on a wrapper of
+your own.
 
 Design decisions baked in (per the approved plan):
 
@@ -30,6 +34,7 @@ import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from . import _dspy_compat
 from ._toolname import sanitize_tool_name
 from .trace import current_recorder, record_tool_call, recorder_scope
 
@@ -88,11 +93,12 @@ def intercept_sub_lm(
     This is THE hook for the sub-LM: ``dspy.RLM`` calls ``self.sub_lm(prompt)`` from
     its built-in ``llm_query`` / ``llm_query_batched`` tools, and the returned object
     sits in that ``sub_lm`` slot. On every call it records a ``sub_call`` trace event
-    (the escalation's input + the sub-LM's raw/processed output) — that is the
-    always-on job, and the only thing most consumers need. Passing ``validators`` /
-    ``postprocessors`` additionally runs a deterministic validate → post-process
-    pipeline (retrying on validation failure up to ``max_retries``); omit them and it
-    is a pure tracing wrapper.
+    (the escalation's input + the sub-LM's raw/processed output). **Since 1.7.0 most consumers do
+    not need to call this at all**: ``RLMTask`` wraps a plain ``sub_lm`` for that recording
+    automatically. Reach for it when you want the deterministic validate → post-process pipeline —
+    pass ``validators`` / ``postprocessors`` and it retries on validation failure up to
+    ``max_retries``. Omit them and it is a pure tracing wrapper, which is exactly what the
+    automatic path installs.
 
     ``base_lm`` is any ``dspy.LM`` (your local model, a cheaper API model, ...).
     The returned object is a drop-in ``sub_lm`` for ``RLMTask``/``dspy.RLM``.
@@ -116,7 +122,34 @@ def intercept_sub_lm(
             self._max_retries = max(1, max_retries)
             self._name = name
 
-        # dspy.LM is callable as lm(prompt=..., messages=...) -> list[str].
+        #: Marks this object as ALREADY emitting its own ``sub_call`` events, so
+        #: ``_ensure_sub_call_recording`` leaves it alone. A duck-typed protocol, not an
+        #: isinstance check: a consumer with its OWN recording wrapper sets this to ``True`` and
+        #: the kit stays out of the way, the same convention ``execution_instructions`` uses on an
+        #: interpreter. Probed with ``is True``, never truthiness — see that function.
+        records_sub_call = True
+
+        def __getattr__(self, attr: str) -> Any:
+            # Delegate anything this wrapper does not define to the wrapped LM. `__init__` copies
+            # only `model` and `kwargs`, so without this the wrapper is missing everything else a
+            # real dspy.LM carries (`history`, `cache`, `num_retries`, `callbacks`, …). That was
+            # tolerable while wrapping was opt-in; since 1.7.0 the kit substitutes this object for
+            # the caller's LM automatically, so "observationally identical to the bare one" has to
+            # hold for attribute access too, not just for the return value. `records_sub_call` and
+            # the real attributes are found normally and never reach here.
+            #
+            # Read `_base` out of `__dict__`, NOT as `self._base`: `copy`/`deepcopy`/`pickle`
+            # rebuild an instance WITHOUT calling `__init__`, so `_base` is absent and
+            # `self._base` would re-enter this method forever. `dspy.BaseLM.copy()` does exactly
+            # that, and it is the documented way to get a rollout-id variant of an LM, so the
+            # recursion would fire on a supported path.
+            base = self.__dict__.get("_base")
+            if base is None:
+                raise AttributeError(attr)
+            return getattr(base, attr)
+
+        # dspy's `RLM._query_lm` accepts a typed `LMResponse` OR the legacy `list[str | dict]`.
+        # This returns whichever the BASE LM returned, never a shape of its own choosing.
         def __call__(self, *args: Any, **kwargs: Any):
             recorder = current_recorder()
             last_error: str | None = None
@@ -130,8 +163,13 @@ def intercept_sub_lm(
 
             for attempt in range(1, self._max_retries + 1):
                 outputs = self._base(*args, **kwargs)
-                texts = list(outputs) if isinstance(outputs, (list, tuple)) else [outputs]
-                processed, error = self._run_pipeline(texts[0] if texts else "")
+                # SHAPE-PRESERVING. This used to be `[outputs]` for anything non-list, which turned
+                # a typed `LMResponse` into `[LMResponse]` and made dspy raise "Sub-LM response must
+                # contain text, got LMResponse" — invisible on the default path, fatal under
+                # `dspy.context(experimental=True)`, and on course to become the DEFAULT after dspy
+                # 3.4. Both the read and the rebuild are resolved in `_dspy_compat`, never here.
+                raw = _dspy_compat.sub_lm_response_text(outputs)
+                processed, error = self._run_pipeline(raw if raw is not None else "")
 
                 if recorder is not None:
                     recorder.record(
@@ -148,18 +186,25 @@ def intercept_sub_lm(
                             "model": self.model,
                             "attempt": attempt,
                             "input": input_repr,
-                            "raw": texts[0] if texts else "",
+                            "raw": raw,          # None = the shape was not recognised
                             "processed": processed,
                             "error": error,
                         },
                     )
 
                 if error is None:
-                    # Replace only the first completion with the processed text;
-                    # preserve any additional completions untouched.
-                    if texts:
-                        texts[0] = processed
-                    return texts
+                    # A no-op pipeline returns the base LM's object UNTOUCHED — identity, not a
+                    # reconstruction. That is what makes automatic wrapping safe: a sub-LM the kit
+                    # wrapped on the caller's behalf must be indistinguishable from the bare one.
+                    #
+                    # `raw is None` means the shim did not RECOGNISE the shape. Return it untouched
+                    # too, so dspy raises its own clear error. Rebuilding it as `[""]` would turn a
+                    # loud TypeError into a silent EMPTY completion that reaches the planner and
+                    # then the RL data as a real escalation answer — and since 1.7.0 wraps every
+                    # sub-LM automatically, that would be inflicted on callers who never opted in.
+                    if raw is None or processed == raw:
+                        return outputs
+                    return _dspy_compat.sub_lm_response_with_text(outputs, processed)
                 last_error = error
                 logger.warning(
                     "sub-LM %s validation failed (attempt %d/%d): %s",
@@ -197,7 +242,13 @@ def model_as_tool(name: str, lm: Any, *, description: str = "") -> Callable[[str
         # it is also the one whose duration the kit can supply without the consumer doing it.
         t0 = time.perf_counter()
         outputs = lm(prompt=prompt)
-        text = outputs[0] if isinstance(outputs, (list, tuple)) and outputs else str(outputs)
+        # Read through the shim, never by indexing: dspy's LMs return a typed `LMResponse` on the
+        # experimental path and the legacy list otherwise, and `outputs[0]` on the former yielded
+        # `str(LMResponse)` — the whole repr, handed to the model AND written to the trace as the
+        # tool's result. Same defect the sub-LM path carried; fixed in the same place, once.
+        text = _dspy_compat.sub_lm_response_text(outputs)
+        if text is None:
+            text = str(outputs)
         record_tool_call(f"model:{name}", args={"prompt": prompt},
                          duration_s=time.perf_counter() - t0, result=text)
         return text
@@ -213,3 +264,42 @@ def model_as_tool(name: str, lm: Any, *, description: str = "") -> Callable[[str
         f"Send a prompt to the '{name}' model and return its text response."
     )
     return query_model
+
+
+def _ensure_sub_call_recording(sub_lm: Any) -> Any:
+    """Return a sub-LM that emits ``sub_call`` events, wrapping only if it does not already.
+
+    ``CLAUDE.md`` states as an invariant that a sub-LM escalation "is recorded as a ``sub_call``".
+    Before 1.7.0 that held only when the CONSUMER remembered to call :func:`intercept_sub_lm`
+    itself — a plain ``dspy.LM`` is invoked by dspy directly and records nothing. Surveyed across
+    nine consumers, four never wrapped; two of those four had corpora, 141 traces, in which
+    ``sub_call`` was identically zero and therefore indistinguishable from "measured, and the model
+    never escalated". That ambiguity reached a design decision in this repo before it was caught.
+
+    Wrapping with no ``validators``/``postprocessors`` is a PURE tracing wrapper: a no-op pipeline
+    returns the base LM's response object untouched, so the wrapped sub-LM is observationally
+    identical to the bare one apart from the event it emits.
+
+    **The probe is ``is True``, deliberately, not truthiness.** ``getattr`` on a ``unittest.mock``
+    double manufactures a truthy attribute for any name, so a truthiness test would silently decide
+    a mock "already records" and skip it — recreating the exact absent-event failure this exists to
+    fix, one layer up. The ``except Exception`` covers a lazy proxy whose ``__getattr__`` raises
+    something other than ``AttributeError``; a probe must never be able to fail a run.
+    """
+    if sub_lm is None:
+        return sub_lm
+    try:
+        if getattr(sub_lm, "records_sub_call", False) is True:
+            return sub_lm
+        return intercept_sub_lm(sub_lm)
+    except Exception:
+        # The WHOLE body is guarded, not just the probe. `intercept_sub_lm` reads `.model` and
+        # `.kwargs` off the base LM, which is enough to raise on a bare `unittest.mock.Mock` (its
+        # `.kwargs` is a Mock, and `dict()` of it raises) or on a lazy proxy that survived the
+        # probe. Auto-wrapping is an observability convenience the caller never asked for; it must
+        # never be the reason a run fails to start.
+        logger.warning(
+            "could not auto-wrap sub_lm for sub_call tracing; escalations will go unrecorded",
+            exc_info=True,
+        )
+        return sub_lm
