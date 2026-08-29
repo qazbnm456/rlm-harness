@@ -32,7 +32,7 @@ from ._retry import run_with_retry
 from .config import RLMConfig
 from .runtime import get_config, get_sub_lm
 from .sandbox import SandboxCancelled, build_interpreter
-from .sub_lm import bind_recorder_to_sub_lm
+from .sub_lm import _ensure_sub_call_recording, bind_recorder_to_sub_lm
 from .trace import current_recorder
 
 logger = logging.getLogger(__name__)
@@ -310,13 +310,26 @@ class RLMTask:
         """
         rlm = self._build_rlm()
         forward_args = _dspy_compat.forward_interpreter_args(self._forward_interpreter)
-        # Bind the active recorder to the sub_lm so dspy's llm_query_batched — which fans the sub-LM
-        # across a ThreadPoolExecutor whose workers DON'T inherit the recorder ContextVar — still records
-        # each escalation as a sub_call (else the lifeline metric under-counts). Per-run (this rlm is
-        # fresh), so concurrent runs sharing the base sub-LM don't cross-contaminate.
+        # Two wrappers, and the ORDER is load-bearing.
+        #
+        # INNER (`_ensure_sub_call_recording`, 1.7.0): make the escalation record itself even when
+        # the caller never asked. Without it a plain `dspy.LM` sub_lm emits NO sub_call at all, and
+        # a corpus of zeros is indistinguishable from "the model never escalated" — an ambiguity
+        # that reached a design decision in this repo before it was caught. A caller who wrapped
+        # its own sub-LM (for a validate/post-process pipeline) declares `records_sub_call` and is
+        # left untouched, so the customisation tier is unaffected.
+        #
+        # OUTER (`bind_recorder_to_sub_lm`): re-establish the recorder in the CALLING thread, since
+        # dspy's llm_query_batched fans the sub-LM across workers. It must stay outermost: its
+        # __call__ enters `recorder_scope` and only then calls inward, while the interceptor reads
+        # `current_recorder()` at call time. Reversed, the interceptor sees None and SILENTLY skips
+        # the record — no error, no event, which is the failure mode hardest to notice.
+        #
+        # Per-run (this rlm is fresh), so concurrent runs sharing the base sub-LM don't
+        # cross-contaminate. Both are skipped entirely when there is no recorder.
         _rec = current_recorder()
         if _rec is not None and getattr(rlm, "sub_lm", None) is not None:
-            rlm.sub_lm = bind_recorder_to_sub_lm(rlm.sub_lm, _rec)
+            rlm.sub_lm = bind_recorder_to_sub_lm(_ensure_sub_call_recording(rlm.sub_lm), _rec)
         captured: dict[str, Any] = {}
 
         async def runner() -> Any:

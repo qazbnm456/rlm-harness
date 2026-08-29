@@ -787,3 +787,179 @@ def test_main_step_timer_stages_once_at_ANY_adapter_nesting_depth():
             adapter_cls().parse(sig, completion)
         assert _CountFires.n == fires, f"{adapter_cls.__name__} fired {_CountFires.n}, not {fires}"
         assert rec.captured == ["R1"], f"{adapter_cls.__name__} staged {len(rec.captured)}"
+
+
+# ---- a sub-LM escalation records itself, whether or not the caller asked ------------------------
+#
+# Before 1.7.0 a `sub_call` existed only if the consumer remembered `intercept_sub_lm`. Four of nine
+# surveyed consumers never did; two of those had corpora, 141 traces, where `sub_call` was
+# identically zero — indistinguishable from "the model never escalated". That ambiguity reached a
+# design decision in this repo before it was caught.
+
+
+def _scripted_escalation_run(sub_lm, tmp_path):
+    """Drive a real RLMTask whose single turn calls `llm_query`, and return its trace events."""
+    import asyncio
+
+    from rlm_harness.testing import ScriptedInterpreter, call, scripted_lm, submit
+    from rlm_harness.trace import TraceRecorder, load_events
+
+    class _Out(BaseModel):
+        x: int
+
+    class T(RLMTask):
+        signature = "q: str -> answer: _Out"
+        output_field = "answer"
+        output_model = _Out
+
+    turns = [
+        {"reasoning": "escalate", "code": 'print(llm_query(prompt="deep question"))'},
+        {"reasoning": "submit", "code": "SUBMIT(answer={'x': 5})"},
+    ]
+    rt.configure(
+        RLMConfig(main_model="x", sub_model="x", interpreter="mock", observe=False),
+        main_lm=scripted_lm(turns), sub_lm=sub_lm,
+    )
+    interp = ScriptedInterpreter(
+        [call("llm_query", prompt="deep question"), submit({"answer": {"x": 5}})]
+    )
+    path = str(tmp_path / "trace.jsonl")
+    with TraceRecorder(path, run_id="r1"):
+        asyncio.run(T(interpreter=interp, sub_lm=sub_lm).arun(q="hi"))
+    return load_events(path)
+
+
+def test_a_plain_sub_lm_records_its_escalation_without_being_wrapped(tmp_path):
+    """The direct regression: 0 sub_call before, 1 after, with no consumer change."""
+    from dspy.utils.dummies import DummyLM
+
+    from rlm_harness.trace import EVENT_SUB_CALL
+
+    events = _scripted_escalation_run(DummyLM([{"answer": "escalated"}] * 4), tmp_path)
+    subs = [e for e in events if e["type"] == EVENT_SUB_CALL]
+    assert len(subs) == 1, f"expected exactly one sub_call, got {len(subs)}"
+    assert subs[0]["payload"]["kind"] == "sub_lm"
+
+
+def test_an_already_wrapped_sub_lm_records_ONCE_not_twice(tmp_path):
+    """The five-consumer path. Double-wrapping would emit two events per escalation for exactly
+    the consumers who did it right."""
+    from dspy.utils.dummies import DummyLM
+
+    from rlm_harness import intercept_sub_lm
+    from rlm_harness.trace import EVENT_SUB_CALL
+
+    wrapped = intercept_sub_lm(DummyLM([{"answer": "escalated"}] * 4), name="lifeline")
+    events = _scripted_escalation_run(wrapped, tmp_path)
+    subs = [e for e in events if e["type"] == EVENT_SUB_CALL]
+    assert len(subs) == 1, f"double-recorded: {len(subs)} sub_call events"
+    assert subs[0]["payload"]["name"] == "lifeline", "the caller's own wrapper was bypassed"
+
+
+def _run_with_stub_rlm(sub_lm, *, trace_path=None, after=None):
+    """Run `arun` through a stub RLM and hand back the sub_lm `task.py` actually composed.
+
+    Asserting on `_build_rlm()` would prove nothing: the composition happens in `arun`, so a test
+    written against the builder stays green even with the whole guard deleted (verified by
+    mutation). `after` runs INSIDE the recorder scope, so a caller can exercise the composed object
+    while the recorder it was bound to is still open."""
+    import asyncio
+    import types as _types
+
+    from rlm_harness.trace import TraceRecorder
+
+    class _Out(BaseModel):
+        x: int
+
+    class T(RLMTask):
+        signature = "q: str -> answer: _Out"
+        output_field = "answer"
+        output_model = _Out
+
+    pred = _types.SimpleNamespace(trajectory=[], final_reasoning=None, answer={"x": 1})
+
+    class _FakeRLM:
+        def __init__(self):
+            self.sub_lm = sub_lm
+
+        async def aforward(self, **kw):
+            return pred
+
+    _configure_with_dummy()
+    task = T(sub_lm=sub_lm)
+    fake = _FakeRLM()
+    task._build_rlm = lambda: fake
+    if trace_path is None:
+        asyncio.run(task.arun(q="hi"))
+    else:
+        with TraceRecorder(trace_path, run_id="r"):
+            asyncio.run(task.arun(q="hi"))
+            if after is not None:
+                after(fake.sub_lm)
+    return fake.sub_lm
+
+
+def test_no_recorder_means_no_wrapper_at_all():
+    """With nothing to record, the call path must be byte-identical to before this feature.
+
+    Driven through `arun`, because that is where the guard lives. A version of this asserting on
+    `_build_rlm()` stayed green with `if _rec is not None` deleted outright."""
+    from dspy.utils.dummies import DummyLM
+
+    sub = DummyLM([{"answer": "a"}] * 4)
+    assert _run_with_stub_rlm(sub) is sub
+
+
+def test_task_composes_bind_OUTSIDE_intercept(tmp_path):
+    """The composition order is load-bearing and must be pinned AT THE SEAM. Reversing the two
+    wrappers in `task.py` leaves the whole suite green if the test hand-writes the correct order
+    itself, so this exercises what `task.py` actually built.
+
+    Bind must be outermost: it establishes `recorder_scope`, and the interceptor reads
+    `current_recorder()` at call time. Reversed, the interceptor sees `None` on any thread that did
+    not inherit the contextvar and SILENTLY skips the record. A RAW thread is required to observe
+    it — dspy 3.3.1's `llm_query_batched` copies the context itself, so its own dispatch records
+    correctly in BOTH orders."""
+    from dspy.utils.dummies import DummyLM
+
+    from rlm_harness.trace import EVENT_SUB_CALL, load_events
+
+    path = str(tmp_path / "t.jsonl")
+
+    def call_from_a_raw_thread(composed):
+        t = threading.Thread(target=lambda: composed(prompt="q"))
+        t.start()
+        t.join()
+
+    _run_with_stub_rlm(
+        DummyLM([{"answer": "a"}] * 8), trace_path=path, after=call_from_a_raw_thread
+    )
+    subs = [e for e in load_events(path) if e["type"] == EVENT_SUB_CALL]
+    assert len(subs) == 1, "the sub_lm `task.py` composed recorded nothing from a raw thread"
+
+
+def test_recording_survives_a_call_from_a_RAW_thread():
+    """Bind must stay OUTERMOST: it establishes `recorder_scope`, and the interceptor reads
+    `current_recorder()` at call time. Reversed, the interceptor sees None and SILENTLY skips the
+    record — no error, no event.
+
+    A raw thread is required to see this. dspy 3.3.1's `llm_query_batched` now dispatches via
+    `contextvars.copy_context().run(...)`, so a test written against dspy's own path would pass in
+    BOTH composition orders and pin nothing."""
+    import tempfile
+    from pathlib import Path
+
+    from dspy.utils.dummies import DummyLM
+
+    from rlm_harness.sub_lm import _ensure_sub_call_recording, bind_recorder_to_sub_lm
+    from rlm_harness.trace import EVENT_SUB_CALL, TraceRecorder, load_events
+
+    path = str(Path(tempfile.mkdtemp()) / "t.jsonl")
+    with TraceRecorder(path, run_id="r") as rec:
+        composed = bind_recorder_to_sub_lm(
+            _ensure_sub_call_recording(DummyLM([{"answer": "a"}] * 4)), rec
+        )
+        t = threading.Thread(target=lambda: composed(prompt="q"))
+        t.start()
+        t.join()
+    assert len([e for e in load_events(path) if e["type"] == EVENT_SUB_CALL]) == 1
