@@ -444,3 +444,44 @@ def test_var_keyword_signature_falls_back_to_the_current_names(monkeypatch):
         max_iterations=7, max_llm_calls=11, max_output_chars=13
     )
     assert resolved == {"max_iters": 7, "max_llm_calls": 11, "max_output_chars": 13}
+
+
+# ---- the sub-LM response contract --------------------------------------------------------------
+
+
+def test_sub_lm_response_shims_round_trip_both_shapes_dspy_accepts():
+    """`RLM._query_lm` accepts a typed `LMResponse` OR the legacy `list[str | dict]`. Both shims
+    must read and rebuild each without changing the type or touching the original.
+
+    Pinned HERE because `sub_lm.py` used to encode this convention at the call site: it collapsed
+    anything non-list into `[outputs]`, so an `LMResponse` became `[LMResponse]` and dspy raised.
+    That break was invisible on the default path, fired only under `experimental=True`, and dspy's
+    own docs date the legacy shape — "In DSPy 3.3 and 3.4, ordinary calls preserve the legacy
+    public return value". A version that changes the contract goes red here rather than silently
+    in every consumer."""
+    from dspy.clients.base_lm import LMResponse
+    from dspy.core.types import LMOutput, LMTextPart
+
+    typed = LMResponse(model="m", outputs=[LMOutput(parts=[LMTextPart(text="hello")])])
+    for original, expected in ((typed, "hello"), (["hello"], "hello"), ([{"text": "hello"}], "hello")):
+        assert _dspy_compat.sub_lm_response_text(original) == expected
+        rebuilt = _dspy_compat.sub_lm_response_with_text(original, "REPLACED")
+        assert _dspy_compat.sub_lm_response_text(rebuilt) == "REPLACED"
+        assert _dspy_compat.sub_lm_response_text(original) == expected, "the original was mutated"
+    assert type(_dspy_compat.sub_lm_response_with_text(typed, "R")) is LMResponse
+
+
+def test_lm_output_text_JOINS_its_text_parts():
+    """The fact the substitution shim is built on. If a dspy release makes `LMOutput.text` return
+    only the first part instead of joining, dropping the later ones becomes wrong and this is where
+    that surfaces — the alternative is a silently truncated sub-LM answer."""
+    from dspy.core.types import LMOutput, LMTextPart
+
+    assert LMOutput(parts=[LMTextPart(text="A"), LMTextPart(text="B")]).text == "AB"
+
+
+def test_an_unrecognised_sub_lm_shape_reads_as_None_rather_than_a_guess():
+    """`None` is what tells the caller to hand the object back untouched so dspy can raise its own
+    error. Guessing a string here would convert a loud failure into a silent empty completion."""
+    for junk in (None, [], "a bare string", object(), 42):
+        assert _dspy_compat.sub_lm_response_text(junk) is None

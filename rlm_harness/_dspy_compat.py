@@ -340,3 +340,83 @@ def is_fast_fail_lm_error(exc: BaseException) -> bool:
     if is_retryable is None:
         return False
     return not is_retryable(exc)
+
+
+@lru_cache(maxsize=1)
+def _lm_response_cls() -> Any:
+    """dspy's typed sub-LM response class, or ``None`` on a dspy that has none."""
+    import dspy
+
+    return getattr(dspy, "LMResponse", None)
+
+
+def sub_lm_response_text(response: Any) -> str | None:
+    """The completion TEXT out of whatever shape a sub-LM returned, or ``None``.
+
+    dspy's ``RLM._query_lm`` accepts TWO shapes from ``sub_lm`` and this mirrors that read:
+    a typed ``dspy.LMResponse`` (take ``.text``), or the legacy ``list[str | dict]`` (take the
+    first element, and its ``"text"`` key when it is a dict). Anything else yields ``None``.
+
+    **Why this is a shim and not three lines at the call site.** ``sub_lm.py`` used to assume the
+    legacy list unconditionally — ``[outputs]`` for anything non-list — which turned an
+    ``LMResponse`` into ``[LMResponse]`` and made dspy raise ``Sub-LM response must contain text,
+    got LMResponse``. That break was invisible on the default path and fired only under
+    ``dspy.context(experimental=True)``, and dspy's own source dates the legacy shape: *"In DSPy
+    3.3 and 3.4, ordinary calls preserve the legacy public return value"*. So the assumption had a
+    two-minor shelf life and no test could see it expire. Resolving it HERE is what makes
+    ``tests/test_dspy_compat.py`` the place a 3.5 contract change goes red.
+    """
+    lm_response = _lm_response_cls()
+    if lm_response is not None and isinstance(response, lm_response):
+        text = getattr(response, "text", None)
+        return text if isinstance(text, str) else None
+    if isinstance(response, (list, tuple)) and response:
+        first = response[0]
+        text = first.get("text") if isinstance(first, dict) else first
+        return text if isinstance(text, str) else None
+    return None
+
+
+def sub_lm_response_with_text(response: Any, text: str) -> Any:
+    """``response`` with its completion text replaced by ``text``, in the SAME shape.
+
+    Shape preservation is the point: a sub-LM wrapper must hand dspy back what dspy handed it,
+    or it silently narrows what the installed dspy supports. For a typed ``LMResponse`` the first
+    ``text`` part of the first output is replaced and **every LATER text part of that output is
+    dropped** — because ``LMOutput.text`` JOINS all of them, so replacing only the first would
+    leave the rest appended to the substituted text (``"AB"`` round-tripping to ``"ABB"``).
+    Multi-part text is not exotic: dspy emits one ``LMTextPart`` per content item, so any provider
+    returning a content ARRAY (citation-interleaved text, Responses-API output blocks) produces
+    several. Thinking, tool-call, citation and refusal parts, every sibling output, and every
+    response-level field (``model``, ``usage``, ``cost``, ``cache_hit``, …) survive untouched, via
+    ``model_copy`` so the ORIGINAL is not mutated. For the legacy list only element 0 is replaced;
+    additional completions pass through.
+
+    Falls back to a one-element list for a shape it does not recognise — the legacy shape dspy
+    has always accepted — so an unknown future return type degrades to something dspy can read
+    rather than to a crash.
+    """
+    lm_response = _lm_response_cls()
+    if lm_response is not None and isinstance(response, lm_response):
+        outputs = list(getattr(response, "outputs", None) or ())
+        if not outputs:
+            return [text]
+        parts = list(getattr(outputs[0], "parts", None) or ())
+        replaced = False
+        new_parts = []
+        for part in parts:
+            if getattr(part, "type", None) != "text":
+                new_parts.append(part)          # thinking / tool_call / citation / refusal
+            elif not replaced:
+                new_parts.append(part.model_copy(update={"text": text}))
+                replaced = True
+            # ...and every LATER text part is DROPPED: `LMOutput.text` joins them, so keeping one
+            # would append the old tail to the substituted text.
+        if not replaced:
+            return [text]
+        new_first = outputs[0].model_copy(update={"parts": new_parts})
+        return response.model_copy(update={"outputs": [new_first, *outputs[1:]]})
+    if isinstance(response, (list, tuple)) and response:
+        rest = list(response[1:])
+        return [text, *rest]
+    return [text]
