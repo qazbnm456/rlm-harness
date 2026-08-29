@@ -68,9 +68,10 @@ Deno sandbox — the logic and tests run without either. dspy requires Deno `>=2
 - **The whole trajectory, recorded.** `TraceRecorder` writes main steps, every sub-LM
   call, and every tool call into one append-only JSONL stream — replayable and
   exportable as SFT/RL datasets (reward-free: scoring belongs to your trainer).
-- **The recursion seat, interceptable.** `intercept_sub_lm` traces every sub-LM
-  escalation (plus optional deterministic validate/post-process); `model_as_tool`
-  lets the main LM choose to consult another named model, in the trajectory.
+- **The recursion seat, interceptable.** Every sub-LM escalation is traced as a
+  `sub_call` automatically — no wrapper needed. `intercept_sub_lm` adds a deterministic
+  validate/post-process pipeline on top; `model_as_tool` lets the main LM choose to
+  consult another named model, in the trajectory.
 - **Tools, the base/wrap way.** Pydantic/JSON-Schema validators, an SSRF-guarded
   `fetch_url`, provider-agnostic web search, the generic model-as-tool core, a
   `run_command` seam over your isolated runner, an MCP client bridge, and

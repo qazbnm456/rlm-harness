@@ -340,12 +340,12 @@ class TraceRecorder:
         Cross-checking it against the same run's ``tool_call`` / ``sub_call`` events is worth trying
         but **often will not resolve it, and a reader must not take the absence as the field lying**:
 
-        * ``llm_query`` produces a ``sub_call`` only if the caller passed an
-          :func:`~rlm_harness.sub_lm.intercept_sub_lm`-wrapped ``sub_lm``. A plain ``dspy.LM`` is
-          called by dspy directly and records NOTHING, so the single largest block of time in a run
-          can have no event of its own. (``RLMTask`` does wrap the sub-LM with
-          ``bind_recorder_to_sub_lm``, but that only makes the recorder visible across dspy's worker
-          threads — it does not emit an event.)
+        * a ``sub_call`` gives you the escalation but not a duration — it records what was asked
+          and answered, not how long it took. **Since 1.7.0 the event is always there**: ``RLMTask``
+          wraps a plain ``sub_lm`` for tracing automatically. On a trace written BEFORE 1.7.0 by a
+          consumer that never called :func:`~rlm_harness.sub_lm.intercept_sub_lm` itself, there is
+          no ``sub_call`` at all and the largest block of time in the run has no event of its own —
+          check ``run_start.rlm_harness`` before reading a zero as a measurement.
         * a ``tool_call``'s ``duration_s`` is OPTIONAL and is set only by the tools whose cost is a
           wait outside this process. The local read/grep/edit tools record the call with no duration
           at all, so a slow local tool is invisible here too.

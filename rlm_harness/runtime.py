@@ -345,8 +345,10 @@ def get_config() -> RLMConfig:
 
 def get_sub_lm() -> dspy.LM:
     """The configured base sub-LM (the recursion seat). PUBLIC accessor — re-exported as
-    ``rlm_harness.get_sub_lm``. A consumer that wants a validated / post-processed sub-LM wraps
-    THIS with ``intercept_sub_lm`` and passes the result as ``RLMTask(sub_lm=...)``; using the
+    ``rlm_harness.get_sub_lm``. Returns the BARE LM: escalations through it are traced anyway,
+    because ``RLMTask`` wraps whatever it is given for ``sub_call`` recording (1.7.0). A consumer
+    that additionally wants a validated / post-processed sub-LM wraps THIS with
+    ``intercept_sub_lm`` and passes the result as ``RLMTask(sub_lm=...)``; using the
     configured instance (rather than reconstructing ``dspy.LM(cfg.sub_model, ...)``) keeps a
     single source of truth so it can't drift from what ``configure`` built. Requires
     ``configure`` to have run."""

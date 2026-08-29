@@ -4,6 +4,80 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.7.0] - 2026-08-29
+
+A sub-LM escalation now records itself whether or not the consumer asked, and the sub-LM wrapper
+hands dspy back the response SHAPE dspy handed it. No new `__all__` entry; `trace/v1` gains no
+event type, envelope key, or payload field.
+
+### Fixed
+
+- **`intercept_sub_lm` broke a sub-LM that returns dspy's typed `LMResponse`.** The wrapper
+  collapsed anything non-list into `[outputs]`, so an `LMResponse` became `[LMResponse]` and dspy
+  raised `Sub-LM response must contain text, got LMResponse`. Invisible on the default path, fatal
+  under `dspy.context(experimental=True)` — and dspy's own source dates the shape the wrapper
+  assumed: *"In DSPy 3.3 and 3.4, ordinary calls preserve the legacy public return value."* The
+  wrapper is shape-preserving now, reading and rebuilding through two new `_dspy_compat` shims
+  rather than encoding dspy's convention at the call site, which is why no test could see this
+  expire. A shape the shim does not RECOGNISE is returned untouched so dspy raises its own error:
+  rebuilding it converts a loud failure into a silent empty completion that would reach the planner
+  and then the RL data as a real escalation answer.
+- **`model_as_tool` had the same defect** sixty lines away — `outputs[0]` on an `LMResponse` handed
+  the model `str(LMResponse)`, the whole repr, and wrote it to the trace as the tool's result.
+- **Substituting text into an `LMResponse` no longer duplicates it.** `LMOutput.text` JOINS every
+  text part, so replacing only the first left the rest appended (`"AB"` round-tripping to `"ABB"`).
+  dspy emits one text part per content item, so any provider returning a content array produces
+  several. Thinking, tool-call, citation and refusal parts and every sibling field survive.
+
+### Added
+
+- **Every sub-LM escalation is traced automatically.** `CLAUDE.md` has always stated that a sub-LM
+  call "is recorded as a `sub_call`"; it was true only when the consumer remembered to call
+  `intercept_sub_lm` itself. A plain `dspy.LM` was invoked by dspy directly and recorded nothing.
+  `RLMTask` now wraps a plain `sub_lm` for tracing at the same per-run seam that binds the recorder.
+
+  **This is not a hypothetical gap.** Surveyed across the consumer fleet, four projects never
+  wrapped; two of those had corpora — 141 traces — in which `sub_call` was identically zero, which
+  is indistinguishable from "measured, and the model never escalated". That ambiguity got into a
+  design decision in this repo: the speculative-tool-calling deferral cited the zero as evidence
+  the model never escalates. Re-derived from code content, the real rate was 0.15%, and one of
+  those escalations later proved to be a 235.5s call. **An absent event is not a measurement.**
+
+  `intercept_sub_lm` keeps its purpose: pass `validators`/`postprocessors` for a deterministic
+  validate/post-process pipeline. A consumer with its OWN recording wrapper opts out by declaring
+  `records_sub_call = True` on it — a duck-typed protocol, probed with `is True` rather than
+  truthiness, because `getattr` on a mock manufactures a truthy attribute for any name and a
+  truthiness probe would silently skip it.
+
+  Auto-wrapping never raises: a sub-LM it cannot wrap is used bare with a warning. It is an
+  observability convenience the caller did not ask for and must never be why a run fails to start.
+
+### Changed
+
+- **Traces from a consumer that never wrapped gain `sub_call` events they did not have**, carrying
+  the escalation prompt (`input`, truncated to 4,000 chars) into the JSONL. A corpus spanning the
+  upgrade is not homogeneous — `run_start.rlm_harness` (1.6.0) separates it.
+  `metrics.compute_run_utilization`'s `sub_calls_total` moves from an unmeasurable zero to a real
+  count, and `export_actions` gains `kind="sub"` records, which is the point: an RL trainer doing
+  credit assignment over actions previously could not see an escalation that happened.
+  `export_sft_turns` / `export_rl` read no `sub_call` and are unaffected.
+- On the automatic path `attempt` is structurally always `1` (no validators, so no second
+  iteration), and `raw` is now always a string or `None` — `None` meaning the response shape was
+  not recognised. Previously a legacy dict output was written to the JSONL verbatim.
+- **A duck-typed sub-LM returning a bare `str` now fails where it used to work.** The old
+  `[outputs]` normalisation turned `"hello"` into `["hello"]`, which dspy accepts; an unrecognised
+  shape is now handed back untouched and dspy raises. That is the same rule that stops a silent
+  empty completion, and it is the right default — but for this one input it converts a working call
+  into a hard failure. A sub-LM deriving from `dspy.LM` is unaffected: `BaseLM.__call__` already
+  returns one of the two shapes dspy accepts.
+- A consumer driving `dspy.RLM` directly, without `RLMTask`, gets none of this.
+
+### Retracted
+
+- The 1.6.0 entry stated that a consumer "records **zero `sub_call` events, in every run** — the
+  model never escalates to the sub-LM at all." **That inference was wrong**, and it is the exact
+  failure this release removes: the zero measured that consumer's wiring, not its model.
+
 ## [1.6.1] - 2026-08-29
 
 Two correctness fixes in shipped code. No new public name, no new payload field, no schema change.
