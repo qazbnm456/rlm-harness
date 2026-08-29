@@ -88,8 +88,15 @@ agrees with the manifest. The same shape exists for any lockfile workflow (`poet
 that lost a deploy to it, whose Dockerfile comment beside the line already claimed the property the
 flag did not have — which is why reading the file could not catch it.
 
-**Confirm at runtime, not from the manifest:** `run_start.rlm_harness` in any new trace, or
-`python -c "import rlm_harness; print(rlm_harness.__version__)"` inside the container.
+**Confirm at runtime, not from the manifest** — `run_start.rlm_harness` in any new trace, or
+`python -c "import rlm_harness; print(rlm_harness.__version__)"` **from inside the deployed
+environment**.
+
+**Do not check it with `uv run`.** `uv run` re-locks implicitly, so `uv run python -c "import
+rlm_harness; …"` repairs the drift it is being used to measure and reports the version you were
+hoping for. That is worse than the `--frozen` behaviour it would be chasing: the flag fails
+silently, but the probe actively manufactures the reassuring answer. The only version that a probe
+cannot manufacture is the one already loaded in the process that is running.
 
 ### Retracted
 
