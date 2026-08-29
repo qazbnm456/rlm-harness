@@ -288,6 +288,34 @@ One companion rule ships under `.claude/rules/`:
   decision and must be a tool. `intercept_sub_lm` is THE sub-LM interception hook (the
   only point dspy exposes); don't try to recompose it from `make_model_tool`, which is
   tool-side. Full consumer-facing explanation: the guide (`rlm_harness/README.md`) "Sub-LM vs. tool".
+- **"Recorded as a `sub_call`" is AUTOMATIC since 1.7.0, and it had to become automatic.** Before
+  that the event existed only if the consumer remembered `intercept_sub_lm`; a plain `dspy.LM` was
+  called by dspy directly and recorded NOTHING. Surveyed across the fleet, four consumers never
+  wrapped, and two of those had corpora — 141 traces — in which `sub_call` was identically zero and
+  therefore indistinguishable from "measured, and the model never escalated". That ambiguity got
+  into a design decision in this repo (the sPTC deferral cited the zero as evidence of no
+  escalation; the real rate, re-derived from code content, was 0.15%). **An absent event is not a
+  measurement** — before reading a zero count as a zero rate, check that the thing which emits the
+  event was wired at all. `RLMTask` now wraps a plain `sub_lm` via `sub_lm._ensure_sub_call_recording`
+  at the SAME seam that binds the recorder, with the bind OUTERMOST (it establishes `recorder_scope`;
+  the interceptor reads `current_recorder()` at call time, so reversing them makes the record
+  silently vanish). Do this at the per-run TASK seam, never in `configure` — consumers call
+  `intercept_sub_lm(get_sub_lm(), …)`, so wrapping there would double-record for exactly the
+  consumers who did it right. **A consumer with its OWN recording wrapper opts out by declaring
+  `records_sub_call = True`** on it; the probe is `is True`, never truthiness, because `getattr` on
+  a mock manufactures a truthy attribute for any name and would silently skip it — the same
+  absent-event failure one layer up.
+- **A sub-LM wrapper hands dspy back the SHAPE dspy handed it.** `RLM._query_lm` accepts a typed
+  `dspy.LMResponse` or the legacy `list[str | dict]`, and both reads and both rebuilds live in
+  `_dspy_compat.sub_lm_response_text` / `sub_lm_response_with_text` — never at a call site. The
+  wrapper used to collapse anything non-list into `[outputs]`, which turned an `LMResponse` into
+  `[LMResponse]` and made dspy raise; invisible on the default path, fatal under
+  `dspy.context(experimental=True)`, and dspy's own source dates the legacy shape ("In DSPy 3.3 and
+  3.4, ordinary calls preserve the legacy public return value"). Two rules the shim encodes: a
+  shape it does NOT recognise is returned UNTOUCHED so dspy raises its own error (rebuilding it as
+  `[""]` converts a loud failure into a silent empty completion that reaches the planner and the RL
+  data), and substituting text into an `LMResponse` drops the output's LATER text parts because
+  `LMOutput.text` JOINS them.
 - **The JSONL trace is the source of truth** for replay and RL datasets. Langfuse
   is an optional mirror only; never make `dataset.py` depend on Langfuse export.
   `TraceRecorder.record` is **lock-guarded** — dspy.RLM's `llm_query_batched` fans the

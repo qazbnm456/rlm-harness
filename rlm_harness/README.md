@@ -20,7 +20,7 @@ pitch, the quickstart, and installation — start at the
 | `isolation.py` | `run_in_subprocess` — a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
 | `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` — see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths` — a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` — safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `make_extract_archive_tool` — safe `zip`/tar extraction in `tools/archive.py` (see below), `verify_quote` — a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
 | `optimize.py` | GEPA harness — metric templates now, compile in Phase 2. |
-| `sub_lm.py` | `intercept_sub_lm` — wrap the RLM's sub-LM to trace every escalation as a `sub_call` (+ optional validate/post-process); `model_as_tool` for LM-decided multi-model routing. |
+| `sub_lm.py` | Every sub-LM escalation is traced as a `sub_call` automatically (1.7.0). `intercept_sub_lm` — wrap the RLM's sub-LM to ADD a deterministic validate/post-process pipeline; `model_as_tool` for LM-decided multi-model routing. |
 | `skills.py` | `load_skills_as_tools` — expose a Skills directory to the RLM as tools. |
 | `trace.py` | `TraceRecorder` — unified append-only JSONL trajectory (main steps + sub-LM + tool calls). |
 | `replay.py` | Reconstruct/replay a recorded run using recorded tool outputs. |
@@ -46,7 +46,7 @@ from rlm_harness import intercept_sub_lm, model_as_tool, get_sub_lm, TraceRecord
 
 configure(RLMConfig.from_env())
 base = get_sub_lm()          # the configured base sub-LM — single source of truth
-# intercept_sub_lm traces every escalation; validators/postprocessors are optional
+# escalations are traced with or without this; intercept_sub_lm ADDS the deterministic pipeline
 # (deterministic only — agentic actions stay LM-decided tools):
 smart_sub = intercept_sub_lm(base, validators=[...], postprocessors=[str.strip])
 
@@ -54,7 +54,7 @@ with TraceRecorder("traces/run.jsonl", run_id="r1"):
     finding = await MyTask(sub_lm=smart_sub).arun(evidence=blob)
 ```
 
-`intercept_sub_lm` records a `sub_call` for every escalation and, if you pass them,
+`intercept_sub_lm` adds a validate/post-process pipeline (the `sub_call` event itself is automatic since 1.7.0) and, if you pass them,
 runs deterministic validate → post-process. `get_sub_lm()` hands back the base sub-LM
 `configure` built — wrap THAT rather than reconstructing a `dspy.LM`, so it can't drift
 from the configured model. External tools are exposed to the main
@@ -75,6 +75,39 @@ JSONL is the dataset's source of truth.
 
 > Depth is **1** by design here (main LM + one intercepted sub-LM layer). True
 > depth>1 recursion is unsupported upstream and out of scope.
+
+### Sub-LM tracing is automatic (1.7.0)
+
+You do not have to wrap anything to see sub-LM escalations in a trace. `RLMTask` wraps a plain
+`sub_lm` for `sub_call` recording at the same per-run seam that binds the recorder, so an
+escalation is recorded whether or not you asked.
+
+That changed because the opposite default was quietly lossy. Before 1.7.0 the event existed only
+if you called `intercept_sub_lm` yourself; a plain `dspy.LM` was invoked by dspy directly and
+recorded nothing. A corpus with zero `sub_call` events is indistinguishable from one where the
+model never escalated — and reading the first as the second is a mistake that has already been
+made, in this kit's own design notes, on real data. **An absent event is not a measurement.**
+
+Call `intercept_sub_lm` when you want the deterministic pipeline:
+
+```python
+sub = intercept_sub_lm(get_sub_lm(), validators=[...], postprocessors=[str.strip], name="lifeline")
+task = MyTask(sub_lm=sub)     # the kit detects it and does not wrap it again
+```
+
+**If you have your own recording wrapper, declare `records_sub_call = True` on it** and the kit
+leaves it alone:
+
+```python
+class MyTracingSubLM:
+    records_sub_call = True   # kit-defined protocol: "I already emit sub_call myself"
+    ...
+```
+
+The probe is `is True`, not truthiness — a `unittest.mock` double manufactures a truthy attribute
+for any name, and a truthiness test would silently skip wrapping it. Auto-wrapping also never
+raises: a sub-LM it cannot wrap is used bare with a warning, because an observability convenience
+must not be why a run fails to start.
 
 ### Sub-LM vs. tool: which model goes where
 
@@ -112,7 +145,7 @@ a model-judgement must be an LM-decided tool call.**
 
 | You want… | Use | Wire as |
 |---|---|---|
-| a smarter/cheaper *default* sub-model, traced, with optional deterministic checks | `intercept_sub_lm(base, validators=…, postprocessors=…)` | `sub_lm=` |
+| a smarter/cheaper *default* sub-model with deterministic validate/post-process checks (tracing needs no wrapper) | `intercept_sub_lm(base, validators=…, postprocessors=…)` | `sub_lm=` |
 | the main LM to *choose*, mid-task, to consult another named model | `model_as_tool(name, lm)` | `tools=` |
 | both (a chosen model that also self-checks) | compose them: `model_as_tool("expert", intercept_sub_lm(expert_lm, …))` | `tools=` |
 
@@ -1112,9 +1145,10 @@ concluded "file order is unreliable, sort by `ts`", and reordered its turns.
   CPU:** dspy dispatches tool calls and `llm_query` synchronously from inside `execute()`, so a cell
   that calls one blocks — and that whole round trip is inside the number. Read a large value as
   "the turn blocked", and try to cross-check it against the `tool_call` / `sub_call` events in the
-  same run — but that check is often unavailable, and its absence is not the field lying: `llm_query`
-  emits a `sub_call` only when the caller wrapped its `sub_lm` in `intercept_sub_lm`, and a
-  `tool_call`'s `duration_s` is optional and unset for the local read/grep/edit tools.
+  same run — but that check is often unavailable, and its absence is not the field lying: a `sub_call` carries no
+  duration of its own, and a `tool_call`'s `duration_s` is optional and unset for the local
+  read/grep/edit tools. On a trace written before 1.7.0 there may be no `sub_call` at all — the
+  event became automatic in that release, so check `run_start.rlm_harness` before reading a zero.
   For scale, measured on a real workload: execution is ~1% of a turn's wall-clock; ~99% is the model
   generating. Prefer a measured field over a gap wherever one exists — and treat a
   NEGATIVE gap as unknown rather than as data (traces written before 1.6.1 can contain them; see
