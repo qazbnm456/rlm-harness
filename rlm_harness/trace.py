@@ -321,7 +321,21 @@ class TraceRecorder:
         The gap before a ``main_step`` is the single biggest bucket in a real trace, and it mixes
         two things with completely different fixes: the root LM GENERATING the turn, and the
         sandbox EXECUTING it. Nothing in ``trace/v1`` separated them, so "99.8% of wall-clock is
-        the root LM turn" was as far as any analysis could get.
+        the root LM turn" was as far as any analysis could get. Measured on a real consumer once
+        this existed: **execution is ~1% of a turn's wall-clock**, the rest is generation.
+
+        **What this measures is ``execute()`` WALL-CLOCK, which is not the same as time the sandbox
+        spent running Python.** dspy's interpreter dispatches a tool call synchronously from inside
+        ``execute()`` (``PythonInterpreter._handle_tool_call``), and ``llm_query`` / the sub-LM are
+        injected as tools, so a cell whose code calls one BLOCKS here for the whole round trip —
+        host-side network time, a subprocess, another model's generation — and every second of it
+        lands in ``exec_duration_s``. There is no hook to subtract it (the same limitation
+        ``RLMConfig.sandbox_turn_timeout_s`` carries, and for the same reason). A one-line cell that
+        calls one slow tool is therefore indistinguishable here from four minutes of real compute.
+        **Read a large outlier as "the turn blocked", not as "the sandbox was busy"**, and cross-check
+        it against the ``tool_call`` / ``sub_call`` events in the same run, which DO carry their own
+        ``duration_s``. Observed in the wild: a 235.5s value on a 143-character single-line cell with
+        no loops and no imports, whose recorded ``output`` was model prose rather than sandbox output.
 
         Called by the interpreter wrappers the kit owns (``sandbox.py``'s guarded ``execute`` and
         ``ContainerInterpreter.execute``). An interpreter a caller injects directly is NOT wrapped,

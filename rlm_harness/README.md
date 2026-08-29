@@ -1107,8 +1107,13 @@ concluded "file order is unreliable, sort by `ts`", and reordered its turns.
   flush time, so sorting by it moves turns.
 - **`ts` is for placing a turn against the tool calls around it**, and nothing else. A per-turn
   duration computed as `t[i] - t[i-1]` is an estimate that also contains the model's generation
-  time; `exec_duration_s` (1.6.0) is the measured sandbox half, and `duration_s` on a `tool_call`
-  is the measured tool half. Prefer a measured field over a gap wherever one exists — and treat a
+  time; `exec_duration_s` (1.6.0) is the measured `execute()` half, and `duration_s` on a
+  `tool_call` is the measured tool half. **`exec_duration_s` is `execute()` wall-clock, not sandbox
+  CPU:** dspy dispatches tool calls and `llm_query` synchronously from inside `execute()`, so a cell
+  that calls one blocks — and that whole round trip is inside the number. Read a large value as
+  "the turn blocked", and cross-check it against the `tool_call` / `sub_call` events in the same run.
+  For scale, measured on a real workload: execution is ~1% of a turn's wall-clock; ~99% is the model
+  generating. Prefer a measured field over a gap wherever one exists — and treat a
   NEGATIVE gap as unknown rather than as data (traces written before 1.6.1 can contain them; see
   that entry in `CHANGELOG.md`).
 
