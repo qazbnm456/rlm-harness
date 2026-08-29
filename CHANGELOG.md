@@ -72,6 +72,25 @@ event type, envelope key, or payload field.
   returns one of the two shapes dspy accepts.
 - A consumer driving `dspy.RLM` directly, without `RLMTask`, gets none of this.
 
+### Upgrading — check the upgrade actually took
+
+This release is only visible as a change in what traces CONTAIN, which makes a silent no-op
+upgrade produce exactly the wrong conclusion: "the events did not appear" rather than "I am still
+running the old version". One way that happens, verified rather than assumed:
+
+    # pyproject.toml bumped to 1.7.0, lockfile still pinning the old version
+    uv sync --frozen   ->  exit 0, installs the OLD version, no warning anywhere
+    uv sync --locked   ->  exit 1
+
+`--frozen` means "sync without updating the lock" — it checks nothing. `--locked` asserts the lock
+agrees with the manifest. The same shape exists for any lockfile workflow (`poetry lock`,
+`pip-compile`): bumping the manifest is not the upgrade, re-resolving is. Reported by a consumer
+that lost a deploy to it, whose Dockerfile comment beside the line already claimed the property the
+flag did not have — which is why reading the file could not catch it.
+
+**Confirm at runtime, not from the manifest:** `run_start.rlm_harness` in any new trace, or
+`python -c "import rlm_harness; print(rlm_harness.__version__)"` inside the container.
+
 ### Retracted
 
 - The 1.6.0 entry stated that a consumer "records **zero `sub_call` events, in every run** — the
