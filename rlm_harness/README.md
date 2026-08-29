@@ -1111,7 +1111,10 @@ concluded "file order is unreliable, sort by `ts`", and reordered its turns.
   `tool_call` is the measured tool half. **`exec_duration_s` is `execute()` wall-clock, not sandbox
   CPU:** dspy dispatches tool calls and `llm_query` synchronously from inside `execute()`, so a cell
   that calls one blocks — and that whole round trip is inside the number. Read a large value as
-  "the turn blocked", and cross-check it against the `tool_call` / `sub_call` events in the same run.
+  "the turn blocked", and try to cross-check it against the `tool_call` / `sub_call` events in the
+  same run — but that check is often unavailable, and its absence is not the field lying: `llm_query`
+  emits a `sub_call` only when the caller wrapped its `sub_lm` in `intercept_sub_lm`, and a
+  `tool_call`'s `duration_s` is optional and unset for the local read/grep/edit tools.
   For scale, measured on a real workload: execution is ~1% of a turn's wall-clock; ~99% is the model
   generating. Prefer a measured field over a gap wherever one exists — and treat a
   NEGATIVE gap as unknown rather than as data (traces written before 1.6.1 can contain them; see

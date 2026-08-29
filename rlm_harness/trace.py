@@ -332,10 +332,26 @@ class TraceRecorder:
         lands in ``exec_duration_s``. There is no hook to subtract it (the same limitation
         ``RLMConfig.sandbox_turn_timeout_s`` carries, and for the same reason). A one-line cell that
         calls one slow tool is therefore indistinguishable here from four minutes of real compute.
-        **Read a large outlier as "the turn blocked", not as "the sandbox was busy"**, and cross-check
-        it against the ``tool_call`` / ``sub_call`` events in the same run, which DO carry their own
-        ``duration_s``. Observed in the wild: a 235.5s value on a 143-character single-line cell with
-        no loops and no imports, whose recorded ``output`` was model prose rather than sandbox output.
+        **Read a large outlier as "the turn blocked", not as "the sandbox was busy".** Observed in the
+        wild and confirmed: a 235.5s value on a 143-character single-line cell that was
+        ``print(llm_query(...))`` — the whole of it a sub-LM round trip, with the generated text
+        recorded as the turn's ``output``.
+
+        Cross-checking it against the same run's ``tool_call`` / ``sub_call`` events is worth trying
+        but **often will not resolve it, and a reader must not take the absence as the field lying**:
+
+        * ``llm_query`` produces a ``sub_call`` only if the caller passed an
+          :func:`~rlm_harness.sub_lm.intercept_sub_lm`-wrapped ``sub_lm``. A plain ``dspy.LM`` is
+          called by dspy directly and records NOTHING, so the single largest block of time in a run
+          can have no event of its own. (``RLMTask`` does wrap the sub-LM with
+          ``bind_recorder_to_sub_lm``, but that only makes the recorder visible across dspy's worker
+          threads — it does not emit an event.)
+        * a ``tool_call``'s ``duration_s`` is OPTIONAL and is set only by the tools whose cost is a
+          wait outside this process. The local read/grep/edit tools record the call with no duration
+          at all, so a slow local tool is invisible here too.
+
+        When neither is available the honest read is "this turn blocked on something unrecorded",
+        not a number to reconcile.
 
         Called by the interpreter wrappers the kit owns (``sandbox.py``'s guarded ``execute`` and
         ``ContainerInterpreter.execute``). An interpreter a caller injects directly is NOT wrapped,
