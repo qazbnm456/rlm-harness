@@ -45,6 +45,9 @@ def _clear_caches():
         _dspy_compat.terminal_interpreter_error,
         _dspy_compat._lm_error_classes,
         _dspy_compat._dspy_reads_execution_instructions,
+        _dspy_compat._lm_response_cls,
+        _dspy_compat.python_fence_langs,
+        _dspy_compat.forced_final_marker,
     ):
         fn.cache_clear()
     yield
@@ -485,3 +488,175 @@ def test_an_unrecognised_sub_lm_shape_reads_as_None_rather_than_a_guess():
     error. Guessing a string here would convert a loud failure into a silent empty completion."""
     for junk in (None, [], "a bare string", object(), 42):
         assert _dspy_compat.sub_lm_response_text(junk) is None
+
+
+# ---- the sub-LM-adjacent dspy facts a rubric's generic surface needs ---------------------------
+
+
+def test_python_fence_langs_resolves_through_INTROSPECTION_not_the_fallback(monkeypatch):
+    """The shim keeps a hardcoded fallback so a dspy-free report renderer never `ImportError`s —
+    which is exactly why a value-equality assertion proves nothing: the fallback satisfies it by
+    construction. Replacing the lookup body with `raise ImportError` passed the entire suite in the
+    first version of this test.
+
+    So: perturb dspy's constant and require the shim to FOLLOW it. If it does not, the shim is
+    serving its fallback and a dspy rename is silent — and not in a safe direction, since a stale
+    set counts EXECUTED turns as refused ones the day dspy adds a lang."""
+    import dspy.predict.rlm as rlm_mod
+
+    assert hasattr(rlm_mod, "_PYTHON_FENCE_LANGS"), "dspy renamed the constant the shim reads"
+    monkeypatch.setattr(rlm_mod, "_PYTHON_FENCE_LANGS", {"zzz-not-a-real-lang"})
+    _dspy_compat.python_fence_langs.cache_clear()   # the autouse fixture clears it again after
+    assert _dspy_compat.python_fence_langs() == frozenset({"zzz-not-a-real-lang"}), (
+        "python_fence_langs() is serving its fallback, not introspecting dspy"
+    )
+
+
+def _dspy_would_refuse(code: str) -> bool:
+    """The oracle: dspy's OWN private stripper, imported unguarded on purpose.
+
+    A `try/except ImportError: skip` here would make a rename leave the mirror unverified and
+    silent — the 1.0.1 failure this module exists to prevent. The module-level `importorskip`
+    already covers a dspy-free environment."""
+    from dspy.predict.rlm import _strip_code_fences
+
+    try:
+        _strip_code_fences(code)
+        return False
+    except SyntaxError:
+        return True
+
+
+_FENCE_TABLE = [
+    "Here is my plan:\n```json\n{}\n```",          # prose before the fence
+    "```\n```json\n{}\n```\n```",                  # decorative outer pair
+    "```\n```\n```go\nx\n```\n```\n```",           # multi-level decorative
+    "```\n```json\n{}\n```",                       # UNBALANCED decorative (open only)
+    'md = """\n```bash\nx\n```\n"""',              # fence buried in a string literal
+    "\n\n   ```json\n{}\n```",                     # leading whitespace
+    "\t```rust\nx\n```",                           # leading tab
+    "```json",                                     # no trailing newline -> dspy RUNS it
+    's = "```json"',                               # trailing-quote tag
+    "```JSON\n{}\n```",                            # uppercase tag
+    '```json title="x"\n{}\n```',                  # tag with an attribute
+    "```   json   \nbody\n```",                    # whitespace-padded tag
+    "```\nx=1\n```",                               # BARE fence — crashes every shortcut
+    "````python\nx=1\n````",                       # four backticks
+    "`````python\nx\n`````",                       # five backticks
+    "~~~json\nx\n~~~",                             # not a fence at all
+    "```python\r\nx=1\r\n```",                     # CRLF
+    "x=1\r\n```bash",                              # CRLF, fence at EOF
+    "```　json\nx\n```",                            # ideographic space in the tag
+    "```python\nx\n```\n```bash\ny\n```",          # python first, then other
+    "```bash\nx\n```\n```python\ny\n```",          # other first, then python
+    'print("```")',                                # a fence inside a string on an ACCEPTED cell
+    "x = 1",                                       # no fence
+    "",
+    "   ",
+    # Three rows added after a check found the corresponding mirror lines uncovered — each is the
+    # ONLY entry that distinguishes a correct port from dropping one specific step.
+    "```PYTHON\nx=1\n```",                          # `.lower()` — dspy ACCEPTS this; a mutant refuses
+    "x = 1\n```\ny = 2",                            # the empty-tag guard — dropping it IndexErrors
+    "\n```\n```json\n{}\n```\n```",                 # the leading `.strip()`, with a decorative pair
+    # The SECOND `"```" not in code` return, at the only input that reaches it: after the
+    # decorative pop this cell has no fence left, so without that return `code[find+3:]` slices
+    # from -1 and parses "o" as the tag. dspy accepts it; the mutant refuses. A fuzz of 36,882
+    # cells found 81 such disagreements, all of this shape.
+    "```\nfoo\nbar\n```",
+    # Seven more, one per mirror line successive checks found unpinned. Each is the ONLY row that separates the
+    # shipped port from dropping that one step — verified individually, and each mutation was
+    # measured against dspy over 70k cells first, so none of these is an equivalent mutant.
+    "```\rfoo\nbar\r```",                           # `splitlines()`, not `split("\n")`  (5,355 diffs)
+    '```\nmd = """\n```bash\nz\n```\n"""',           # the decorative loop's LAST-line condition (15)
+    "``` \n```json\nx\n```\n```",                    # `lines[0].strip()`, not `lines[0]`      (49)
+    " ```\n```json\nx\n```\n ```",                   # `lines[-1].strip()`                     (24)
+    "```",                                         # `len(lines) >= 2` — `>= 1` IndexErrors  (1,290)
+    "``` \nx=1",                                    # `lang_line.strip()` — dropping it IndexErrors (281)
+    # A seventh, for the `.strip()` AFTER the join: the decorative pop can leave a trailing "",
+    # so the join ends in "\n" and `partition` then finds a separator where dspy finds none.
+    # dspy RUNS this cell; without that strip the mirror refuses it. (25 diffs over 200k cells.)
+    "```\n```json\n\n```",
+]
+
+# The FIRST `"```" not in code` return (before the decorative pop) is a PROVABLY EQUIVALENT MUTANT:
+# `splitlines()`/`"\n".join()` cannot introduce a backtick, so the second return catches everything
+# it would. Recorded rather than chased — no test can redden it, and it is a fast path, not a guard.
+
+
+def test_dspy_refuses_fence_mirrors_dspys_own_stripper():
+    """The shim is a VERBATIM mirror of the `_`-private `_strip_code_fences`, so the test is a
+    cross-check against that function itself rather than against a table of expected answers.
+
+    Every line of the port is load-bearing. Measured against tens of thousands of real and fuzzed
+    cells, a `re.search(r"```([^\\n`]*)")` + `split()[0]` shortcut produced 1,764 disagreements and
+    3,855 IndexError CRASHES — it dies on a BARE ``` fence, the commonest shape — and a prose
+    paraphrase that drops the `.strip()` or either early return still crashed 673 times. Both are
+    the mutations this test exists to redden."""
+    for code in _FENCE_TABLE:
+        assert _dspy_compat.dspy_refuses_fence(code) == _dspy_would_refuse(code), repr(code)
+
+
+def test_dspy_refuses_fence_never_raises_on_a_non_string():
+    """Shape drift, a hand-built event, or a future dspy renaming the payload key. Counting it as
+    NOT refused keeps a caller's total an `int` rather than making it unmeasurable, and keeps a
+    consumer's dspy-free report renderer from getting an exception out of a metric."""
+    for junk in (None, 42, 3.5, b"x", [], {}, object(), True):
+        assert _dspy_compat.dspy_refuses_fence(junk) is False
+
+
+def test_forced_final_marker_matches_a_REAL_forced_final_run(tmp_path):
+    """The marker is a bare literal in dspy with no constant behind it, so asserting the shim's
+    return value against the same literal would assert the kit against itself and stay green
+    through any rename. This drives dspy's actual fall-through branch instead: a
+    `ScriptedInterpreter` with no steps never SUBMITs, so the turn loop runs to `max_iterations`
+    and dspy forces an extract."""
+    import asyncio
+
+    from pydantic import BaseModel
+
+    import rlm_harness.runtime as rt
+    from rlm_harness import RLMConfig, RLMTask
+    from rlm_harness.testing import ScriptedInterpreter, scripted_lm
+    from rlm_harness.trace import EVENT_FINAL, TraceRecorder, load_events
+
+    class _Out(BaseModel):
+        x: int
+
+    class T(RLMTask):
+        signature = "q: str -> answer: _Out"
+        output_field = "answer"
+        output_model = _Out
+
+    # One planner turn per iteration, then the shape `_extract_fallback`'s own `extract` call needs:
+    # the SIGNATURE's output fields, not {reasoning, code}.
+    turns = [{"reasoning": "no submit", "code": "print(1)"}] * 2 + [{"answer": {"x": 7}}]
+    rt.configure(
+        RLMConfig(main_model="x", sub_model="x", interpreter="mock", observe=False,
+                  max_iterations=2),
+        main_lm=scripted_lm(turns), sub_lm=scripted_lm(turns),
+    )
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r"):
+        asyncio.run(T(interpreter=ScriptedInterpreter([])).arun(q="hi"))
+    final = [e for e in load_events(path) if e["type"] == EVENT_FINAL][0]
+    assert final["payload"]["final_reasoning"] == _dspy_compat.forced_final_marker(), (
+        "dspy changed its forced-final marker; every budget_exhausted in the fleet now reads False"
+    )
+
+
+def test_the_fence_lang_FALLBACK_matches_what_dspy_actually_says(monkeypatch):
+    """The fallback's own contents, pinned against the introspected value as the oracle.
+
+    They must be equal, and only forcing the fallback path can check that — with dspy installed the
+    shim returns the introspection, so a bogus entry in the fallback set is invisible. Those two
+    lines were the only new production lines in this release with no coverage at all, and the
+    hazard is named in the shim's own docstring: a stale set counts EXECUTED turns as refused ones
+    the day dspy adds a lang, for every dspy-free reader."""
+    import dspy.predict.rlm as rlm_mod
+
+    truth = frozenset(rlm_mod._PYTHON_FENCE_LANGS)
+    monkeypatch.delattr(rlm_mod, "_PYTHON_FENCE_LANGS")     # force the ImportError branch
+    _dspy_compat.python_fence_langs.cache_clear()   # the autouse fixture clears it again after
+    assert _dspy_compat.python_fence_langs() == truth, (
+        "the hardcoded fallback has drifted from what dspy actually accepts"
+    )

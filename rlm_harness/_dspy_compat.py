@@ -420,3 +420,86 @@ def sub_lm_response_with_text(response: Any, text: str) -> Any:
         rest = list(response[1:])
         return [text, *rest]
     return [text]
+
+
+@lru_cache(maxsize=1)
+def python_fence_langs() -> frozenset[str]:
+    """The markdown fence tags dspy's ``_strip_code_fences`` accepts as Python.
+
+    Introspected from ``dspy.predict.rlm._PYTHON_FENCE_LANGS``, with a hardcoded fallback so a
+    consumer computing metrics in a dspy-free report renderer never hits an ``ImportError``. The
+    fallback makes a RENAME silent, which is why ``tests/test_dspy_compat.py`` asserts the
+    INTROSPECTION PATH resolves rather than merely that the value equals the fallback — and it is
+    not silent in a safe direction either: a stale set counts executed turns as refused ones the
+    day dspy adds a lang.
+    """
+    try:
+        from dspy.predict.rlm import _PYTHON_FENCE_LANGS
+
+        return frozenset(_PYTHON_FENCE_LANGS)
+    except Exception:
+        return frozenset({"", "python", "py", "python3", "py3"})
+
+
+@lru_cache(maxsize=1)
+def forced_final_marker() -> str:
+    """The ``final_reasoning`` dspy writes when its turn loop falls through without a ``FINAL``.
+
+    **NOT introspectable** — unlike :func:`python_fence_langs`, this is a bare string literal at two
+    sites in dspy (``rlm.py``'s ``_extract_fallback`` / ``_aextract_fallback``) with no constant
+    behind it, so there is nothing to look up. Asserting this function's return value against the
+    same literal in a test would assert the kit against itself and stay green through any dspy
+    rename — the exact failure this module exists to prevent. Its test therefore DRIVES a real
+    forced-final run and compares the resulting ``Prediction.final_reasoning`` to this value.
+
+    Reached only by the iteration budget running out; ``max_llm_calls`` exhaustion raises inside the
+    sandbox and comes back as a turn instead, so a reader of this marker is measuring the ITERATION
+    cap specifically.
+    """
+    return "Extract forced final output"
+
+
+def dspy_refuses_fence(code: Any) -> bool:
+    """Would dspy refuse to execute this cell because of a markdown fence tag?
+
+    **A VERBATIM MIRROR of the `_`-private ``dspy.predict.rlm._strip_code_fences``** — the same
+    declared exception ``testing.py``'s ``_signature_field_names`` carries. The accepted-tag SET is
+    introspectable (:func:`python_fence_langs`) but the DECISION is not: it lives in that function's
+    prelude, and every step below is load-bearing.
+
+    A shortcut does not work, measured against the real function over tens of thousands of cells:
+    a ``re.search(r"```([^\\n`]*)")`` + ``split()[0]`` form produced **1,764 disagreements and 3,855
+    IndexError crashes**, crashing on a BARE ``` fence — the commonest shape. A prose paraphrase
+    that drops the ``.strip()``, the empty-tag guard, or either early return still crashed 673
+    times. This port was verified at **0 disagreements and 0 crashes** over tens of thousands of real and
+    fuzzed cells across several independent runs, including
+    CRLF, ``\\r``-only, tabs, four and five backticks, ``~~~``, unbalanced decorative pairs, unicode
+    whitespace in tags, and the ``\\x85``/``\\x0b``/``\\x0c`` characters ``splitlines()`` splits on
+    but ``partition("\\n")`` does not — it survives those only BECAUSE it is verbatim.
+
+    Deliberately NOT ``lru_cache``d. That is this module's norm for an argument-taking shim (only
+    the nullary ones are cached); here the key would be an unbounded set of full code cells.
+
+    A non-``str`` ``code`` — shape drift, a hand-built event, a future dspy — counts as NOT refused,
+    so a caller's count stays an ``int`` rather than becoming unmeasurable.
+    """
+    if not isinstance(code, str):
+        return False
+    code = code.strip()
+    if "```" not in code:
+        return False
+    lines = code.splitlines()          # dspy pops DECORATIVE outer ``` / ``` line pairs
+    while len(lines) >= 2 and lines[0].strip() == "```" and lines[-1].strip() == "```":
+        lines.pop(0)
+        lines.pop()
+    code = "\n".join(lines).strip()
+    if "```" not in code:
+        return False
+    lang_line, sep, _rest = code[code.find("```") + 3:].partition("\n")
+    if not sep:
+        # dspy RETURNS the code and RUNS it. This is the ONLY accept path whose recorded `code`
+        # still contains a fence, and its output is a fixpoint (re-parsing re-accepts).
+        return False
+    stripped = lang_line.strip()
+    lang = (stripped.split(maxsplit=1)[0] if stripped else "").lower()
+    return lang not in python_fence_langs()
