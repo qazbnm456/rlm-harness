@@ -16,7 +16,7 @@ pitch, the quickstart, and installation — start at the
 | `_retry.py` | Validation + retry engine (dspy-free, unit-tested). Mostly private, but `short_error` is public — head-and-tail elision for a caught exception, so a giant `AdapterParseError` (which embeds the whole raw completion) becomes one readable log line instead of thousands. |
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
 | `atomic.py` | `atomic_write_text` / `atomic_write_stream` — a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write; `atomic_write_stream` takes an iterable of `bytes` chunks instead of one in-memory blob, aborting once a running total exceeds an optional `max_bytes`. dspy-free. |
-| `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` — reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded `trace/v1` events. dspy-free. |
+| `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` / `RUN_FACT_KEYS` / `compute_run_facts` / `compute_run_facts_by_run` (the generic half of a rubric's facts) — reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded `trace/v1` events. dspy-free. |
 | `isolation.py` | `run_in_subprocess` — a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
 | `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` — see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths` — a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` — safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `make_extract_archive_tool` — safe `zip`/tar extraction in `tools/archive.py` (see below), `verify_quote` — a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
 | `optimize.py` | GEPA harness — metric templates now, compile in Phase 2. |
@@ -1081,8 +1081,10 @@ LABELS, `rlm_harness.rubric` gives you the reward-free substrate — the `Criter
 `validate_rubric`, and a pure `criteria_facts(criteria, facts, lens)`. `category` is an OPAQUE label YOU
 define — the kit imposes no taxonomy. The pattern (all consumer-side except the primitives):
 - define your own category set + a fixed (or per-task) criterion skeleton (`default_rubric`);
-- write a `trace -> facts` function — reuse your OWN run labels/metrics so a criterion's facts can never
-  drift from the export bundle — and a `category -> keys` lens choosing which facts each category surfaces;
+- write a `trace -> facts` function — **start from `compute_run_facts(events)`, which gives you the
+  generic half for free (see "Rubric facts" below), and merge your own domain labels/metrics into it**
+  so a criterion's facts can never drift from the export bundle — and a `category -> keys` lens
+  choosing which facts each category surfaces;
 - `criteria_facts(rubric_from_meta(events).criteria or default_rubric().criteria, trace_facts(events),
   LENS)` → per-criterion facts, reward-free. Emit them beside the trajectory via
   `run_label_bundle(runs, rubric=lambda ev: {...})`; a downstream trainer turns facts into a score.
@@ -1124,6 +1126,73 @@ reward scalar. SCORING (reward composition, credit assignment) and TRAINING (GRP
 SEPARATE downstream project that installs the trainer. A prompt/policy rule that makes the rollouts
 BETTER is in scope; a reward or penalty is not. Keep the trace clean training data and let the
 trainer score it.
+
+## Rubric facts — the kit computes the generic half (1.8.0)
+
+`rubric.py` gives you the SHAPE of a rubric and stays deliberately empty of meaning: the category
+label is opaque, and `criteria_facts(criteria, facts, lens)` is pure — it slices a facts dict
+through your lens and knows nothing about traces. What was missing was the facts.
+
+```python
+from rlm_harness import compute_run_facts, criteria_facts, load_events
+
+facts = {**compute_run_facts(load_events(path, run_id)), **my_domain_facts(events)}
+per_criterion = criteria_facts(my_criteria, facts, MY_LENS)
+```
+
+`compute_run_facts` emits exactly `RUN_FACT_KEYS` — import it rather than hand-copying names:
+
+| key | |
+|---|---|
+| `main_steps`, `tool_calls`, `sub_calls`, `tool_call_rate`, `sub_call_rate` | what the run did |
+| `tool_declines`, `tool_endpoint_errors`, `tool_circuit_breaks`, `tool_ok` | the four outcomes, summed |
+| `tool_wasted_seconds`, `tool_total_seconds`, `tool_measured_calls` | cost, and how much of it was measurable |
+| `fence_refused_turns` | turns dspy refused over a fence tag — read the note below |
+| `budget_exhausted` | `True`/`False`/`None`; the ITERATION cap only |
+
+`tool_calls_by_name` is deliberately absent — an open key space cannot be a closed set. Call
+`compute_run_utilization` / `compute_tool_waste` for per-tool detail. Use
+`compute_run_facts_by_run` for a file holding several runs.
+
+**Two readings that are easy to get wrong.** `tool_wasted_seconds` and `tool_total_seconds` are
+`None`, never `0.0`, when nothing carried a duration — unmeasured is not zero, and
+`tool_measured_calls` is there so one measured call in fifty does not look like fifty in fifty.
+And `budget_exhausted` is `None` whenever the answer is unknown; it never guesses `False`.
+`fence_refused_turns` is `0` on a run with no turns at all — unmeasured, not measured-zero — so read
+it beside `main_steps`, which rides in the same dict for exactly that reason. In that same zero-turn
+case **both rates are `None`** (there is no denominator), and a crashed run really can carry
+live-recorded tool calls with no `main_step`, so a lens doing arithmetic on a rate must handle it.
+
+**`fence_refused_turns` is named for a mechanism, and the obvious cause is wrong.** Across three
+real corpora, **60 of 60** refusals had the fence BURIED rather than leading — 55 of the 60 cells
+are valid Python assigning a documentation page whose text contains a fenced example — `markdown = """# Overview … ```bash … """`. dspy's fence stripper
+scans the whole cell including string literals. So this counts environment friction, not a model
+failing to follow a format; a consumer read it the other way and spent two prompt generations
+suppressing the code blocks its own pages needed.
+
+**Writing the facts into the trace.** Off by default. `TraceRecorder(..., record_metrics=True)`, or
+`RLM_TRACE_METRICS=1`, folds them into `run_end.payload["metrics"]` at teardown, computed from the
+file just written. A killed run has no `run_end` and therefore no snapshot — `compute_run_facts` on
+the events is the authority in every case; the snapshot is a convenience for a reader that will not
+run it.
+
+**If you are starting a rubric from scratch**, four categories that work for most agent runs. The
+kit ships none of this — the names are yours to copy and the sentences after the dash are yours to
+write:
+
+```python
+CATEGORY_MEANING = {
+    "TF": "Task Fulfillment      — <did the run produce what was asked, within its budget>",
+    "TA": "Tool Appropriateness  — <did it reach for the right capabilities, without waste>",
+    "TG": "Tool Grounding        — <do its claims rest on what it actually observed>",
+    "PA": "Parameter Accuracy    — <were its calls well-formed enough to succeed>",
+}
+```
+
+A lens is a VIEW, not a partition: one fact may legitimately appear under two categories.
+`budget_exhausted` answers the same question as a hand-rolled `hit_iteration_cap` and answers it
+better — the `steps >= cap` form is a false positive on a run that submits on its last allowed turn
+— so keep one, not both.
 
 ## Reading a trace — the ordering rules
 

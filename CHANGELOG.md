@@ -4,6 +4,56 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.8.0] - 2026-08-30
+
+The kit now computes the generic half of a rubric's facts, so a consumer supplies only its domain
+half. Three new public names, one optional payload field, nothing removed or re-typed.
+
+### Added
+
+- **`compute_run_facts(events)` / `compute_run_facts_by_run` / `RUN_FACT_KEYS`.** `rubric.py` has
+  always given you the SHAPE of a rubric — `criteria_facts(criteria, facts, lens)` is pure and knows
+  nothing about traces — while every consumer hand-derived the facts to feed it. Those two modules
+  are consecutive stages of one pipeline and the middle stage was missing, for a mundane reason:
+  `rubric.py` predates 1.0.0 and `metrics.py` landed in 1.3.0, five weeks after the rubrics that
+  would have used it. `RUN_FACT_KEYS` is a closed, public tuple the dict is BUILT against, so a new
+  key cannot appear without a diff to a SemVer-governed name — which is the mechanism keeping a
+  reward-shaped scalar out of the source of truth, rather than a promise in a docstring.
+
+- **`budget_exhausted`** — did the run stop because its ITERATION budget ran out? Read from the
+  marker dspy writes on its own fall-through branch, which the kit has always recorded. It needs no
+  configured cap staged into the trace, works on every trace ever written, and avoids the
+  `main_steps >= cap` false positive on a run that submits successfully on its last allowed turn.
+  Tri-state: `None`, never `False`, when there is no `final` event or its reasoning is absent.
+
+- **`fence_refused_turns`** — turns dspy refused to execute over a markdown fence tag.
+  **Named for the mechanism, because the obvious cause is wrong**, and shipping the wrong name would
+  have been the expensive part. Running dspy's own stripper over three real corpora found 60
+  refusals and **zero** that start with a fence; 55 of the 60 are valid Python assigning a
+  documentation page whose text contains a fenced example. dspy's stripper scans the whole cell including string
+  literals. A consumer read the same number as format non-compliance and spent two prompt
+  generations suppressing the code blocks its own pages needed.
+
+- **Optional snapshot into the trace, OFF by default.** `TraceRecorder(record_metrics=True)` or
+  `RLM_TRACE_METRICS=1` folds the facts into `run_end.payload["metrics"]` — additive within
+  `trace/v1`, no new event type or envelope key. Computed by re-reading the file just written and
+  filtered by `run_id`, so the snapshot is consistent-by-construction with the bytes beside it.
+  **Emitted only when that re-read finds this run's own `run_start`:** `load_events` returns `[]` for
+  a rotated file or a mismatched id, and an all-zero dict would be indistinguishable from a measured
+  zero — and streamed live to every `on_event`. `run_end` is recorded from a `finally`, so a
+  `BaseException` during the snapshot cannot lose it.
+
+### Internal
+
+- `_dspy_compat` gains `python_fence_langs`, `forced_final_marker` and `dspy_refuses_fence`. The
+  three are not symmetric and the tests say so: the fence-tag SET is a dspy module constant, so its
+  test asserts the introspection path resolves rather than the value; the forced-final marker is a
+  bare literal with no constant behind it, so its test drives a real forced-final run instead of
+  asserting the kit against itself; and `dspy_refuses_fence` is a declared verbatim mirror of a
+  `_`-private dspy parser, cross-checked against that function itself. A regex shortcut was measured
+  at 1,764 disagreements and 3,855 crashes over 20,016 cells — it dies on a bare fence, the
+  commonest shape — so the mirror is not optional and the mutation test says so.
+
 ## [1.7.0] - 2026-08-29
 
 A sub-LM escalation now records itself whether or not the consumer asked, and the sub-LM wrapper
