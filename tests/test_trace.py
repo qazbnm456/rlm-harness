@@ -2,6 +2,8 @@ import json
 import threading
 import types
 
+import pytest
+
 from rlm_harness.trace import (
     CAUSE_CIRCUIT_BROKEN,
     CAUSE_ENDPOINT,
@@ -719,3 +721,159 @@ def test_a_setup_execution_cannot_be_claimed_by_a_later_turn(tmp_path):
     main = [e for e in load_events(path) if e["type"] == EVENT_MAIN_STEP]
     assert main[0]["payload"]["exec_duration_s"] == 1.0
     assert main[1]["payload"]["exec_duration_s"] == 2.0, "claimed the pre-loop setup duration"
+
+
+# ---- opt-in metrics snapshot on run_end --------------------------------------------------------
+
+
+def _run_end(path):
+    return [e for e in load_events(path) if e["type"] == EVENT_RUN_END][0]["payload"]
+
+
+def test_metrics_snapshot_is_OFF_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("RLM_TRACE_METRICS", raising=False)
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r") as rec:
+        rec.record(EVENT_MAIN_STEP, {"turn": 0, "code": "x=1"})
+    assert "metrics" not in _run_end(path)
+
+
+def test_an_explicit_record_metrics_False_beats_the_environment(tmp_path, monkeypatch):
+    """The kwarg is documented as the way to bypass the environment, and only the bypass-to-ON
+    direction was pinned. `if record_metrics is None` narrowed to `if not record_metrics` survived
+    the whole suite — under which an env var silently overrides an explicit caller opt-out and
+    writes prompts into a trace the caller asked to keep clean."""
+    monkeypatch.setenv("RLM_TRACE_METRICS", "1")
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r", record_metrics=False) as rec:
+        rec.record(EVENT_MAIN_STEP, {"turn": 0, "code": "x=1"})
+    assert "metrics" not in _run_end(path)
+
+
+def test_metrics_snapshot_turns_on_by_env_read_at_construction(tmp_path, monkeypatch):
+    """The env is resolved at `__init__`, so the value is fixed for the recorder's life and a
+    mid-run change cannot half-apply."""
+    monkeypatch.setenv("RLM_TRACE_METRICS", "1")
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r") as rec:
+        monkeypatch.delenv("RLM_TRACE_METRICS")      # too late to matter
+        rec.record(EVENT_MAIN_STEP, {"turn": 0, "code": "x=1"})
+    assert _run_end(path)["metrics"]["main_steps"] == 1
+
+
+def test_metrics_snapshot_is_SKIPPED_not_zeroed_when_the_reread_finds_nothing(tmp_path):
+    """`load_events` returns `[]` for a rotated file, `/dev/null`, or a `run_id` that does not
+    match — and `compute_run_facts([])` would then emit `main_steps: 0` and the rest, which is
+    indistinguishable from a measured zero AND is streamed live to every consumer's `on_event`.
+    An absent event is not a measurement, one layer over.
+
+    Driven with a `run_id` mismatch specifically: a path that cannot be READ raises instead, the
+    suppression swallows it, and no `metrics` key appears with or without the guard — so that
+    driver would leave the mutation green."""
+    path = str(tmp_path / "t.jsonl")
+    rec = TraceRecorder(path, run_id="written-as-this", record_metrics=True)
+    with rec:
+        rec.record(EVENT_MAIN_STEP, {"turn": 0, "code": "x=1"})
+        rec.run_id = "now-looks-for-this"
+    payload = _run_end(path)
+    assert "metrics" not in payload, "an all-zero snapshot was emitted for a run it could not read"
+    assert payload["ok"] is True, "run_end itself must still be written"
+
+
+def test_metrics_snapshot_is_computed_from_the_FILE_filtered_by_run_id(tmp_path):
+    """Consistent-by-construction with the bytes it sits beside — and the `run_id` filter matters
+    because the handle is opened in append mode and one file may hold several runs."""
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="a", record_metrics=True) as rec:
+        for i in range(3):
+            rec.record(EVENT_MAIN_STEP, {"turn": i, "code": "x=1"})
+    with TraceRecorder(path, run_id="b", record_metrics=True) as rec:
+        rec.record(EVENT_MAIN_STEP, {"turn": 0, "code": "x=1"})
+    got = {e["run_id"]: e["payload"]["metrics"]["main_steps"]
+           for e in load_events(path) if e["type"] == EVENT_RUN_END}
+    assert got == {"a": 3, "b": 1}
+
+
+def test_run_end_survives_a_BaseException_escaping_the_snapshot(tmp_path, monkeypatch):
+    """`suppress(Exception)` does not catch `BaseException`, so `run_end` is recorded from a
+    `finally` — otherwise a Ctrl-C during the re-read loses it on precisely the killed-run path
+    that is most worth analysing.
+
+    The interrupt must be raised INSIDE the snapshot, not in the `with` body: a body raise arrives
+    at `__exit__` as an ARGUMENT and never unwinds it, so the `finally` is never exercised and the
+    test passes with the record moved back into the `try`. That vacuous form shipped first."""
+    import rlm_harness.metrics as metrics_mod
+
+    def interrupted(_events):
+        raise KeyboardInterrupt("Ctrl-C during the re-read")
+
+    monkeypatch.setattr(metrics_mod, "compute_run_facts", interrupted)
+    path = str(tmp_path / "t.jsonl")
+    # `pytest.raises`, not `suppress`: the interrupt must still PROPAGATE. Asserting only that
+    # `run_end` exists holds for `suppress(BaseException)` too, and that mutant survived the whole
+    # suite — a recorder inside a coroutine would then silently eat its own `CancelledError`.
+    with pytest.raises(KeyboardInterrupt), \
+            TraceRecorder(path, run_id="k", record_metrics=True) as rec:
+        rec.record(EVENT_MAIN_STEP, {"turn": 0, "code": "x=1"})
+    assert any(e["type"] == EVENT_RUN_END for e in load_events(path))
+
+
+def test_a_raise_inside_the_snapshot_keeps_run_end_and_the_original_exception(tmp_path, monkeypatch):
+    """Observability must never break the run or replace its diagnosis."""
+    import rlm_harness.metrics as metrics_mod
+
+    def boom(_events):
+        raise RuntimeError("metrics bug")
+
+    monkeypatch.setattr(metrics_mod, "compute_run_facts", boom)
+    path = str(tmp_path / "t.jsonl")
+    with pytest.raises(ValueError, match="the real failure"), \
+            TraceRecorder(path, run_id="r", record_metrics=True) as rec:
+        rec.record(EVENT_MAIN_STEP, {"turn": 0, "code": "x=1"})
+        raise ValueError("the real failure")
+    payload = _run_end(path)
+    assert "metrics" not in payload and payload["ok"] is False
+
+
+def test_the_reread_follows_the_path_as_it_was_at_ENTER_not_at_init(tmp_path, monkeypatch):
+    """`open()` resolves a relative path at `__enter__`, so the re-read must resolve it there too.
+
+    Two chdirs, and both matter. The one AFTER entering catches dropping the stash entirely. The one
+    BETWEEN constructing and entering catches stashing at `__init__` instead — that mutant passes an
+    enter-then-chdir test, because both placements stash before that chdir, and it survived the whole
+    suite. Under it `open()` writes to the new cwd while `_abs_path` points at the old one, so the
+    re-read raises, `suppress` eats it, and the snapshot silently disappears."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    rec = TraceRecorder("rel.jsonl", run_id="r", record_metrics=True)   # constructed HERE
+    monkeypatch.chdir(tmp_path)                                        # ...entered THERE
+    with rec:
+        rec.record(EVENT_MAIN_STEP, {"turn": 0, "code": "x=1"})
+        (tmp_path / "after").mkdir()
+        monkeypatch.chdir(tmp_path / "after")                          # ...and exited somewhere else
+    assert _run_end(str(tmp_path / "rel.jsonl"))["metrics"]["main_steps"] == 1
+
+
+def test_a_truncated_file_with_this_runs_events_but_no_run_start_emits_nothing(tmp_path):
+    """The guard is `run_start present`, not `events non-empty`, and the difference is reachable.
+
+    A log-rotated file can drop its head while keeping this `run_id`'s later events. `not events`
+    would then compute facts from a truncated stream and publish them as this run's — a measured-
+    looking number over a fragment. Weakening the guard that way survived every other test, because
+    the drivers the plan specified (`/dev/null`, a `run_id` mismatch) both yield an EMPTY list, and
+    an empty list satisfies both forms."""
+    import json
+
+    path = tmp_path / "rotated.jsonl"
+    # Hand-built: this run's turns survived the rotation, its run_start did not.
+    with path.open("w") as fh:
+        for turn in range(3):
+            fh.write(json.dumps({
+                "schema": "rlm-harness/trace/v1", "run_id": "r", "step_id": turn, "ts": 1.0,
+                "type": EVENT_MAIN_STEP, "payload": {"turn": turn, "code": "x=1"},
+            }) + "\n")
+
+    rec = TraceRecorder(str(path), run_id="r", record_metrics=True)
+    rec._abs_path = str(path)
+    assert rec._snapshot_facts() is None, "facts were computed from a headless fragment"
