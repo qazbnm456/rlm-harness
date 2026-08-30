@@ -616,7 +616,7 @@ def test_forced_final_marker_matches_a_REAL_forced_final_run(tmp_path):
 
     import rlm_harness.runtime as rt
     from rlm_harness import RLMConfig, RLMTask
-    from rlm_harness.testing import ScriptedInterpreter, scripted_lm
+    from rlm_harness.testing import ScriptedInterpreter, scripted_lm, submit
     from rlm_harness.trace import EVENT_FINAL, TraceRecorder, load_events
 
     class _Out(BaseModel):
@@ -641,6 +641,22 @@ def test_forced_final_marker_matches_a_REAL_forced_final_run(tmp_path):
     final = [e for e in load_events(path) if e["type"] == EVENT_FINAL][0]
     assert final["payload"]["final_reasoning"] == _dspy_compat.forced_final_marker(), (
         "dspy changed its forced-final marker; every budget_exhausted in the fleet now reads False"
+    )
+
+    # THE CONTROL RUN. Without it the assertion above is not a measurement: a dspy that wrote this
+    # string on EVERY run would produce exactly that output. A run that SUBMITs must not match.
+    submitted = str(tmp_path / "submitted.jsonl")
+    rt.configure(
+        RLMConfig(main_model="x", sub_model="x", interpreter="mock", observe=False,
+                  max_iterations=6),
+        main_lm=scripted_lm([{"reasoning": "submit", "code": "SUBMIT(answer={'x': 1})"}]),
+        sub_lm=scripted_lm([{"reasoning": "submit", "code": "SUBMIT(answer={'x': 1})"}]),
+    )
+    with TraceRecorder(submitted, run_id="r2"):
+        asyncio.run(T(interpreter=ScriptedInterpreter([submit({"answer": {"x": 1}})])).arun(q="hi"))
+    control = [e for e in load_events(submitted) if e["type"] == EVENT_FINAL][0]
+    assert control["payload"]["final_reasoning"] != _dspy_compat.forced_final_marker(), (
+        "a run that SUBMITted also carries the forced-final marker — the field discriminates nothing"
     )
 
 
