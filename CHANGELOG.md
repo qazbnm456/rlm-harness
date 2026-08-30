@@ -4,6 +4,36 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.8.1] - 2026-08-30
+
+Documentation and test only. No behaviour change, no API change — every 1.8.0 call path is
+byte-identical.
+
+### Docs
+
+- **`budget_exhausted` now documents what actually establishes it, and what it cannot answer.**
+  1.8.0 shipped the field with its evidence resting entirely on `ScriptedInterpreter` — which
+  proves dspy writes the forced-final marker and the kit reads it back, and says nothing about
+  whether the real sandbox path reaches that branch the same way. A consumer ran all three states
+  against `dspy.PythonInterpreter` on deno 2.8.2, scripting only the LM since the interpreter is
+  the seam that matters, and the field discriminated. The docstring records that, the two traps
+  that fake a negative result (the forced-final path makes a SECOND LM call for the task's output
+  field, so a scripted LM one turn short dies in `extract` and the marker looks lost; and a `True`
+  without a submitting control run is not a measurement), and the boundary that is a product fact
+  rather than a defect — the trajectory is written after `aforward()` returns, so a SIGKILLed job,
+  the case an operator actually asks about, is exactly the one this reports `None` for.
+
+  **These notes were one commit past the `v1.8.0` tag**, so anybody who installed 1.8.0 and ran
+  `help()` on the field saw none of it. Caught by a consumer that checked the installed package
+  before writing "the kit documents this" into its own README.
+
+### Tests
+
+- **The forced-final test had no control run.** It asserted only that a run which never submits
+  carries the marker — which a dspy that wrote that string on every run would also satisfy. It now
+  drives a submitting run and requires the marker to be absent there. Verified additive: deleting
+  the control leaves the suite green, so it guards something no other assertion reaches.
+
 ## [1.8.0] - 2026-08-30
 
 The kit now computes the generic half of a rubric's facts, so a consumer supplies only its domain
