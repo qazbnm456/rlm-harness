@@ -175,6 +175,12 @@ class TraceRecorder:
 
         with TraceRecorder("trace.jsonl", run_id="r1") as rec:
             result = await task.arun(...)   # main_step/sub_call/tool_call land here
+
+    ``record_metrics`` (default from ``RLM_TRACE_METRICS``, **OFF**) folds
+    :func:`rlm_harness.metrics.compute_run_facts` into the ``run_end`` payload at teardown,
+    computed by re-reading this run's own events out of the file just written. Off by default
+    because it changes what a trace CONTAINS; `compute_run_facts(events)` is the authority in every
+    case and the snapshot is a convenience for a reader that will not call it.
     """
 
     def __init__(
@@ -186,6 +192,7 @@ class TraceRecorder:
         meta: dict | None = None,
         clock=time.time,
         on_event: Callable[[dict], None] | None = None,
+        record_metrics: bool | None = None,
     ) -> None:
         self.path = path
         self.run_id = run_id
@@ -197,6 +204,18 @@ class TraceRecorder:
         # it for tool_calls/sub_calls, which the planner's REPL invokes INSIDE the sandbox (so dspy's
         # on_tool callback never sees them, but the recorder does). Never mutates the persisted trace.
         self._on_event = on_event
+        # Opt-in (`record_metrics=True`, or `RLM_TRACE_METRICS=1`; OFF by default): fold
+        # `metrics.compute_run_facts` into the `run_end` payload at teardown. Named
+        # `record_metrics` rather than `metrics` because that word is already the payload key and
+        # the module. Resolved HERE, not at `__exit__`, so the value is fixed for the recorder's
+        # life and a mid-run environment change cannot half-apply. `config` owns env PARSING, so
+        # "no other module reads os.environ" still holds.
+        if record_metrics is None:
+            from .config import _env_bool
+
+            record_metrics = _env_bool("RLM_TRACE_METRICS", False)
+        self._record_metrics = bool(record_metrics)
+        self._abs_path: str | None = None
         self._step = 0
         self._token: Token | None = None
         self._fh = None
@@ -220,6 +239,10 @@ class TraceRecorder:
 
     def __enter__(self) -> Self:
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+        # Stashed HERE, where `open()` resolves the relative path — a caller that constructs, then
+        # `chdir`s, then enters would otherwise have the teardown re-read aimed at a different file
+        # than the one written. PRIVATE: the public `self.path` stays exactly what the caller passed.
+        self._abs_path = os.path.abspath(self.path)
         self._fh = open(self.path, "a", encoding="utf-8")
         self._token = _active.set(self)
         # `rlm_harness` sits BESIDE `meta`, never inside it: `meta` is the caller's namespace
@@ -237,18 +260,52 @@ class TraceRecorder:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
+        payload = {"ok": exc_type is None, "error": repr(exc) if exc else None}
         try:
-            self.record(
-                EVENT_RUN_END,
-                {"ok": exc_type is None, "error": repr(exc) if exc else None},
-            )
+            if self._record_metrics:
+                # SUPPRESSED and computed into a LOCAL, with `run_end` recorded from the `finally`
+                # below. `__exit__` runs during exception propagation: a raise here would both lose
+                # the run_end event and REPLACE the run's real exception with a metrics bug. The
+                # same posture `sandbox.py` takes for its own observability.
+                with contextlib.suppress(Exception):
+                    facts = self._snapshot_facts()
+                    if facts is not None:
+                        payload["metrics"] = facts
         finally:
-            if self._token is not None:
-                _active.reset(self._token)
-                self._token = None
-            if self._fh is not None:
-                self._fh.close()
-                self._fh = None
+            try:
+                self.record(EVENT_RUN_END, payload)
+            finally:
+                if self._token is not None:
+                    _active.reset(self._token)
+                    self._token = None
+                if self._fh is not None:
+                    self._fh.close()
+                    self._fh = None
+
+    def _snapshot_facts(self) -> dict | None:
+        """The run's generic facts, computed FROM THE FILE just written, or ``None`` to emit nothing.
+
+        Re-reads rather than accumulating: the recorder retains no events, and computing from the
+        file is what makes the snapshot consistent-by-construction with the bytes it sits beside.
+        Filtered by ``run_id`` because the handle is opened in append mode and the file may hold
+        several runs.
+
+        **Returns ``None`` — emitting NOTHING — unless the re-read contains this run's own
+        ``run_start``.** ``load_events`` returns ``[]`` for a rotated file, a ``/dev/null`` path, or
+        a mismatched id, and `compute_run_facts([])` would then produce ``main_steps: 0`` and the
+        rest — indistinguishable from a measured zero, and streamed live to every consumer's
+        ``on_event``. An absent event is not a measurement, one layer over. A torn line from a
+        concurrent appender raises ``JSONDecodeError`` (a ``ValueError``) and degrades to absent
+        too, which is the right direction.
+
+        The ``metrics`` import is function-level and must stay so: `metrics.py` imports THIS module.
+        """
+        from . import metrics
+
+        events = load_events(self._abs_path or self.path, self.run_id)
+        if not any(e.get("type") == EVENT_RUN_START for e in events):
+            return None
+        return metrics.compute_run_facts(events)
 
     # -- recording ---------------------------------------------------------
 
