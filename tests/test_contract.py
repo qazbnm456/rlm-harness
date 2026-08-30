@@ -141,6 +141,9 @@ def test_public_surface_includes_the_consumer_contract():
         # DELIBERATELY: the assertion below is a SUBSET check, so a new __all__ entry passes on
         # its own — being in `must_export` is what makes an accidental removal go red.
         "is_valid_tool_name", "sanitize_tool_name", "unique_tool_names",
+        # the generic rubric-fact surface (1.8.0) — a consumer's lens imports RUN_FACT_KEYS
+        # instead of hand-copying names, so removing either is a downstream break
+        "compute_run_facts", "compute_run_facts_by_run", "RUN_FACT_KEYS",
         "signature_from_json_schema",
         # reward-free rubric primitives (opaque category)
         "Criterion", "RubricCriteria", "CriterionFact",
@@ -154,3 +157,27 @@ def test_public_surface_includes_the_consumer_contract():
     # no binding behind it — a real hazard here, since several are lazy `__getattr__` exports.
     for name in must_export:
         assert getattr(rlm_harness, name, None) is not None, f"{name} is in __all__ but unbound"
+
+
+def test_run_fact_keys_are_a_CLOSED_set_pinned_here():
+    """`RUN_FACT_KEYS` is the mechanism, not a docstring promise.
+
+    1.8.0 deleted a proposed runtime "refuse a reward-ish key" check because it would have been dead
+    code — the kit writes these keys itself, so there is no caller-supplied name to refuse. What
+    replaces it is this: the set is CLOSED and pinned HERE, so a new key cannot reach a consumer's
+    dataset without a diff to a SemVer-governed public name that a reviewer sees. That matters most
+    for a key shaped like a score: everything in this set is a count, a rate, a duration or a
+    boolean, and the moment one is not, this test is where it surfaces.
+
+    A `must_export` entry alone would not do it — that assertion is a SUBSET check, so an ADDED key
+    passes on its own."""
+    from rlm_harness import RUN_FACT_KEYS, compute_run_facts
+
+    assert RUN_FACT_KEYS == (
+        "main_steps", "tool_calls", "sub_calls", "tool_call_rate", "sub_call_rate",
+        "tool_declines", "tool_endpoint_errors", "tool_circuit_breaks",
+        "tool_wasted_seconds", "tool_total_seconds", "tool_ok", "tool_measured_calls",
+        "fence_refused_turns", "budget_exhausted",
+    )
+    # ...and what is EMITTED is exactly that set, in that order — the constant is not decorative.
+    assert tuple(compute_run_facts([])) == RUN_FACT_KEYS

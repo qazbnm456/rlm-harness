@@ -10,7 +10,7 @@ from rlm_harness.metrics import (
     compute_tool_waste_by_run,
     compute_utilization_by_run,
 )
-from rlm_harness.trace import EVENT_MAIN_STEP, EVENT_SUB_CALL, EVENT_TOOL_CALL
+from rlm_harness.trace import EVENT_FINAL, EVENT_MAIN_STEP, EVENT_SUB_CALL, EVENT_TOOL_CALL
 
 
 def _main_step():
@@ -177,3 +177,177 @@ def test_it_is_reward_free():
     """Same charter as the rest of this module: counts, seconds and rates — never a score."""
     fields = set(ToolWaste.__dataclass_fields__)
     assert not any("reward" in f or "score" in f for f in fields), fields
+
+
+# ---- compute_run_facts: the generic half of a rubric's facts -----------------------------------
+
+
+def _facts(events):
+    from rlm_harness.metrics import compute_run_facts
+
+    return compute_run_facts(events)
+
+
+def _step(turn=0, code="x = 1"):
+    """A richer main_step than the module-level `_main_step()`, which other tests share."""
+    return {"type": EVENT_MAIN_STEP, "payload": {"turn": turn, "code": code}}
+
+
+def _call(name="g", **payload):
+    return {"type": EVENT_TOOL_CALL, "payload": {"tool": name, "ok": True, **payload}}
+
+
+def test_run_facts_keys_are_exactly_the_public_constant_and_json_safe():
+    """The dict is BUILT against `RUN_FACT_KEYS`, not merely documented to match it — and every
+    value is a scalar. `compute_tool_waste` returns frozen `ToolWaste` dataclasses, which
+    `record()`'s `json.dumps(..., default=str)` would silently stringify into the source of truth
+    as `"ToolWaste(tool='g', calls=1, ...)"`. The round-trip is what catches that."""
+    import json
+
+    from rlm_harness.metrics import RUN_FACT_KEYS
+
+    facts = _facts([_step(), _call(), _sub_call()])
+    assert tuple(facts) == RUN_FACT_KEYS
+    assert json.loads(json.dumps(facts)) == facts
+
+
+def test_wasted_and_total_seconds_are_None_when_nothing_was_measured():
+    """`ToolWaste` makes BOTH `*_seconds` `None`, never `0.0`, under the same condition. Summing
+    with `or 0.0` would regress that discipline inside the dict that feeds a rubric — where an
+    unmeasured cost would read as a measured zero."""
+    facts = _facts([_step(), _call()])                        # no duration_s anywhere
+    assert facts["tool_wasted_seconds"] is None
+    assert facts["tool_total_seconds"] is None
+    assert facts["tool_measured_calls"] == 0
+
+
+def test_seconds_are_a_partial_sum_and_measured_calls_shows_the_partiality():
+    """One measured call in fifty is otherwise indistinguishable from fifty in fifty — which is the
+    whole reason `tool_measured_calls` is in the key set."""
+    events = [_step(), _call(duration_s=1.5)] + [_call() for _ in range(4)]
+    facts = _facts(events)
+    assert facts["tool_total_seconds"] == 1.5
+    assert facts["tool_measured_calls"] == 1 and facts["tool_calls"] == 5
+
+
+def test_fence_refused_counts_a_valid_python_cell_whose_fence_is_in_a_string():
+    """THE case that matters: 60 of 60 real refusals had the fence BURIED rather than leading (55 of
+    them valid Python assigning a documentation page whose text contains a fenced example). A rule that only caught cells STARTING with a fence
+    would find none of them."""
+    buried = _step(0, 'md = """# Overview\n\n```bash\nrun\n```\n"""')
+    ran = _step(1, "x = 1")
+    fenced_python = _step(2, "```python\nx = 1\n```")
+    facts = _facts([buried, ran, fenced_python])
+    assert facts["fence_refused_turns"] == 1
+    assert facts["main_steps"] == 3
+
+
+def test_budget_exhausted_is_tri_state_and_matched_on_exact_equality():
+    """`None` is not `False`: a run whose `aforward` raised records no `final` at all (31 of 503
+    real runs), and shape drift can leave `final_reasoning` absent. And the success path writes the
+    MODEL's own reasoning, so a substring test would let a model quoting the phrase flip the fact."""
+    from rlm_harness import _dspy_compat
+
+    marker = _dspy_compat.forced_final_marker()
+    assert _facts([{"type": "final", "payload": {"final_reasoning": marker}}])["budget_exhausted"]
+    assert _facts([{"type": "final", "payload": {"final_reasoning": "done"}}])["budget_exhausted"] is False
+    assert _facts([_step()])["budget_exhausted"] is None
+    assert _facts([{"type": "final", "payload": {}}])["budget_exhausted"] is None
+    quoting = f"I will {marker} as my answer"
+    assert _facts([{"type": "final", "payload": {"final_reasoning": quoting}}])["budget_exhausted"] is False
+
+
+def test_run_facts_by_run_splits_a_multi_run_file():
+    """The sibling both other computers already ship — without it a multi-run file conflates."""
+    from rlm_harness.metrics import compute_run_facts_by_run
+
+    events = [dict(_step(0), run_id="a"), dict(_step(1), run_id="a"),
+              dict(_step(0), run_id="b")]
+    by_run = compute_run_facts_by_run(events)
+    assert by_run["a"]["main_steps"] == 2 and by_run["b"]["main_steps"] == 1
+
+
+def test_every_run_fact_key_carries_the_value_it_names():
+    """A pinned key set says nothing about whether each key is WIRED to the right source.
+
+    **The test asserts pairwise distinctness of its own expectations before using them**, because
+    hand-checking that property failed twice: the first fixture had `circuit_breaks == ok == 1`, so
+    the assertion labelled "fed from ok?" passed under exactly that mis-wiring; the second fixed
+    that pair and left `endpoint_errors == circuit_breaks` and `declines == main_steps`, so three
+    more swaps survived the whole suite. A fixture for this job is only as good as its
+    least-distinct pair, and checking that by eye is what kept failing.
+    """
+    events = (
+        [_step(i) for i in range(6)]                                    # main_steps
+        + [{"type": EVENT_SUB_CALL, "payload": {}} for _ in range(7)]   # sub_calls
+        + [_call("a", ok=False) for _ in range(1)]                      # decline, unmeasured
+        + [_call("a", ok=False, duration_s=1.0) for _ in range(2)]      # declines, measured
+        + [_call("b", error="boom", duration_s=1.75) for _ in range(2)] # endpoint errors, measured
+        + [_call("c", circuit_broken=True) for _ in range(4)]           # circuit breaks
+        + [_call("d", ok=True, duration_s=2.5)]                         # ok, measured
+    )
+    expected = {
+        "main_steps": 6, "sub_calls": 7, "tool_calls": 10,
+        "tool_declines": 3, "tool_endpoint_errors": 2, "tool_circuit_breaks": 4,
+        "tool_ok": 1, "tool_measured_calls": 5, "tool_total_seconds": 8.0,
+    }
+    # Every number this test asserts goes through the guard, not just the dict — `wasted_seconds`
+    # and the two rates are asserted below and must not collide with anything either.
+    vals = [*expected.values(), 5.5, 10 / 6, 7 / 6]
+    assert len(set(vals)) == len(vals), f"fixture has a masking pair: {sorted(vals)}"
+
+    f = _facts(events)
+    for key, want in expected.items():
+        assert f[key] == want, f"{key} is {f[key]}, expected {want} — wired to the wrong source?"
+    assert f["tool_call_rate"] == 10 / 6 and f["sub_call_rate"] == 7 / 6, "rates swapped?"
+    assert f["tool_wasted_seconds"] == 5.5     # the 2 declines + 2 endpoint errors that had a clock
+
+
+def test_fence_refusal_counts_only_MAIN_STEP_events():
+    """A `tool_call` whose payload happens to carry a fenced `code` string is not a turn."""
+    not_a_turn = {"type": EVENT_TOOL_CALL, "payload": {"tool": "g", "code": "```bash\nx\n```"}}
+    assert _facts([_step(0), not_a_turn])["fence_refused_turns"] == 0
+
+
+def test_budget_exhausted_takes_the_LAST_final_when_a_run_id_carries_two():
+    """Documented rule; nothing else pins which end of the list wins."""
+    from rlm_harness import _dspy_compat
+
+    marker = _dspy_compat.forced_final_marker()
+    events = [{"type": EVENT_FINAL, "payload": {"final_reasoning": "done"}},
+              {"type": EVENT_FINAL, "payload": {"final_reasoning": marker}}]
+    assert _facts(events)["budget_exhausted"] is True
+    assert _facts(list(reversed(events)))["budget_exhausted"] is False
+
+
+def test_compute_run_facts_accepts_a_generator():
+    """`compute_run_facts` materialises its argument first. Without that, the first consumer drains
+    the stream and every later one sees an empty run — silently, with plausible zeros rather than an
+    error, which is the failure mode this module keeps refusing to ship."""
+    events = [_step(0), _step(1, "```bash\nx\n```"), _call(),
+              {"type": EVENT_SUB_CALL, "payload": {}}]
+    facts = _facts(e for e in events)
+    # The assertions must reach past the FIRST consumer: `compute_run_utilization` runs first and
+    # would drain the generator itself, so `main_steps`/`tool_calls` look right either way. What
+    # goes wrong silently is everything after it.
+    assert facts["main_steps"] == 2 and facts["tool_calls"] == 1
+    assert facts["tool_ok"] == 1, "compute_tool_waste saw an exhausted stream"
+    assert facts["fence_refused_turns"] == 1, "the fence scan saw an exhausted stream"
+
+
+def test_a_MEASURED_zero_waste_stays_0_and_does_not_become_None():
+    """The other direction of the same distinction, and the one nothing covered.
+
+    `_sum_or_none` filters on `is not None`, not truthiness. `compute_tool_waste` sets
+    `wasted_seconds = 0.0` — a MEASURED zero — for a tool that carried durations and had no invalid
+    or endpoint outcome, which is the commonest healthy shape there is. A `if v` filter drops those
+    `0.0`s and reports `None`, inverting exactly the distinction `_sum_or_none` exists to protect:
+    "every tool ran clean and we timed them" would read as "nothing was measured".
+
+    The suite's other seconds test covers `or 0.0` (unmeasured wrongly becoming zero); this covers
+    the mirror image, and the mutant survived every other test in the suite."""
+    facts = _facts([_step(0), _call("a", ok=True, duration_s=2.0),
+                    _call("b", ok=True, duration_s=1.0)])
+    assert facts["tool_wasted_seconds"] == 0.0, "a measured zero was reported as unmeasured"
+    assert facts["tool_total_seconds"] == 3.0
+    assert facts["tool_measured_calls"] == 2
