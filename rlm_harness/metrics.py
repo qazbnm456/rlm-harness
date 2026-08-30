@@ -328,7 +328,23 @@ def _budget_exhausted(events: list[dict]) -> bool | None:
     successfully on its last allowed turn.
 
     ``None``, never ``False``, when: there is no ``final`` event (a run whose ``aforward`` raised
-    records none — 31 of 503 real runs), or ``final_reasoning`` is absent from shape drift. Exact
+    records none — 31 of 503 real runs), or ``final_reasoning`` is absent from shape drift.
+
+    **Validated against the REAL deno/pyodide interpreter, not only the scripted one.** The kit's
+    own test drives the fall-through through ``ScriptedInterpreter``, which proves dspy writes the
+    marker and the kit reads it back but says nothing about whether the real sandbox path reaches
+    that branch the same way. A consumer ran all three states against `dspy.PythonInterpreter` on
+    deno 2.8.2 — scripting only the LM, since the interpreter is the seam that matters — and the
+    field discriminated: ``True`` on a run that never submits, ``False`` on one that does, ``None``
+    on a run that raises before the flush. **Two traps that fake a negative result:** the forced
+    -final path makes a SECOND LM call for the task's own output field, so a scripted LM that runs
+    out of turns dies in ``extract``, ``aforward`` raises, no ``final`` is recorded, and the marker
+    looks lost when it is not; and a ``True`` without a submitting control run is not a measurement,
+    since a field that is always ``True`` produces it too.
+
+    **What it can and cannot answer.** Only a run that FINISHED inside its budget — the trajectory
+    is recorded after ``aforward()`` returns, so a SIGKILLed job is exactly the case an operator
+    asks about and exactly the case this reports ``None`` for. Exact
     EQUALITY, never a substring test: the success path writes the model's own reasoning, so ``in``
     would let a model quoting the phrase flip the fact. Last ``final`` wins if a ``run_id`` somehow
     carries two. Detects the ITERATION cap only — ``max_llm_calls`` exhaustion raises inside the
