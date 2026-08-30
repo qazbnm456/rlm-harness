@@ -6,9 +6,11 @@ against a caller-supplied lens; this module COMPUTES fixed counts/rates directly
 every other trace-derived module here: raw counts and rates, never a score.
 
 Reads only already-frozen ``trace/v1`` fields — ``event["type"]``, ``payload["tool"]``, the
-optional ``payload["duration_s"]``, and (through :func:`rlm_harness.trace.payload_cause`, never
+optional ``payload["duration_s"]``, ``payload["code"]`` and ``payload["final_reasoning"]`` (both
+1.8.0, for :func:`compute_run_facts`), and (through :func:`rlm_harness.trace.payload_cause`, never
 directly) ``circuit_broken`` / ``endpoint_error`` / ``error`` / ``ok``. No new event type, nothing
-the trace contract needs to change for. dspy-free, stdlib only.
+the trace contract needs to change for. dspy-free at module top — :func:`compute_run_facts` reaches
+``_dspy_compat`` for two dspy behavioural facts, and that module keeps its own dspy imports lazy.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from .trace import (
     CAUSE_ENDPOINT,
     CAUSE_INVALID,
     CAUSE_OK,
+    EVENT_FINAL,
     EVENT_MAIN_STEP,
     EVENT_SUB_CALL,
     EVENT_TOOL_CALL,
@@ -202,3 +205,141 @@ def compute_tool_waste_by_run(events: Iterable[dict]) -> dict[str, dict[str, Too
         run_id: compute_tool_waste(run_events)
         for run_id, run_events in group_by_run(events).items()
     }
+
+
+#: The exact key set :func:`compute_run_facts` emits — a CLOSED, public constant, not a docstring
+#: promise. The dict is BUILT against this tuple, `tests/test_contract.py` pins its contents
+#: exactly, and a consumer's rubric lens imports it instead of hand-copying names. Adding a key
+#: therefore means editing a SemVer-governed public name that shows up in a diff, which is the
+#: mechanism keeping a reward-shaped scalar from drifting into the source of truth — the kit writes
+#: these keys itself, so `run_label_bundle`'s "refuse a caller-supplied name" analogue would have
+#: been dead code here.
+#:
+#: Every value is a SCALAR. `tool_calls_by_name` is deliberately ABSENT: an open key space cannot
+#: belong to a closed set, and a `ToolWaste` dataclass reaching `record()`'s `json.dumps(...,
+#: default=str)` would be silently stringified into the trace as `"ToolWaste(tool='g', calls=1…)"`.
+#: A consumer wanting per-tool detail calls `compute_run_utilization` / `compute_tool_waste`.
+RUN_FACT_KEYS: tuple[str, ...] = (
+    "main_steps", "tool_calls", "sub_calls", "tool_call_rate", "sub_call_rate",
+    "tool_declines", "tool_endpoint_errors", "tool_circuit_breaks",
+    "tool_wasted_seconds", "tool_total_seconds", "tool_ok", "tool_measured_calls",
+    "fence_refused_turns", "budget_exhausted",
+)
+
+
+def _sum_or_none(values: Iterable[float | None]) -> float | None:
+    """Sum, preserving "nothing was measured" as ``None`` rather than collapsing it to ``0.0``.
+
+    ``ToolWaste`` is explicit that its ``*_seconds`` are ``None``, never ``0.0``, when no call
+    carried a duration, and a test pins that. Summing with ``or 0.0`` would regress the distinction
+    inside the very dict that feeds a rubric — so: ``None`` when nothing measured anything, a
+    PARTIAL sum otherwise, with ``tool_measured_calls`` riding alongside to show the partiality
+    (one measured call in fifty is otherwise indistinguishable from fifty in fifty).
+    """
+    seen = [v for v in values if v is not None]
+    return sum(seen) if seen else None
+
+
+def compute_run_facts(events: Iterable[dict]) -> dict:
+    """The GENERIC half of a rubric's facts for ONE run — everything the kit can observe without
+    knowing the consumer's domain.
+
+    Feeds :func:`rlm_harness.rubric.criteria_facts`, which is documented pure and stays that way:
+    the consumer supplies its criteria, its category lens, and its own domain facts, and merges
+    this dict in. Nine consumers each hand-derive most of what is here, because `metrics.py` landed
+    five weeks after their rubrics did and nobody went back.
+
+    Reward-free by construction: counts, rates and one boolean. Keys are exactly
+    :data:`RUN_FACT_KEYS`.
+
+    **Single-run**, like :func:`compute_run_utilization` — pass one run's events, or use
+    :func:`compute_run_facts_by_run` for a file holding several. A multi-run list silently
+    conflates, which is why both existing computers already ship a ``_by_run`` sibling.
+
+    Two readings that need care, both stated rather than implied:
+
+    * ``fence_refused_turns`` is ``0`` on a run with no ``main_step`` events at all — UNMEASURED,
+      not measured-zero. ``main_steps`` rides in the same dict to disambiguate.
+    * ``budget_exhausted`` is ``None`` whenever the answer is unknown (see below), never ``False``.
+    """
+    events = list(events)
+    util = compute_run_utilization(events)
+    waste = compute_tool_waste(events).values()
+    facts = {
+        "main_steps": util.main_steps,
+        "tool_calls": util.tool_calls_total,
+        "sub_calls": util.sub_calls_total,
+        "tool_call_rate": util.tool_call_rate,
+        "sub_call_rate": util.sub_call_rate,
+        "tool_declines": sum(w.invalid for w in waste),
+        "tool_endpoint_errors": sum(w.endpoint_errors for w in waste),
+        "tool_circuit_breaks": sum(w.circuit_broken for w in waste),
+        "tool_wasted_seconds": _sum_or_none(w.wasted_seconds for w in waste),
+        "tool_total_seconds": _sum_or_none(w.total_seconds for w in waste),
+        "tool_ok": sum(w.ok for w in waste),
+        "tool_measured_calls": sum(w.measured_calls for w in waste),
+        "fence_refused_turns": _count_fence_refused(events),
+        "budget_exhausted": _budget_exhausted(events),
+    }
+    assert set(facts) == set(RUN_FACT_KEYS)   # the closed set is built, not merely documented
+    return facts
+
+
+def compute_run_facts_by_run(events: Iterable[dict]) -> dict[str, dict]:
+    """:func:`compute_run_facts` per ``run_id`` — the sibling both other computers already have."""
+    return {rid: compute_run_facts(evs) for rid, evs in group_by_run(events).items()}
+
+
+def _count_fence_refused(events: list[dict]) -> int:
+    """Turns dspy refused to execute because of a markdown fence tag in the cell.
+
+    **Named and documented for the MECHANISM, never a cause**, because the obvious cause is wrong.
+    Running dspy's own stripper over three real corpora — 1,406 + 137 + 252 turns — found 60
+    refusals and **zero** that START with a fence; 55 of the 60 are valid Python assigning a
+    documentation page whose TEXT contains a fenced example::
+
+        markdown = \"\"\"# Overview … ```bash … \"\"\"
+
+    dspy's ``_strip_code_fences`` scans the whole cell including string literals, reads the inner
+    tag, and refuses the turn. So this counts **dspy fence-stripper friction**, and the tag
+    distribution (the documented repository's own language, plus ``bash`` for install steps) is a
+    documentation generator behaving correctly. A consumer read it as format non-compliance and
+    spent two prompt generations suppressing the blocks its own pages needed.
+
+    The decision is `_dspy_compat.dspy_refuses_fence` — one place, mirroring dspy's private parser
+    verbatim, because a shortcut disagrees with it on thousands of real cells.
+    """
+    from . import _dspy_compat
+
+    return sum(
+        1 for e in events
+        if e.get("type") == EVENT_MAIN_STEP
+        and _dspy_compat.dspy_refuses_fence((e.get("payload") or {}).get("code"))
+    )
+
+
+def _budget_exhausted(events: list[dict]) -> bool | None:
+    """Did the run stop because its ITERATION budget ran out? ``None`` when unknowable.
+
+    dspy marks that branch itself: falling out of the turn loop without a ``FINAL`` sets
+    ``final_reasoning`` to a fixed marker, which the kit has always recorded on the ``final`` event.
+    So this needs no configured cap staged into the trace — it works on every trace ever written,
+    and it avoids the ``main_steps >= cap`` formula's false positive on a run that SUBMITs
+    successfully on its last allowed turn.
+
+    ``None``, never ``False``, when: there is no ``final`` event (a run whose ``aforward`` raised
+    records none — 31 of 503 real runs), or ``final_reasoning`` is absent from shape drift. Exact
+    EQUALITY, never a substring test: the success path writes the model's own reasoning, so ``in``
+    would let a model quoting the phrase flip the fact. Last ``final`` wins if a ``run_id`` somehow
+    carries two. Detects the ITERATION cap only — ``max_llm_calls`` exhaustion raises inside the
+    sandbox and comes back as a turn, so it reads ``False`` here.
+    """
+    from . import _dspy_compat
+
+    finals = [e for e in events if e.get("type") == EVENT_FINAL]
+    if not finals:
+        return None
+    reasoning = (finals[-1].get("payload") or {}).get("final_reasoning")
+    if reasoning is None:
+        return None
+    return reasoning == _dspy_compat.forced_final_marker()
