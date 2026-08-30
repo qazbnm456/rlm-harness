@@ -187,7 +187,7 @@ One companion rule ships under `.claude/rules/`:
   dspy, so a future rename fails safe rather than over-eagerly killing a retryable run.
 - **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`,
   `tools/`, `trace.py`, `skills.py`, `replay.py`, `dataset.py`, `serving.py`, `harness_serve.py`,
-  `_dspy_compat.py`
+  `_dspy_compat.py`, `metrics.py`, `rubric.py`, `_toolname.py`, `atomic.py`, `isolation.py`
   must NOT import `dspy` at module top — that keeps their logic testable without dspy. Only
   `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`, `container_interpreter.py`,
   `testing.py`, and `claude_agent_lm.py` touch dspy — the last four live outside the dspy-free

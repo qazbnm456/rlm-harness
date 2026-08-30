@@ -33,8 +33,11 @@ from .config import RLMConfig
 from .dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
 from .isolation import run_in_subprocess
 from .metrics import (
+    RUN_FACT_KEYS,
     RunUtilization,
     ToolWaste,
+    compute_run_facts,
+    compute_run_facts_by_run,
     compute_run_utilization,
     compute_tool_waste,
     compute_tool_waste_by_run,
@@ -146,6 +149,9 @@ __all__ = [
     "RunUtilization",
     "compute_run_utilization",
     "compute_utilization_by_run",
+    "compute_run_facts",
+    "compute_run_facts_by_run",
+    "RUN_FACT_KEYS",
     "ToolWaste",
     "compute_tool_waste",
     "compute_tool_waste_by_run",
@@ -154,7 +160,7 @@ __all__ = [
     "run_in_subprocess",
 ]
 
-__version__ = "1.7.0"
+__version__ = "1.8.0"
 
 
 def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import
