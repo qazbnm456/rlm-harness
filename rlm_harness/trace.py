@@ -350,7 +350,26 @@ class TraceRecorder:
         # `chdir`s, then enters would otherwise have the teardown re-read aimed at a different file
         # than the one written. PRIVATE: the public `self.path` stays exactly what the caller passed.
         self._abs_path = os.path.abspath(self.path)
-        self._fh = open(self.path, "a", encoding="utf-8")
+        # `errors="backslashreplace"`, not the default STRICT. A LONE SURROGATE anywhere in any
+        # payload otherwise raises `UnicodeEncodeError` out of `record()` and LOSES the event --
+        # reproduced on shipped code with nothing exotic:
+        #
+        #     rec.record("main_step", {"code": "x = '/data/caf\udce9'"})   -> UnicodeEncodeError
+        #
+        # `os.fsdecode`, `bytes.decode(errors="surrogateescape")` and a model completion embedded in
+        # a dspy adapter error all produce them. `json.dumps(..., ensure_ascii=False)` passes them
+        # through untouched, so the encoder is the only place to catch it. Losing an event is worst
+        # on the FAILURE path, where the trace is the only surviving account of what happened.
+        #
+        # It round-trips: backslashreplace writes the six characters `\udce9`, which JSON then
+        # re-reads as that same escape, so `load_events` returns the original string. That is a
+        # property this relies on, not a coincidence -- pinned by a test. ONE shape does not
+        # round-trip exactly: an ADJACENT high+low surrogate pair is recombined by the JSON reader
+        # into the astral character it encodes. Not a regression -- that payload used to raise and
+        # lose the event outright -- but the recovered string is the composed form, not the input. Ordinary text is
+        # untouched (CJK, emoji, newlines, quotes all verified byte-exact), because the handler
+        # fires only on characters that cannot be encoded at all.
+        self._fh = open(self.path, "a", encoding="utf-8", errors="backslashreplace")
         self._token = _active.set(self)
         # `rlm_harness` sits BESIDE `meta`, never inside it: `meta` is the caller's namespace
         # (`rubric_to_meta` writes there) and the kit must not squat in it. Deferred import
