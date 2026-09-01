@@ -33,7 +33,7 @@ from .config import RLMConfig
 from .runtime import get_config, get_sub_lm
 from .sandbox import SandboxCancelled, build_interpreter
 from .sub_lm import _ensure_sub_call_recording, bind_recorder_to_sub_lm
-from .trace import current_recorder
+from .trace import _ensure_tool_timing, current_recorder
 
 logger = logging.getLogger(__name__)
 
@@ -258,9 +258,15 @@ class RLMTask:
         # an interpreter it built itself. Stash it for _teardown_interpreter().
         self._built_interpreter = interpreter
 
+        # Tools go in TIMED. `_ensure_tool_timing` publishes a start time that
+        # `record_tool_call` reads when the tool did not measure itself; it never records an event
+        # of its own, so it cannot double-count. Applied HERE rather than in each factory for the
+        # reason 1.7.0 made `sub_call` automatic: a field every author must remember is missing for
+        # someone -- and a consumer whose tools are pure delegation to our factories has no seam of
+        # its own to add one. This covers the consumer's own tools too. See `_ensure_tool_timing`.
         kwargs: dict[str, Any] = {
             "sub_lm": self._sub_lm,
-            "tools": list(self.resolved_tools),
+            "tools": [_ensure_tool_timing(t) for t in self.resolved_tools],
         }
 
         # The caller's interpreter goes to forward()/aforward() as the first POSITIONAL

@@ -22,6 +22,8 @@ This module is dependency-light: stdlib ``json`` only. No dspy import.
 from __future__ import annotations
 
 import contextlib
+import functools
+import inspect
 import json
 import os
 import threading
@@ -47,6 +49,87 @@ _active: ContextVar[TraceRecorder | None] = ContextVar("rlm_harness_recorder", d
 def current_recorder() -> TraceRecorder | None:
     """Return the recorder active in the current context, or ``None``."""
     return _active.get()
+
+
+_tool_started: ContextVar[tuple[str, float] | None] = ContextVar(
+    "rlm_harness_tool_started", default=None
+)
+
+# ONE clock, named once, because the two ends of this measurement live in different functions.
+# `perf_counter` and `monotonic` happen to share an epoch on macOS and Linux (both `CLOCK_MONOTONIC`
+# / `mach_absolute_time`), so publishing with one and subtracting with the other is invisible here
+# and meaningless on Windows, where they are QPC and GetTickCount64. `pyproject.toml` advertises
+# `Operating System :: OS Independent`, so the pairing is made structural rather than tested for.
+_tool_clock = time.perf_counter
+
+
+def _ensure_tool_timing(tool: Any) -> Any:
+    """Wrap ``tool`` so :func:`record_tool_call` can fill ``duration_s`` without being asked.
+
+    **Why this is not each tool's job.** ``duration_s`` used to exist only where its author
+    remembered to measure — six of the kit's own tool sources did, and the filesystem and knowledge tools
+    (27 ``record_tool_call`` sites) did not, so ``metrics.compute_tool_waste``'s ``*_seconds`` read
+    ``None`` for them everywhere. That is the same shape as the ``sub_call`` event before 1.7.0: a
+    field that depends on every author remembering is missing for someone, and `None` then reads as
+    "nothing measured" when the truth is "nobody wired it". A consumer could not fix it either —
+    one whose tools are pure delegation to these factories has no seam of its own, and wrapping the
+    callable to add a duration would emit a SECOND ``tool_call`` and double every count derived
+    from it.
+
+    So the timing is applied once, at ``RLMTask._build_rlm``, to whatever the task hands the model
+    — the kit's tools and the consumer's alike. **This wrapper never calls ``record_tool_call``**;
+    it only publishes a start time, which is what keeps it from double-recording.
+
+    Three properties it must keep:
+
+    * **A ``ContextVar``, not a module global.** Two ``RLMTask``s driven from two threads each own
+      an interpreter and can call tools concurrently; a global start time would interleave. A
+      context variable is per-thread by construction. (Within ONE interpreter they cannot: dspy's
+      ``PythonInterpreter`` raises if touched from a second thread, and the container kind is
+      serialised by its own request/response loop.)
+    * **Token-based reset**, matching ``recorder_scope`` and ``TraceRecorder.__enter__``. A tool
+      that calls another traced tool must restore the OUTER start on the way out, not clear it.
+    * **``functools.wraps``**, and applied AFTER the factory has stamped ``__name__``. dspy builds
+      the sandbox proxy from ``inspect.signature(tool.func)`` and its ``Tool`` metadata from
+      ``typing.get_type_hints``; both follow ``__wrapped__``, the latter to reach the original
+      module's globals — which matters because every ``tools/*.py`` uses
+      ``from __future__ import annotations``, so the annotations ``wraps`` copies are STRINGS that
+      only resolve there. Verified against dspy 3.3.1 on the 3.11 floor.
+
+    One capability this costs, latent rather than observed: a wrapped module-level tool stops being
+    PICKLABLE. ``wraps`` copies ``__qualname__``, so ``pickle``'s ``save_global`` identity check
+    finds the wrapper is not the object that name resolves to. ``deepcopy`` still works and nothing
+    in the kit pickles a tool today -- dspy fans out on threads, not processes -- but a consumer
+    that did could pickle one before 1.8.3.
+    """
+    # Only a plain function or a bound method is wrappable. `mcp._make_tool` returns a `dspy.Tool` -- a pydantic
+    # model with no `__name__` -- and `functools.wraps` then leaves the wrapper called `timed` while
+    # copying the model's field dict onto it: TWO MCP tools abort the whole task with "Duplicate
+    # tool name 'timed'", and ONE registers as `timed` with its args collapsed to `{"kwargs": {}}`,
+    # the exact `**kwargs` proxy bug `assert_repl_safe` exists to prevent (which cannot see it here,
+    # because it reads the pydantic fields `wraps` copied over). Everything skipped either records
+    # its own duration already (MCP does) or is not a shape this can time. A coroutine function is
+    # skipped too: dspy branches on `inspect.iscoroutinefunction(tool.func)`, which does NOT follow
+    # `__wrapped__`, so wrapping one turns a working async tool into "calling __call__ on an async
+    # tool". (CLAUDE.md forbids async tools anyway; this keeps the wrapper from making it worse. An ASYNC
+    # GENERATOR function is neither, so it IS wrapped and, like a plain generator function, records
+    # nothing -- same forbidden category, same already-documented degradation.)
+    if not (inspect.isfunction(tool) or inspect.ismethod(tool)):
+        return tool
+    if inspect.iscoroutinefunction(tool):
+        return tool
+
+    name = getattr(tool, "__name__", None)
+
+    @functools.wraps(tool)
+    def timed(*args: Any, **kwargs: Any):
+        token = _tool_started.set((name, _tool_clock()))
+        try:
+            return tool(*args, **kwargs)
+        finally:
+            _tool_started.reset(token)
+
+    return timed
 
 
 @contextlib.contextmanager
@@ -145,10 +228,18 @@ def record_tool_call(
     then done once, by the code that knows, rather than re-derived by every reader.
 
     **``duration_s`` — how long the tool actually took, in seconds.** An explicit parameter rather
-    than one more ``**fields`` entry so the name and the unit are documented in ONE place; written
-    only when given, like ``args``, so a caller that does not measure adds no key. Measure with
-    a MONOTONIC clock around the work itself — ``time.perf_counter()``, or ``time.monotonic()`` as
-    ``make_command_tool`` already uses — never with wall-clock.
+    than one more ``**fields`` entry so the name and the unit are documented in ONE place. Since
+    1.8.3 it is also FILLED FOR YOU when you pass none, the call came through a tool a task wrapped
+    (:func:`_ensure_tool_timing`), AND the ``tool`` name here matches that wrapped function's
+    ``__name__`` — so a tool that does not measure is no longer silently unmeasured, while a call
+    made INSIDE another tool is not charged that tool's window. Passing your own value still wins, and is worth doing whenever you can scope the
+    window more tightly than the whole call: measure with a MONOTONIC clock around the work itself
+    — ``time.perf_counter()``, or ``time.monotonic()`` as ``make_command_tool`` already uses —
+    never with wall-clock.
+
+    ``0.0`` is a MEASUREMENT and is written as one; only ``None`` means "not measured". That is
+    why the fill below tests ``is None`` rather than falsiness — the same distinction
+    ``ToolWaste``'s ``*_seconds`` rests on, and the one this release exists to stop losing.
 
     Worth the two lines at every call site: without it a trace's only clock is the envelope ``ts``,
     stamped when the event is RECORDED, so the sole way to attribute wall-clock is the gap between
@@ -161,6 +252,22 @@ def record_tool_call(
     payload: dict[str, Any] = {"tool": tool}
     if args is not None:
         payload["args"] = args
+    if duration_s is None:
+        # Filled from the task-seam wrapper when the tool did not measure itself; an explicit
+        # value always wins, because a tool that times itself scopes the window more precisely
+        # than this wrapper can (`make_command_tool` keeps a runner-reported figure alongside).
+        #
+        # MATCHED ON THE TOOL'S NAME, and that is load-bearing rather than defensive. Only the
+        # tools a task hands the model are wrapped, so a COMPOSITE tool -- a consumer's tool that
+        # calls a kit tool inside itself -- would otherwise charge the outer tool's whole window to
+        # every event recorded beneath it. Measured before the check existed: two zero-cost
+        # `read_file` calls inside a 0.25s tool each reported 0.25s, tripling
+        # `compute_tool_waste.total_seconds`. That is WORSE than the `None` it replaced -- `None` is
+        # an honest unknown, this was a confident wrong answer. On a mismatch we fill nothing,
+        # which fails back to that honest unknown.
+        started = _tool_started.get()
+        if started is not None and started[0] == tool:
+            duration_s = _tool_clock() - started[1]
     if duration_s is not None:
         payload["duration_s"] = round(float(duration_s), 6)
     payload.update(fields)

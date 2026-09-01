@@ -209,6 +209,13 @@ def assert_task_repl_safe(task: Any) -> None:
         tools_attr = getattr(task, "tools", ())
     else:
         resolved = getattr(task, "resolved_tools", None)
+        # ...through the SAME wrapping `_build_rlm` applies, so this guard inspects the list dspy
+        # actually receives. Since 1.8.3 those are different objects, and checking the unwrapped
+        # one made this blind to its own first-listed failure: a seam wrapper that lost `__name__`
+        # would abort registration with "Duplicate tool name" while this still passed.
+        if resolved is not None:
+            from .trace import _ensure_tool_timing
+            resolved = [_ensure_tool_timing(x) for x in resolved]
         tools_attr = resolved if resolved is not None else getattr(task, "tools", ())
     tools = list(tools_attr or ())
     for tool in tools:
