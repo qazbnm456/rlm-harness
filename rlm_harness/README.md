@@ -913,20 +913,42 @@ getting that wrong costs real accuracy in both directions:
     line_numbers=True  ->  the MODEL, so it can cite a coordinate without counting lines
     the raw file text  ->  verify_quote, NOT the tool's rendered output
 
-The rendered output prefixes each line with `f"{n:>6}\t"`. A model quoting from it naturally
-carries that gutter into its quote, and `verify_quote` then refuses a perfectly correct citation —
-the quote is not in the file, the gutter is not file content. So a consumer that turns line numbers
+The rendered output prefixes each line with `f"{n:>6}\t"` — and so does `edit_file`'s success
+snippet, which is a second source of guttered text and reaches the model on every edit. A model
+quoting from either naturally carries that gutter into its quote, and `verify_quote` then refuses a
+perfectly correct citation — the quote is not in the file, the gutter is not file content. So a consumer that turns line numbers
 on to fix coordinates starts failing verification, and one that turns them off to fix verification
 makes the model count lines itself.
 
 **The second failure is the expensive one and it has been measured**: on a live deployment with line
 numbers OFF, **59 of 411 stored citations (14.4%) quoted the text verbatim at the wrong line**, and
 without a host-side coordinate correction the unverified rate would have been 21.9% instead of 7.5%.
-Every wiki in that population had at least two.
+Every artifact in that population had at least two.
+
+The same consumer then turned line numbers back on and re-ran the task: coordinate corrections went
+**21.4% to 0.0%** (15 of 70 citations, then 0 of 39). Zero corrections at the prior rate is
+P = 8.2e-05, so it is not sample size. It is two independent generations rather than a paired
+re-run — the model planned a different outline the second time, 11 artifacts against 6, so the
+citation counts are not comparable and only the proportion is.
 
 The fix is not a kit setting, it is which string goes where. Your verifier holds the source anyway —
 it has to, to verify — so pass it the raw text and let the tool's rendered form exist only for the
 model.
+
+**A BLANK line renders as nothing but its gutter**, and that used to defeat the guard entirely.
+`"     7\t"` strips to `"7"` — non-empty, so it passed the empty-quote check and then matched any
+source containing that digit. A citation of nothing verified, reporting a line the citation never
+claimed. Since 1.8.2 a quote whose every non-blank line is a bare number is refused with its own
+message, which also covers the shapes a model actually emits: the trailing tab trimmed (`"     2"`),
+a space written for it (`"     2 "`), and the render's real trailing newline (`"     2\t\n"`).
+
+Two things to know about that guard. It refuses any all-digit quote, so a citation of a genuine
+number — `"8080"`, or a column from a numeric file — is refused as well; cite the line's text, not
+its coordinate. And it closes the fully-blank case only: a guttered quote of a NEAR-blank line still
+carries content, and the gutter digits can fuse with it (`"    25\t)"` becomes `25\s*\)`) into a
+pattern that matches elsewhere. Rendering every line of every file in this repo and verifying it
+against its own source leaves 2 such false matches in 27,165 quotes. Closing them needs the
+gutter-stripping repair below, which is not what this function does.
 
 **`verify_quote` will not strip a gutter for you, deliberately.** Stripping a leading `spaces +
 digits + tab` from a quote was measured: it repairs 98.1% of guttered quotes, but on a document

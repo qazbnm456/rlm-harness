@@ -48,6 +48,12 @@ def _format_edit_snippet(
     around ``lines[start_line-1:end_line]`` (1-indexed, inclusive), padded with up to
     ``context_lines`` unchanged lines on each side, clamped to ``[1, len(lines)]``.
 
+    Sharing that convention makes this the SECOND source of gutter-bearing text a model can copy
+    into a citation — ``read_file(line_numbers=True)`` is the documented one, and this reaches the
+    model on every successful edit. :func:`~rlm_harness.tools.grounding.verify_quote` must
+    therefore be given the raw file text here too, and since 1.8.2 refuses a quote carrying only a
+    line number (what a BLANK line in this window renders as) rather than falsely verifying it.
+
     If the edited region ITSELF spans more than ``2 * context_lines + 1`` lines, only its own
     head and tail (each ``context_lines`` long) are shown, with a visible ``"... N line(s)
     omitted ..."`` marker between them — bounds the rendered size to a small, fixed multiple of
