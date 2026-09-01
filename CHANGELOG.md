@@ -4,6 +4,72 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.8.2] - 2026-09-01
+
+One correctness fix in shipped code. It is model-visible: dspy builds a tool's description from
+`func.__doc__`, and `verify_quote` is registered directly as a REPL tool, so its refusal text and
+its docstring reach every consumer's model on every call.
+
+### Fixed
+
+- **A quote carrying only a line number verified against almost anything.**
+  `make_read_file_tool(line_numbers=True)` renders a line as `f"{n:>6}\t{line}"`, so a BLANK line
+  renders as `"     7\t"` — and `"     7\t".strip()` is `"7"`. Non-empty, so it passed the
+  empty-quote guard, and the search then reduced to the bare pattern `7`, matching any source
+  containing that digit:
+
+      verify_quote("x = 42\n\ny = 1\n", "     2\t")
+      -> MATCH: found at line 1 (char 5)
+
+  A citation of nothing verified, at a line the citation never claimed. The guard's own stated
+  reason for existing — "trivially matches almost any real text, a meaningless confirmation, not a
+  real check" — describes that case exactly and did not fire on it.
+
+  The guard now covers a second shape: a quote whose every non-blank line is a bare number, refused
+  before any search, with its own message rather than the empty-quote one. The rule reads the whole
+  line loosely on purpose, because the render is not what arrives — a model trims the trailing tab
+  (`"     2"`), writes a space for it (`"     2 "`), or keeps the newline the renderer emits
+  (`"     2\t\n"`), and a tighter pattern catches none of those. It matches ASCII digits only;
+  `\d` accepts fullwidth and Arabic-Indic numerals, which are content here, not coordinates.
+
+  It encodes no line-number format, so `grounding.py` stays independent of the tools that render
+  one. `edit_file`'s success snippet uses the same convention and was never documented as a source
+  of guttered text; it is now.
+
+  **This closes the fully-blank case, not the whole class.** A guttered quote of a NEAR-blank line
+  still carries content, so the guard does not see it, and the gutter digits can fuse with that
+  content into a pattern that matches elsewhere: `"    25\t)"` becomes `25\s*\)`, because a
+  digit-to-punctuation junction is one of the places this function treats whitespace as optional.
+  Measured by rendering every line of every file and verifying it against its own source — 2 such
+  false matches in 27,165 quotes from this repo, 5 in 37,111 from an installed third-party package.
+  Closing those needs the gutter-stripping repair, which is deferred: a position-checked design was
+  built and audited, and it splits lines differently from the renderer in a way that verifies
+  FABRICATED citations on any file containing a form feed. That needs its own release.
+
+  **What this costs.** An all-digit quote no longer verifies even when the digits are genuinely in
+  the source — `verify_quote("port = 8080", "8080")` is refused, and so is a multi-line quote whose
+  every line is a number, such as a column lifted from a numeric file. For a short number that is
+  the point, since the match was never evidence of anything. For a long one it is a real loss: an
+  18-digit identifier appearing verbatim IS strong evidence, and it is refused too. The rule is
+  blunt on purpose — it cannot tell a coordinate from a datum, and the failure it prevents is worse
+  than the one it causes. It was 0 of 1,363 citations in a consumer corpus.
+
+### Docs
+
+- **Line numbers and `verify_quote` are complementary, not alternatives** — a consumer read them as
+  a choice, turned numbers off to keep verification passing, and paid for it: 59 of 411 stored
+  citations quoted the text verbatim at the wrong line. Turning them back on and re-running the
+  same task moved coordinate corrections from 21.4% to 0.0% (15 of 70, then 0 of 39; P = 8.2e-05
+  against the prior rate). Read that as a proportion, not a paired experiment — the second run
+  planned a different outline, so it is 11 artifacts against 6 and the citation counts differ. The
+  rule is which string goes where — the rendered text to the model, the raw file to the verifier —
+  and the guide now says so under its own heading.
+
+- **The README's Status section no longer restates the current release.** It had fallen five
+  versions behind while claiming to describe the current one. It now points at the Releases page
+  and this file and keeps only what does not change with a version number. That file is the PyPI
+  long description, so the stale text was the first thing a reader saw.
+
 ## [1.8.1] - 2026-08-30
 
 Documentation and test only. No behaviour change, no API change — every 1.8.0 call path is
