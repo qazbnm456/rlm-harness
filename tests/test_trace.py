@@ -1,4 +1,5 @@
 import json
+import pathlib
 import threading
 import types
 
@@ -883,3 +884,60 @@ def test_a_truncated_file_with_this_runs_events_but_no_run_start_emits_nothing(t
     rec = TraceRecorder(str(path), run_id="r", record_metrics=True)
     rec._abs_path = str(path)
     assert rec._snapshot_facts() is None, "facts were computed from a headless fragment"
+
+
+# --- lone surrogates must not lose the event, and a failure must say WHY -----------------------
+
+
+def _end(path):
+    return next(json.loads(x)["payload"] for x in pathlib.Path(path).read_text().splitlines()
+                if json.loads(x)["type"] == "run_end")
+
+
+def test_a_lone_surrogate_in_a_payload_does_not_lose_the_event(tmp_path):
+    """PRE-EXISTING bug, reproducible with no new field involved: `record()` json-dumps with
+    `ensure_ascii=False` into a handle that had STRICT error handling, so a lone surrogate raised
+    `UnicodeEncodeError` and the event was never written. `os.fsdecode`, a `surrogateescape`
+    decode, and a model completion embedded in a dspy adapter error all produce them."""
+    code = "x = '/data/caf\udce9'"
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r") as rec:
+        rec.record("main_step", {"turn": 1, "code": code})
+    got = [e for e in load_events(str(p), "r") if e["type"] == "main_step"][0]
+    assert got["payload"]["code"] == code        # written AND round-tripped, not merely written
+
+
+def test_a_surrogate_in_the_failure_message_still_writes_run_end(tmp_path):
+    """Worst on the failure path: the trace is the only surviving account of what happened."""
+    p = tmp_path / "t.jsonl"
+    try:
+        with TraceRecorder(str(p), run_id="r"):
+            raise ValueError("cannot open /data/caf\udce9.txt")
+    except ValueError:
+        pass
+    assert _end(p)["ok"] is False
+
+
+@pytest.mark.parametrize("text", ["中文測試", "emoji 🎯", "line1\nline2", 'quote " and \\ '])
+def test_ordinary_text_round_trips_unchanged(tmp_path, text):
+    """`backslashreplace` fires only on characters that cannot be encoded AT ALL, so it is not a
+    change to how ordinary text is written."""
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r") as rec:
+        rec.record("main_step", {"turn": 1, "code": text})
+    got = [e for e in load_events(str(p), "r") if e["type"] == "main_step"][0]
+    assert got["payload"]["code"] == text
+
+
+@pytest.mark.parametrize("text", ["中文測試", "emoji 🎯"])
+def test_non_ascii_still_reaches_the_file_raw(tmp_path, text):
+    """Pins the encoder change as ENCODER-level. A "fix" reaching for `ensure_ascii=True` would
+    also stop the surrogate crash -- and silently re-encode every non-ASCII trace the fleet has
+    ever written into backslash-u escapes. Only the raw-byte check separates the two.
+
+    Applies to non-ASCII only: JSON escapes newlines, quotes and backslashes by specification,
+    which is not what this is about."""
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r") as rec:
+        rec.record("main_step", {"turn": 1, "code": text})
+    assert text in p.read_text()
