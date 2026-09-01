@@ -36,13 +36,16 @@ its docstring reach every consumer's model on every call.
   one. `edit_file`'s success snippet uses the same convention and was never documented as a source
   of guttered text; it is now.
 
-  **This closes the fully-blank case, not the whole class.** A guttered quote of a NEAR-blank line
-  still carries content, so the guard does not see it, and the gutter digits can fuse with that
-  content into a pattern that matches elsewhere: `"    25\t)"` becomes `25\s*\)`, because a
-  digit-to-punctuation junction is one of the places this function treats whitespace as optional.
-  Measured by rendering every line of every file and verifying it against its own source — 2 such
-  false matches in 27,165 quotes from this repo, 5 in 37,111 from an installed third-party package.
-  Closing those needs the gutter-stripping repair, which is deferred: a position-checked design was
+  **This closes the fully-blank case, not the whole class.** A guttered quote that carries content
+  is not refused, and the gutter NUMBER is then searched as literal content — so the quote matches
+  wherever that number happens to precede the line's text, including across a mandatory `\s+` that
+  spans blank lines. A full line of code is reachable that way, not only a line of punctuation.
+  From this repo's own suite: a quote claiming line 42 of `tests/test_async.py` verifies at line
+  39, because line 39 ends `== 42` and the pattern becomes `42\s+def\s+test_run_...`. Measured by
+  rendering every non-blank line of every `.py` here and verifying it against its own file, that is
+  2 false matches in 17,412 quotes, about 1 in 8,700.
+
+  Closing them needs the gutter-stripping repair, which is deferred: a position-checked design was
   built and audited, and it splits lines differently from the renderer in a way that verifies
   FABRICATED citations on any file containing a form feed. That needs its own release.
 
