@@ -613,9 +613,15 @@ def test_a_shipped_outbound_tool_records_its_own_duration(tmp_path):
     assert waste.wasted_seconds == 0.0          # it succeeded
 
 
-def test_a_refusal_that_never_left_the_process_records_no_duration(tmp_path):
-    """A blocked URL never touched the network. Charging it a ~0 duration would put noise into the
-    wall-clock attribution; absent is the honest answer."""
+def test_a_refusal_called_outside_a_task_records_no_duration(tmp_path):
+    """What is pinned here is the seam's BOUNDARY, not the old "a refusal is never timed" rule.
+
+    That rule is gone as of 1.8.3: through a task, `_ensure_tool_timing` wraps every tool and the
+    refusal branch carries a true ~0 rather than an absent field — because `None` in `ToolWaste`
+    means "nobody measured", so spending it on "measured, and it was instant" makes the two
+    indistinguishable. Called DIRECTLY, as here, there is no wrapper and nothing to read, which is
+    unchanged and is why this file's other exact-payload assertions still hold.
+    `tests/test_tool_durations.py` pins the task-seam side."""
     from rlm_harness.tools import make_fetch_tool
 
     p = tmp_path / "t.jsonl"

@@ -80,7 +80,10 @@ def make_web_search_tool(
         if not q:
             record_tool_call("web_search", args={"query": q}, ok=False, note="empty query")
             return "Refused: empty search query."
-        t0 = time.perf_counter()   # the outbound call only; the empty-query refusal above is free
+        # The outbound call only -- narrower than the task seam's window, so it wins. The
+        # empty-query refusal above now carries the seam's ~0 instead of no field at all; see
+        # `make_fetch_tool` for why absent stopped being the honest answer.
+        t0 = time.perf_counter()
         try:
             results = normalise_search_results(
                 searcher(q), max_results=max_results, drop_unsafe_urls=drop_unsafe_urls

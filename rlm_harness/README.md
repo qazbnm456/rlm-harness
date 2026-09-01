@@ -1269,8 +1269,13 @@ concluded "file order is unreliable, sort by `ts`", and reordered its turns.
   that calls one blocks — and that whole round trip is inside the number. Read a large value as
   "the turn blocked", and try to cross-check it against the `tool_call` / `sub_call` events in the
   same run — but that check is often unavailable, and its absence is not the field lying: a `sub_call` carries no
-  duration of its own, and a `tool_call`'s `duration_s` is optional and unset for the local
-  read/grep/edit tools. On a trace written before 1.7.0 there may be no `sub_call` at all — the
+  duration of its own, and a `tool_call`'s `duration_s` is filled since 1.8.3 for most — not all —
+  of what a task hands the model. Before 1.8.3 it was present only for the six tool sources that
+  timed themselves (`fetch_url`, `web_search`, `run_command`, `git_clone`, `model:<id>`, MCP) and
+  absent for everything else; before 1.6.0 it did not exist at all. It is still absent for a tool
+  called outside a task and for the shapes listed under "Which shipped tools carry a duration"
+  below. Treat it as optional and read `None` as "not measured", never as zero.
+  On a trace written before 1.7.0 there may be no `sub_call` at all — the
   event became automatic in that release, so check `run_start.rlm_harness` before reading a zero.
   For scale, measured on a real workload: execution is ~1% of a turn's wall-clock; ~99% is the model
   generating. Prefer a measured field over a gap wherever one exists — and treat a
@@ -1321,24 +1326,63 @@ Two things it refuses to do, both deliberate:
   validator, not over every call: a circuit break ran no validator and an endpoint failure produced
   no output to judge.
 - **It never infers a duration from the gap between events.** `*_seconds` is `None` — meaning "not
-  recorded" — for any tool that did not pass `duration_s`, including every trace written before
-  1.6.0. `0.0` would read as "measured and found to be free", and inferring from event gaps charges
+  recorded" — whenever the events carry no `duration_s`. Since 1.8.3 that is narrower than it was:
+  a task fills the field for nearly all of what it hands the model, so `None` now means a pre-1.8.3
+  trace, a tool called outside a task, or one of the shapes named below; before 1.6.0 the field did
+  not exist at all. `0.0` would read as "measured and found to be free", and inferring from event gaps charges
   a whole turn's model generation to that turn's first tool call. Every wall-clock attribution made
   against this kit's own corpus before 1.6.0 had exactly that error in it.
 
-**Which shipped tools carry a duration.** The ones whose cost is a WAIT on something outside this
-process: `fetch_url`, `web_search`, `run_command`, `git_clone`, the `model:<id>` tool from
-`model_as_tool`, and every MCP tool. A local read/edit is sub-millisecond and its refusal paths
-never touch anything, so timing them would add noise to the attribution rather than signal — those
-record no `duration_s` and the metric says "not recorded" rather than "free".
+**Which shipped tools carry a duration: since 1.8.3, nearly all of them.** `RLMTask` wraps every tool it
+hands the model, and `record_tool_call` fills `duration_s` from that wrapper whenever the tool did
+not measure itself. A tool that DOES measure itself keeps its own number, because it scopes the
+window more precisely — `fetch_url` starts its clock after the SSRF check, `run_command` keeps a
+runner-reported figure alongside. Your own tools are covered too, with no second event: the wrapper
+publishes a start time and records nothing.
 
-`grep_files` is the honest exception to that reasoning and is documented rather than fixed: it
-ships `per_match_timeout_s=1.0` per line and `max_total_time_s=30.0` per call, so it is *not*
-sub-millisecond in principle, and `compute_tool_waste` is blind to exactly its worst case. It stays
-untimed because it is sub-millisecond in PRACTICE on the corpora measured so far — n=146, median
-0.029s, max 0.746s, not one call over a second. Two caveats stand against that number: it does not
-identify which backend served those calls, and it contains no pathological regex over a large tree,
-which is the only shape that would approach the budget. New evidence of either reopens this.
+**Four shapes are deliberately NOT wrapped**, and a fifth is wrapped but records nothing, each falling back to an absent field rather than a
+wrong one. A `dspy.Tool` OBJECT is passed through untouched (`mcp_tools` returns these, and they
+record their own duration; a `dspy.Tool` you build yourself does not, so pass `duration_s`
+yourself). So are a callable class instance and a `functools.partial`. `functools.wraps` does not refuse
+either — it skips the attributes they lack — which is the problem: the wrapper keeps its own
+`__name__` and dspy then registers `timed` with the arg types dropped. A coroutine function is
+skipped for a different reason — `wraps` handles it fine, but dspy branches on
+`inspect.iscoroutinefunction`, which does not follow `__wrapped__`, so wrapping one turns a run
+that completes into an error. A GENERATOR FUNCTION is wrapped like any other, but records
+nothing: the wrapper hands back the generator object and releases the start time before the body
+has run, so the `record_tool_call` inside that body finds none. (A plain function that merely
+returns a generator expression is timed normally — its body does run inside the window.)
+
+And the fill is matched on the tool's NAME, so a call recorded under a name other than the wrapped
+function's `__name__` is left unmeasured rather than charged your window — including the tools your
+own composite tool calls inside itself.
+
+**The one shape that gets a wrong number rather than none**, disclosed because this function's own
+bar is that a confident wrong answer is worse than an honest unknown: a composite tool whose
+`__name__` MATCHES the tool it calls inside itself. A consumer wrapper named `read_file` that
+delegates to `make_read_file_tool`'s `read_file` collides on the name, and every inner call is
+charged the outer window. Measured with 3 inner reads inside a 0.15 s wrapper: four events of
+~0.151 s each — the outer tool's own record lands in the same bucket, by construction, since the
+collision IS the shape — so `compute_tool_waste["read_file"].total_seconds` reads 0.605 s against
+0.15 s real, **4.0x**. Before 1.8.3 that shape produced `None`. Give your wrapper a distinct
+name, or pass `duration_s` yourself. (Returning a kit factory's tool AS-IS is not this shape —
+there is only one function, and it is timed correctly.)
+
+This reverses two rules the kit used to state, and both reversals have the same cause.
+
+*A refusal now carries a duration.* It used to record none, on the argument that a blocked URL
+never touched the network so a ~0 would be noise. But `None` in `ToolWaste` means "nobody
+measured", so using it for "measured, and it was instant" makes those two indistinguishable —
+which is the structural-zero mistake 1.7.0 shipped a release to fix for `sub_call`.
+
+*`grep_files` is no longer exempt*, and it was its own exemption that said so: the text here used
+to justify leaving it untimed with n=146, median 0.029s, max 0.746s, and to name "a pathological
+regex over a large tree" as the shape that would reopen it. Re-measured on a consumer deployment
+across nine real repositories, 7 patterns x 3 runs each: **median 744 ms and max 6.3 s on a
+2,110-file repository**, and it does not scale with file count — a 102-file repo measured slower
+than a 1,210-file one, so the driver is bytes and match count, not files. Against the same corpus
+that tool alone is about 40% of all sandbox execution time. The old number was not wrong; it was
+taken on a corpus without a big repository in it.
 
 The tool that dominates a real run is usually the consumer's own model-backed one, and for the two
 BASE factories the kit cannot record it: `make_model_tool` and `make_harness_tool` are deliberately
