@@ -132,6 +132,53 @@ def _ensure_tool_timing(tool: Any) -> Any:
     return timed
 
 
+_ERROR_CHAIN_CAP = 5
+
+
+def _error_chain(exc: BaseException, cap: int = _ERROR_CHAIN_CAP) -> list[str]:
+    """The causes BELOW ``exc``, innermost last, rendered with ``short_error``.
+
+    ``_retry.py`` raises ``RLMTaskError(...) from last_error``, so a failed run's real cause is
+    chained on the exception object -- and ``repr(exc)``, which is all ``run_end`` recorded until
+    1.8.4, drops it. ``RLMTaskError``'s message is deliberately generic, so the trace said only
+    that the run failed. Across a nine-consumer fleet that was 15 of 15 recorded failures carrying
+    no recoverable cause, on the one artifact that outlives an intermittent failure.
+
+    The outer exception is NOT included: ``payload["error"]`` already holds it, and a second
+    rendering of the same object would spend a slot saying nothing new.
+
+    * **``__cause__``, else ``__context__`` unless ``__suppress_context__``.** What sets
+      ``__context__`` is raising a NEW exception inside an ``except`` without ``from`` -- a BARE
+      ``raise`` re-raises the same object and sets nothing. A ``finally`` or a function called from
+      an ``except`` does it too. The kit has 12 bare re-raises and zero new-raises-without-``from``
+      (AST-verified), so its own frames only ever carry ``__cause__`` -- but ``last_error`` is
+      whatever dspy / litellm / httpx raised, and those do raise new exceptions that way.
+    * **The ``seen`` set is what guarantees TERMINATION**, not the cap: ``__context__`` can form a
+      cycle, and each frame is visited at most once. The cap then decides how much is KEPT.
+    * **Truncation drops the OUTER end.** The innermost frame is the root cause and the reason this
+      exists; keeping the outer end would lose it exactly on the deep chains that need it most.
+    * Frames are collected before rendering, so a pathological chain costs one ``short_error`` per
+      SURVIVING frame rather than per frame walked.
+    """
+    # Deferred: `_retry` imports pydantic, and this module's docstring promises a stdlib-only
+    # top level. Same posture as the `config` and `metrics` imports elsewhere in this file.
+    from ._retry import short_error
+
+    frames: list[BaseException] = []
+    seen = {id(exc)}
+    cur: BaseException = exc
+    while True:
+        nxt = cur.__cause__
+        if nxt is None and not cur.__suppress_context__:
+            nxt = cur.__context__
+        if nxt is None or id(nxt) in seen:
+            break
+        seen.add(id(nxt))
+        frames.append(nxt)
+        cur = nxt
+    return [short_error(f) for f in frames[-cap:]]
+
+
 @contextlib.contextmanager
 def recorder_scope(recorder: TraceRecorder | None) -> Iterator[None]:
     """Make ``recorder`` the active recorder for the CURRENT context (thread), restoring on exit.
@@ -388,6 +435,19 @@ class TraceRecorder:
     def __exit__(self, exc_type, exc, tb) -> None:
         payload = {"ok": exc_type is None, "error": repr(exc) if exc else None}
         try:
+            if exc is not None:
+                # INSIDE this `try`, so the `finally` below still records `run_end`, resets the
+                # contextvar and closes the handle even on the one escape `suppress(Exception)`
+                # cannot catch: a `BaseException` out of a frame's `__str__`, which `short_error`
+                # propagates by design. Placed before the `try` this leaked all three.
+                #
+                # SUPPRESSED for the reason the metrics snapshot below is: `__exit__` runs during
+                # exception propagation, and a subclass whose `__cause__` is a property that RAISES
+                # would otherwise replace the run's own exception with a bookkeeping bug.
+                with contextlib.suppress(Exception):
+                    chain = _error_chain(exc)
+                    if chain:                   # absent, never empty: a reader must be able to tell
+                        payload["error_chain"] = chain  # "none" from "one we failed to build"
             if self._record_metrics:
                 # SUPPRESSED and computed into a LOCAL, with `run_end` recorded from the `finally`
                 # below. `__exit__` runs during exception propagation: a raise here would both lose

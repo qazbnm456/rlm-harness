@@ -941,3 +941,275 @@ def test_non_ascii_still_reaches_the_file_raw(tmp_path, text):
     with TraceRecorder(str(p), run_id="r") as rec:
         rec.record("main_step", {"turn": 1, "code": text})
     assert text in p.read_text()
+
+
+def _fail_with(chain_depth, path, run_id="r"):
+    """Raise an exception carrying `chain_depth` causes below it, inside a recorder."""
+    def build(n):
+        if n == 0:
+            return RuntimeError("root cause: proxy read timeout")
+        try:
+            raise build(n - 1)
+        except RuntimeError as e:
+            return _chain(f"layer {n}", e)
+
+    def _chain(msg, cause):
+        err = RuntimeError(msg)
+        err.__cause__ = cause
+        return err
+
+    try:
+        with TraceRecorder(str(path), run_id=run_id):
+            raise build(chain_depth)
+    except RuntimeError:
+        pass
+
+
+def test_a_failed_run_records_the_cause_chain_innermost_last(tmp_path):
+    """The whole point. Until 1.8.4 a failed run's trace said only that it failed: `_retry.py`
+    raises `RLMTaskError(...) from last_error` and `repr()` drops the chain, while
+    `RLMTaskError`'s message is deliberately generic. Across a nine-consumer fleet that was 15 of
+    15 recorded failures with no recoverable cause.
+
+    Asserted on the INNERMOST frame BY VALUE -- the root cause is the reason this exists, and a
+    test that only checked the key exists would pass on a one-element list holding the wrong end."""
+    p = tmp_path / "t.jsonl"
+    _fail_with(2, p)
+    chain = _end(p)["error_chain"]
+    assert chain[-1] == "RuntimeError: root cause: proxy read timeout"
+    assert "layer" in chain[0]                   # ...and the outer causes are above it
+
+
+def test_a_depth_two_chain_emits_the_key(tmp_path):
+    """The commonest real shape -- one cause below the wrapper, which is what you get whenever
+    `last_error` has no cause of its own. Without this case a `len(chain) > 1` threshold
+    passes -- verified by mutation."""
+    p = tmp_path / "t.jsonl"
+    _fail_with(1, p)
+    assert len(_end(p)["error_chain"]) == 1
+
+
+def test_a_failure_with_no_chain_records_no_key_at_all(tmp_path):
+    """Absent, never empty: a reader must be able to tell "there was no cause" from "we failed to
+    build one"."""
+    p = tmp_path / "t.jsonl"
+    try:
+        with TraceRecorder(str(p), run_id="r"):
+            raise RuntimeError("bare")
+    except RuntimeError:
+        pass
+    assert "error_chain" not in _end(p)
+
+
+def test_a_successful_run_records_no_chain_but_keeps_its_error_key(tmp_path):
+    """`error` is byte-identical to before in every state -- and a SUCCESSFUL run has always
+    recorded `error: None`, so the assertion is "no `error_chain`", never "no `error`"."""
+    p = tmp_path / "t.jsonl"
+    with TraceRecorder(str(p), run_id="r"):
+        pass
+    end = _end(p)
+    assert end == {"ok": True, "error": None}
+
+
+def test_the_error_field_is_still_a_repr_on_a_failure(tmp_path):
+    """`error` must be byte-identical to what it was before the chain existed. The success case
+    cannot see this -- it records `None` under any rendering -- so the guard has to sit on a
+    FAILURE. Two consumers read this field by name and one forwards it verbatim into a
+    browser-facing body.
+
+    What `repr` carries and `str` drops is the exception TYPE. On a `RLMTaskError` whose message is
+    deliberately generic, the type is most of the remaining signal."""
+    p = tmp_path / "t.jsonl"
+    try:
+        with TraceRecorder(str(p), run_id="r"):
+            raise ValueError("boom")
+    except ValueError:
+        pass
+    assert _end(p)["error"] == "ValueError('boom')"      # str() would give bare "boom"
+
+
+def test_suppress_context_is_honoured(tmp_path):
+    """`raise X from None` severs the chain deliberately; recording `__context__` anyway would
+    republish exactly what the author suppressed."""
+    p = tmp_path / "t.jsonl"
+    try:
+        with TraceRecorder(str(p), run_id="r"):
+            try:
+                raise ValueError("inner")
+            except ValueError:
+                raise RuntimeError("outer") from None
+    except RuntimeError:
+        pass
+    assert "error_chain" not in _end(p)
+
+
+def test_a_context_cycle_terminates_with_an_exact_list(tmp_path):
+    """Asserted as list EQUALITY, not membership, so a guard that merely repeats frames is visible.
+
+    **The `seen` set is the ONLY termination guarantee.** The frame cap is applied to the finished
+    list (`frames[-cap:]`), so it bounds nothing inside the walk -- an earlier version of this
+    docstring said the opposite, and a mutation sweep trusting it would have recorded "drop the
+    `id()` guard" as a red when it in fact WEDGES. There is no `pytest-timeout` here, so that
+    regression hangs a CI job to its limit rather than failing it. Removing the guard makes this
+    very test spin forever; the sibling below is the one that pins the `seen.add` line itself."""
+    a, b = ValueError("a"), ValueError("b")
+    a.__context__, b.__context__ = b, a
+    p = tmp_path / "t.jsonl"
+    try:
+        with TraceRecorder(str(p), run_id="r"):
+            raise a
+    except ValueError:
+        pass
+    assert _end(p)["error_chain"] == ["ValueError: b"]
+
+
+def test_a_cycle_that_does_not_pass_through_the_root_terminates(tmp_path):
+    """Pins `seen.add(id(nxt))`, which the root-cycle test above cannot reach.
+
+    That test's cycle runs back through the exception the walk STARTED from, and `seen` is seeded
+    with it -- so the initial seed alone is enough and deleting `seen.add` survives. Only a cycle
+    among frames BELOW the root (r -> x -> y -> x) needs the line: without it the walk never exits,
+    verified to 200,000 steps."""
+    r, x, y = ValueError("r"), ValueError("x"), ValueError("y")
+    r.__context__, x.__context__, y.__context__ = x, y, x
+
+    p = tmp_path / "t.jsonl"
+    try:
+        with TraceRecorder(str(p), run_id="r"):
+            raise r
+    except ValueError:
+        pass
+    assert _end(p)["error_chain"] == ["ValueError: x", "ValueError: y"]
+
+
+def test_suppression_on_an_INNER_frame_is_honoured(tmp_path):
+    """`__suppress_context__` is read off the frame being walked, not off the outer exception. The
+    depth-1 test above cannot tell the two apart, and `not exc.__suppress_context__` survives it --
+    so an author's `raise ... from None` deeper in the chain would have been republished anyway."""
+    root = ValueError("private detail")
+    middle = RuntimeError("middle")
+    middle.__context__ = root
+    middle.__suppress_context__ = True           # the author severed it HERE
+    outer = RuntimeError("outer")
+    outer.__context__ = middle
+
+    p = tmp_path / "t.jsonl"
+    try:
+        with TraceRecorder(str(p), run_id="r"):
+            raise outer
+    except RuntimeError:
+        pass
+    assert _end(p)["error_chain"] == ["RuntimeError: middle"]
+
+
+def test_a_surrogate_in_a_CAUSE_message_still_writes_run_end(tmp_path):
+    """The exposure this release actually creates. `error` survives a surrogate because `repr()`
+    escapes it; a chain frame goes through `short_error`, which is an f-string over `str(exc)` and
+    does NOT -- so the encoder fix is what keeps the event. Reverting `errors="backslashreplace"`
+    leaves the sibling surrogate test red but this one is the one that names the NEW path."""
+    p = tmp_path / "t.jsonl"
+    try:
+        with TraceRecorder(str(p), run_id="r"):
+            try:
+                raise OSError("cannot read /repo/caf\udce9/x.py")
+            except OSError as e:
+                raise RuntimeError("wrapper") from e
+    except RuntimeError:
+        pass
+    end = _end(p)
+    assert end["ok"] is False
+    assert "caf" in end["error_chain"][0]
+
+
+def test_a_chain_deeper_than_the_cap_keeps_the_INNERMOST_frames(tmp_path):
+    """Truncation drops the OUTER end. Keeping the outer end would lose the root cause exactly on
+    the deep chains -- through third-party layers -- that the headroom exists for."""
+    p = tmp_path / "t.jsonl"
+    _fail_with(9, p)
+    chain = _end(p)["error_chain"]
+    assert len(chain) == 5
+    assert chain[-1] == "RuntimeError: root cause: proxy read timeout"
+
+
+def test_a_cause_that_raises_does_not_replace_the_runs_own_exception(tmp_path):
+    """`__exit__` runs during exception propagation, so a bookkeeping failure here would REPLACE
+    what actually went wrong -- the same reason the metrics snapshot is suppressed."""
+    class Hostile(RuntimeError):
+        @property
+        def __cause__(self):
+            raise KeyError("boom")
+
+    p = tmp_path / "t.jsonl"
+    with pytest.raises(Hostile), TraceRecorder(str(p), run_id="r"):
+        raise Hostile("the real failure")        # the ORIGINAL exception, not a KeyError
+    assert _end(p)["ok"] is False                # ...and run_end survived
+
+
+def test_an_enormous_cause_message_is_bounded(tmp_path):
+    """dspy's `AdapterParseError` embeds the ENTIRE raw completion; `short_error` is reused
+    precisely because it already keeps head and tail and says how much it dropped. Asserted on the
+    elision marker rather than a length, so this pins the helper and not a number."""
+    p = tmp_path / "t.jsonl"
+    try:
+        with TraceRecorder(str(p), run_id="r"):
+            try:
+                raise ValueError("X" * 100_000)
+            except ValueError as e:
+                raise RuntimeError("wrapper") from e
+    except RuntimeError:
+        pass
+    assert "chars elided" in _end(p)["error_chain"][0]
+
+
+def test_a_BaseException_from_the_walk_still_writes_run_end_and_resets(tmp_path):
+    """`suppress(Exception)` cannot catch a `BaseException`, and `short_error` propagates those by
+    design. Built OUTSIDE the `try/finally` this cost three things at once — the `run_end` event,
+    the contextvar reset, and the file handle — on the failure path, which is the one where the
+    trace is the only surviving account.
+
+    The metrics snapshot whose posture the comment claims to copy has always been inside that
+    `try`; the chain block was not, so the parity the comment asserted was not actually met."""
+    class Hostile(RuntimeError):
+        @property
+        def __cause__(self):
+            raise KeyboardInterrupt("escapes suppress(Exception) by design")
+
+    p = tmp_path / "t.jsonl"
+    with pytest.raises(BaseException) as caught, TraceRecorder(str(p), run_id="r") as rec:
+        fh = rec._fh                             # captured INSIDE: `__exit__` nulls the attribute
+        raise Hostile("the real failure")
+    assert isinstance(caught.value, KeyboardInterrupt)
+    assert _end(p)["ok"] is False                # run_end survived
+    assert current_recorder() is None            # ...the contextvar was reset...
+    assert fh.closed                             # ...and the handle was closed
+    # `fh.closed` on the captured OBJECT, not a trailing-newline check on the file: `record()`
+    # flushes after every write, so the newline is on disk whether or not the handle is closed.
+    # An earlier version asserted that and claimed it proved closure -- removing `self._fh.close()`
+    # left the whole file green. `rec._fh is None` fails the same way, since `__exit__` nulls the
+    # attribute unconditionally after closing.
+
+
+def test_cause_is_preferred_over_context(tmp_path):
+    """`__cause__` is the author's STATED cause; `__context__` is whatever happened to be in
+    flight. Reading the wrong one reports a coincidence as the reason.
+
+    Reaching the distinction takes deliberate setup, and that is the finding rather than an
+    inconvenience: **CPython sets `__suppress_context__ = True` as a side effect of assigning
+    `__cause__`** (which is also what `raise X from Y` does), so on any normally-constructed
+    exception `__context__` is already unreachable and the two walk orders agree. The order is only
+    observable on a frame where something reset that flag — so this is a defensive pin on the
+    stated intent, not a scenario seen in the wild. A version of this test that merely assigned
+    both attributes could not tell the orders apart, and a `__context__`-first walk survived it."""
+    stated = ValueError("the stated cause")
+    incidental = KeyError("merely in flight")
+    outer = RuntimeError("wrapper")
+    outer.__cause__, outer.__context__ = stated, incidental
+    outer.__suppress_context__ = False           # undo the side effect of assigning __cause__
+
+    p = tmp_path / "t.jsonl"
+    try:
+        with TraceRecorder(str(p), run_id="r"):
+            raise outer
+    except RuntimeError:
+        pass
+    assert _end(p)["error_chain"] == ["ValueError: the stated cause"]
