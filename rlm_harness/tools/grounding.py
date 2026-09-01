@@ -78,6 +78,54 @@ def _is_word(ch: str) -> bool:
     return re.match(r"\w", ch, re.UNICODE) is not None
 
 
+_NUMBERS_ONLY_LINE = re.compile(r"^\s*[0-9]+\s*$")
+
+
+def _carries_only_numbers(quote: str) -> bool:
+    """Is every non-blank line of ``quote`` a bare number and nothing else?
+
+    Such a quote asserts no content, so verifying it confirms nothing — the same reason an empty
+    or whitespace-only quote is refused. It reaches this function by a route the kit itself opens:
+    ``make_read_file_tool(line_numbers=True)`` and ``edit_file``'s confirmation window both render
+    a line as ``f"{n:>6}\\t{line}"``, so a BLANK line renders as ``"     7\\t"`` — whose ``.strip()``
+    is ``"7"``, non-empty, and which then matches any source containing that digit.
+
+    Three details are load-bearing and each has a named failure:
+
+    * **It reads the RAW ``quote``, and under THIS rule that is defensive rather than
+      load-bearing.** Verified equivalent to reading ``quote.strip()`` across 14,550 exhaustive
+      combinations, and necessarily so: ``strip()`` removes exactly the leading/trailing whitespace
+      the rule already ignores on both edges. The equivalence is a property of the rule's
+      PERMISSIVENESS, not of the call — tighten either edge (require the separator, say) and the
+      strip starts destroying the evidence it is meant to weigh, because ``"     7\\t".strip()`` is
+      ``"7"``. Reading raw costs nothing and survives that change.
+    * **Blank lines are SKIPPED, not disqualifying.** ``read_file``'s real output for a blank line
+      keeps its trailing newline (``"     2\\t\\n"``), and a model that pads or wraps a quote emits
+      ``"\\n     2\\t\\n"`` or ``"     2\\t\\n\\n"``. Requiring EVERY split element to match lets one
+      empty element drop all three through.
+    * **``\\s*`` on both sides and ``[0-9]``, not ``[ ]*`` + a literal tab and not ``\\d``.** A model
+      trims the trailing tab (``"     2"``) or writes a space for it (``"     2 "``), and a quote may
+      arrive with a leading tab; the tighter form misses all three and buys nothing, since no
+      pattern requiring ``[0-9]+`` can match text starting with a letter. ``\\d`` is UNICODE — it
+      accepts ``"     \u0662\\t"`` and ``"     \uff12\\t"``, which no renderer here emits.
+
+    This encodes NO line-number format. The claim is only that a quote carrying nothing but digits
+    is not a claim, which stands on its own — so ``grounding.py`` stays independent of the tools
+    that render line numbers.
+
+    **It closes the fully-blank case, not the whole class.** A guttered quote of a NEAR-blank line
+    still carries content, so it is not refused here, and the digits can fuse with it into a
+    pattern that matches elsewhere — ``"    25\\t)"`` becomes ``25\\s*\\)`` because
+    ``_whitespace_joiner`` makes a digit-to-punctuation junction optional. Measured by rendering
+    every line of every file and verifying it against its own source: 2 such false matches in
+    27,165 quotes from this repo, 5 in 37,111 from an installed third-party package. Closing those
+    needs the gutter-stripping repair, which is deferred — see CHANGELOG 1.8.2. Do not describe
+    this guard as refusing every guttered quote.
+    """
+    lines = [line for line in quote.split("\n") if line.strip()]
+    return bool(lines) and all(_NUMBERS_ONLY_LINE.match(line) for line in lines)
+
+
 def verify_quote(
     source: str,
     quote: str,
@@ -115,12 +163,12 @@ def verify_quote(
     alternation — the shapes that exhibit catastrophic backtracking — so stdlib ``re`` is provably
     safe here regardless of what ``quote`` contains.
 
-    **Pass the RAW file text as ``source``, not the output of a line-numbered reader.**
-    :func:`~rlm_harness.tools.fs.make_read_file_tool`'s ``line_numbers=True`` prefixes each line
-    with ``f"{n:>6}\\t"``; a model quoting from that render carries the gutter into its quote and
-    this function refuses it, correctly — the gutter is not file content. The two tools are
-    complementary: numbers exist so the MODEL can cite a coordinate without counting lines, raw text
-    exists so the VERIFIER can check the claim.
+    **Pass the RAW file text as ``source``, not a line-numbered render.** ``read_file``'s
+    ``line_numbers=True`` and ``edit_file``'s success snippet both prefix a line with
+    ``f"{n:>6}\\t"``, so both are gutter-bearing text easy to copy by accident. A quote carrying a
+    gutter usually fails here, because the gutter is not file content. The two are complementary:
+    numbers so the MODEL can cite a coordinate without counting lines, raw text so the VERIFIER can
+    check the claim.
 
     **This function will not strip a gutter for you, and that is a measured decision.** Removing a
     leading ``spaces + digits + tab`` repairs 98.1% of guttered quotes — and on a document whose
@@ -142,10 +190,18 @@ def verify_quote(
     candidate clearing the similarity cutoff skips the hint entirely rather than forcing a
     low-quality one.
 
-    A ``quote`` that is empty OR whitespace-only is refused outright (before any search): a
-    whitespace-only ``quote`` would otherwise reduce to the bare pattern ``\\s+``, which trivially
-    matches almost any real text — a meaningless confirmation, not a real check. Same reasoning
-    ``edit_file`` already applies to refusing an empty ``old_string``.
+    **A ``quote`` that asserts no content is refused before any search**, because a match on it
+    would confirm nothing. Two shapes, each with its own message:
+
+    * **Empty or whitespace-only.** It would reduce to the bare pattern ``\\s+``, matching almost
+      any real text. Same reasoning ``edit_file`` applies to an empty ``old_string``.
+    * **Only digits and whitespace**, on every non-blank line — which is what a BLANK line of a
+      line-numbered render is (``"     7\\t"``). It would reduce to that digit and match wherever
+      the digit occurs, reporting a line the citation never claimed.
+
+    The second rule is deliberately blunt, so it also refuses an all-digit quote whose digits ARE
+    in the source (``"8080"``, or a column of numbers from a numeric file). Quote the surrounding
+    text instead, so that a match means something.
 
     **Leading/trailing whitespace on ``quote`` is stripped before matching** — it's incidental
     padding, not a claim about what precedes/follows the quoted text in ``source``. Without this,
@@ -157,6 +213,15 @@ def verify_quote(
     stripped_quote = quote.strip()
     if not stripped_quote:
         return "MISMATCH: quote must be non-empty (an empty or whitespace-only quote is not a claim)."
+
+    # On the RAW `quote` -- equivalent to `stripped_quote` under today's rule, and deliberately
+    # not relying on that. See `_carries_only_numbers`.
+    if _carries_only_numbers(quote):
+        return (
+            "MISMATCH: quote carries only digits and whitespace, so there is no text to check "
+            "(a blank line in a line-numbered render is just its number). Quote the line's TEXT "
+            "instead; if the line is blank, quote the nearest non-blank line on its own."
+        )
 
     # Leading/trailing whitespace in `quote` is incidental padding, not a claim about what
     # precedes/follows the quoted text in `source` -- stripped BEFORE pattern-building.
