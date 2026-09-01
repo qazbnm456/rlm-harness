@@ -113,14 +113,21 @@ def _carries_only_numbers(quote: str) -> bool:
     is not a claim, which stands on its own — so ``grounding.py`` stays independent of the tools
     that render line numbers.
 
-    **It closes the fully-blank case, not the whole class.** A guttered quote of a NEAR-blank line
-    still carries content, so it is not refused here, and the digits can fuse with it into a
-    pattern that matches elsewhere — ``"    25\\t)"`` becomes ``25\\s*\\)`` because
-    ``_whitespace_joiner`` makes a digit-to-punctuation junction optional. Measured by rendering
-    every line of every file and verifying it against its own source: 2 such false matches in
-    27,165 quotes from this repo, 5 in 37,111 from an installed third-party package. Closing those
-    needs the gutter-stripping repair, which is deferred — see CHANGELOG 1.8.2. Do not describe
-    this guard as refusing every guttered quote.
+    **It closes the fully-blank case, not the whole class, and the residue is not only blank-ish
+    lines.** A guttered quote that carries content is not refused here, and the GUTTER NUMBER is
+    then searched as literal content — so the quote matches wherever that number happens to precede
+    the line's text, including across a MANDATORY ``\\s+`` junction that spans blank lines. A full
+    line of code is therefore reachable, not merely a line that is only punctuation. Live example
+    in this repo's own suite:
+
+        quote   "    42\\tdef test_run_isolated_does_not_see_an_outer_recorder(tmp_path):"
+        source  line 39 is "    assert asyncio.run(outer()) == 42", then two blank lines
+        result  MATCH at line 39 -- the pattern is `42\\s+def\\s+test_run_...`
+
+    Measured by rendering every non-blank line of every ``.py`` here and verifying it against its
+    own file: 2 false matches in 17,412 quotes (~1 in 8,700), one of them a full line of code.
+    Closing these needs the gutter-stripping repair, which is deferred — see CHANGELOG 1.8.2. Do
+    NOT describe this guard as refusing every guttered quote.
     """
     lines = [line for line in quote.split("\n") if line.strip()]
     return bool(lines) and all(_NUMBERS_ONLY_LINE.match(line) for line in lines)

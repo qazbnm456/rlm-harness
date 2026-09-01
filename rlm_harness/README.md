@@ -944,11 +944,14 @@ a space written for it (`"     2 "`), and the render's real trailing newline (`"
 
 Two things to know about that guard. It refuses any all-digit quote, so a citation of a genuine
 number — `"8080"`, or a column from a numeric file — is refused as well; cite the line's text, not
-its coordinate. And it closes the fully-blank case only: a guttered quote of a NEAR-blank line still
-carries content, and the gutter digits can fuse with it (`"    25\t)"` becomes `25\s*\)`) into a
-pattern that matches elsewhere. Rendering every line of every file in this repo and verifying it
-against its own source leaves 2 such false matches in 27,165 quotes. Closing them needs the
-gutter-stripping repair below, which is not what this function does.
+its coordinate. And it closes the fully-blank case only. A guttered quote that carries content is
+not refused, and the gutter NUMBER is then searched as literal content — so it matches wherever that
+number happens to precede the line's text, across a mandatory `\s+` and therefore across blank
+lines. A full line of code is reachable that way, not just a line of punctuation: a quote claiming
+line 42 of this repo's `tests/test_async.py` verifies at line 39, because line 39 ends `== 42`.
+Rendering every non-blank line of every `.py` here and verifying it against its own file leaves 2
+such false matches in 17,412 quotes, about 1 in 8,700. Closing them needs the gutter-stripping
+repair below, which is not what this function does.
 
 **`verify_quote` will not strip a gutter for you, deliberately.** Stripping a leading `spaces +
 digits + tab` from a quote was measured: it repairs 98.1% of guttered quotes, but on a document
