@@ -160,7 +160,7 @@ __all__ = [
     "run_in_subprocess",
 ]
 
-__version__ = "1.8.3"
+__version__ = "1.8.4"
 
 
 def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import

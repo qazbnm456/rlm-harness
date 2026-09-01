@@ -1230,6 +1230,45 @@ file just written. A killed run has no `run_end` and therefore no snapshot — `
 the events is the authority in every case; the snapshot is a convenience for a reader that will not
 run it.
 
+### When a run fails, the trace says why
+
+`run_end` carries `ok: False` and `error` — the outer exception's `repr`. Since 1.8.4 it also
+carries **`error_chain`** when there is one: the causes BELOW that exception, innermost last, each
+rendered as `Type: message` by `short_error`.
+
+That matters because `RLMTaskError`'s message is deliberately generic. `run_with_retry` raises it
+`from` the last real failure, so the cause is on the exception object — and the `repr` that was all
+`run_end` recorded drops it. Across a nine-consumer fleet, 15 of 15 recorded failures carried
+nothing but the generic sentence, on the one artifact that outlives an intermittent failure you
+cannot reproduce.
+
+    "error": "RLMTaskError(\"Failed to produce a valid 'result' after 2 attempts\")",
+    "error_chain": ["ValueError: adapter could not parse the completion",
+                    "ConnectionError: proxy: read timeout on POST /v1/chat/completions"]
+
+**Read it as absent-or-populated, never as empty.** The key is written only when a chain exists, so
+a reader can tell "there was no cause" from "we could not build one". `error` itself is unchanged.
+
+**Three things it is not.** It is not a traceback — a traceback names every frame's file and line,
+which multiplies the paths on offer; a message carries only what the raiser put in it. That is a
+difference of degree, not of kind: `ValueError("cannot open /data/private/x.txt")` is one message
+and one absolute path, so do not read "no traceback" as "no paths". It is capped at five frames,
+truncating the OUTER end so the root cause survives on a deep chain. And each frame goes through
+`short_error`, which bounds it just over 600 characters — its contract is "never longer than the limit
+plus an elision marker", so treat it as a bound, not an exact number — because dspy's
+`AdapterParseError` embeds the entire raw completion.
+
+**Two cautions if you forward it anywhere.** Unlike `error`'s `repr`, a frame is not guaranteed to
+be single-line — pydantic and dspy adapter errors are multi-line — so a bare SSE `data:` field or a
+markdown table cell will break on one where `error` never did. And an exception message can carry a
+URL with a query-string token; this kit has no scrubber, and `short_error`'s cap is the whole
+mitigation. That exposure already existed for `error`; the chain widens it to third-party frames,
+which is where such a token most often is.
+
+**If you already walk `__cause__` yourself**, the recorded chain is the authority — it is deeper
+than a one-level walk and honours `__suppress_context__`, but each frame is shorter. Prefer it over
+a second derivation, or the two will disagree about the same failure.
+
 **If you are starting a rubric from scratch**, four categories that work for most agent runs. The
 kit ships none of this — the names are yours to copy and the sentences after the dash are yours to
 write:
