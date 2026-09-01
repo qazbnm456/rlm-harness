@@ -4,6 +4,67 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.8.4] - 2026-09-02
+
+A failed run's trace now says why it failed — and, separately, stops losing the event that says so.
+
+### Fixed
+
+- **A lone surrogate anywhere in a payload lost the event.** `record()` json-dumps with
+  `ensure_ascii=False` into a handle that had STRICT error handling, so a single unencodable
+  character raised `UnicodeEncodeError` out of `record()` and nothing was written. Reproducible on
+  shipped code with nothing exotic:
+
+      rec.record("main_step", {"code": "x = '/data/caf\udce9'"})   -> UnicodeEncodeError
+
+  `os.fsdecode`, a `surrogateescape` decode, and a model completion embedded in a dspy adapter
+  error all produce them. The handle now opens with `errors="backslashreplace"`, which round-trips
+  byte-exactly through `load_events` — backslashreplace writes the escape, JSON reads it back — and
+  leaves ordinary text alone, because the handler fires only on characters that cannot be encoded
+  at all. `run_end`'s `error` survived this until now only because `repr()` happens to escape
+  surrogates.
+
+### Added
+
+- **`run_end.payload["error_chain"]` — the causes below the outer exception.** `run_with_retry`
+  raises `RLMTaskError(...)` **from** the last real failure, so the cause is chained on the object,
+  and the `repr()` that was all `run_end` recorded drops it. `RLMTaskError`'s message is
+  deliberately generic, so a failed run's trace said only that it had failed.
+
+  **Across the nine-consumer fleet that was 15 of 15 recorded failures with no recoverable cause** —
+  on the one artifact that outlives an intermittent failure. What prompted it: two live runs failed
+  identically and the same case then succeeded unchanged, so there was nothing to reproduce and
+  nothing recorded to read.
+
+  Each frame is `short_error(e)` — `Type: message`, head and tail kept, bounded near 600 characters
+  (its contract is "never longer than the limit plus an elision marker" — a frame measures 624-630 on
+  messages up to 10 MB, the figure moving with the digit count in that marker, so treat it as a
+  bound rather than a number) — reusing the
+  public helper `run_with_retry` already logs each attempt with, rather than promoting `repr()` —
+  which renders an EXCEPTION at exactly one place in the package, the `error` line just above. The outer frame is
+  not repeated, since `error` already holds it.
+
+  Written only when a chain exists, so a reader can tell "no cause" from "could not build one".
+  Never a traceback: a traceback names every frame's file and line, while a message carries only
+  what the raiser put in it — a difference of degree, since a message can itself hold a path. Capped at five
+  frames, truncating the OUTER end so the root cause survives a deep chain. The walk follows
+  `__cause__`, else `__context__` unless `__suppress_context__`. What sets `__context__` is a NEW
+  exception raised while another is in flight without `from` — most often inside an `except`, but a
+  `finally` or a function called from one does it too. The kit has zero of those (AST-verified) and
+  so only ever chains via `__cause__`; dspy, litellm and httpx raise that way.
+
+  **Unconditional, not opt-in, and the `RLM_TRACE_METRICS` precedent does not apply.** That one
+  defaults off because its facts are DERIVABLE — `compute_run_facts(events)` is the authority and
+  the snapshot is convenience. A cause chain exists only on the live exception and is gone the
+  moment `__exit__` returns. Gating it would also repeat what 1.7.0 and 1.8.3 each shipped a fix
+  for: a field that depends on someone opting in is missing for someone.
+
+  **Two cautions before forwarding a frame anywhere.** Unlike `error`'s `repr`, a frame is not
+  guaranteed single-line — pydantic and dspy adapter errors are multi-line. And an exception
+  message can carry a URL with a query-string token; this kit has no scrubber, and `short_error`'s
+  cap is the whole mitigation. The exposure already existed for `error`; the chain widens it to
+  third-party frames, which is where such a token most often lives.
+
 ## [1.8.3] - 2026-09-01
 
 Every tool a task hands the model now records how long it took, without its author doing anything.
