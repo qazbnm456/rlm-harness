@@ -4,6 +4,87 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.8.3] - 2026-09-01
+
+Every tool a task hands the model now records how long it took, without its author doing anything.
+Two documented rules are reversed to make that true, and both reversals have the same cause.
+
+### Fixed
+
+- **`duration_s` existed only where its author remembered, which is the `sub_call` failure one
+  field over.** Six of the kit's tool sources measured themselves; the filesystem and knowledge tools —
+  27 `record_tool_call` sites across `fs.py`, `edit.py`, `archive.py` and `skills.py` — did not. So
+  `metrics.compute_tool_waste`'s `*_seconds` read `None` for them everywhere, and `ToolWaste` is
+  explicit that `None` means "nothing measured" rather than zero.
+
+  **A consumer could not fix it either.** One whose `read_file` / `grep_repo` / `read_skill` are
+  pure delegation to these factories has no seam of its own; wrapping the callable to add a
+  duration would emit a SECOND `tool_call` and double `tool_calls`, `tool_ok` and everything
+  derived from them. It was right to refuse, and the only place to fix it was here.
+
+  `RLMTask._build_rlm` now wraps every tool it hands the model — the same seam and the same reason
+  as 1.7.0's automatic `sub_call` wrapper. The wrapper publishes a start time and **records nothing
+  itself**, so it cannot double-count; `record_tool_call` fills `duration_s` from it only when the
+  caller passed none. A tool that measures itself keeps its own figure, because it scopes the window
+  more tightly — `fetch_url` starts its clock after the SSRF check, `run_command` keeps a
+  runner-reported number alongside. A consumer's own tools are covered with no work.
+
+  **What it deliberately does not reach**, each failing back to an absent field rather than a wrong
+  one. A `dspy.Tool` OBJECT is passed through untouched — `mcp._make_tool` returns one, and it is a
+  pydantic model with no `__name__`, so wrapping it would leave the wrapper called `timed`: two MCP
+  tools would abort the task with "Duplicate tool name", one would register as `timed` with its
+  args collapsed to `{"kwargs": {}}`. MCP records its own duration anyway. A coroutine function is
+  passed through too, because dspy branches on `inspect.iscoroutinefunction`, which does not follow
+  `__wrapped__` — deleting that one line turns a run that completes into `RLMTaskError: You are
+  calling __call__ on an async tool`. So are a callable class instance and a `functools.partial`,
+  neither of which `functools.wraps` can wrap without changing what dspy registers. And a GENERATOR FUNCTION -- one whose body
+  contains a `yield` -- is wrapped like any other yet records nothing: calling it only builds the
+  generator object, and the wrapper releases the start time before the body, and the
+  `record_tool_call` inside it, ever runs. (A plain function that merely RETURNS a generator
+  expression is a different shape and is timed normally; the distinguishing word is *function*,
+  not *returns*.)
+
+  Note the `dspy.Tool` passthrough is safe for MCP because MCP records its own duration; a
+  `dspy.Tool` a CONSUMER builds does not, and must pass `duration_s` itself.
+
+  **The fill is matched on the tool's name, and that is load-bearing.** Only what the task hands
+  the model is wrapped, so a COMPOSITE tool — a consumer's tool calling a kit tool inside itself —
+  would otherwise charge its whole window to every event recorded beneath it. Measured before the
+  check existed: two zero-cost `read_file` calls inside a 0.25 s tool each reported 0.25 s, which
+  triples `compute_tool_waste.total_seconds`. That is worse than the `None` it replaces — `None` is
+  an honest unknown, that was a confident wrong answer — so a mismatch fills nothing.
+
+  Applied at the task seam rather than inside each factory, which is safe for the annotations
+  DESPITE the distance rather than because of it: every `tools/*.py` uses
+  `from __future__ import annotations`, so the annotations `functools.wraps` copies are strings
+  that only resolve in the defining module — and they survive only because `typing.get_type_hints`
+  walks `__wrapped__` to find those globals. A factory-local wrapper would have resolved them
+  trivially; this one depends on a CPython behaviour, which is why it is tested rather than assumed.
+  Verified against dspy 3.3.1 on the 3.11 floor, where a `Tool` construction failure would abort
+  registration for every tool on the task, not just the wrapped one.
+
+### Changed
+
+- **A refused call now carries a duration.** It used to record none, on the argument that a blocked
+  URL never touched the network so a ~0 would be noise. `None` means "nobody measured", so spending
+  it on "measured, and it was instant" makes the two indistinguishable — the mistake 1.7.0 shipped
+  a release to correct. The reversal is stated in the guide, in `make_fetch_tool` and
+  `make_web_search_tool`, and in the test that used to pin the old rule.
+
+- **`grep_files` is no longer exempt from timing, reopened by its own terms.** Its exemption rested
+  on a measurement — n=146, median 0.029s, max 0.746s — and named "a pathological regex over a
+  large tree" as what would reopen it. Re-measured on a consumer deployment across nine real
+  repositories, 7 patterns x 3 runs each: **median 744 ms, p95 4.8 s, max 6.3 s on a 2,110-file
+  repository.** It does not scale with file count — a 102-file repo measured slower than a
+  1,210-file one — so the driver is bytes and match count. Against that corpus the tool alone is
+  about 40% of all sandbox execution time. The old number was not wrong; it was taken on a corpus
+  with no large repository in it.
+
+- **Do not average a `compute_tool_waste` figure across this upgrade.** A tool that reported `None`
+  before reports a real number after, so a corpus spanning the boundary mixes "unmeasured" with
+  "measured" in the same denominator — the same warning the 1.7.0 `sub_call` note carries, and
+  `run_start.rlm_harness` is what separates the cohorts.
+
 ## [1.8.2] - 2026-09-01
 
 One correctness fix in shipped code. It is model-visible: dspy builds a tool's description from

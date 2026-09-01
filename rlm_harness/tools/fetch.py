@@ -161,8 +161,12 @@ def make_fetch_tool(fetcher: Fetcher) -> Callable[[str], str]:
                 note="refused: not a permitted external http(s) URL",
             )
             return f"Refused: {url!r} is not a permitted external http(s) URL."
-        # Timed around the OUTBOUND call only — the refusal above never touched the network, and
-        # charging it a duration would put a meaningless ~0 into the wall-clock attribution.
+        # Timed around the OUTBOUND call only, which is NARROWER than the task seam's window and
+        # therefore wins over it (`record_tool_call` fills only when given nothing). The refusal
+        # above no longer records nothing: since 1.8.3 it carries the seam's wall-clock, which is a
+        # true ~0 rather than an absent field. That reverses a rule this comment used to state, and
+        # the reason is the kit's own 1.7.0 lesson — `None` means "nobody measured", so using it
+        # for "measured, and it was instant" makes the two indistinguishable.
         t0 = time.perf_counter()
         try:
             result = fetcher(url)

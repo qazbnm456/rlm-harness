@@ -110,8 +110,12 @@ class ToolWaste:
     every naive counter absorbs infrastructure failures as content declines. That mistake has
     shipped four times.
 
-    ``*_seconds`` are ``None``, not ``0.0``, when the events carry no ``duration_s`` — i.e. a trace
-    written before 1.6.0, or a tool that does not measure. ``None`` means "not recorded"; ``0.0``
+    ``*_seconds`` are ``None``, not ``0.0``, when the events carry no ``duration_s``. Since 1.8.3
+    that is a NARROWER set than it used to be: a task fills the field for nearly every tool it
+    hands the model, so ``None`` now means a pre-1.8.3 trace, a tool called outside a task, or one
+    of the shapes the seam does not reach, or a call recorded under a name other than the wrapped
+    function's ``__name__`` (see :func:`rlm_harness.trace._ensure_tool_timing`) — not simply
+    "a tool that does not measure itself". ``None`` means "not recorded"; ``0.0``
     would read as "measured and found to be free". Deliberately NOT inferred from the gaps between
     events: that charges a whole turn's model generation to the turn's first tool call, which is
     the exact error this class exists to stop people making.
