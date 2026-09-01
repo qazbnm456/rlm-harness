@@ -147,13 +147,12 @@ See `CLAUDE.md` for invariants when modifying the kit.
 
 ## Status
 
-**v1.3.0** — the current release. Scaffold + harness-engineering layer (sub-LM hook,
-skills-as-tools, trajectory recording, replay, dataset export, harness delegation on both the client
-and server side), plus fast-failing non-retryable LM errors and a filesystem/process layer: reading,
-searching, writing and editing a bounded directory, safe git clone and archive extraction, an
-isolated-subprocess primitive, and deterministic quote grounding. Hardened by dogfooding against real
-downstream consumers; the changes that surfaced are in
-[`CHANGELOG.md`](https://github.com/qazbnm456/rlm-harness/blob/main/CHANGELOG.md).
+Released versions, with what changed in each, are on the
+[Releases page](https://github.com/qazbnm456/rlm-harness/releases) and in
+[`CHANGELOG.md`](https://github.com/qazbnm456/rlm-harness/blob/main/CHANGELOG.md). This section
+used to restate the current one and fell five versions behind, so it no longer tries.
+
+What is worth saying here is the part that does not change with a version number.
 
 1.0.0 means the public surface is a contract: `__init__.__all__`, the `rlm-harness/trace/v1` wire format,
 and `RLMTask`'s declaration fields are frozen under
