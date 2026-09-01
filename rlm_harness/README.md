@@ -905,6 +905,35 @@ new model: the main LM critiques cheaply against its own REPL state, reserving a
 for a genuine knowledge gap. A consumer uses it so the planner stops finalizing a generated artifact
 whose content only *looks* right — diffing it against the retrieved source held in the REPL.
 
+### Line numbers and `verify_quote` — feed them different text
+
+`make_read_file_tool(line_numbers=True)` and `verify_quote` **must not see the same string**, and
+getting that wrong costs real accuracy in both directions:
+
+    line_numbers=True  ->  the MODEL, so it can cite a coordinate without counting lines
+    the raw file text  ->  verify_quote, NOT the tool's rendered output
+
+The rendered output prefixes each line with `f"{n:>6}\t"`. A model quoting from it naturally
+carries that gutter into its quote, and `verify_quote` then refuses a perfectly correct citation —
+the quote is not in the file, the gutter is not file content. So a consumer that turns line numbers
+on to fix coordinates starts failing verification, and one that turns them off to fix verification
+makes the model count lines itself.
+
+**The second failure is the expensive one and it has been measured**: on a live deployment with line
+numbers OFF, **59 of 411 stored citations (14.4%) quoted the text verbatim at the wrong line**, and
+without a host-side coordinate correction the unverified rate would have been 21.9% instead of 7.5%.
+Every wiki in that population had at least two.
+
+The fix is not a kit setting, it is which string goes where. Your verifier holds the source anyway —
+it has to, to verify — so pass it the raw text and let the tool's rendered form exist only for the
+model.
+
+**`verify_quote` will not strip a gutter for you, deliberately.** Stripping a leading `spaces +
+digits + tab` from a quote was measured: it repairs 98.1% of guttered quotes, but on a document
+whose line numbers ARE content (a stored line-numbered listing) it accepts a quote that cites the
+WRONG number — an invented claim passing verification. That is the false-positive direction this
+function is built to keep closed, and no repair rate justifies opening it.
+
 ### `verify_quote` — the deterministic half of step 2's diff
 
 Step 2 above ("diff the artifact against it, itemized") is entirely model-judged — nothing backs

@@ -115,6 +115,19 @@ def verify_quote(
     alternation — the shapes that exhibit catastrophic backtracking — so stdlib ``re`` is provably
     safe here regardless of what ``quote`` contains.
 
+    **Pass the RAW file text as ``source``, not the output of a line-numbered reader.**
+    :func:`~rlm_harness.tools.fs.make_read_file_tool`'s ``line_numbers=True`` prefixes each line
+    with ``f"{n:>6}\\t"``; a model quoting from that render carries the gutter into its quote and
+    this function refuses it, correctly — the gutter is not file content. The two tools are
+    complementary: numbers exist so the MODEL can cite a coordinate without counting lines, raw text
+    exists so the VERIFIER can check the claim.
+
+    **This function will not strip a gutter for you, and that is a measured decision.** Removing a
+    leading ``spaces + digits + tab`` repairs 98.1% of guttered quotes — and on a document whose
+    line numbers ARE content (a stored line-numbered listing) it accepts a quote citing the WRONG
+    number, because the remaining text still appears elsewhere in the file. That is an invented
+    claim passing verification, the exact direction this function keeps closed.
+
     On a match, the return includes the 1-indexed line number and a ``snippet_chars``-wide window
     of ``source`` centered on the match, clamped to the string's bounds — enough to sanity-check
     the RIGHT occurrence was found if ``quote`` is generic enough to match more than one place

@@ -104,13 +104,22 @@ def make_read_file_tool(
 
     ``encoding`` (default ``"utf-8"``): point this at a non-UTF-8 corpus if needed.
 
+    **If you also run :func:`~rlm_harness.tools.grounding.verify_quote`, give IT the raw file text,
+    never this tool's rendered output.** A model quoting from a numbered render carries the gutter
+    into its quote, and `verify_quote` correctly refuses it — the gutter is not file content. The
+    two are complementary, not alternatives: numbers for the model's coordinates, raw text for the
+    verifier. Turning numbers off to keep verification happy is the expensive half of that mistake —
+    measured at 14.4% of citations landing on the wrong line. See the guide, "Line numbers and
+    ``verify_quote``".
+
     ``max_output_chars`` (default ``None`` = unlimited): truncates the returned text at that
     length with a VISIBLE marker appended — never a silent shortening. Scoped to the
     successful-read branch only: the ``Refused``/``Read error`` strings below are never truncated.
 
     ``line_numbers`` (default ``False``): prefix each returned line with its REAL 1-indexed file
-    line number, so a model reading a slice starting mid-file doesn't have to compute one itself
-    from ``start_line`` — removing exactly the kind of off-by-one a model gets wrong when later
+    line number (``f"{n:>6}\\t"``), so a model reading a slice starting mid-file doesn't have to
+    compute one itself from ``start_line`` — removing exactly the kind of off-by-one a model gets
+    wrong when later
     asked to cite or edit that line. Also scoped to the successful-read branch only.
     """
     _validate_tool_name(name)
