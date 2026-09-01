@@ -3,6 +3,8 @@ offline, dspy-free.
 """
 import time
 
+import pytest
+
 from rlm_harness.testing import assert_repl_safe
 from rlm_harness.tools import verify_quote
 
@@ -66,6 +68,64 @@ def test_verify_quote_whitespace_only_quote_is_refused_not_a_spurious_match():
     # whitespace run. Must be refused with the SAME dedicated message, not "MATCH:".
     result = verify_quote("hello world", "   ")
     assert result.startswith("MISMATCH: quote must be non-empty")
+
+
+# --- a quote carrying only line numbers -------------------------------------------------------
+#
+# `make_read_file_tool(line_numbers=True)` and `edit_file`'s snippet both render a line as
+# f"{n:>6}\t{line}", so a BLANK line renders as "     7\t" -- whose .strip() is "7". That is
+# non-empty, so it passed the guard above and then matched any source containing that digit:
+# a citation of NOTHING verified, reporting a line the citation never claimed. Shipped in 1.8.1.
+
+# Every shape below returned "MATCH: found at line 1" before the fix. Source line 2 is blank.
+_NUMBERS_ONLY_SHAPES = [
+    "     2\t",        # the render, verbatim
+    "     2",          # a model trimmed the trailing tab
+    "     2\t\n",       # read_file's ACTUAL output -- the trailing newline is kept
+    "     2\t\n\n",      # padded
+    "\n     2\t\n",      # wrapped, e.g. out of a code fence
+    "     2 ",         # a space written for the tab
+    "2",               # the coordinate alone
+    "\t     2\t",       # a leading tab
+]
+
+
+@pytest.mark.parametrize("quote", _NUMBERS_ONLY_SHAPES)
+def test_a_quote_carrying_only_line_numbers_is_refused(quote):
+    assert verify_quote("x = 42\n\ny = 1\n", quote).startswith(
+        "MISMATCH: quote carries only digits"
+    )
+
+
+def test_the_numbers_only_refusal_is_not_the_empty_quote_message():
+    # Two different failures with two different remedies: pad the quote vs. quote the TEXT. The
+    # model reads these, so they must not be interchangeable.
+    empty = verify_quote("x = 42\n\ny = 1\n", "   ")
+    numbers = verify_quote("x = 42\n\ny = 1\n", "     2\t")
+    assert empty.startswith("MISMATCH: quote must be non-empty")
+    assert numbers.startswith("MISMATCH: quote carries only digits")
+    assert empty != numbers
+
+
+@pytest.mark.parametrize(
+    ("quote", "verdict"),
+    [
+        ("x = 42", "MATCH:"),                                  # ordinary content
+        ("     1\tx = 42", "MISMATCH: quote not found"),        # a gutter WITH content
+        ("42 is the answer", "MISMATCH: quote not found"),     # starts with a number
+        ("3.14", "MISMATCH: quote not found"),                 # not all digits
+        ("     1\tx = 42\n     2\t", "MISMATCH: quote not found"),  # content line + blank
+    ],
+)
+def test_a_quote_that_carries_content_is_untouched(quote, verdict):
+    # Each verdict is what the PRE-1.8.2 function returned. The guard must not move any of them.
+    assert verify_quote("x = 42\n\ny = 1\n", quote).startswith(verdict)
+
+
+def test_the_rule_uses_ascii_digits_so_a_unicode_numeral_is_real_content():
+    # \d is UNICODE: it accepts fullwidth and Arabic-Indic numerals, which no renderer here emits.
+    # Treating those as a gutter would refuse a citation of text that IS in the source.
+    assert verify_quote("count = \uff12\uff10\n", "\uff12\uff10").startswith("MATCH:")
 
 
 def test_verify_quote_incidental_padding_on_a_real_quote_is_not_over_refused():
