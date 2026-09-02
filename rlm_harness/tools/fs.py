@@ -106,17 +106,21 @@ def make_read_file_tool(
 
     **If you also run :func:`~rlm_harness.tools.grounding.verify_quote`, give IT the raw file text,
     never this tool's rendered output.** A model quoting from a numbered render carries the gutter
-    into its quote, and `verify_quote` correctly refuses it — the gutter is not file content. The
-    two are complementary, not alternatives: numbers for the model's coordinates, raw text for the
-    verifier. Turning numbers off to keep verification happy is the expensive half of that mistake —
-    measured at 14.4% of citations landing on the wrong line, and at 21.4% -> 0.0% of coordinate
-    corrections when a consumer turned them back on. See the guide, "Line numbers and
+    into its quote. Since rlm-harness 1.9.0 `verify_quote` READS that as a coordinate claim and
+    verifies it against the line the gutter names, so a guttered citation resolves rather than
+    failing. The two stay complementary, not alternatives: numbers for the model's coordinates,
+    raw text for the verifier. Turning numbers off to keep verification happy is the expensive
+    half of that mistake — measured at 14.4% of citations landing on the wrong line, and at
+    21.4% -> 0.0% of coordinate corrections when a consumer turned them back on. See the guide,
+    "Line numbers and
     ``verify_quote``".
 
     **A BLANK line renders as just its gutter** (``"     7\\t"``), which strips to ``"7"`` — so
     until 1.8.2 a quote of one passed ``verify_quote``'s empty-quote guard and matched any source
     containing that digit: a citation of nothing verifying, at a line it never claimed. Such a
-    quote is now refused with its own message. Nothing else about a guttered quote changed.
+    quote is refused with its own message. A guttered quote that carries CONTENT is resolved by
+    coordinate since 1.9.0 — it must match the named line exactly and that block must occur once,
+    or it falls back to the ordinary search.
 
     ``max_output_chars`` (default ``None`` = unlimited): truncates the returned text at that
     length with a VISIBLE marker appended — never a silent shortening. Scoped to the

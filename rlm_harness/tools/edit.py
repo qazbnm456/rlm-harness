@@ -51,8 +51,9 @@ def _format_edit_snippet(
     Sharing that convention makes this the SECOND source of gutter-bearing text a model can copy
     into a citation — ``read_file(line_numbers=True)`` is the documented one, and this reaches the
     model on every successful edit. :func:`~rlm_harness.tools.grounding.verify_quote` must
-    therefore be given the raw file text here too, and since 1.8.2 refuses a quote carrying only a
-    line number (what a BLANK line in this window renders as) rather than falsely verifying it.
+    therefore be given the raw file text here too. Since 1.8.2 it refuses a quote carrying only a
+    line number (what a BLANK line in this window renders as); since 1.9.0 it resolves one carrying
+    CONTENT against the line the gutter names, rather than searching the gutter's digits as text.
 
     If the edited region ITSELF spans more than ``2 * context_lines + 1`` lines, only its own
     head and tail (each ``context_lines`` long) are shown, with a visible ``"... N line(s)

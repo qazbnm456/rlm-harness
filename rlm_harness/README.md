@@ -915,10 +915,15 @@ getting that wrong costs real accuracy in both directions:
 
 The rendered output prefixes each line with `f"{n:>6}\t"` — and so does `edit_file`'s success
 snippet, which is a second source of guttered text and reaches the model on every edit. A model
-quoting from either naturally carries that gutter into its quote, and `verify_quote` then refuses a
-perfectly correct citation — the quote is not in the file, the gutter is not file content. So a consumer that turns line numbers
-on to fix coordinates starts failing verification, and one that turns them off to fix verification
-makes the model count lines itself.
+quoting from either naturally carries that gutter into its quote.
+
+**Until 1.9.0 that cost the citation.** The quote is not in the file — the gutter is not file
+content — so `verify_quote` refused a perfectly correct citation, and a consumer who turned line
+numbers on to fix coordinates started failing verification while one who turned them off made the
+model count lines itself. Since 1.9.0 the gutter is READ rather than searched: 83.16% of those
+citations now resolve to the line they name, and the rest keep the old verdict rather than getting a
+wrong one. The rule and its limits are under "`verify_quote` reads a gutter as a COORDINATE CLAIM"
+below.
 
 **The second failure is the expensive one and it has been measured**: on a live deployment with line
 numbers OFF, **59 of 411 stored citations (14.4%) quoted the text verbatim at the wrong line**, and
@@ -950,21 +955,43 @@ number happens to precede the line's text, across a mandatory `\s+` and therefor
 lines. A full line of code is reachable that way, not just a line of punctuation: a quote claiming
 line 42 of this repo's `tests/test_async.py` verifies at line 39, because line 39 ends `== 42`.
 Rendering every non-blank line of every `.py` here and verifying it against its own file leaves 2
-such false matches in 17,412 quotes, about 1 in 8,700. Closing them needs the gutter-stripping
-repair below, which is not what this function does.
+such false matches in 18,761 quotes. **1.9.0 resolves both**, by the mechanism below.
 
-**`verify_quote` will not strip a gutter for you, deliberately.** Stripping a leading `spaces +
-digits + tab` from a quote was measured: it repairs 98.1% of guttered quotes, but on a document
-whose line numbers ARE content (a stored line-numbered listing) it accepts a quote that cites the
-WRONG number — an invented claim passing verification. That is the false-positive direction this
-function is built to keep closed, and no repair rate justifies opening it.
+**`verify_quote` reads a gutter as a COORDINATE CLAIM, and never strips it.** Stripping the
+leading `spaces + digits + tab` and searching the remainder repairs most guttered quotes and
+accepts a citation naming the WRONG line whenever that remainder appears anywhere else — an
+invented claim passing verification, which is why it was refused for four releases.
+
+Using the gutter is stronger than discarding it: the content must sit at exactly the line it names,
+and that block must occur exactly once in the source. Both halves are load-bearing. Without
+uniqueness a bare position check is WORSE than searching — 16.84% of non-blank lines in this repo
+recur in their own file, so a fabricated coordinate verifies at roughly 0.15% against 0.000% for a
+plain search. Without exactness a fabricated INDENTATION level verifies, since 2.16% of lines here
+are exact-unique but identical after stripping, and indentation is semantics in Python.
+
+With both, fabrication is closed by construction rather than by rate: exact content at line `n` plus
+a block occurring once means `n` is the only line that can hold it. What remains is honest citations
+that stay uncoordinated — 16.84% of non-blank lines, or 32.8% of everything `read_file` renders once
+blank-line citations are counted. Those keep exactly today's verdict, and that class contains no
+wrong-line matches to inherit.
+
+A coordinate-verified match says so in its text, because it means something different from an
+ordinary one: the source holds the CONTENT at that line, but the quoted bytes — gutter included —
+are not a substring of it. Branch on that if you re-derive grounding host-side with `quote in
+source`. `normalize_whitespace=False` skips the path entirely: byte-exact mode means no
+interpretation, and reading a gutter as a coordinate is an interpretation. That is also the lever
+if `source` is itself a numbered listing, where a correct literal match would otherwise be
+overridden — a shape found in none of the tens of thousands of text files scanned locally, though
+`cat -n` emits it.
 
 ### `verify_quote` — the deterministic half of step 2's diff
 
 Step 2 above ("diff the artifact against it, itemized") is entirely model-judged — nothing backs
 the claim that a specific quote/citation actually appears in the held source. `verify_quote(source,
 quote)` (`rlm_harness.tools`) is the deterministic primitive for exactly that one checkable piece:
-it returns a parseable `"MATCH: ..."` (with a line number and a context snippet) or `"MISMATCH:
+it returns a parseable `"MATCH: ..."` (with a line number, plus a character
+offset and context snippet on the literal path — a coordinate-verified match has no offset to give)
+or `"MISMATCH:
 ..."` (with a bounded "closest line" hint when `quote` is single-line) — never a self-graded
 guess. A single plain function, no factory, no `name=`, no trace call (it binds to nothing at
 construction time and touches no filesystem/network, matching `make_schema_validator`'s own
