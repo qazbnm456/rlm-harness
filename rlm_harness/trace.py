@@ -288,6 +288,16 @@ def record_tool_call(
     why the fill below tests ``is None`` rather than falsiness — the same distinction
     ``ToolWaste``'s ``*_seconds`` rests on, and the one this release exists to stop losing.
 
+    **PRECONDITION for anything that reads these as an INTERVAL:** the envelope ``ts`` must be the
+    END of the window ``duration_s`` measures, because :mod:`rlm_harness.metrics` reconstructs
+    ``[ts - duration_s, ts]`` from the pair to stop a nested call being counted twice. Every tool
+    here records immediately after its window closes, so the kit satisfies it — but the tighter
+    scoping invited above puts it in your hands: work
+    done between the window's end and this call shifts the interval later, and enough of it stops
+    an outer interval containing its inner one. Note ``record`` stamps ``ts`` inside its own lock,
+    so a call contending with the batched sub-LM fan-out is stamped after the wait, not at window
+    end.
+
     Worth the two lines at every call site: without it a trace's only clock is the envelope ``ts``,
     stamped when the event is RECORDED, so the sole way to attribute wall-clock is the gap between
     consecutive events — which charges a whole turn's model generation to that turn's first tool
