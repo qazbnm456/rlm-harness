@@ -1235,7 +1235,7 @@ per_criterion = criteria_facts(my_criteria, facts, MY_LENS)
 |---|---|
 | `main_steps`, `tool_calls`, `sub_calls`, `tool_call_rate`, `sub_call_rate` | what the run did |
 | `tool_declines`, `tool_endpoint_errors`, `tool_circuit_breaks`, `tool_ok` | the four outcomes, summed |
-| `tool_wasted_seconds`, `tool_total_seconds`, `tool_measured_calls` | cost, and how much of it was measurable |
+| `tool_wasted_seconds`, `tool_total_seconds`, `tool_measured_calls` | wall-clock OCCUPIED by tool calls, and how much of it was measurable |
 | `fence_refused_turns` | turns dspy refused over a fence tag — read the note below |
 | `budget_exhausted` | `True`/`False`/`None`; the ITERATION cap only |
 
@@ -1243,9 +1243,23 @@ per_criterion = criteria_facts(my_criteria, facts, MY_LENS)
 `compute_run_utilization` / `compute_tool_waste` for per-tool detail. Use
 `compute_run_facts_by_run` for a file holding several runs.
 
-**Two readings that are easy to get wrong.** `tool_wasted_seconds` and `tool_total_seconds` are
+**Three readings that are easy to get wrong.** `tool_wasted_seconds` and `tool_total_seconds` are
 `None`, never `0.0`, when nothing carried a duration — unmeasured is not zero, and
 `tool_measured_calls` is there so one measured call in fifty does not look like fifty in fifty.
+And since 1.9.1 both measure the **union** of the tool calls' intervals rather than their sum, so
+neither equals `sum(w.total_seconds for w in compute_tool_waste(...))` once one tool call nests
+inside another. A sum double-counts the nested call, which is two correct events describing one
+stretch of wall clock; on a real trace that reported **136.5% of the run's own span**. It takes both
+halves to happen — the kit times the outer tool for you, and the inner call is recorded by the tool
+itself — so a flat tool graph never sees the double-count.
+
+**Do not assert `new <= old` across the upgrade.** The relation is strictly smaller only when
+something nests; otherwise the two agree just to within reconstruction error, and that error has two
+terms. Float quantisation contributes ~1e-7 s (`ts - (ts - d)` at epoch scale), in EITHER direction —
+a 24-call run with nothing nested came out 1.6e-7 s *larger*. Clock rate difference contributes
+`duration_s x drift`, which is bigger and grows with the call: on one run with nothing
+double-counted, a 0.9 s call and a 298 s call reconstructed as overlapping by 7.8 ms — they had run
+back to back — moving the total by −0.00208% of its own value.
 And `budget_exhausted` is `None` whenever the answer is unknown; it never guesses `False`.
 `fence_refused_turns` is `0` on a run with no turns at all — unmeasured, not measured-zero — so read
 it beside `main_steps`, which rides in the same dict for exactly that reason. In that same zero-turn

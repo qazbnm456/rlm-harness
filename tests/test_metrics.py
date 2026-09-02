@@ -338,11 +338,12 @@ def test_compute_run_facts_accepts_a_generator():
 def test_a_MEASURED_zero_waste_stays_0_and_does_not_become_None():
     """The other direction of the same distinction, and the one nothing covered.
 
-    `_sum_or_none` filters on `is not None`, not truthiness. `compute_tool_waste` sets
-    `wasted_seconds = 0.0` — a MEASURED zero — for a tool that carried durations and had no invalid
-    or endpoint outcome, which is the commonest healthy shape there is. A `if v` filter drops those
-    `0.0`s and reports `None`, inverting exactly the distinction `_sum_or_none` exists to protect:
-    "every tool ran clean and we timed them" would read as "nothing was measured".
+    The `None` gate is decided over ALL tool calls, never over the restricted (invalid/endpoint)
+    subset. A tool that carried durations and had no invalid or endpoint outcome is the commonest
+    healthy shape there is, and its wasted total is a MEASURED zero. Gating on the restricted
+    subset — which is empty here — reports `None` instead, inverting exactly the distinction the
+    gate exists to protect: "every tool ran clean and we timed them" would read as "nothing was
+    measured".
 
     The suite's other seconds test covers `or 0.0` (unmeasured wrongly becoming zero); this covers
     the mirror image, and the mutant survived every other test in the suite."""
@@ -351,3 +352,154 @@ def test_a_MEASURED_zero_waste_stays_0_and_does_not_become_None():
     assert facts["tool_wasted_seconds"] == 0.0, "a measured zero was reported as unmeasured"
     assert facts["tool_total_seconds"] == 3.0
     assert facts["tool_measured_calls"] == 2
+
+
+# --- 1.9.1: tool_total_seconds measures the UNION of the calls' intervals, not their sum ---------
+#
+# Fixtures below set an envelope `ts`, which the `_call()` helper above deliberately does not — a
+# suite built only on that helper exercises the additive fallback and NOTHING of the union.
+
+def _at(ts, name="g", **payload):
+    """A tool_call positioned on the timeline. `ts` is the END of the measured window."""
+    return {"type": EVENT_TOOL_CALL, "ts": ts, "payload": {"tool": name, "ok": True, **payload}}
+
+
+def test_a_nested_call_is_counted_once_not_twice():
+    """THE defect. An outer tool whose duration contains an inner tool's is two CORRECT events
+    describing one stretch of wall clock; adding them reports time that was never spent.
+
+    Measured on a real trace the sum reached 136.5% of the run's own span — impossible for a
+    wall-clock share, and invisible until the nested call grew to two thirds of the run. Both
+    halves are needed to reach it: the kit auto-times the outer tool, and the inner call is
+    recorded explicitly by the tool itself."""
+    facts = _facts([_step(0),
+                    _at(10.0, "outer", duration_s=10.0),    # [0, 10]
+                    _at(9.0, "inner", duration_s=8.0)])     # [1, 9] — strictly inside
+    assert facts["tool_total_seconds"] == 10.0, "the nested call was counted twice"
+    assert facts["tool_measured_calls"] == 2, "both events are real and both stay counted"
+
+
+def test_disjoint_calls_are_a_plain_sum_on_exactly_representable_constants():
+    """The no-op case: with nothing nested the union IS the sum, so a normal run cannot shift.
+
+    The constants are DYADIC, not merely small. `ts - duration_s` has to be exactly representable
+    or the reconstruction loses an ULP and this assertion becomes flaky for a reason that has
+    nothing to do with the rule: `ts=1.0, d=0.1` is small and reconstructs to
+    0.09999999999999998."""
+    facts = _facts([_step(0), _at(10.0, "a", duration_s=1.5), _at(20.0, "b", duration_s=2.0)])
+    assert facts["tool_total_seconds"] == 3.5
+
+
+def test_epoch_scale_reconstruction_stays_within_tolerance():
+    """Real traces carry epoch timestamps, where ulp is 2.4e-7 s, so `ts - (ts - d)` is quantised.
+
+    Asserted as a TOLERANCE and never as inexactness: a duration that happens to be a multiple of
+    the ulp reconstructs EXACTLY (0.5, 1.0, 1.5, 2.0 all do), so `assert != ` would go red on the
+    most natural constant an implementer reaches for. The bound is float quantisation ALONE —
+    n * ulp/2, so ~2.4e-7 for two intervals — and NOT the clock drift documented in
+    `_union_seconds`, which needs two real clocks and cannot arise between two literals here."""
+    base = 1788282031.592608
+    facts = _facts([_step(0), _at(base, "a", duration_s=0.898282),
+                    _at(base + 300.0, "b", duration_s=297.917570)])
+    assert abs(facts["tool_total_seconds"] - (0.898282 + 297.917570)) < 1e-6
+
+
+def test_partial_overlap_counts_the_union_not_either_end():
+    facts = _facts([_step(0), _at(10.0, "a", duration_s=10.0), _at(15.0, "b", duration_s=10.0)])
+    assert facts["tool_total_seconds"] == 15.0, "expected the union of [0,10] and [5,15]"
+
+
+def test_a_zero_length_call_inside_another_adds_nothing():
+    facts = _facts([_step(0), _at(10.0, "a", duration_s=10.0), _at(5.0, "b", duration_s=0.0)])
+    assert facts["tool_total_seconds"] == 10.0
+
+
+def test_the_total_does_not_depend_on_event_order():
+    events = [_at(10.0, "a", duration_s=10.0), _at(9.0, "b", duration_s=8.0),
+              _at(30.0, "c", duration_s=2.0)]
+    assert _facts([_step(0)] + events)["tool_total_seconds"] == \
+        _facts([_step(0)] + list(reversed(events)))["tool_total_seconds"]
+
+
+def test_events_without_a_usable_ts_take_the_additive_fallback():
+    """A MIXED run — the only shape the one-fallback rule actually arbitrates, and the shape
+    neither a real trace nor any other fixture here produces.
+
+    An event that cannot be placed on the timeline cannot be shown to overlap anything, so it is
+    added in full. That is the direction to be wrong in for a WASTE metric: over-reporting sends a
+    reader to look at a call that turns out to be fine, under-reporting hides cost that is real."""
+    facts = _facts([_step(0), _at(100.0, "a", duration_s=10.0),   # [90, 100]
+                    _call("b", duration_s=3.0),                   # no ts at all
+                    _at(95.0, "c", duration_s=2.0)])              # [93, 95] — inside a
+    assert facts["tool_total_seconds"] == 13.0
+
+
+def test_a_non_finite_or_non_numeric_ts_takes_the_fallback_and_never_poisons_the_total():
+    """`nan` fails EVERY comparison, so a `nan`-derived interval opens its own run in the
+    sort-merge and propagates through the whole accumulator — it would destroy the run's total,
+    not merely its own event."""
+    for bad in (float("nan"), float("inf"), "2026-09-02T00:00:00", None):
+        facts = _facts([_step(0), _at(bad, "a", duration_s=1.0), _at(200.0, "b", duration_s=2.0)])
+        assert facts["tool_total_seconds"] == 3.0, f"a ts of {bad!r} changed the total"
+
+
+def test_a_bool_is_not_a_number_on_either_field():
+    """Separated from the loop above, because the geometry has to ABSORB the interval a mutant
+    would build — the same trap the negative-duration test documents. With `ts=True` beside a call
+    at `[198, 200]` the mutant's `[0, 1]` is disjoint, so union and fallback both give 3.0 and the
+    mutant lives. Placed inside `[0, 2]` instead, it is absorbed: 3.0 spec against 2.0 mutant."""
+    ts_bool = _facts([_step(0), _at(True, "a", duration_s=1.0), _at(2.0, "b", duration_s=2.0)])
+    assert ts_bool["tool_total_seconds"] == 3.0, "a bool ts was treated as the number 1"
+
+    dur_bool = _facts([_step(0), _at(10.0, "a", duration_s=True)])
+    assert dur_bool["tool_total_seconds"] is None, "a bool duration_s was treated as a measurement"
+    assert dur_bool["tool_measured_calls"] == 0
+
+
+def test_a_malformed_duration_takes_the_fallback_and_matches_the_previous_arithmetic():
+    """Routed to the fallback rather than excluded, so this stays consistent with
+    `tool_measured_calls` — which counts ANY numeric duration. Excluding them would emit
+    "one call measured, total unmeasured" inside one dict, which is the pairing that key exists
+    to disambiguate."""
+    import math
+
+    negative = _facts([_step(0), _at(100.0, "a", duration_s=10.0), _at(200.0, "b", duration_s=-2.0)])
+    assert negative["tool_total_seconds"] == 8.0
+    assert negative["tool_measured_calls"] == 2, "the malformed call is still a measured call"
+
+    poisoned = _facts([_step(0), _at(1.0, "a", duration_s=float("nan"))])
+    assert math.isnan(poisoned["tool_total_seconds"]), "nan propagates exactly as it did before"
+    assert poisoned["tool_measured_calls"] == 1
+
+
+def test_a_negative_duration_never_builds_a_reversed_interval():
+    """The fixture geometry is the whole test. A reversed interval that merges with nothing
+    contributes `ts - (ts + |d|) == d`, IDENTICAL to the fallback — so the negative alone, or
+    disjoint from everything, cannot tell the two apart. `ts + |d|` has to land INSIDE another
+    well-formed interval before the mutant diverges."""
+    facts = _facts([_step(0), _at(100.0, "a", duration_s=50.0),   # [50, 100]
+                    _at(60.0, "b", duration_s=-2.0)])             # reversed: (62, 60) -> inside a
+    assert facts["tool_total_seconds"] == 48.0, "a reversed interval was merged into the union"
+
+
+def test_wasted_never_exceeds_total_while_durations_are_non_negative():
+    """A RE-PIN, not a new invariant — it holds today too, because the wasted intervals are a
+    subset of all of them. Stated with its qualifier because the subset argument needs
+    NON-NEGATIVE terms, and negatives reach the additive path by design: an `ok` call of -5.0 with
+    an `invalid` call of 1.0 gives wasted 1.0 against total -4.0, on this version and the one
+    before it alike."""
+    facts = _facts([_step(0),
+                    _at(10.0, "a", ok=False, error="bad", duration_s=10.0),   # invalid, [0, 10]
+                    _at(9.0, "b", duration_s=8.0)])                           # ok, nested inside
+    assert facts["tool_wasted_seconds"] <= facts["tool_total_seconds"]
+    assert facts["tool_wasted_seconds"] == 10.0 and facts["tool_total_seconds"] == 10.0
+
+
+def test_a_payload_of_None_is_counted_rather_than_raising():
+    """`dict.get`'s default fires only on a MISSING key, never on a key whose value is `None`, so
+    `event.get("payload", {}).get(...)` raised `AttributeError` in `compute_run_utilization` while
+    `compute_tool_waste` handled it correctly with `or {}`. The two now agree: such an event is
+    tool "?" with cause invalid."""
+    facts = _facts([_step(0), {"type": EVENT_TOOL_CALL, "payload": None}])
+    assert facts["tool_calls"] == 1 and facts["tool_declines"] == 1
+    assert facts["tool_total_seconds"] is None

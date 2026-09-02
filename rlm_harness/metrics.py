@@ -15,6 +15,7 @@ the trace contract needs to change for. dspy-free at module top — :func:`compu
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
@@ -68,7 +69,7 @@ def compute_run_utilization(events: Iterable[dict]) -> RunUtilization:
         if etype == EVENT_MAIN_STEP:
             main_steps += 1
         elif etype == EVENT_TOOL_CALL:
-            name = event.get("payload", {}).get("tool", "?")
+            name = (event.get("payload") or {}).get("tool", "?")
             tool_calls_by_name[name] = tool_calls_by_name.get(name, 0) + 1
         elif etype == EVENT_SUB_CALL:
             sub_calls_total += 1
@@ -109,6 +110,13 @@ class ToolWaste:
     frequently ABSENT on an endpoint-failure payload, so ``payload.get("ok")`` reads ``None`` and
     every naive counter absorbs infrastructure failures as content declines. That mistake has
     shipped four times.
+
+    ``*_seconds`` are a per-tool SUM and may double-count: a call nested inside another call of the
+    SAME name, or two concurrent calls of it, contribute their durations twice over one stretch of
+    wall clock. That is deliberate — "what this tool's calls cost, added up" stays well defined
+    under overlap, and it is the cross-tool AGGREGATE that must not double-count. Use
+    :func:`compute_run_facts`'s ``tool_total_seconds``, which measures the union, for "how much of
+    the run went into tools".
 
     ``*_seconds`` are ``None``, not ``0.0``, when the events carry no ``duration_s``. Since 1.8.3
     that is a NARROWER set than it used to be: a task fills the field for nearly every tool it
@@ -231,17 +239,92 @@ RUN_FACT_KEYS: tuple[str, ...] = (
 )
 
 
-def _sum_or_none(values: Iterable[float | None]) -> float | None:
-    """Sum, preserving "nothing was measured" as ``None`` rather than collapsing it to ``0.0``.
+def _union_seconds(events: Iterable[dict], causes: tuple[str, ...] | None = None) -> float | None:
+    """Wall-clock OCCUPIED by tool calls — the measure of the UNION of their intervals, not a sum.
 
-    ``ToolWaste`` is explicit that its ``*_seconds`` are ``None``, never ``0.0``, when no call
-    carried a duration, and a test pins that. Summing with ``or 0.0`` would regress the distinction
-    inside the very dict that feeds a rubric — so: ``None`` when nothing measured anything, a
-    PARTIAL sum otherwise, with ``tool_measured_calls`` riding alongside to show the partiality
-    (one measured call in fifty is otherwise indistinguishable from fifty in fifty).
+    A SUM double-counts a NESTED call. An outer tool whose recorded duration contains an inner
+    tool's is two CORRECT ``tool_call`` events describing one stretch of wall clock, and adding
+    them reports time that was never spent. On a real trace that reached **136.5% of the run's own
+    span** — an impossible share, and the defect this replaces. It needs both halves to appear:
+    the kit auto-times the outer tool (1.8.3), and the inner call is recorded explicitly by the
+    tool itself. A consumer whose tool graph is flat never sees it.
+
+    Each event contributes ``[ts - duration_s, ts]``. That is sound across the two clocks involved
+    — ``ts`` is ``time.time``, ``duration_s`` a ``time.perf_counter`` DELTA — because a delta is
+    clock-agnostic: it fixes the interval's LENGTH. It does NOT fix the POSITION. The two clocks
+    differ in RATE, so a reconstructed start is displaced by roughly ``duration_s x drift`` and the
+    error GROWS with the call being measured. Two observations in one corpus put that at >= 26.3
+    and >= 29.9 ppm — 7.8 ms and 17.3 ms on calls of 298 s and 577 s. Every such observation is a
+    LOWER bound, because it is visible only where it crosses a KNOWN ordering and the true gap
+    before the later call is unknown and >= 0. So the union can INVENT a small overlap between
+    strictly sequential calls, or erase a real one. It moves the fifth decimal place of a metric
+    against a nesting effect measured in hundreds of seconds.
+
+    ``ts`` must therefore be the END of the measured window. Every tool in this kit records
+    immediately after its window closes — but :meth:`TraceRecorder.record` stamps ``ts`` INSIDE its
+    lock, so a call contending with the batched sub-LM fan-out is stamped after the wait rather
+    than at window end. Treat it as a precondition, not a guarantee.
+
+    ONE additive fallback covers every event whose interval cannot be soundly formed: no usable
+    ``ts``, or a ``duration_s`` that is not finite and non-negative. That reproduces the previous
+    arithmetic for exactly those events (a ``nan`` still propagates, a negative still subtracts),
+    which keeps this consistent with ``tool_measured_calls`` — that counts ANY numeric duration,
+    and excluding malformed ones here would emit "one call measured, total unmeasured" in one dict.
+    A ``nan``/``inf`` ``ts`` MUST take the fallback rather than build an interval: ``nan`` fails
+    every comparison in the sort-merge, so it opens its own run and propagates through the whole
+    accumulator — it would destroy the total, not merely its own event.
+
+    ``None``, never ``0.0``, when nothing carried a duration — and that gate is decided over ALL
+    tool calls, NEVER over the ``causes`` subset. :class:`ToolWaste` gates the same way, which is
+    why a run with measured calls and nothing wasted reports ``0.0`` rather than ``None``; gating
+    on the subset here would silently invert that.
+
+    Note ``tool_wasted_seconds <= tool_total_seconds`` holds only while every duration is
+    non-negative — the subset-of-terms argument needs non-negative terms, and negatives reach the
+    additive path by design.
     """
-    seen = [v for v in values if v is not None]
-    return sum(seen) if seen else None
+    intervals: list[tuple[float, float]] = []
+    fallback = 0.0
+    measured = False
+
+    for event in events:
+        if event.get("type") != EVENT_TOOL_CALL:
+            continue
+        payload = event.get("payload") or {}
+        duration = payload.get("duration_s")
+        if not isinstance(duration, (int, float)) or isinstance(duration, bool):
+            continue
+        measured = True   # the None gate is over ALL tool calls; `causes` only picks intervals
+        if causes is not None and payload_cause(payload) not in causes:
+            continue
+
+        duration = float(duration)
+        ts = event.get("ts")
+        if (isinstance(ts, (int, float)) and not isinstance(ts, bool) and math.isfinite(ts)
+                and math.isfinite(duration) and duration >= 0.0):
+            intervals.append((ts - duration, ts))
+        else:
+            fallback += duration
+
+    if not measured:
+        return None
+
+    intervals.sort()
+    total = 0.0
+    cur_start: float | None = None
+    cur_end = 0.0
+    for start, end in intervals:
+        if cur_start is None:
+            cur_start, cur_end = start, end
+        elif start <= cur_end:      # `<` gives an identical MEASURE; the choice is untestable
+            cur_end = max(cur_end, end)
+        else:
+            total += cur_end - cur_start
+            cur_start, cur_end = start, end
+    if cur_start is not None:
+        total += cur_end - cur_start
+
+    return total + fallback
 
 
 def compute_run_facts(events: Iterable[dict]) -> dict:
@@ -260,11 +343,17 @@ def compute_run_facts(events: Iterable[dict]) -> dict:
     :func:`compute_run_facts_by_run` for a file holding several. A multi-run list silently
     conflates, which is why both existing computers already ship a ``_by_run`` sibling.
 
-    Two readings that need care, both stated rather than implied:
+    Three readings that need care, all stated rather than implied:
 
     * ``fence_refused_turns`` is ``0`` on a run with no ``main_step`` events at all — UNMEASURED,
       not measured-zero. ``main_steps`` rides in the same dict to disambiguate.
     * ``budget_exhausted`` is ``None`` whenever the answer is unknown (see below), never ``False``.
+    * ``tool_total_seconds`` / ``tool_wasted_seconds`` measure the UNION of the tool calls'
+      intervals, so they do NOT equal ``sum(w.total_seconds for w in compute_tool_waste(...))``
+      once any call nests inside another — a sum counts one stretch of wall clock twice, and
+      reported 136.5% of a run's own span before this changed. The relation is strictly SMALLER
+      when something nests and otherwise equal only up to reconstruction error, where it can be a
+      few 1e-7 s LARGER — so do not assert ``<=`` across the two.
     """
     events = list(events)
     util = compute_run_utilization(events)
@@ -278,8 +367,8 @@ def compute_run_facts(events: Iterable[dict]) -> dict:
         "tool_declines": sum(w.invalid for w in waste),
         "tool_endpoint_errors": sum(w.endpoint_errors for w in waste),
         "tool_circuit_breaks": sum(w.circuit_broken for w in waste),
-        "tool_wasted_seconds": _sum_or_none(w.wasted_seconds for w in waste),
-        "tool_total_seconds": _sum_or_none(w.total_seconds for w in waste),
+        "tool_wasted_seconds": _union_seconds(events, (CAUSE_INVALID, CAUSE_ENDPOINT)),
+        "tool_total_seconds": _union_seconds(events),
         "tool_ok": sum(w.ok for w in waste),
         "tool_measured_calls": sum(w.measured_calls for w in waste),
         "fence_refused_turns": _count_fence_refused(events),
