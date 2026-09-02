@@ -936,6 +936,13 @@ P = 8.2e-05, so it is not sample size. It is two independent generations rather 
 re-run — the model planned a different outline the second time, 11 artifacts against 6, so the
 citation counts are not comparable and only the proportion is.
 
+**A second consumer sized the same population on its own corpora.** Re-running its current verifier
+over four artifact sets built before line numbers were on corrected **96 of 556 coordinates (17.3%)**,
+reaching **35.6%** on the worst of the four. Read that as a size, not a rate: it is one deployment on
+one model family, re-verified after the fact rather than observed live. The spread is the part to
+carry — a factor of two across four corpora from one system, so a single measurement does not bound
+the next, and neither does the 14.4% above.
+
 The fix is not a kit setting, it is which string goes where. Your verifier holds the source anyway —
 it has to, to verify — so pass it the raw text and let the tool's rendered form exist only for the
 model.
@@ -966,7 +973,8 @@ Using the gutter is stronger than discarding it: the content must sit at exactly
 and that block must occur exactly once in the source. Both halves are load-bearing. Without
 uniqueness a bare position check is WORSE than searching — 16.84% of non-blank lines in this repo
 recur in their own file, so a fabricated coordinate verifies at roughly 0.15% against 0.000% for a
-plain search. Without exactness a fabricated INDENTATION level verifies, since 2.16% of lines here
+plain search. An unrelated Python tree measures 16.39% of 52,941, so budget for it as a property of
+the language rather than of this repo. Without exactness a fabricated INDENTATION level verifies, since 2.16% of lines here
 are exact-unique but identical after stripping, and indentation is semantics in Python.
 
 With both, fabrication is closed by construction rather than by rate: exact content at line `n` plus
