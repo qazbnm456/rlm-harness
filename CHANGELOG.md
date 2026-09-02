@@ -4,6 +4,78 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.9.0] - 2026-09-02
+
+`verify_quote` now reads a line-numbered citation as a coordinate claim and verifies it, instead of
+searching the gutter's digits as if they were content.
+
+### Added
+
+- **A guttered quote is resolved by coordinate.** 1.8.2 closed the case where a citation of NOTHING
+  verified and documented what it left open: a guttered quote carrying CONTENT was searched with the
+  gutter DIGITS as literal text, so it matched wherever that number happened to precede the line's
+  text — across a mandatory whitespace junction, and therefore across blank lines.
+
+  Rendering every non-blank line of every `.py` in this repo and verifying it against its own file
+  found **2 such matches in 18,761**, and both are HONEST citations whose content really is at the
+  gutter's line. One is a full line of code. The function was reporting a coordinate the citation
+  never claimed; both now resolve correctly.
+
+  A guttered quote verifies when four things hold: its gutters are consecutive, the line numbers are
+  in range, the content sits at exactly the line the gutter names, and that block occurs exactly
+  once in the source as a contiguous line sequence. Otherwise nothing changes and the ordinary
+  search runs.
+
+  **The gutter is used, never stripped.** Stripping it and searching the remainder — the repair this
+  function refused for four releases — accepts a citation naming the WRONG line whenever the
+  remainder appears anywhere else. Both halves of the replacement are load-bearing: without
+  uniqueness a bare position check is WORSE than searching, because 16.84% of non-blank lines here
+  recur in their own file, so a fabricated coordinate verifies at roughly 0.15% against 0.000% for a
+  plain search. Without exactness a fabricated INDENTATION level verifies, since 2.16% of lines here
+  are exact-unique but identical after stripping, and in Python indentation is semantics. With both,
+  fabrication is closed by construction: exact content at line `n` plus a block occurring once means
+  `n` is the only line that can hold it.
+
+  Uniqueness is a contiguous LINE SEQUENCE, not a substring count — the second residual's content is
+  `)`, which has hundreds of substring hits and one whole-line hit, so a substring criterion would
+  have missed it entirely.
+
+### Changed
+
+- **A coordinate-verified `MATCH` means something different, and says so.** The source holds the
+  CONTENT at that line, but the quoted bytes — gutter included — are not a substring of it. A caller
+  re-deriving grounding host-side with `quote in source` must branch on the text; the `MATCH:`
+  prefix is unchanged for callers that branch on that.
+
+- **`normalize_whitespace=False` skips the coordinate path.** Byte-exact mode means no
+  interpretation, and reading a gutter as a coordinate is an interpretation. It is also the lever
+  when `source` is itself a numbered listing, where a correct literal match would otherwise be
+  overridden — a shape found in none of the
+  tens of thousands of local text files scanned, though `cat -n` and `nl` emit it.
+
+- **Two pinned test verdicts move, and that is the feature.** A quote of `"     1\tx = 42"` against
+  a source whose line 1 is `x = 42` was a MISMATCH; it is now a coordinate-verified MATCH.
+
+### Not a fix — a constraint on the new code
+
+- **The gutter is bounded to nine digits, and that is why nothing raises.** `verify_quote` documents
+  that it never raises, and on CPython 3.11 `int("9" * 4301)` raises `ValueError: Exceeds the limit
+  (4300) for integer string conversion`. No released version ever converted a digit run, so this
+  fixes no regression; an unbounded `[0-9]+` in the NEW recognizer would have introduced one. Nine
+  digits covers 999,999,999 lines.
+
+- **The closest-line hint on a failed coordinate check was considered and left alone.** A guttered
+  quote that falls through is diffed against source lines with its gutter attached, which depresses
+  the similarity ratio for exactly this class. Hinting with the parsed content instead is a change
+  to the MISMATCH path with its own verdict surface, and it is not this release.
+
+### What this does NOT close
+
+16.84% of non-blank lines recur in their own file, and a citation of one of those stays
+uncoordinated — 32.8% of everything `read_file` renders, once blank-line citations refused by the
+1.8.2 guard are counted. Those keep exactly today's verdict, and that class contains no wrong-line
+matches to inherit: every one of the 18,759 non-residual honest quotes was already a MISMATCH.
+
 ## [1.8.4] - 2026-09-02
 
 A failed run's trace now says why it failed — and, separately, stops losing the event that says so.

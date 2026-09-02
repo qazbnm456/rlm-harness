@@ -1,6 +1,6 @@
 [project]
 name = "rlm-harness"
-version = "1.8.4"
+version = "1.9.0"
 description = "A clean, reusable harness for building tasks on DSPy Recursive Language Models (RLMs)."
 readme = "README.md"
 requires-python = ">=3.11"
