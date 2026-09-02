@@ -305,6 +305,31 @@ One companion rule ships under `.claude/rules/`:
   `records_sub_call = True`** on it; the probe is `is True`, never truthiness, because `getattr` on
   a mock manufactures a truthy attribute for any name and would silently skip it — the same
   absent-event failure one layer up.
+- **Before believing a count, ask what the reader would report if the writer were perfect — and
+  whether the thing being counted is still moving.** The `sub_call` bullet above is one instance of
+  a failure that has now cost this project and its consumers TEN times, and the general form is
+  cheaper to check than any of the specific ones. Two questions, in order:
+  1. **What number would this reader return if everything it measures were working?** If the answer
+     is "zero either way", the reader is disqualified before any data is collected — no experiment
+     needed. Four recorded cases: `sub_call` recorded nothing because nobody wrapped the LM; `ps`
+     was absent from a container image so "0 processes" meant "no tool"; `pgrep -f` matched its own
+     command so "2 running" meant "none"; a duration-coverage figure read as "83% of calls are
+     untimed for an unknown reason" was **entirely** the share of a corpus predating the release
+     that added the field — 111 runs at 0%, 55 at 100%, zero partial. **A rate that varies by
+     "tool", "task" or "kind" is worth suspecting of being corpus composition first.** The
+     signature: a component added AFTER an upgrade reads 100% while everything older reads ~15%.
+  2. **Is the population still changing while I describe it?** The fifth case is the one where
+     nothing was broken — two readers, both correct, both counts right at their moment, and a
+     40-event discrepancy that was a job still writing traces between the two sentences. No check on
+     the reader catches it. Quote a count WITH the corpus size and the moment, never a bare rate.
+
+  **A null that is too clean is evidence about the instrument before it is evidence about the
+  world**, and the tell is believability: "zero EVENTS" is a different claim from "zero DURATIONS",
+  and the first should be disbelieved first. A related trap has no self-check at all — **a rule
+  stored as a prohibition hides the observation it was derived from.** A consumer's note said "don't
+  bucket traces by the version field when you mean 'this index'"; the same sentence was also saying
+  the corpus IS version-mixed, which was the answer to an open question filed under a heading that
+  made it look only like a hazard. Correct, followed, and blinding at once.
 - **A sub-LM wrapper hands dspy back the SHAPE dspy handed it.** `RLM._query_lm` accepts a typed
   `dspy.LMResponse` or the legacy `list[str | dict]`, and both reads and both rebuilds live in
   `_dspy_compat.sub_lm_response_text` / `sub_lm_response_with_text` — never at a call site. The
