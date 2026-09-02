@@ -332,7 +332,10 @@ One companion rule ships under `.claude/rules/`:
   the version field when you mean 'this index'") and this project's own memory ("never average a rate
   across the upgrade boundary"). Both were known, both were correct, and NEITHER was retrieved —
   because "why does duration coverage vary by tool" presents as a question about TOOLS, and both
-  rules are filed under "when you are bucketing by version". The fix cost one query once the right
+  rules are filed under "when you are bucketing by version". **Note which one missed harder: the
+  memory file whose ENTIRE SUBJECT is the upgrade boundary, held by the reader who then suggested
+  querying the wrong axis.** So "write it down more prominently" is not the remedy — it was already
+  a whole note about exactly this. The fix cost one query once the right
   field was suggested from outside. **The fact was never missing; the retrieval was.** So when a rate
   varies by some dimension, enumerate what else differs between the groups before treating the
   dimension as the cause.
