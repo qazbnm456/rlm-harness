@@ -326,10 +326,16 @@ One companion rule ships under `.claude/rules/`:
   **A null that is too clean is evidence about the instrument before it is evidence about the
   world**, and the tell is believability: "zero EVENTS" is a different claim from "zero DURATIONS",
   and the first should be disbelieved first. A related trap has no self-check at all — **a rule
-  stored as a prohibition hides the observation it was derived from.** A consumer's note said "don't
-  bucket traces by the version field when you mean 'this index'"; the same sentence was also saying
-  the corpus IS version-mixed, which was the answer to an open question filed under a heading that
-  made it look only like a hazard. Correct, followed, and blinding at once.
+  indexed by the SITUATION that triggers it will not fire in a situation that looks different, even
+  when the underlying fact is identical.** Two notes already said the corpus is version-mixed and
+  named `run_start.rlm_harness` as what separates the cohorts: a consumer's ("don't bucket traces by
+  the version field when you mean 'this index'") and this project's own memory ("never average a rate
+  across the upgrade boundary"). Both were known, both were correct, and NEITHER was retrieved —
+  because "why does duration coverage vary by tool" presents as a question about TOOLS, and both
+  rules are filed under "when you are bucketing by version". The fix cost one query once the right
+  field was suggested from outside. **The fact was never missing; the retrieval was.** So when a rate
+  varies by some dimension, enumerate what else differs between the groups before treating the
+  dimension as the cause.
 - **A sub-LM wrapper hands dspy back the SHAPE dspy handed it.** `RLM._query_lm` accepts a typed
   `dspy.LMResponse` or the legacy `list[str | dict]`, and both reads and both rebuilds live in
   `_dspy_compat.sub_lm_response_text` / `sub_lm_response_with_text` — never at a call site. The
