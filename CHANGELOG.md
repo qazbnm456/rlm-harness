@@ -4,6 +4,79 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.9.1] - 2026-09-02
+
+`tool_total_seconds` measures the wall-clock tool calls OCCUPIED, instead of adding their durations
+together and counting a nested call twice.
+
+### Fixed
+
+- **`compute_run_facts`'s `tool_total_seconds` / `tool_wasted_seconds` are the measure of the UNION
+  of the tool calls' intervals, not a cross-tool sum.** A tool that records another `tool_call` from
+  inside itself produces two CORRECT events describing one stretch of wall clock; adding them
+  reports time that was never spent. On a real trace the sum reached **136.5% of the run's own
+  span** — impossible for a wall-clock share, and produced by this kit's own code. Five traces from
+  one consumer moved 42.8→23.3%, 83.1→46.0% and 136.5→69.4%. The two with nothing nested moved by
+  reconstruction error alone, which has TWO terms and not one: **+1.6e-7 s** on the first (float
+  quantisation) and **−7.8 ms** on the second, where a 0.9 s call and a 298 s call reconstructed as
+  overlapping by that much of clock drift though they ran back to back. As a share of each metric's
+  own previous value that is +0.00000% and −0.00208%; as a share of the run's span, +0.0000000% and
+  −0.00094%. Seconds are quoted first here because the two ratios have different denominators and
+  the drift term, unlike the float one, grows with the length of the call.
+
+  It takes BOTH halves to happen, which is why it went unseen: the key has been a sum since 1.8.0,
+  but the double-count needs 1.8.3's auto-timing of the OUTER tool AND an inner call recorded
+  explicitly by the tool itself — so it could only ship in 1.8.3, 1.8.4 and 1.9.0. A consumer
+  whose tool graph is flat never saw it, and the number stays under 100% — 42.8%, 83.1% — until the
+  nested call dominates the run, so nobody catches it by inspection.
+
+  Each event contributes `[ts - duration_s, ts]`. That is sound across the two clocks involved
+  (`ts` is `time.time`, `duration_s` a `time.perf_counter` delta) because a delta is clock-agnostic
+  and fixes the interval's LENGTH — but nothing fixes its POSITION. The clocks differ in RATE, so a
+  reconstructed start is displaced by roughly `duration_s x drift`, and the error grows with the
+  call: two observations in one corpus put it at >= 26.3 and >= 29.9 ppm, i.e. 7.8 ms and 17.3 ms on
+  calls of 298 s and 577 s. Every such observation is a lower bound, so the union can invent a small
+  overlap between strictly sequential calls or erase a real one. It moves the fifth decimal place
+  against a nesting effect measured in hundreds of seconds. `record_tool_call`'s docstring now
+  states the precondition this rests on: the envelope `ts` must be the END of the measured window.
+
+- **`compute_run_utilization` no longer raises on a `tool_call` whose `payload` is `None`.**
+  `dict.get`'s default fires only on a MISSING key, never on a key present with a `None` value, so
+  `event.get("payload", {}).get("tool", ...)` raised `AttributeError`. `compute_tool_waste` already
+  handled it with `or {}`; the two now agree, and such an event counts as tool `"?"` with cause
+  *invalid*. A public name in `__all__`, so the behaviour change is noted here rather than only in
+  the code.
+
+### Changed
+
+- **`tool_total_seconds` no longer equals `sum(w.total_seconds for w in compute_tool_waste(...))`.**
+  It is strictly SMALLER once any call nests, and otherwise equal only up to reconstruction error —
+  where it can be a few 1e-7 s LARGER, because `ts - (ts - d)` is quantised at epoch scale. Do not
+  write `assert new <= old`: on a flat run with 24 calls and nothing nested it already fails, by
+  +1.6e-7 s. This is the one behavioural break: a consumer
+  re-deriving the total from the per-tool dict will see a difference on any run with a nested call.
+  `ToolWaste`'s own per-tool numbers are deliberately unchanged and stay SUMS — "what this tool's
+  calls cost, added up" is well defined under overlap; it is the cross-tool aggregate that must not
+  double-count.
+- **A consumer tracking `tool_total_seconds` across the upgrade sees a step**, downward on any run
+  with a real nest. `tool_wasted_seconds` changes with it, and its derived SHARE can move UP — an
+  `ok` call nested inside an `invalid` one reads 0.556 before and 1.000 after. Not observed on the
+  corpus behind this release, where every wasted call was flat, but latent for anyone whose failures
+  wrap other calls.
+- **The changed value is also written INTO traces** by `TraceRecorder(record_metrics=True)`, which
+  folds these facts into the `run_end` payload. Nothing is added, removed or re-typed, so trace/v1's
+  additive-only rule is intact — but a corpus spanning the upgrade holds two meanings of
+  `payload.metrics.tool_total_seconds` in-file, distinguishable only by run date.
+- **`compute_run_facts` on a MULTI-RUN list changes its conflation direction.** It already warns
+  that a multi-run list silently conflates; today that over-adds, and the union can now silently
+  UNDER-add by merging two concurrently-executed runs' intervals. Use `compute_run_facts_by_run`.
+
+### Removed
+
+- `_sum_or_none` (private, unused once both keys move). Its `None`-vs-`0.0` discipline moves into
+  the new helper: `None` when nothing carried a duration, decided over ALL tool calls and never over
+  the wasted subset — gating on the subset reports `None` where a healthy run should report `0.0`.
+
 ## [1.9.0] - 2026-09-02
 
 `verify_quote` now reads a line-numbered citation as a coordinate claim and verifies it, instead of
