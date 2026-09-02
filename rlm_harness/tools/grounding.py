@@ -38,6 +38,7 @@ function's return value.
 from __future__ import annotations
 
 import difflib
+import itertools
 import re
 
 _DEFAULT_SNIPPET_CHARS = 120
@@ -125,12 +126,100 @@ def _carries_only_numbers(quote: str) -> bool:
         result  MATCH at line 39 -- the pattern is `42\\s+def\\s+test_run_...`
 
     Measured by rendering every non-blank line of every ``.py`` here and verifying it against its
-    own file: 2 false matches in 17,412 quotes (~1 in 8,700), one of them a full line of code.
-    Closing these needs the gutter-stripping repair, which is deferred — see CHANGELOG 1.8.2. Do
-    NOT describe this guard as refusing every guttered quote.
+    own file: 2 false matches in 18,761 quotes, one of them a full line of code. **1.9.0 resolves
+    BOTH** -- see :func:`_coordinate_match`, which reads a guttered quote as a coordinate claim and
+    verifies it rather than searching its digits as content. Do NOT describe THIS guard as doing
+    that: it refuses a quote that carries no content at all, and nothing more.
     """
     lines = [line for line in quote.split("\n") if line.strip()]
     return bool(lines) and all(_NUMBERS_ONLY_LINE.match(line) for line in lines)
+
+
+_GUTTER_LINE = re.compile(r"^\s*([0-9]{1,9})\t(.*)$")
+
+
+def _coordinate_match(source: str, quote: str) -> int | None:
+    """A guttered quote is a COORDINATE CLAIM. Return the line it verifies at, or ``None``.
+
+    1.8.2 closed the case where a citation of NOTHING verified. The other half stayed open: a
+    guttered quote carrying CONTENT is searched with the gutter DIGITS as literal content, so it
+    matches wherever that number precedes the line's text. Rendering every non-blank line of every
+    ``.py`` in this repo and verifying it against its own file found 2 such matches in 18,761 --
+    and BOTH are honest citations whose content really is at the gutter's line. The function was
+    reporting a coordinate the citation never claimed.
+
+    A coordinate claim can be verified more strongly than a substring can, so when this verifies it
+    wins; when it does not, nothing changes and the caller falls through to the literal search.
+    Four conditions, each closing a specific shape rather than a hypothetical one:
+
+    * **Consecutive gutters.** Two exact-unique lines 92 apart in this very file verify
+      individually; without this they would return a MATCH asserting an adjacency that does not
+      exist -- a NEW false-match class, in the direction this function keeps closed.
+    * **Bounds -- BOTH belt-and-braces, and the docs said otherwise until a review checked.**
+      Deleting either leaves the suite green. The slice refuses every overhang on its own (a short
+      slice is unequal), and a gutter of ``0`` cannot verify either, because ``lines[-1:0]`` is the
+      EMPTY list -- ``lines[0 - 1]`` is the last line as a SUBSCRIPT, and this code slices. An
+      earlier version of this comment asserted the lower bound was load-bearing on exactly that
+      confusion, and named a test as its guardian which was green under the mutation it claimed to
+      catch. But they are not JOINTLY redundant: delete the upper bound AND replace the slice
+      with a ``zip`` and a block claiming lines 6-7 of a six-line source verifies against its
+      content at lines 3-4 -- a fabricated coordinate past EOF, coordinate-verified. Uniqueness
+      does not save it, having found that block exactly once. Pinned by
+      ``test_removing_BOTH_the_bound_and_the_slice_would_verify_a_fabricated_coordinate``, which is
+      the reason both stay: "each is deletable alone" is exactly the shape that invites deleting
+      both.
+    * **EXACT equality, never whitespace-tolerant.** ``container_interpreter.py``'s line 285 and
+      line 320 are the same statement at 12 and 16 spaces. Each is exact-unique, so uniqueness
+      alone passes, and a tolerant check would coordinate-VERIFY 285's content under a claimed
+      gutter of 320 -- a fabricated indentation level in a language where indentation is semantics.
+      406 of 18,761 lines here (2.16%, across 61 files) are exact-unique but strip-duplicate.
+    * **The block occurs exactly once as a contiguous line SEQUENCE**, not as a substring. The
+      second residual's content is ``)``: hundreds of substring hits, one whole-line hit, so a
+      substring criterion would miss it entirely.
+
+    **Together the last two close fabrication by construction, not by luck**: exact content at
+    ``n`` plus a block occurring once means ``n`` is the ONLY line that can hold it. Without
+    uniqueness a bare position check is WORSE than today -- measured at ~0.15% of random fabricated
+    coordinates verifying, against 0.000% for the shipped function, because 16.84% of non-blank
+    lines here recur in their own file.
+
+    Two parsing details carry their own measurements:
+
+    * **``strip("\n")``, not "strip one trailing newline".** ``make_read_file_tool`` renders from
+      ``readlines()`` keepends, so one numbered line arrives as ``"     2\tdef foo():\n"``.
+      Stripping both ends cannot destroy a claimed line -- a blank SOURCE line renders as
+      ``"     8\t"``, carrying its own gutter, never a bare ``""`` -- and it additionally parses
+      the padded and code-fence-unwrapped shapes ``_NUMBERS_ONLY_SHAPES`` already documents models
+      emitting. Treating the trailing empty element as a CLAIMED blank line instead drops the fire
+      rate from 83.16% to 14.70% and fixes NEITHER residual.
+    * **``{1,9}`` on the digit run is a contract fix.** ``verify_quote`` documents that it never
+      raises, and on CPython 3.11 ``int("9" * 4301)`` raises ``ValueError: Exceeds the limit
+      (4300)``. An unbounded ``[0-9]+`` matched such a gutter. Nine digits covers 999,999,999 lines.
+
+    Note ``split("\n")``, never ``splitlines()``: the latter breaks on eight separators
+    universal-newline ``readlines()`` does not, and the renderer uses ``readlines()``. The mismatch
+    refuses honest citations and verifies fabricated ones on any file containing a form feed.
+    """
+    pairs: list[tuple[int, str]] = []
+    for element in quote.strip("\n").split("\n"):
+        m = _GUTTER_LINE.match(element)
+        if m is None:
+            return None
+        pairs.append((int(m.group(1)), m.group(2)))
+    if any(b - a != 1 for (a, _), (b, _) in itertools.pairwise(pairs)):
+        return None
+
+    start = pairs[0][0]
+    block = [content for _, content in pairs]
+    lines = source.split("\n")
+    if start < 1 or start - 1 + len(block) > len(lines):
+        return None
+    if lines[start - 1 : start - 1 + len(block)] != block:
+        return None
+    occurrences = sum(
+        1 for i in range(len(lines) - len(block) + 1) if lines[i : i + len(block)] == block
+    )
+    return start if occurrences == 1 else None
 
 
 def verify_quote(
@@ -173,21 +262,39 @@ def verify_quote(
     **Pass the RAW file text as ``source``, not a line-numbered render.** ``read_file``'s
     ``line_numbers=True`` and ``edit_file``'s success snippet both prefix a line with
     ``f"{n:>6}\\t"``, so both are gutter-bearing text easy to copy by accident. A quote carrying a
-    gutter usually fails here, because the gutter is not file content. The two are complementary:
-    numbers so the MODEL can cite a coordinate without counting lines, raw text so the VERIFIER can
-    check the claim.
+    gutter is READ AS A COORDINATE CLAIM since 1.9.0 and verified as one — see
+    :func:`_coordinate_match`. The two remain complementary: numbers so the MODEL can cite a
+    coordinate without counting lines, raw text so the VERIFIER can check the claim.
 
-    **This function will not strip a gutter for you, and that is a measured decision.** Removing a
-    leading ``spaces + digits + tab`` repairs 98.1% of guttered quotes — and on a document whose
-    line numbers ARE content (a stored line-numbered listing) it accepts a quote citing the WRONG
-    number, because the remaining text still appears elsewhere in the file. That is an invented
-    claim passing verification, the exact direction this function keeps closed.
+    **It still does not STRIP the gutter, and that distinction is the whole design.** Removing a
+    leading ``spaces + digits + tab`` and searching the remainder repairs most guttered quotes and
+    accepts a citation naming the WRONG line whenever the remainder appears anywhere else — an
+    invented claim passing verification. Instead the gutter is used: the content must be at exactly
+    the line the gutter names, and that block must occur exactly once. Without the uniqueness half a
+    bare position check is WORSE than searching, because 16.84% of non-blank lines in this repo
+    recur in their own file. With it, fabrication is closed by construction rather than by rate.
 
-    On a match, the return includes the 1-indexed line number and a ``snippet_chars``-wide window
-    of ``source`` centered on the match, clamped to the string's bounds — enough to sanity-check
-    the RIGHT occurrence was found if ``quote`` is generic enough to match more than one place
-    (this reports the FIRST match only, via ``re.search`` — a presence check, not an enumeration;
-    a model wanting every occurrence in a FILE already has ``grep_files`` for that).
+    A coordinate-verified MATCH says so in its text, because it means something different: the
+    source holds the CONTENT at that line, but the quoted bytes — gutter included — are not a
+    substring of it. A caller re-deriving grounding with ``quote in source`` must branch on that.
+    Pass ``normalize_whitespace=False`` to skip this path entirely; byte-exact mode means no
+    interpretation, and reading a gutter as a coordinate is an interpretation.
+
+    On a LITERAL match the return includes the 1-indexed line number, a character offset, and a
+    ``snippet_chars``-wide window of ``source`` centered on the match, clamped to the string's
+    bounds. **A coordinate-verified match (see** :func:`_coordinate_match` **) returns neither an
+    offset nor a snippet**, because there is no match position to report: the quoted bytes are not
+    in ``source`` at all, only their content is, and the line number IS the answer. The design
+    considered giving it the offset of the content at that line and dropped it -- an offset only a
+    coordinate match ever produces would invite a caller to treat the two returns as one shape,
+    which is the thing the wording of that return exists to prevent. ``snippet_chars`` is unused on
+    that path.
+
+    The literal path's snippet is there to sanity-check that the RIGHT occurrence was found when
+    ``quote`` is generic enough to match more than one place — it reports the FIRST match only, via
+    ``re.search``, a presence check rather than an enumeration; a model wanting every occurrence in
+    a FILE already has ``grep_files``. A coordinate match needs no such check: uniqueness is one of
+    its four conditions, so there is exactly one place it could be.
 
     On no match, a cheap, bounded fallback tries one "closest line" diagnostic — only when
     ``quote`` (stripped) is single-line — via ``difflib.get_close_matches`` against
@@ -229,6 +336,22 @@ def verify_quote(
             "(a blank line in a line-numbered render is just its number). Quote the line's TEXT "
             "instead; if the line is blank, quote the nearest non-blank line on its own."
         )
+
+    # A COORDINATE CLAIM outranks a substring, so this runs BEFORE the literal search -- the
+    # residual it closes IS that search matching on the gutter's digits. Skipped under
+    # `normalize_whitespace=False`: that mode means byte-exact matching with no interpretation, and
+    # reading a gutter as a coordinate claim is an interpretation. It is also the one lever a caller
+    # has if `source` itself contains numbered listings, where a correct literal match could
+    # otherwise be overridden -- a shape not observed in tens of thousands of local text files, but
+    # `cat -n` emits it.
+    if normalize_whitespace:
+        line = _coordinate_match(source, quote)
+        if line is not None:
+            return (
+                f"MATCH: line {line} verified by line number. The source holds this content at "
+                f"that line, and nowhere else. NOTE the quote's gutter is not in the source, so "
+                f"unlike an ordinary MATCH the quoted text is not a substring of it."
+            )
 
     # Leading/trailing whitespace in `quote` is incidental padding, not a claim about what
     # precedes/follows the quoted text in `source` -- stripped BEFORE pattern-building.
