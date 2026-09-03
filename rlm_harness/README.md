@@ -334,6 +334,16 @@ other `guard`).
   only as its unsliceable `repr`, so the tool returns a dict and the runner returns the typed
   `CommandResult`). The trace keeps only `exit_code` + lengths + a stderr preview + `duration_ms`,
   like `fetch_url` records size not body.
+- **The trace's stdout/stderr asymmetry is deliberate, and it has one blind spot worth knowing.**
+  `stdout` is bulk content, so it gets a LENGTH only — the same rule `fetch_url` applies to a body,
+  and the one that keeps a credential out of the JSONL even when redaction misses. `stderr` is
+  diagnostic rather than bulk, so it gets a 500-character preview. **The blind spot: a tool that
+  writes its diagnostics to STDOUT leaves nothing readable in the trace when it fails** — you get
+  `exit_code: 1`, an empty `stderr_preview`, and `stdout_len: 1234`. The model still sees
+  everything (it holds the full dict), so this costs a trace READER, not the run. If your commands
+  behave that way and you need the text offline, have your `runner` fold the relevant stdout into
+  `CommandResult.stderr`, or record your own event alongside — do not expect the length to
+  reconstruct it.
 - Sync, like every RLM tool — wrap an async container/sandbox client into a sync call yourself.
 
 **One-shot vs stateful — the runner decides.** `run_command` returns a single command's result and
