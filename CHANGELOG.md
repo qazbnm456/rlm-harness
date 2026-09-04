@@ -4,6 +4,80 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.10.0] - 2026-09-04
+
+`run_end` records the token budget that was in force and what each attempt actually spent, so a
+TRUNCATED completion stops being indistinguishable from a MALFORMED one.
+
+### Added
+
+- **`run_end.payload.budgets` — the generation cap that was APPLIED, per role.** A consumer's run
+  died with `AdapterParseError: LM response cannot be serialized to a JSON object` on a response that
+  opened with the model's own reasoning prose inside the JSON envelope, and it read as a small model
+  failing to follow the format. It was a `max_tokens` truncation. dspy detects that — `_check_truncation`
+  tests `finish_reason == "length"` — and then only `logger.warning`s it, discarding the datum before
+  any caller can see it; the only evidence was a container log line that rotates. The exception TYPE
+  is identical either way, so this is the misdiagnosis 1.4.0 already documented under `max_tokens`,
+  recurring because nothing recorded the one fact that separates them.
+
+  Recorded alongside the token cap: the ITERATION caps (`max_iterations`, `max_llm_calls`,
+  `max_output_chars`) and a `dropped` flag saying whether `_build_rlm`'s `except TypeError` fired —
+  that path reverts all three to dspy's own defaults, so without the flag the configured numbers
+  would read as applied when they were not. `max_output_chars` matters to the diagnosis in its own
+  right: dspy head+tail-caps each REPL output, so "the output was cut off" has THREE independent
+  mechanisms and a reader has to be able to rule each out.
+
+  Read off the LM, never from `RLMConfig`: an injected `main_lm`/`sub_lm` is used verbatim, so the
+  configured cap can be one the call never used — which is exactly the consumer whose run died. The
+  recorded `key` says which name held it, because dspy rewrites `max_tokens` to
+  `max_completion_tokens` for OpenAI reasoning models and a reader of the first name alone gets
+  `None` for precisely the thinking-model case this exists to explain. **Named keys only** — a
+  trace is a shipped artifact and `lm.kwargs` carries `api_key` for every LM the kit builds.
+
+- **`run_end.payload.usage` — token counts, per ATTEMPT.** `completion_tokens == cap` is a
+  truncation, and unlike a boolean the ratio also shows a turn APPROACHING the cap, which is the
+  early warning nobody has ever been able to see. Collected through dspy's public usage API, whose
+  tracker the kit HOLDS — so the counts survive the exception, and the fatal call's tokens are
+  recorded for a run that raised. That is the whole point: the run being diagnosed is one that died.
+
+  Per attempt, with `turns_recorded` marking the attempt whose turns are in the trace, because
+  `run_with_retry` re-runs the whole trajectory and the attempt that reached the trace is NOT always
+  the last — a run whose FINAL attempt raises keeps an EARLIER attempt's turns. Scoping usage to
+  "the attempt with the turns" would have discarded the fatal call's tokens. A run that never
+  produced a prediction (`main_steps: 0`, the shape of the incident behind this) records every
+  attempt with none flagged.
+
+  **Not per TURN, and that is a limit rather than an omission**: `sub_model` falls back to
+  `main_model` and dspy propagates the tracker into its sub-LM workers, so planner turns, sub-LM
+  escalations and same-model tool-LM calls land in one flat list under one key with no call id and
+  no timestamp. Nothing in dspy's tracker can separate them. For a distribution over runs use
+  `max(completion_tokens)`, never the run's SUM — summing many turns against a per-completion cap
+  answers a cost question, not this one.
+
+- **A caller's own `dspy.track_usage()` is REUSED, not shadowed.** dspy installs a tracker only when
+  none is set, so installing unconditionally would hand a consumer measuring cost around
+  `task.arun(...)` ZERO entries for everything inside — this kit writing a structural zero into
+  someone else's measurement. The kit reuses an installed tracker and reads a per-attempt SLICE, so
+  the consumer's own calls are never counted as the run's. One disclosed cost when the kit installs
+  one because you had none: dspy attaches per-prediction usage only when no tracker is installed, so
+  a `dspy.Module` a consumer calls from inside a kit run gets `None` from `get_lm_usage()`. The
+  counts are still in the tracker and in the trace; that one accessor stops answering.
+
+### Not done, deliberately
+
+- **An in-loop recovery for a truncated or unparseable turn** was requested and is refused. dspy DOES
+  expose the seam — `Adapter.__call__`/`acall`, where `JSONAdapter` already re-calls on a parse
+  failure, and which this kit already subclasses and deliberately strips of that fallback. But a
+  recovery there is invisible to the trajectory: the RLM loop never sees it, so the corrective
+  exchange is not a `main_step` — a second unrecorded turn added to a failure whose defining problem
+  is that the deciding turn is unrecorded. It also doubles the cost of the runaway actually observed.
+  The version worth having needs the loop, so it belongs upstream: extending dspy's existing
+  `CodeExecutionError` feedback path to a parse failure would make it a real turn with a real number.
+
+- **`RUN_FACT_KEYS` is unchanged.** The trace payload gains the fields; `compute_run_facts` does not.
+  With per-turn attribution impossible, a `truncated_turns` count would be per-run and weaker than
+  its name implies.
+
 ## [1.9.1] - 2026-09-02
 
 `tool_total_seconds` measures the wall-clock tool calls OCCUPIED, instead of adding their durations
