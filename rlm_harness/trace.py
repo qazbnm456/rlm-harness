@@ -379,6 +379,10 @@ class TraceRecorder:
 
             record_metrics = _env_bool("RLM_TRACE_METRICS", False)
         self._record_metrics = bool(record_metrics)
+        # Staged by the task via note_budgets / note_usage; folded into run_end. Empty means
+        # "nothing staged", and the fields are then ABSENT rather than empty -- see __exit__.
+        self._budgets: dict = {}
+        self._usage: list = []
         self._abs_path: str | None = None
         self._step = 0
         self._token: Token | None = None
@@ -458,6 +462,13 @@ class TraceRecorder:
                     chain = _error_chain(exc)
                     if chain:                   # absent, never empty: a reader must be able to tell
                         payload["error_chain"] = chain  # "none" from "one we failed to build"
+            # Staged by `RLMTask` through `note_budgets` / `note_usage`; absent when nothing
+            # staged them, never an empty dict -- a reader must be able to tell "no budgets
+            # recorded" from "recorded, and there were none".
+            if self._budgets:
+                payload["budgets"] = self._budgets
+            if self._usage:
+                payload["usage"] = self._usage
             if self._record_metrics:
                 # SUPPRESSED and computed into a LOCAL, with `run_end` recorded from the `finally`
                 # below. `__exit__` runs during exception propagation: a raise here would both lose
@@ -550,6 +561,30 @@ class TraceRecorder:
         with self._lock:
             self._main_ts = []
             self._exec_s = []
+
+    def note_budgets(self, budgets: dict) -> None:
+        """Stage the generation caps that were APPLIED, for `run_end.payload.budgets`.
+
+        Pushed in by the task rather than passed to `__init__`, because `run_start` is written by
+        `__enter__` -- before the caller's task ever runs -- and the task does not own the recorder.
+        And pushed AUTOMATICALLY rather than asked of the consumer: a field that exists only when
+        someone remembers to pass it is the `sub_call` failure, which four of nine consumers proved
+        they do not remember.
+
+        Plain dicts in; this module stays dspy-free.
+        """
+        self._budgets = dict(budgets)
+
+    def note_usage(self, usage: list) -> None:
+        """Stage PER-ATTEMPT token usage for `run_end.payload.usage`.
+
+        A LIST, one entry per attempt, because `run_with_retry` re-runs the whole trajectory and
+        the attempt whose turns reach the trace is NOT always the last one -- `captured["prediction"]`
+        is last-writer-wins, so a run whose final attempt RAISES keeps an earlier attempt's turns.
+        Scoping usage to "the attempt with the turns" would therefore discard the fatal call's
+        usage, which is the one number this exists to capture.
+        """
+        self._usage = list(usage)
 
     def note_main_step(self, reasoning: Any, ts: float | None = None) -> None:
         """Buffer that a ROOT planner turn was parsed LIVE at ``ts`` (default: now).

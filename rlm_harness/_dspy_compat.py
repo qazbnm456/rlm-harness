@@ -30,6 +30,7 @@ imports dspy lazily and is cached, since the installed dspy cannot change mid-pr
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 from functools import lru_cache
 from typing import Any
@@ -503,3 +504,111 @@ def dspy_refuses_fence(code: Any) -> bool:
     stripped = lang_line.strip()
     lang = (stripped.split(maxsplit=1)[0] if stripped else "").lower()
     return lang not in python_fence_langs()
+
+
+# --- token budgets and usage ---------------------------------------------------------------
+#
+# Why this lives here at all: a truncated completion and a malformed one raise the SAME exception
+# type, so a consumer diagnosing `AdapterParseError` cannot tell which it had. dspy DOES detect
+# truncation -- `LM._check_truncation` tests `finish_reason == "length"` -- and then only
+# `logger.warning`s it, discarding the datum before any caller can see it. What survives is the
+# token COUNT, and `completion_tokens == max_tokens` is the same fact with an extra property: it
+# also shows a turn APPROACHING the cap, where a boolean fires only after death.
+
+_LM_BUDGET_KEYS = ("max_tokens", "max_completion_tokens")
+
+
+def applied_lm_budget(lm: Any) -> dict[str, Any] | None:
+    """The generation cap actually APPLIED by ``lm``, as ``{"cap": int, "key": str}`` or ``None``.
+
+    Read off the LM, never from ``RLMConfig``: ``runtime`` builds an LM from config ONLY for a role
+    that is still ``None``, and an injected ``main_lm``/``sub_lm`` is used verbatim -- so the
+    configured cap can be one the call never used, which is exactly the consumer whose run died.
+    This mirrors dspy's own ``_check_truncation``, which reads ``self.kwargs['max_tokens']``.
+
+    **Both key names, and the found one is reported.** dspy rewrites ``max_tokens`` to
+    ``max_completion_tokens`` in ``LM._get_initial_kwargs`` for OpenAI reasoning models, so
+    ``dspy.LM("openai/o3", max_tokens=16384).kwargs`` carries ONLY the latter. Reading the former
+    alone returns ``None`` for precisely the thinking-model case this exists to explain.
+
+    **NAMED KEYS ONLY -- never serialise ``lm.kwargs``.** It carries ``api_key`` for every LM the
+    kit builds, and a trace is a shipped artifact that reaches replay, the dataset exporters and
+    every consumer's corpus. One dict-dump here is a credential in every file.
+
+    ``None`` when no cap is set. Note the key is PRESENT with value ``None`` in that case, so this
+    cannot distinguish "never set" from "explicitly None" -- both are absent, which is the honest
+    reading either way.
+    """
+    kwargs = getattr(lm, "kwargs", None)
+    if not isinstance(kwargs, dict):
+        return None
+    for key in _LM_BUDGET_KEYS:
+        cap = kwargs.get(key)
+        if isinstance(cap, int) and not isinstance(cap, bool):
+            return {"cap": cap, "key": key}
+    return None
+
+
+def current_usage_tracker() -> Any:
+    """dspy's active ``UsageTracker``, or ``None`` -- through the PUBLIC ``dspy.settings``.
+
+    Never `module.py`'s ``thread_local_overrides.get().get("usage_tracker")``: that private read is
+    the EVIDENCE for the behaviour below, not the API to code against. Verified equivalent with no
+    tracker, inside one, and inside a ``copy_context()`` worker.
+    """
+    try:
+        import dspy
+
+        return getattr(dspy.settings, "usage_tracker", None)
+    except Exception:
+        return None
+
+
+@contextlib.contextmanager
+def usage_tracking() -> Any:
+    """Yield a ``UsageTracker`` for the enclosed block, REUSING one already installed.
+
+    Installing unconditionally would SHADOW a consumer's own tracker: ``dspy.Module`` creates one
+    only when none is set, so a consumer's ``with dspy.track_usage(): await task.arun(...)`` would
+    collect ZERO entries for everything inside -- this kit writing a structural zero into someone
+    else's measurement. Reuse instead, and read a SLICE (see :func:`usage_since`) so the
+    consumer's own calls are not counted as ours.
+
+    Yields ``None`` when the installed dspy has no usage tracking at all.
+    """
+    existing = current_usage_tracker()
+    if existing is not None:
+        yield existing
+        return
+    try:
+        from dspy.utils.usage_tracker import track_usage
+    except Exception:
+        yield None
+        return
+    with track_usage() as tracker:
+        yield tracker
+
+
+def usage_baseline(tracker: Any) -> dict[str, int]:
+    """Per-model call counts to slice from. ``add_usage`` only ever APPENDS, which is what makes a
+    length snapshot a valid cursor."""
+    data = getattr(tracker, "usage_data", None)
+    return {k: len(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def usage_since(tracker: Any, baseline: dict[str, int]) -> dict[str, list]:
+    """The calls recorded on ``tracker`` since ``baseline`` -- keyed by the MODEL-NAME STRING.
+
+    ``usage_data`` is keyed by ``lm.model`` (a string) and is a ``defaultdict(list)``, so indexing
+    it with an LM OBJECT returns ``[]`` silently AND inserts a bogus key. ``base.get(k, 0)``, never
+    ``base[k]``: a model that first appears mid-scope (a tool-LM on another model) has no baseline.
+    """
+    data = getattr(tracker, "usage_data", None)
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for model, entries in data.items():
+        fresh = list(entries[baseline.get(model, 0):])
+        if fresh:
+            out[str(model)] = fresh
+    return out

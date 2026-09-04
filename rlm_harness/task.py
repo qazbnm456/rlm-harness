@@ -130,6 +130,42 @@ def _live_main_timing(recorder: Any):
             logger.debug("main-step timing context exit failed", exc_info=True)
 
 
+def _applied_budgets(sub_lm: Any, config: Any, caps_dropped: bool) -> dict[str, Any]:
+    """The generation caps ACTUALLY APPLIED, per role, for `run_end.payload.budgets`.
+
+    Read off the LMs rather than from `RLMConfig`: `runtime` builds an LM from config only for a
+    role still `None`, so an injected `main_lm`/`sub_lm` is used VERBATIM and the configured cap can
+    be one the call never used -- exactly the consumer whose run died of a truncation. The MAIN LM
+    is `dspy.settings.lm` (the task holds no reference to it); the sub-LM is the task's own.
+
+    Named keys only -- `_dspy_compat.applied_lm_budget` never serialises `lm.kwargs`, which carries
+    `api_key` for every LM the kit builds, and a trace is a shipped artifact.
+    """
+    out: dict[str, Any] = {}
+    with contextlib.suppress(Exception):
+        main = _dspy_compat.applied_lm_budget(dspy.settings.lm)
+        if main is not None:
+            out["main"] = main
+    with contextlib.suppress(Exception):
+        sub = _dspy_compat.applied_lm_budget(sub_lm)
+        if sub is not None:
+            out["sub"] = sub
+    # The ITERATION caps, which are a DIFFERENT exhaustion from the token cap above -- and
+    # `max_output_chars` is a THIRD, independent truncation mechanism (dspy head+tail-caps each
+    # REPL output), which a reader diagnosing "truncation" has to be able to rule out.
+    with contextlib.suppress(Exception):
+        out["iterations"] = {
+            "max_iterations": config.max_iterations,
+            "max_llm_calls": config.max_llm_calls,
+            "max_output_chars": config.max_output_chars,
+            # TRUE when `_build_rlm`'s `except TypeError` fired: dspy rejected the budget kwargs and
+            # every cap above reverted to dspy's own default. Without this the three numbers read as
+            # applied when they were not.
+            "dropped": bool(caps_dropped),
+        }
+    return out
+
+
 class RLMTask:
     """Base class for a single RLM-backed task. Subclass and set the class vars."""
 
@@ -290,6 +326,9 @@ class RLMTask:
         # `max_iterations` to `max_iters`). The `except TypeError` below is now only a
         # backstop for an unknown future signature — and it is a LOSSY one, so the
         # mapping has to be right: it drops every cap to dspy's defaults, silently.
+        # RESET per build, not just set on failure: without this the flag survives into a later
+        # run of the SAME task instance and claims caps were dropped when they were not.
+        self._budget_caps_dropped = False
         budget = _dspy_compat.rlm_budget_kwargs(
             max_iterations=self._config.max_iterations,
             max_llm_calls=self._config.max_llm_calls,
@@ -298,6 +337,10 @@ class RLMTask:
         try:
             return dspy.RLM(signature, **kwargs, **budget)
         except TypeError:
+            # Recorded, not just logged: this path drops all three iteration caps to dspy's own
+            # defaults, so a trace carrying the CONFIGURED values here would be a fiction. A log
+            # line rotates; the trace is what outlives the run.
+            self._budget_caps_dropped = True
             logger.warning(
                 "dspy.RLM rejected the budget kwargs %s — building WITHOUT budget caps "
                 "(max_iterations/max_llm_calls/max_output_chars fall back to dspy's own "
@@ -337,6 +380,19 @@ class RLMTask:
         if _rec is not None and getattr(rlm, "sub_lm", None) is not None:
             rlm.sub_lm = bind_recorder_to_sub_lm(_ensure_sub_call_recording(rlm.sub_lm), _rec)
         captured: dict[str, Any] = {}
+        # Opened around the whole retry loop, and REUSING a tracker the caller already installed:
+        # dspy creates one only when none is set, so installing unconditionally would shadow a
+        # consumer's own `with dspy.track_usage(): await task.arun(...)` and hand them zero entries
+        # for everything inside -- this kit writing a structural zero into someone else's
+        # measurement. Closed in the same `finally` as the interpreter teardown.
+        _usage_stack = contextlib.ExitStack()
+        tracker = _usage_stack.enter_context(_dspy_compat.usage_tracking())
+        # One entry per ATTEMPT. `run_with_retry` re-runs the whole trajectory, and the attempt
+        # whose turns reach the trace is NOT always the last: `captured["prediction"]` is
+        # last-writer-wins, so a run whose FINAL attempt raises keeps an EARLIER attempt's turns.
+        # Scoping usage to "the attempt with the turns" would discard the fatal call's usage --
+        # the one number this records at all.
+        attempt_usage: list[dict[str, Any]] = []
 
         async def runner() -> Any:
             # Capture each turn's LIVE timestamp as dspy parses it, so the post-hoc
@@ -345,13 +401,52 @@ class RLMTask:
             recorder = current_recorder()
             if recorder is not None and hasattr(recorder, "begin_main_capture"):
                 recorder.begin_main_capture()
-            with _live_main_timing(recorder):
-                # On dspy 3.3.x a caller-owned interpreter is the first POSITIONAL
-                # argument here rather than a constructor kwarg; empty tuple when the task
-                # has no caller-owned interpreter.
-                prediction = await rlm.aforward(*forward_args, **inputs)
-            captured["prediction"] = prediction
-            return prediction
+            index = len(attempt_usage)
+            baseline = _dspy_compat.usage_baseline(tracker) if tracker is not None else {}
+            try:
+                with _live_main_timing(recorder):
+                    # On dspy 3.3.x a caller-owned interpreter is the first POSITIONAL
+                    # argument here rather than a constructor kwarg; empty tuple when the task
+                    # has no caller-owned interpreter.
+                    prediction = await rlm.aforward(*forward_args, **inputs)
+                captured["prediction"] = prediction
+                captured["attempt"] = index
+                return prediction
+            finally:
+                # In a `finally`, because the RAISING attempt is the entire point -- read after
+                # the call returns and its slice is lost with the exception.
+                if tracker is not None:
+                    # Appended UNCONDITIONALLY: `index` is `len(attempt_usage)`, so skipping an
+                    # attempt that recorded no calls would hand the NEXT attempt the same index.
+                    # An attempt with no calls is also a fact worth keeping -- it failed before
+                    # reaching the LM.
+                    attempt_usage.append(
+                        {"attempt": index, "calls": _dspy_compat.usage_since(tracker, baseline)}
+                    )
+
+        def _stage_budgets_and_usage() -> None:
+            """Fold the applied caps and the per-attempt usage into `run_end`.
+
+            Called on the success AND failure paths: the failure path is the one this exists for.
+            Which attempt's turns reached the trace is resolvable only HERE, after the loop --
+            `captured["prediction"]` is last-writer-wins, so an attempt that produced a prediction
+            may still have had its turns overwritten by a later one. A flag stamped per attempt
+            would mark BOTH, telling a reader the usage and the turns agree when they do not.
+            """
+            rec = current_recorder()
+            if rec is None:
+                return
+            with contextlib.suppress(Exception):
+                budgets = _applied_budgets(
+                    self._sub_lm, self._config, getattr(self, "_budget_caps_dropped", False)
+                )
+                if budgets and hasattr(rec, "note_budgets"):
+                    rec.note_budgets(budgets)
+                if attempt_usage and hasattr(rec, "note_usage"):
+                    recorded = captured.get("attempt")
+                    for entry in attempt_usage:
+                        entry["turns_recorded"] = entry["attempt"] == recorded
+                    rec.note_usage(attempt_usage)
 
         try:
             try:
@@ -383,6 +478,7 @@ class RLMTask:
                 recorder = current_recorder()
                 if recorder is not None and "prediction" in captured:
                     recorder.record_main_trajectory(captured["prediction"])
+                _stage_budgets_and_usage()
                 raise
 
             recorder = current_recorder()
@@ -390,9 +486,11 @@ class RLMTask:
                 if "prediction" in captured:
                     recorder.record_main_trajectory(captured["prediction"])
                 recorder.record_result(result)
+            _stage_budgets_and_usage()
             return result
         finally:
             self._teardown_interpreter()
+            _usage_stack.close()
 
     def _teardown_interpreter(self) -> None:
         """Shut down the sandbox interpreter built for this run, if any.
