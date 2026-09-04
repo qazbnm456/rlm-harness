@@ -1305,6 +1305,59 @@ cannot reproduce.
     "error_chain": ["ValueError: adapter could not parse the completion",
                     "ConnectionError: proxy: read timeout on POST /v1/chat/completions"]
 
+**`run_end` also carries `budgets` and `usage` since 1.10.0 — because a TRUNCATED completion and a
+MALFORMED one raise the same exception.** dspy detects truncation (`finish_reason == "length"`) and
+only logs a warning, so the trace recorded nothing to tell them apart, and the misdiagnosis it
+enables is one this kit has already documented once, under `max_tokens`.
+
+    "budgets": {"main": {"cap": 16384, "key": "max_tokens"},
+                "sub":  {"cap": 4096,  "key": "max_tokens"},
+                "iterations": {"max_iterations": 10, "max_llm_calls": 30,
+                               "max_output_chars": 10000, "dropped": false}},
+    "usage":   [{"attempt": 0, "turns_recorded": true,
+                 "calls": {"openai/gpt-4o": [{"prompt_tokens": 1234, "completion_tokens": 2100}]}},
+                {"attempt": 1, "turns_recorded": false,
+                 "calls": {"openai/gpt-4o": [{"prompt_tokens": 1234, "completion_tokens": 16384}]}}]
+
+Read `completion_tokens == cap` as a truncation, and the ratio as a turn approaching one — the
+early warning a boolean cannot give. Four things to know:
+
+- **`budgets` is the cap APPLIED, read off the LM, not `RLMConfig`.** An injected `main_lm`/`sub_lm`
+  is used verbatim, so the configured value can be one the call never used. `key` says which name
+  held it: dspy rewrites `max_tokens` to `max_completion_tokens` for OpenAI reasoning models, and a
+  reader of the first name alone sees nothing for exactly that class of model. An absent
+  `main`/`sub` means no cap was set on that role — never `0`, and never `False` for the derived truncation. (`budgets` itself is
+  present on any task-driven run, since `iterations` is unconditional; its absence means nothing was
+  staged at all.)
+- **`usage` is per ATTEMPT, and `turns_recorded` marks the one whose turns are in the trace.**
+  `run_with_retry` re-runs the whole trajectory, and the attempt that reached the trace is NOT
+  always the last: a run whose final attempt RAISES keeps an earlier attempt's turns. Scoping usage
+  to the attempt with the turns would have discarded the fatal call's tokens, which is the number
+  worth having. A run that never produced a prediction — `main_steps: 0`, the shape of the incident
+  behind this — records every attempt with none flagged.
+- **It is NOT per turn, and that is a limit, not an omission.** `sub_model` falls back to
+  `main_model`, and dspy propagates the tracker into `llm_query_batched`'s workers, so planner
+  turns, sub-LM escalations and same-model tool-LM calls land in one flat list under one key with
+  no call id and no timestamp. Nothing in dspy's tracker can key them apart. For a distribution
+  over runs use `max(completion_tokens)` per run, never the run's SUM — summing fifteen turns'
+  tokens against a per-completion cap answers a cost question, not this one.
+- **Usage may be absent**, and absent is not zero: not every provider returns a usage block, dspy
+  drops an empty one entirely, and streaming needs `dspy.settings.track_usage` for the provider to
+  send it at all. If your own code opens `dspy.track_usage()` around a run, the kit REUSES your
+  tracker rather than shadowing it, and records only the calls it made. One cost of installing a
+  tracker at all, if you had none: dspy attaches per-prediction usage (`get_lm_usage()`) only when
+  no tracker is installed, so a `dspy.Module` YOU call from inside a kit run returns `None` there
+  while the kit's scope is open. The numbers are not lost — they are in the tracker, and in the
+  trace — but that one accessor stops answering.
+
+**`budgets` covers a DIFFERENT exhaustion from `budget_exhausted`.** The `metrics` snapshot's
+`budget_exhausted` reports the ITERATION cap: the run used up its turns. `budgets.iterations` shows
+what those caps were, `budgets.main`/`.sub` show the TOKEN cap, and `budgets.iterations.dropped`
+says whether dspy rejected the iteration kwargs and reverted them all to its own defaults — without
+which the three numbers would read as applied when they were not. A run can exhaust either budget,
+and `max_output_chars` is a third, independent truncation: dspy head+tail-caps each REPL output, so
+a reader diagnosing "the output was cut off" has three mechanisms to rule out, not one.
+
 **Read it as absent-or-populated, never as empty.** The key is written only when a chain exists, so
 a reader can tell "there was no cause" from "we could not build one". `error` itself is unchanged.
 

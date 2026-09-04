@@ -676,3 +676,56 @@ def test_the_fence_lang_FALLBACK_matches_what_dspy_actually_says(monkeypatch):
     assert _dspy_compat.python_fence_langs() == truth, (
         "the hardcoded fallback has drifted from what dspy actually accepts"
     )
+
+
+# --- 1.10.0 token-budget shims -------------------------------------------------------------
+#
+# The behavioural cases live in `tests/test_token_budget.py`; these are the RENAME TRIPWIRES the
+# `_dspy_compat` invariant asks for -- each asserts the shim's contract against the INSTALLED dspy,
+# so a rename goes red HERE rather than silently degrading a trace to "no budget recorded".
+
+def test_applied_lm_budget_finds_the_cap_under_dspys_current_key():
+    """dspy rewrites `max_tokens` to `max_completion_tokens` for reasoning models. If it renames
+    either, or stops rewriting, this is where it surfaces."""
+    import dspy
+
+    from rlm_harness._dspy_compat import applied_lm_budget
+
+    assert applied_lm_budget(dspy.LM("openai/gpt-4o-mini", max_tokens=4096)) == {
+        "cap": 4096, "key": "max_tokens",
+    }
+    assert applied_lm_budget(dspy.LM("openai/o3", max_tokens=16384)) == {
+        "cap": 16384, "key": "max_completion_tokens",
+    }
+
+
+def test_the_usage_tracker_is_reachable_through_public_dspy_settings():
+    """`dspy.settings.usage_tracker` is the PUBLIC read; `module.py`'s `thread_local_overrides` is
+    the evidence for the behaviour, never the API. If dspy moves it, this goes red."""
+    from dspy.utils.usage_tracker import track_usage
+
+    from rlm_harness._dspy_compat import current_usage_tracker, usage_tracking
+
+    assert current_usage_tracker() is None
+    with track_usage() as outer:
+        assert current_usage_tracker() is outer
+        with usage_tracking() as reused:
+            assert reused is outer, "the shim shadowed the caller's tracker"
+
+
+def test_usage_data_is_keyed_by_the_model_name_string():
+    """A real dspy call, asserting the tracker's SHAPE: model-name string keys, one appended entry
+    per call, carrying `completion_tokens`."""
+    import dspy
+    from dspy.utils.dummies import DummyLM
+    from dspy.utils.usage_tracker import track_usage
+
+    from rlm_harness._dspy_compat import usage_baseline, usage_since
+
+    lm = DummyLM([{"answer": "x"}])
+    with track_usage() as tracker, dspy.context(lm=lm):
+        base = usage_baseline(tracker)
+        lm("hi")                    # the LM call itself is what reaches `add_usage`
+        fresh = usage_since(tracker, base)
+    assert list(fresh) and all(isinstance(k, str) for k in fresh)
+    assert all("completion_tokens" in c for calls in fresh.values() for c in calls)
