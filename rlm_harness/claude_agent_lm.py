@@ -336,9 +336,9 @@ class ClaudeAgentLM(dspy.BaseLM):
     cap off the LM rather than off `RLMConfig` because dspy's own `_check_truncation` reads that
     same dict, which is to say on the assumption that an LM's kwargs ARE what it applied. This
     adapter is where the assumption does not hold, so read a cap recorded for it as configuration
-    rather than as a measurement — and see `applied_lm_budget`, whose "actually APPLIED" is the
-    claim this counterexample qualifies. Build without the kwarg and no cap is recorded for the
-    role.
+    rather than as a measurement — and see `applied_lm_budget`, which names this LM as the reason
+    it reports what an LM CARRIES rather than what it applied. Build without the kwarg and no cap
+    is recorded for the role, which is what the auto-routed path does.
 
     Token usage is recorded per CALL, and with `output_format` set a call can span more than one
     API request. `_api_rounds` carries the provider's per-sampling-iteration breakdown into the

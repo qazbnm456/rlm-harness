@@ -530,12 +530,29 @@ _LM_BUDGET_KEYS = ("max_tokens", "max_completion_tokens")
 
 
 def applied_lm_budget(lm: Any) -> dict[str, Any] | None:
-    """The generation cap actually APPLIED by ``lm``, as ``{"cap": int, "key": str}`` or ``None``.
+    """The generation cap ``lm`` CARRIES, as ``{"cap": int, "key": str}`` or ``None``.
 
     Read off the LM, never from ``RLMConfig``: ``runtime`` builds an LM from config ONLY for a role
     that is still ``None``, and an injected ``main_lm``/``sub_lm`` is used verbatim -- so the
     configured cap can be one the call never used, which is exactly the consumer whose run died.
     This mirrors dspy's own ``_check_truncation``, which reads ``self.kwargs['max_tokens']``.
+
+    **"Carries", not "applied", and the difference is not pedantry.** Reading ``lm.kwargs`` is
+    right because dspy's own truncation check reads the same dict -- which is to say this rests on
+    the assumption that an LM's kwargs ARE what it applied. That assumption has one shipped
+    counterexample: ``claude_agent_lm.ClaudeAgentLM`` tolerates and IGNORES a ``max_tokens=``
+    (the Claude Agent SDK exposes no sampling controls), so a cap passed there is reported here and
+    ``completion_tokens`` can exceed it. This function cannot detect that -- an LM exposes no
+    attestation of what it honoured -- so the honest contract is the one stated: this is what the
+    LM carries, and it equals what was applied for every LM that honours its own kwargs. A READER
+    of the finished trace is better placed, with one attribution trap: ``completion_tokens`` above
+    the largest of the per-role token caps falsifies the equality (it can never confirm it), but
+    above ONE role's cap it proves nothing: ``budgets`` records no model name and ``usage`` is
+    keyed by model, so the trace alone maps no usage entry to a role -- differing model strings do
+    not rescue that, they only make it less obvious. This particular LM
+    needs no attribution at all: it is recognisable by the ``SUBSCRIPTION_PREFIX`` on its model
+    key. See that class's docstring, which names itself as
+    the exception at the point a caller would pass the kwarg.
 
     **Both key names, and the found one is reported.** dspy rewrites ``max_tokens`` to
     ``max_completion_tokens`` in ``LM._get_initial_kwargs`` for OpenAI reasoning models, so
