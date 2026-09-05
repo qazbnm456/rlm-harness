@@ -516,8 +516,9 @@ def dspy_refuses_fence(code: Any) -> bool:
 # also shows a turn APPROACHING the cap, where a boolean fires only after death.
 #
 # MEASURED SINCE, and the approaching half is CONDITIONAL on the cap: on the first production corpus
-# (385 runs, one model, cap 32768) the ratio distribution has a HOLE -- 363 below 0.6, ZERO between
-# 0.6 and 1.0, 21 at exactly 1.0. But transposing those bins onto a 16384 cap moves 64 of 379 runs
+# (one model, cap 32768; 385 runs reaching run_end, of which 379 succeeded) the ratio distribution
+# has a HOLE. The BINS are the 379 successes -- 363 below 0.6, ZERO between 0.6 and 1.0, 16 at the
+# cap; adding the 6 failures gives 364 / 0 / 21 across all 385. But transposing those bins onto a 16384 cap moves 64 of 379 runs
 # (16.9%) into the empty band, so the hole is an artifact of a cap set at ~2x what the model needs,
 # not a property of the model. Do not promise early warning unconditionally, and do not deny it
 # either -- it depends on the caller's cap. What holds regardless: the count separates a truncation

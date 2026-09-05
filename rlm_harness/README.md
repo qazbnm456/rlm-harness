@@ -398,10 +398,10 @@ finding = MyTask(tools=[read_file, grep_files]).run(...)
   marker when set), and `line_numbers=` (default `False`; prefixes each returned line with its
   REAL 1-indexed file line number, so a model reading a slice starting mid-file doesn't have to
   compute one itself from `start_line` — removing exactly the off-by-one a model gets wrong when
-  later asked to cite or edit that line). **If you also verify citations, read "Line numbers and
-  `verify_quote`" below BEFORE turning this on** — the two must not see the same string, and getting
-  it wrong silently fails correct citations. The last two are scoped to the successful-read branch
-  only — a `Refused`/`Read error` string is never numbered or truncated.
+  later asked to cite or edit that line). The last two are scoped to the successful-read branch
+  only — a `Refused`/`Read error` string is never numbered or truncated. **If you also verify
+  citations, read "Line numbers and `verify_quote`" below BEFORE turning `line_numbers=` on** — the
+  two must not see the same string, and getting it wrong silently fails correct citations.
 - **`make_grep_files_tool` requires the optional `regex` package outright** (`pip install
   "rlm-harness[grep]"` — a friendly `ImportError` otherwise, no silent fallback to stdlib `re`).
   `pattern` is LM-controlled, unbounded regex, matched against real file lines with no wall-clock
@@ -1324,13 +1324,16 @@ enables is one this kit has already documented once, under `max_tokens`.
 Read `completion_tokens == cap` as a truncation. **Whether the RATIO gives early warning depends on
 how generous your cap is, and 1.10.0 shipped claiming it always does.** On the first production
 corpus — one model, cap 32768, **385 runs reaching `run_end`: 379 that succeeded and 6 that
-failed** — the distribution has a HOLE. Across all 385: **364 below 0.6, ZERO between 0.6 and
-1.0, 21 at exactly the cap** (16 of the successes, 5 of the failures). A turn stays under ~0.55
-or blows straight through, and a proximity meter has nothing to point at.
+failed** — the distribution has a HOLE. The bins are the **379 successes**: 363 below 0.6, ZERO
+between 0.6 and 1.0, 16 at the cap. Adding the 6 failures (1 below 0.6, 5 at the cap) gives
+**364 / 0 / 21 across all 385**. A turn stays under ~0.55 or blows straight through, and a
+proximity meter has nothing to point at.
 
 But the hole is an artifact of that cap, not of the model. Converting the bins back to absolute
-tokens and re-dividing by a 16384 cap moves **64 runs into the empty band** — 16.9% of the 379
-successes whose bins these are, 16.6% of all 385 — with the median max-turn going 0.209 → 0.418 and p90 0.378 → 0.756. So a cap set at roughly twice
+tokens and re-dividing by a 16384 cap moves **64 of the 379 into the empty band — 16.9%** — with
+the median max-turn going 0.209 → 0.418 and p90 0.378 → 0.756. Quoted over the successes because
+that is the population the bins cover; the all-385 figure is not derivable without knowing whether
+the one sub-cap failure sits in [0.3, 0.5), which nothing here records. So a cap set at roughly twice
 what the model needs produces the hole; a tighter one produces a real gradient, and there the
 warning reading works. Measure your own before building either. (The transposition assumes token
 counts do not change with the cap — `max_tokens` is a hard stop rather than a hint, so that should
