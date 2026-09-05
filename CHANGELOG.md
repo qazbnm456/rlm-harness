@@ -4,7 +4,34 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
-## [Unreleased]
+## [1.10.1] - 2026-09-05
+
+Documentation only — no public name, no behaviour, no schema change. It ships because the docstrings
+are IN the wheel: `pip install rlm-harness==1.10.0` gives a builder a `line_numbers=` warning that
+argues the wrong way at the moment the flag is flipped.
+
+### Fixed
+
+- **`make_read_file_tool`'s `line_numbers=` warning cited the argument FOR the flag as the cost of
+  turning it ON.** It said a correct guttered citation used to fail "and one consumer measured 17.3%
+  of its stored coordinates as wrong because of it". That 17.3% was measured on corpora built with
+  line numbers OFF, where no gutter existed — it is the SECOND failure, the one line numbers FIX
+  (the model counting lines itself). So the docstring a builder reads while deciding presented the
+  strongest reason to turn the flag on as a reason not to. Now carries the first failure's own
+  number (83.16% of guttered non-blank quotes resolving since 1.9.0, 67.2% of everything the tool
+  renders once blank-line citations are counted) and points at the guide, where both failures can be
+  weighed against each other.
+- **The gutter warning was reachable only from where the consequence is explained, not from where
+  the flag is flipped.** `make_read_file_tool`'s docstring, the guide's parameter list, and
+  `make_edit_file_tool`'s `show_snippet` all described their feature and stopped; the interaction
+  with `verify_quote` lived in the grounding section, which a builder reads only if they already
+  know the two interact. `show_snippet` is the worst of the three because it defaults to **True** —
+  a task using `edit_file` feeds the model guttered text whether or not it ever considered line
+  numbers, and the only warning sat in a private helper. All three now point at the explanation.
+- **`_dspy_compat.py` reported a distribution summing to 384 over a stated 385.** Two populations
+  mixed: 363 is the successes-only count, 21 spans successes and failures. Now states the split
+  once — the bins are the 379 successes (363 / 0 / 16), and adding the 6 failures gives 364 / 0 / 21
+  across all 385 — matching the guide digit for digit.
 
 ### Changed
 
