@@ -398,7 +398,9 @@ finding = MyTask(tools=[read_file, grep_files]).run(...)
   marker when set), and `line_numbers=` (default `False`; prefixes each returned line with its
   REAL 1-indexed file line number, so a model reading a slice starting mid-file doesn't have to
   compute one itself from `start_line` — removing exactly the off-by-one a model gets wrong when
-  later asked to cite or edit that line). The last two are scoped to the successful-read branch
+  later asked to cite or edit that line). **If you also verify citations, read "Line numbers and
+  `verify_quote`" below BEFORE turning this on** — the two must not see the same string, and getting
+  it wrong silently fails correct citations. The last two are scoped to the successful-read branch
   only — a `Refused`/`Read error` string is never numbered or truncated.
 - **`make_grep_files_tool` requires the optional `regex` package outright** (`pip install
   "rlm-harness[grep]"` — a friendly `ImportError` otherwise, no silent fallback to stdlib `re`).

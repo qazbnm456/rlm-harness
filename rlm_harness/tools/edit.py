@@ -163,6 +163,11 @@ def make_edit_file_tool(
     ``f"{lineno:>6}\\t{line}"`` numbering convention) so the model can confirm what its edit
     actually did without a separate ``read_file`` round-trip. ``show_snippet`` (default ``True``)
     is the escape hatch back to the terse ``"Replaced N occurrence(s) in {path!r}."`` alone.
+    **It is ON by default, so a task using this tool feeds the model guttered text whether or not
+    it ever considered line numbers** — the snippet prefixes each line with ``f"{n:>6}\t"``, the
+    same shape ``make_read_file_tool(line_numbers=True)`` produces. If you verify citations, give
+    :func:`~rlm_harness.tools.grounding.verify_quote` the RAW file text and never this rendered
+    output; see the guide's "Line numbers and ``verify_quote``".
     ``snippet_context_lines`` (default ``3``) bounds each shown region to a small window around it
     — if the edited region itself spans more, only its own head/tail are shown with an "... N
     line(s) omitted ..." marker, so a huge insertion never dumps an unbounded block back. With

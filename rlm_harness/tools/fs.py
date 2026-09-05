@@ -131,6 +131,15 @@ def make_read_file_tool(
     compute one itself from ``start_line`` — removing exactly the kind of off-by-one a model gets
     wrong when later
     asked to cite or edit that line. Also scoped to the successful-read branch only.
+
+    **If you verify citations, this flag changes what `verify_quote` must be given.** The rendered
+    line carries a gutter that is NOT file content, so a model quoting what it SAW carries the
+    gutter into its quote. Feed the tool's output to the MODEL and the RAW file text to
+    `verify_quote` — never the same string to both. Since 1.9.0 `verify_quote` reads a gutter as a
+    COORDINATE CLAIM and resolves most of them, but only under `normalize_whitespace=True`, and the
+    ones it cannot resolve keep their old verdict rather than getting a wrong one. Before that
+    release a correct, guttered citation simply FAILED, and one consumer measured 17.3% of its
+    stored coordinates as wrong because of it. See the guide's "Line numbers and `verify_quote`".
     """
     _validate_tool_name(name)
 
