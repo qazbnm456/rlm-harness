@@ -12,7 +12,8 @@ All notable changes to `rlm-harness`. Format loosely follows
   on the caller's cap.** 1.10.0's entry below says the ratio "shows a turn APPROACHING the cap" with
   no qualification, and that is left standing as the record of what was believed at release. The
   first production corpus qualified it: 385 runs on one model at a 32768 cap, and the distribution
-  has a HOLE — 364 below 0.6, ZERO between 0.6 and 1.0, 21 at the cap. There a turn stays under
+  has a HOLE. The bins are the 379 successes (363 below 0.6, ZERO between 0.6 and 1.0, 16 at the
+  cap); adding the 6 failures gives 364 / 0 / 21 across all 385. There a turn stays under
   ~0.55 or blows straight through and a proximity meter has nothing to point at. But the hole is an
   artifact of a cap set at roughly twice what that model needed: transposing the same bins onto a
   16384 cap moves 64 of the 379 successes (16.9%) into the empty band. So a tighter cap gives a real
