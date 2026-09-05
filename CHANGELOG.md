@@ -4,6 +4,39 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.11.1] - 2026-09-05
+
+Documentation only — no public name, no behaviour, no schema change. It ships for the reason 1.10.1
+did: the docstrings are IN the wheel, and four of them told a builder that `budgets` records the cap
+a call APPLIED. It records the cap the LM CARRIES, and this kit ships one LM for which those differ.
+
+### Fixed
+
+- **Four shipped docstrings and the guide claimed `budgets` is the cap "APPLIED".** It is read off
+  `lm.kwargs`, which is right — dspy's own `_check_truncation` reads the same dict — but that rests
+  on the assumption that an LM's kwargs are what it applied, and `ClaudeAgentLM` is the shipped
+  counterexample: the subscription SDK exposes no output cap, so it tolerates and IGNORES a
+  `max_tokens=`, which is then staged into `budgets` as a cap nothing enforced and which
+  `completion_tokens` can exceed. 1.11.0 documented the trap on that class; the producers of the
+  field went on asserting the opposite. `_dspy_compat.applied_lm_budget`, `task.py:_applied_budgets`,
+  `trace.py:note_budgets` and the guide now all say CARRIES, and point at one explanation instead of
+  repeating four. (1.10.0's CHANGELOG entry keeps its original wording, as the record of what was
+  believed at release.)
+- **"Nothing can detect this from the trace side" was false, and it was the sentence retracting the
+  first claim.** A reader of a finished trace has two handles. `completion_tokens` above the
+  largest of the per-role token caps falsifies the equality — never confirms it, which is the
+  asymmetry the flat claim lost — while comparing against one role's cap proves nothing, since
+  `budgets` records no model name and `usage` is keyed by model, so the trace alone maps no usage
+  entry to a role. The second handle needs no attribution: this LM's model key carries
+  the exported `SUBSCRIPTION_PREFIX`, so it is recognisable by name. The advice attached to the false claim was
+  inverted too: it told a reader to distrust a cap when they did not choose the LM, when the
+  auto-routed path passes no kwargs at all and the only way to reach the trap is to construct the
+  LM yourself.
+- **`configure`'s docstring omitted `max_tokens` from the kwargs an auto-routed subscription role
+  drops.** So `RLM_MAX_TOKENS` is silently inert for that role — worth stating rather than
+  discovering, along with its upside: no cap is recorded either, where a hand-built
+  `ClaudeAgentLM(max_tokens=...)` stages one the call never applies.
+
 ## [1.11.0] - 2026-09-05
 
 An LM call's token totals give the context size only when the call made a single API request with
