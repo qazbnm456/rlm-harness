@@ -1319,8 +1319,20 @@ enables is one this kit has already documented once, under `max_tokens`.
                 {"attempt": 1, "turns_recorded": false,
                  "calls": {"openai/gpt-4o": [{"prompt_tokens": 1234, "completion_tokens": 16384}]}}]
 
-Read `completion_tokens == cap` as a truncation, and the ratio as a turn approaching one — the
-early warning a boolean cannot give. Four things to know:
+Read `completion_tokens == cap` as a truncation. **Read the RATIO as diagnostic after the fact, not
+as an early warning** — 1.10.0 shipped claiming the second, and the first production corpus says
+otherwise. Over 385 runs on one model and one cap, the distribution has a HOLE: 363 runs below 0.6,
+**zero between 0.6 and 1.0**, and 21 at exactly 1.0. A turn stays under ~0.55 or blows straight
+through, so there is no gradient to warn on.
+
+That corpus also measured what truncation costs, which was invisible before this release: **21 runs
+of 385 (5.5%) hit the cap, and 16 of those 21 (76%) finished anyway.** Not luck — it is WHERE in the
+turn the truncation landed. A truncated CODE cell is a `SyntaxError`, and dspy's own in-loop feedback
+hands it back to the model, which repairs it. A truncated FINAL answer is an adapter parse failure
+with no handler, and kills the run. So the visible failures are the ~24% that land in the wrong
+place, and the rest self-heal without anyone knowing they happened.
+
+Four things to know:
 
 - **`budgets` is the cap APPLIED, read off the LM, not `RLMConfig`.** An injected `main_lm`/`sub_lm`
   is used verbatim, so the configured value can be one the call never used. `key` says which name
