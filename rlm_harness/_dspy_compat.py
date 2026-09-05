@@ -514,6 +514,13 @@ def dspy_refuses_fence(code: Any) -> bool:
 # `logger.warning`s it, discarding the datum before any caller can see it. What survives is the
 # token COUNT, and `completion_tokens == max_tokens` is the same fact with an extra property: it
 # also shows a turn APPROACHING the cap, where a boolean fires only after death.
+#
+# MEASURED SINCE, and the approaching half did not survive contact: on the first production corpus
+# (385 runs, one model, one cap) the ratio distribution has a HOLE -- 363 runs below 0.6, ZERO
+# between 0.6 and 1.0, 21 at exactly 1.0. A turn stays under ~0.55 or blows straight through, so
+# there is no gradient to warn on. The count is still worth recording -- it is what separates a
+# truncation from a malformed reply, and it showed that 76% of truncations self-heal because dspy's
+# own SyntaxError feedback repairs a truncated CODE cell -- but do not sell it as early warning.
 
 _LM_BUDGET_KEYS = ("max_tokens", "max_completion_tokens")
 
