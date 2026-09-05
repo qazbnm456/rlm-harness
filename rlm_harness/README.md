@@ -948,12 +948,18 @@ P = 8.2e-05, so it is not sample size. It is two independent generations rather 
 re-run — the model planned a different outline the second time, 11 artifacts against 6, so the
 citation counts are not comparable and only the proportion is.
 
-**A second consumer sized the same population on its own corpora.** Re-running its current verifier
-over four artifact sets built before line numbers were on corrected **96 of 556 coordinates (17.3%)**,
-reaching **35.6%** on the worst of the four. Read that as a size, not a rate: it is one deployment on
-one model family, re-verified after the fact rather than observed live. The spread is the part to
-carry — a factor of two across four corpora from one system, so a single measurement does not bound
-the next, and neither does the 14.4% above.
+**A second consumer sized this failure on its own corpora, with a different denominator.**
+Re-running its current verifier over four artifact sets built before line numbers were on corrected
+**96 of 556 coordinates (17.3%)**, reaching **35.6%** on the worst of the four. Read that as a size,
+not a rate: one deployment, one model family, re-verified after the fact rather than observed live.
+
+**Do not reconcile it with the 14.4% above, or average them.** They count different things over
+related corpora: 14.4% is stored CITATIONS observed to quote the right text at the wrong line, live;
+17.3% is COORDINATES a later verifier corrected, after the fact. That consumer holds at least one
+further cut on the same family of artifacts — coordinate errors as a share of the UNVERIFIED
+citations, which is a share of FAILURES and lands near 60% — and none of the three is the working
+for another. The spread is what to carry: a factor of two across four corpora from one system, so a
+single measurement does not bound the next, and neither of these bounds the other.
 
 The fix is not a kit setting, it is which string goes where. Your verifier holds the source anyway —
 it has to, to verify — so pass it the raw text and let the tool's rendered form exist only for the
