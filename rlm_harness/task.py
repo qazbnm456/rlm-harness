@@ -385,6 +385,15 @@ class RLMTask:
         # consumer's own `with dspy.track_usage(): await task.arun(...)` and hand them zero entries
         # for everything inside -- this kit writing a structural zero into someone else's
         # measurement. Closed in the same `finally` as the interpreter teardown.
+        #
+        # **Installing it BEFORE `aforward` is also what keeps this run off dspy's own
+        # `get_total_tokens()`.** `dspy.Module.__call__`/`acall` auto-total a run when
+        # `settings.track_usage` is set AND no tracker is installed yet; entering the scope here
+        # means `Predict.acall` inside RLM sees a non-`None` tracker and never takes that branch,
+        # and `RLMTask` calls `aforward` DIRECTLY rather than `acall`. That matters because dspy's
+        # aggregator merges usage entries with `(current or 0) + (v or 0)`, which raises on a
+        # value it cannot add -- so a refactor to `rlm.acall(...)`, or to install this later,
+        # would arm a crash that lands AFTER a completed run and discards its result.
         _usage_stack = contextlib.ExitStack()
         tracker = _usage_stack.enter_context(_dspy_compat.usage_tracking())
         # One entry per ATTEMPT. `run_with_retry` re-runs the whole trajectory, and the attempt

@@ -6,6 +6,7 @@ lazy export is asserted without it, and construction is exercised against a FAKE
 wheel. dspy IS a hard dep, so the module imports; guard anyway for a dspy-less environment.
 """
 
+import contextlib
 import sys
 import types
 
@@ -293,3 +294,167 @@ def test_the_returned_text_is_the_sdk_result(sdk_returning):
     sdk_returning({"input_tokens": 1, "output_tokens": 1}, text="the answer")
     response = rlm_harness.ClaudeAgentLM("sonnet").forward(prompt="hi")
     assert response.choices[0].message.content == "the answer"
+
+
+# --- the totals give the context size conditionally; the rounds give it unconditionally -------
+#
+# MEASURED entry shape (consumer's machine, claude-agent-sdk 0.2.119 / CLI 2.1.261): the four
+# token fields, `type`, and a nested `cache_creation` breakdown. `model` and further members
+# appear in the SDK's schema, which is why the guard checks the CONTAINER and never an entry's
+# keys — enumerating would freeze a set that demonstrably moves.
+
+_ROUND = {
+    "type": "message",
+    "model": "claude-sonnet-5",
+    "input_tokens": 2,
+    "cache_creation_input_tokens": 1080,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 125,
+    # A DECOMPOSITION of cache_creation_input_tokens, not an addition to it — Anthropic documents
+    # it as "Breakdown of cached tokens by TTL". Summing every int in this dict gives 2287.
+    "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 1080},
+}
+
+
+def _usage_with_rounds(rounds):
+    return {"input_tokens": 2, "cache_creation_input_tokens": 1080,
+            "cache_read_input_tokens": 0, "output_tokens": 125, "iterations": rounds}
+
+
+def test_the_rounds_ride_through_verbatim_beside_the_aggregate(sdk_returning):
+    """The whole point of carrying them: `prompt_tokens` is a per-CALL total, and a reader
+    watching context growth cannot tell a growing prompt from a retried call without the
+    breakdown. Entries stay in the SDK's own vocabulary — normalising them to
+    prompt_tokens/completion_tokens would collapse the cache split, which is exactly what made
+    1.10.2's bug invisible for as long as it was."""
+    sdk_returning(_usage_with_rounds([_ROUND]))
+    usage = rlm_harness.ClaudeAgentLM("sonnet").forward(prompt="hi").usage
+    assert usage.api_rounds == {"rounds": [_ROUND]}, "the rounds were reshaped, not carried"
+    # ...beside the aggregate, never instead of it, and the aggregate is untouched by them.
+    assert usage.prompt_tokens == 1082
+    assert usage.completion_tokens == 125
+
+
+def test_the_aggregate_is_the_three_TOP_LEVEL_input_fields_not_every_int_in_a_round():
+    """A pin on THIS adapter's arithmetic over a fixture — NOT a claim that the SDK's top-level
+    usage equals its rounds' sum. That is not merely unobserved, it is structurally false in
+    general: the totals accumulate across every API request a call made while the rounds cover
+    only the last, and a `compaction` entry's tokens are excluded from the totals outright. What
+    this DOES pin is the double-count the nested members invite: adding every integer in `_ROUND`
+    gives 2287, counting `cache_creation`'s 1080 twice."""
+    from rlm_harness.claude_agent_lm import _prompt_tokens_from_sdk_usage
+
+    assert _prompt_tokens_from_sdk_usage(_usage_with_rounds([_ROUND])) == 1082
+
+    def every_int(obj):
+        if isinstance(obj, dict):
+            return sum(every_int(v) for v in obj.values())
+        return obj if isinstance(obj, int) and not isinstance(obj, bool) else 0
+
+    assert every_int(_ROUND) == 2287, "the fixture must contain the trap this test exists to pin"
+
+
+@pytest.mark.parametrize("reported", [
+    pytest.param({}, id="absent"),
+    pytest.param({"iterations": None}, id="null"),
+    pytest.param({"iterations": []}, id="empty-list"),
+    pytest.param({"iterations": ["a", "b"]}, id="list-of-strings"),
+    pytest.param({"iterations": {"rounds": [_ROUND]}}, id="bare-dict"),
+])
+def test_only_a_non_empty_list_of_dicts_becomes_api_rounds(sdk_returning, reported):
+    """Five inputs, ONE outcome: no key. The empty list is the one that needs saying — `all(...)`
+    over an empty list is True, so a guard that only checked "list of dicts" would CARRY `[]`,
+    and the CLI does construct empty ones. Collapsing all five keeps "no api_rounds" a single
+    fact with a single meaning instead of four."""
+    sdk_returning({"input_tokens": 5, "output_tokens": 2, **reported})
+    usage = rlm_harness.ClaudeAgentLM("sonnet").forward(prompt="hi").usage
+    assert not hasattr(usage, "api_rounds"), "an unusable shape reached the trace"
+    assert usage.prompt_tokens == 5, "the aggregate must survive a rejected breakdown"
+
+
+def test_a_round_with_junk_values_is_carried_and_does_not_touch_the_aggregate(sdk_returning):
+    """Rounds get NONE of `_token_count`'s int/bool guards — that is what verbatim means. The
+    three-field rule is an instruction to the READER, not something the kit applies per round."""
+    junk = {"type": "message", "input_tokens": None, "output_tokens": True}
+    sdk_returning(_usage_with_rounds([junk]))
+    usage = rlm_harness.ClaudeAgentLM("sonnet").forward(prompt="hi").usage
+    assert usage.api_rounds == {"rounds": [junk]}
+    assert usage.prompt_tokens == 1082
+
+
+def test_an_unreported_usage_cannot_be_resurrected_by_the_rounds(sdk_returning):
+    """1.10.2's promise, unchanged: no usage means no `usage` kwarg at all, so there is no object
+    for `api_rounds` to hang off and no response-level zero to manufacture."""
+    sdk_returning(None)
+    assert not hasattr(rlm_harness.ClaudeAgentLM("sonnet").forward(prompt="hi"), "usage")
+
+
+def test_both_dspy_reads_carry_the_rounds_to_the_tracker(sdk_returning):
+    """The typed path works only because dspy's `LMUsage` declares `extra="allow"` — a one-line
+    upstream decision that could change and would silently drop the field for experimental-mode
+    consumers. 1.10.2 learned to drive both reads; this drives both too."""
+    import dspy
+
+    sdk_returning(_usage_with_rounds([_ROUND]))
+    lm = rlm_harness.ClaudeAgentLM("sonnet")
+    for ctx in (contextlib.nullcontext(), dspy.context(experimental=True)):
+        with ctx, dspy.track_usage() as tracker:
+            lm(prompt="hi")
+        entries = tracker.usage_data["claude-agent-sdk/sonnet"]
+        assert [e["api_rounds"] for e in entries] == [{"rounds": [_ROUND]}]
+
+
+def test_mixed_presence_reaches_the_kits_own_reader_intact(sdk_returning):
+    """A run mixing calls that report rounds with calls that do not, asserted through
+    `usage_since` — the shim the trace is actually built from, not the raw tracker one hop
+    earlier. WITH-then-WITHOUT is the order used because it is the one a FLAT list would raise on
+    through `get_total_tokens()`; nested it does not raise in any order, which is the point."""
+    import dspy
+
+    from rlm_harness._dspy_compat import usage_baseline, usage_since
+
+    sdk_returning(_usage_with_rounds([_ROUND]))
+    with dspy.track_usage() as tracker:
+        base = usage_baseline(tracker)
+        rlm_harness.ClaudeAgentLM("sonnet")(prompt="hi")
+        sdk_returning({"input_tokens": 7, "output_tokens": 1})
+        rlm_harness.ClaudeAgentLM("sonnet")(prompt="hi")
+        fresh = usage_since(tracker, base)
+    calls = fresh["claude-agent-sdk/sonnet"]
+    assert [("api_rounds" in c) for c in calls] == [True, False], "order or presence was lost"
+    assert calls[0]["api_rounds"] == {"rounds": [_ROUND]}
+    assert calls[1]["prompt_tokens"] == 7
+
+
+def test_a_rejected_breakdown_is_logged_and_an_absent_one_is_not(sdk_returning, caplog):
+    """Without this line, "no run has `api_rounds`" is indistinguishable between the SDK never
+    reporting it, reporting it unusably, and the key having been RENAMED upstream — the last being
+    the failure this project has paid for repeatedly. A JSON `null` stays silent on purpose: that
+    IS absence, not a rejection."""
+    import logging
+
+    cases = [({"iterations": "nope"}, 1), ({"iterations": [1, 2]}, 1),
+             # `[]` is the shape most likely to be rejected in practice — it is what the CLI's
+             # usage accumulator seeds itself with — so it must be one of the LOGGED ones.
+             ({"iterations": []}, 1), ({"iterations": None}, 0), ({}, 0)]
+    for reported, expected in cases:
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger="rlm_harness.claude_agent_lm"):
+            sdk_returning({"input_tokens": 5, "output_tokens": 2, **reported})
+            rlm_harness.ClaudeAgentLM("sonnet").forward(prompt="hi")
+        assert len(caplog.records) == expected, f"wrong DEBUG count for {reported}"
+
+
+def test_a_multi_entry_breakdown_rides_through_in_order_and_unfiltered(sdk_returning):
+    """Every other fixture here carries ONE round, so a guard that reordered or filtered entries
+    would be invisible. This is the shape the field exists for — a server-side fallback puts the
+    declined hop's `message` entry and the serving hop's `fallback_message` in the SAME request,
+    which is exactly the case where "one `message` entry" is true and the totals still cover two
+    hops. Order is load-bearing: the context reading is the LAST qualifying entry."""
+    declined = {**_ROUND, "type": "message"}
+    served = {"type": "fallback_message", "model": "claude-haiku-4-5-20251001",
+              "input_tokens": 9, "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 1080, "output_tokens": 40}
+    sdk_returning(_usage_with_rounds([declined, served]))
+    usage = rlm_harness.ClaudeAgentLM("sonnet").forward(prompt="hi").usage
+    assert usage.api_rounds == {"rounds": [declined, served]}, "entries were reordered or dropped"

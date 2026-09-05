@@ -729,3 +729,57 @@ def test_usage_data_is_keyed_by_the_model_name_string():
         fresh = usage_since(tracker, base)
     assert list(fresh) and all(isinstance(k, str) for k in fresh)
     assert all("completion_tokens" in c for calls in fresh.values() for c in calls)
+
+
+def test_usage_since_returns_raw_per_call_entries_with_unknown_keys_intact():
+    """An LM may report facts dspy has no field for. `usage_since` must hand them back UNCHANGED,
+    one entry per call and in call order — because it reads `usage_data` rather than dspy's
+    aggregator, and the kit's whole per-call usage record rests on that.
+
+    Deliberately vendor-neutral: an arbitrary extra key, not any adapter's. The shim's contract is
+    with dspy, and it should not carry a caller's shape."""
+    from dspy.utils.usage_tracker import track_usage
+
+    from rlm_harness._dspy_compat import usage_baseline, usage_since
+
+    extra = {"anything": {"nested": [{"a": 1}]}}
+    with track_usage() as tracker:
+        base = usage_baseline(tracker)
+        tracker.add_usage("m", {"prompt_tokens": 1, **extra})
+        tracker.add_usage("m", {"prompt_tokens": 2})
+        fresh = usage_since(tracker, base)
+    assert [c["prompt_tokens"] for c in fresh["m"]] == [1, 2], "call order or count was lost"
+    assert fresh["m"][0]["anything"] == extra["anything"], "an unknown key was reshaped"
+    assert "anything" not in fresh["m"][1], "a key leaked between calls"
+
+
+def test_the_aggregator_survives_a_nested_value_and_not_a_bare_list():
+    """WHY a caller putting structured data in a usage entry must nest it one level.
+
+    `get_total_tokens()` merges a model's entries by ADDING same-named values, and dspy calls it
+    itself from `Module.__call__` whenever `dspy.configure(track_usage=True)` is set — so a value
+    it cannot add is a crash in a caller who never wrote `get_total_tokens`. A dict value is
+    merged by RECURSION instead and is therefore safe; a bare list is not.
+
+    The WITH-then-WITHOUT order is named on purpose: the reverse order does not raise, so a test
+    that picked it would pass while proving nothing."""
+    from dspy.utils.usage_tracker import track_usage
+
+    def totals(first, second):
+        with track_usage() as tracker:
+            tracker.add_usage("m", {"prompt_tokens": 1, **first})
+            tracker.add_usage("m", {"prompt_tokens": 1, **second})
+            return tracker.get_total_tokens()
+
+    nested = {"x": {"rounds": [{"a": 1}]}}
+    assert totals(nested, {})["m"]["x"] == {"rounds": [{"a": 1}]}
+    assert totals({}, nested)["m"]["x"] == {"rounds": [{"a": 1}]}
+
+    # And when BOTH carry one, the nested form concatenates in CALL order where a flat list
+    # reverses it. Not a reason to read the merged value -- the per-call boundary is gone either
+    # way -- but the difference is what shows the recursion is doing the work.
+    both = totals({"x": {"rounds": [{"a": 1}]}}, {"x": {"rounds": [{"a": 2}]}})
+    assert both["m"]["x"] == {"rounds": [{"a": 1}, {"a": 2}]}
+
+    with pytest.raises(TypeError):
+        totals({"x": [{"a": 1}]}, {})

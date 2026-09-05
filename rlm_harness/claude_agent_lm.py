@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import logging
 import os
 import re
 import threading
@@ -55,10 +56,103 @@ import litellm
 if TYPE_CHECKING:  # annotations only — never imported at runtime (the SDK is an optional extra)
     from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
 
+logger = logging.getLogger(__name__)
+
 _BACKOFF_S = 30.0
 # Phrase-level, not bare substrings: "rate"/"limit" alone would false-match ordinary error text
 # ("failed to generate", "delimiter") and turn a non-retryable error into a 30s sleep + retry.
 _RATE_LIMIT_RE = re.compile(r"rate.?limit|usage limit|overloaded|429|529")
+
+#: The SDK's own name for the per-iteration breakdown, and the key this kit files it under. They
+#: differ on purpose: `iterations` collides head-on with `run_end.payload.budgets.iterations`,
+#: which is the RLM TURN CAP -- an unrelated thing entirely. Two fields of that name in one
+#: `run_end` payload is a misreading waiting to happen, so the key is ours; the LIST is verbatim.
+_SDK_ROUNDS_KEY = "iterations"
+_ROUNDS_KEY = "api_rounds"
+
+
+def _api_rounds(usage: dict | None) -> dict[str, list] | None:
+    """The provider's per-SAMPLING-ITERATION breakdown, wrapped one level, or ``None`` when absent.
+
+    **What it answers, and what it does NOT.** Anthropic's own type docs define an entry as "one
+    sampling iteration" -- for ``message`` entries, "such as the turns of a server-side tool use
+    loop" -- and name one use for it outright: "Calculate the context window size from the last
+    ``message`` entry".
+
+    That is the question this exists for, and the honest form of the claim is CONDITIONAL. When a
+    call made ONE API request running ONE SAMPLING ITERATION -- the ordinary case here -- the
+    top-level fields and that single entry are the same numbers, so ``prompt_tokens`` already IS
+    the context size. "One ``message`` entry" is NOT the same condition and does not suffice: a
+    server-side fallback puts two entries in one request, since "a declined hop produces the
+    existing ``message`` entry" while the serving hop produces a ``fallback_message`` -- one
+    ``message``, no compaction, and totals that cover both hops -- inferred rather than stated
+    upstream, which carves only ``compaction`` out of the top-level fields. If a declined hop's
+    tokens turned out to be excluded too, this condition would merely be conservative: it would
+    decline an equality that happens to hold, never assert one that does not.
+
+    What the totals cannot say is WHICH call they were. This field is what makes the answer
+    unconditional, not what makes it possible -- so a missing ``api_rounds`` means "no breakdown
+    was reported", never "there is no context number here". A reader who takes the second reading
+    discards an exact number wherever the condition happened to hold, and neither of us can tell
+    from the totals where that was.
+
+    It is **not** a decomposition of this call's token fields, and reading it as one is the trap.
+    Two independent reasons, both from upstream rather than from measurement here:
+
+    - The CLI accumulates a call's token fields across every API request it makes, but keeps
+      ``iterations`` from the LAST request wholesale rather than concatenating. So on a call that
+      needed more than one request -- a structured-output retry, exactly the interesting case --
+      the totals span all of them and these rounds cover only the last.
+    - A ``compaction`` entry's tokens "are not included in the top-level ``usage`` fields" at all,
+      by Anthropic's own statement.
+
+    **What makes the condition usual FOR THIS ADAPTER** is structural rather than statistical, and
+    worth stating as such rather than as a frequency nobody counted: ``_acomplete`` sends
+    ``tools=[]``, which removes the server-side tool-use loop Anthropic names as A driver of
+    multiple iterations -- "such as" is their word, so it is an example rather than the mechanism
+    -- and a plain completion runs ``max_turns=1``, one API request. Neither
+    closes a fallback or advisor entry, and a call with ``output_format`` may take several
+    requests -- so this is a reason to expect the coincidence, never a guarantee of it.
+
+    Four entry types exist (``message``, ``fallback_message``, ``compaction``,
+    ``advisor_message``), and the type matters: a ``compaction`` entry reports the cost of the
+    summarisation, NOT the size of the context it closed, so Anthropic says not to derive a
+    context size from one "even when it is the last entry".
+
+    **Why it is nested.** ``{"rounds": [...]}`` rather than the bare list, and that is load-bearing
+    rather than tidy. dspy's ``UsageTracker`` merges a model's usage entries with ``(current or 0)
+    + (v or 0)``; for a bare LIST that is concatenation, an empty list is FALSY so ``[] or 0`` is
+    ``0``, and the mixed cases then raise ``TypeError: int + list`` -- out of
+    ``dspy.Module.__call__`` itself whenever ``dspy.configure(track_usage=True)`` is set, with no
+    ``get_total_tokens()`` anywhere in the caller's code. The merge RECURSES into a dict value
+    before it reaches that arithmetic, so one wrapper makes the crash structurally impossible and
+    additionally restores call ORDER, which the flat form scrambles. ``tests/test_dspy_compat.py``
+    pins that dspy behaviour so a change there goes red here rather than in a consumer.
+
+    **Why non-empty.** ``all(...)`` over an empty list is ``True``, so a guard that only checked
+    "list of dicts" would CARRY ``[]``. That is not a corner case: the CLI seeds its usage
+    accumulator from a zero literal whose ``iterations`` is ``[]`` and only replaces it when a
+    response actually carries the field, so ``[]`` is the RUNTIME outcome for every call whose
+    response does not. Requiring content collapses absent / ``null`` / ``[]`` / malformed into ONE
+    outcome with one meaning: no key.
+
+    The guard is on the CONTAINER only, never on an entry's keys: an entry carries ``type``, an
+    optional ``model`` and the four token fields today, and enumerating would freeze a set that
+    demonstrably moves.
+    """
+    if not usage:
+        return None
+    value = usage.get(_SDK_ROUNDS_KEY)
+    if isinstance(value, list) and value and all(isinstance(entry, dict) for entry in value):
+        return {"rounds": value}
+    if value is not None:
+        # Separates "the guard dropped it" from "the SDK never reported it". Without this, an
+        # absent `api_rounds` across a whole corpus is indistinguishable between four causes --
+        # one of which is the key having been RENAMED upstream, the failure this project has now
+        # paid for repeatedly. A JSON `null` is silent here, which is correct: that IS absence.
+        logger.debug("claude-agent-sdk reported %r in an unusable shape: %r", _SDK_ROUNDS_KEY, value)
+    return None
+
 
 #: The three fields Anthropic splits a prompt across. `input_tokens` is only the part that was
 #: neither written to nor read from the cache, so it is NOT the prompt size on its own.
@@ -111,6 +205,11 @@ def _prompt_tokens_from_sdk_usage(usage: dict | None) -> int:
 
     And it is per CALL, not per turn: with an ``output_format`` set the adapter runs ``max_turns=8``
     (the SDK's structured-output round), so ``result.usage`` aggregates whatever that loop spent.
+    **Since 1.11.0 a call may also carry ``api_rounds``** -- see ``_api_rounds``. It is NOT a
+    breakdown of this number (the two cover different spans, and a ``compaction`` entry's tokens
+    are excluded from these fields entirely). On a single-request, single-ITERATION call the two
+    agree and this number already gives the context size; what it cannot do is tell you that the
+    call WAS one, which is the gap ``api_rounds`` closes.
     """
     return sum(_token_count(usage, key) for key in _PROMPT_TOKEN_KEYS)
 
@@ -241,6 +340,11 @@ class ClaudeAgentLM(dspy.BaseLM):
     claim this counterexample qualifies. Build without the kwarg and no cap is recorded for the
     role.
 
+    Token usage is recorded per CALL, and with `output_format` set a call can span more than one
+    API request. `_api_rounds` carries the provider's per-sampling-iteration breakdown into the
+    trace beside it — so a reader can get the context size unconditionally, rather than only on
+    the calls where the totals happen to coincide with it.
+
     `model` is an alias (`"opus"` / `"sonnet"` / `"haiku"`) or a full Claude model id; the
     trace label becomes `claude-agent-sdk/<model>`.
     """
@@ -350,6 +454,11 @@ class ClaudeAgentLM(dspy.BaseLM):
                 "completion_tokens": completion_tokens,
                 "total_tokens": prompt_tokens + completion_tokens,
             }
+            # The rounds ride ALONGSIDE these totals, never instead of them, and neither is
+            # derived from the other -- they do not even cover the same span. See `_api_rounds`.
+            rounds = _api_rounds(usage)
+            if rounds is not None:
+                reported["usage"][_ROUNDS_KEY] = rounds
         response = litellm.ModelResponse(
             model=self.model,
             choices=[{"message": {"role": "assistant", "content": text}}],

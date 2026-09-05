@@ -1352,7 +1352,7 @@ hands it back to the model, which repairs it. A truncated FINAL answer is an ada
 with no handler, and kills the run. So the visible failures are the ~24% that land in the wrong
 place, and the rest self-heal without anyone knowing they happened.
 
-Four things to know:
+Five things to know:
 
 - **`budgets` is the cap APPLIED, read off the LM, not `RLMConfig`.** An injected `main_lm`/`sub_lm`
   is used verbatim, so the configured value can be one the call never used. `key` says which name
@@ -1381,6 +1381,46 @@ Four things to know:
   no tracker is installed, so a `dspy.Module` YOU call from inside a kit run returns `None` there
   while the kit's scope is open. The numbers are not lost — they are in the tracker, and in the
   trace — but that one accessor stops answering.
+- **A call entry may carry `api_rounds`, and it answers a question the token fields cannot.** One
+  LM call can make more than one API request, and each request can run several *sampling
+  iterations* server-side. `api_rounds: {"rounds": [ ... ]}` is the provider's own per-iteration
+  breakdown, carried verbatim when it reports one and absent when it does not — one fact with one
+  meaning. Its purpose is the CONTEXT WINDOW SIZE: the provider's documentation says to calculate
+  it "from the last `message` entry". **The totals give you that too — but only conditionally.**
+  When a call made one API request running one SAMPLING ITERATION, the top-level fields and that
+  single entry are the same numbers and `prompt_tokens` already IS the context size. ("One
+  `message` entry" is a different and weaker condition: a server-side fallback puts a `message`
+  entry for the declined hop and a `fallback_message` for the serving one in the same request, so
+  the totals cover both. That last step is an inference — only `compaction` is documented as
+  excluded from the top-level fields — and it errs safe: the tighter condition can only decline an
+  equality that happens to hold, never assert one that does not.) What the totals cannot say is WHICH call they were — so read a missing
+  `api_rounds` as "the provider reported no breakdown", never as "no context number here". Three
+  things to know, each a way this will otherwise be misread:
+  - **It is NOT a decomposition of the entry's `prompt_tokens`.** The two do not cover the same
+    span. A call's token fields accumulate across every API request it made, while `api_rounds`
+    holds only the LAST request's iterations — so on a call that took more than one request, the
+    totals span all of them and the rounds do not. Independently: a `compaction` entry's tokens
+    are excluded from the top-level fields entirely. Summing the rounds does not reconstruct the
+    call, and the difference is not an error in either number.
+  - **For context size, take the last `message` or `fallback_message` entry — never a
+    `compaction` one, even when it is last.** There are four entry types, discriminated by `type`.
+    A `compaction` entry reports what the summarisation itself cost, NOT the size of the context it
+    closed, and the provider warns those differ by orders of magnitude — a compaction closing a
+    ~200k context can report a few thousand tokens. Filtering by `type` is the whole difference
+    between a context reading and a wrong one, and it matters exactly in the long-context regime
+    where you would reach for this field.
+  - **Read it from the per-call entries, never through `dspy.track_usage()`'s
+    `get_total_tokens()`.** That aggregator MERGES a model's calls into one, so what comes back is
+    every call's rounds in one flat list with the per-CALL boundaries gone — the token totals stay
+    correct, the rounds stop meaning anything. This matters more than it sounds: with `dspy.configure(track_usage=True)`, dspy calls
+    that aggregator ITSELF from `dspy.Module.__call__`, so the merge happens whether or not you
+    ask. A kit run is not affected (it installs its tracker before dspy would auto-total, and the
+    trace is written from the per-call entries either way).
+
+  A nested `*_details` / `cache_creation` object inside a round is a DECOMPOSITION of a field
+  already counted, never an addition — add up every integer in a round and you count the cached
+  half twice. Written for the SHAPE rather than today's field names, because the provider says
+  `output_tokens` "remains the inclusive, authoritative total" of its own breakdown too.
 
 **`budgets` covers a DIFFERENT exhaustion from `budget_exhausted`.** The `metrics` snapshot's
 `budget_exhausted` reports the ITERATION cap: the run used up its turns. `budgets.iterations` shows
