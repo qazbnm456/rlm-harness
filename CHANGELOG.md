@@ -4,6 +4,30 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [Unreleased]
+
+### CI
+
+- **`install-check.yml` — the first job that installs the PUBLISHED artifact, and the first that
+  runs on macOS.** Every other job in this repo, `release.yml` and `dspy-latest.yml` included, is
+  `ubuntu-latest` and builds from the tree; `ci.yml`'s `packaging` job comes closest but builds its
+  wheel locally. So neither "what PyPI actually serves" nor "green on Linux, red on macOS" had an
+  instrument. It installs from PyPI on both platforms and runs `packaging`'s own smoke body against
+  it. Prompted by a downstream consumer who hit a macOS-only install failure their all-Linux CI
+  structurally could not see.
+
+  Measured before adding, so the entry is honest: a fresh macOS install of the published 1.11.1
+  resolved dspy 3.3.1 + litellm 1.99.0 and passed the smoke. Nothing was broken — this is a
+  tripwire, added because the alternative was a manual probe that runs only when someone remembers,
+  which is the failure mode the `sub_call` invariant exists for.
+
+  Three decisions worth finding here rather than rediscovering: it chains off `Release` COMPLETING
+  rather than `release: [published]`, which is the event `release.yml` itself keys on and would race
+  the upload; on that path it demands the exact version just tagged and FAILS rather than falling
+  back, because a stale CDN would otherwise resolve the previous release and report green on an
+  artifact it never installed; and it is INFORMATIONAL — it runs after the upload and PyPI never
+  reuses a version, so a red is fix-forward and never a rollback.
+
 ## [1.11.1] - 2026-09-05
 
 Documentation only — no public name, no behaviour, no schema change. It ships for the reason 1.10.1

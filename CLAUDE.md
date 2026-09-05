@@ -75,6 +75,28 @@ One companion rule ships under `.claude/rules/`:
   `pydantic` is invisible to it. Reproduce locally with
   `uv run --group dev --extra mcp --extra grep --with "dspy==<newest>" python -m pytest -q` — it leaves
   `uv.lock` untouched.
+- **`.github/workflows/install-check.yml` is the only job that touches the PUBLISHED artifact, and
+  the only one that runs on macOS.** Every other job in this repo — `ci.yml`'s `test`, `mcp-major`,
+  `packaging` and `lint`, both jobs in `dspy-latest.yml`, and `release.yml`'s `build` and `publish`
+  — is `ubuntu-latest`, and every one that builds anything builds it from this tree (`publish` is
+  the exception that proves it: it has no checkout because it uploads what `build` handed it). So two axes had no reader: what PyPI actually
+  serves, and a break that is green on Linux and red on macOS. That second direction is not
+  symmetric with the `RLIMIT_AS` case ABOVE — that one is Linux-only behaviour a Linux CI caught,
+  while nothing here installs the published wheel on a Mac at all, which is what a consumer on that
+  platform actually does. It runs weekly, on demand, and CHAINED off `Release` completing — never on
+  `release: [published]` itself, the event `release.yml` keys on, which would race the upload and
+  fail against an index that has nothing yet. On that chained path it demands the exact version just
+  tagged rather than "latest", and FAILS rather than falling back if the tag is missing: a stale CDN
+  would otherwise resolve the PREVIOUS release, pass, and report green on an artifact it never
+  installed. It carries NO `actions/checkout` on purpose — with no source on the runner,
+  "accidentally installed from the tree" is unavailable rather than merely discouraged. Its smoke
+  body is byte-identical to `packaging`'s but for one print; if you change one, change both.
+  **It is INFORMATIONAL, and a red is fix-forward, never a rollback** — it runs after the upload,
+  and PyPI never lets a version be reused, so there is no undo to go looking for; a red means yank
+  and ship `X.Y.Z+1`. A red also does not always mean broken-for-everyone: CDN lag past the retry
+  window, a PyPI 5xx or a runner hiccup redden a healthy artifact. And green is narrow — it tests
+  the RELEASED artifact on ONE interpreter, so a break on `main`, or one at the 3.11 floor, is
+  invisible to it.
 - A *live* `dspy.RLM` run needs real model credentials **and** a Deno sandbox
   (`brew install deno`, or `pip install "dspy[deno]"`; dspy 3.3.1 hard-gates the version to
   `>=2.0.0,<3.0.0` and raises at startup otherwise). Don't run it in CI; it costs money.
