@@ -4,6 +4,66 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.11.0] - 2026-09-05
+
+An LM call's token totals give the context size only when the call made a single API request with
+a single sampling iteration — and they never say whether it did. The provider reports the
+breakdown that settles it, and nothing carried it into the trace. Now something does. Additive
+within trace/v1; no public name moves.
+
+### Added
+
+- **`api_rounds` on a `run_end.payload.usage` call entry** — the provider's own per-iteration
+  breakdown, verbatim, when it reports one. Its purpose is the CONTEXT WINDOW SIZE, which
+  Anthropic's own type documentation says to calculate "from the last `message` entry". The totals
+  coincide with that on an ordinary single-request, single-iteration call — the field's value is
+  making the answer UNCONDITIONAL, not making it possible, and the guide says so, because the
+  reading it displaces ("the totals are useless for context") throws away an exact number wherever
+  that condition held, which the totals themselves never reveal. The motivating observation was a live run whose last of six planner
+  calls recorded 91,514 prompt tokens against 10,591 for the one before, with `completion_tokens`
+  jumping an order of magnitude at the same place — a shape the trace could not explain, because
+  the totals alone cannot separate a grown context from a repeated request.
+
+  **It is not a decomposition of the entry's `prompt_tokens`, and the release notes for this
+  feature say so first**, because that is the reading it invites. The two cover different spans: a
+  call's token fields accumulate across every API request it made, while `api_rounds` carries only
+  the last request's iterations; and a `compaction` entry's tokens are excluded from the top-level
+  fields entirely. The guide states the consequence — summing the rounds does not reconstruct the
+  call, and for a context reading you take the last `message`/`fallback_message` entry and never a
+  `compaction` one, whose counts report what the summarisation cost rather than the size of the
+  context it closed.
+
+  Two properties, each chosen against a specific failure:
+
+  - **Nested as `{"rounds": [ ... ]}`, and that is load-bearing.** dspy's `UsageTracker` merges a
+    model's usage entries by ADDING same-named values; a bare list makes that concatenation, an
+    empty list is falsy so `[] or 0` is `0`, and the mixed cases raise `TypeError: int + list` —
+    out of `dspy.Module.__call__` itself under `dspy.configure(track_usage=True)`, with no
+    `get_total_tokens()` anywhere in the caller's code, landing AFTER a completed run. The merge
+    recurses into a dict value before reaching that arithmetic, so one wrapper removes the failure
+    instead of documenting it, and restores call order the flat form scrambles. Pinned in
+    `tests/test_dspy_compat.py` against the installed dspy.
+  - **Present only for a NON-EMPTY list of objects.** `all(...)` over an empty list is `True`, so
+    a guard that only checked "list of objects" would carry `[]` — and `[]` is what the CLI's usage
+    accumulator seeds itself with, so it is what survives for any response that does not carry the
+    field. Absent, null,
+    empty and malformed collapse to one outcome with one meaning: no key. A rejected-but-present
+    breakdown logs at DEBUG, so "no run has `api_rounds`" can be told apart from the key having
+    been renamed upstream.
+
+  Entries stay in the provider's own vocabulary. Normalising them would collapse the cache split —
+  precisely what made 1.10.2's bug invisible for as long as it was — and a nested
+  `*_details`/`cache_creation` object inside a round is a decomposition of a field already counted,
+  so adding every integer in a round double-counts the cached half.
+
+### Changed
+
+- **`task.py` now records WHY installing the usage tracker before `aforward` is load-bearing.**
+  `dspy.Module.__call__`/`acall` auto-total a run when `settings.track_usage` is set and no tracker
+  exists yet; entering the kit's scope first means dspy never takes that branch, and `RLMTask`
+  calls `aforward` directly rather than `acall`. Both were true by accident of ordering and are now
+  true on purpose — a refactor to `rlm.acall(...)` would arm a crash that discards a finished run.
+
 ## [1.10.2] - 2026-09-05
 
 `ClaudeAgentLM` recorded 0.1% of the prompt it actually sent, and manufactured a zero-token call
