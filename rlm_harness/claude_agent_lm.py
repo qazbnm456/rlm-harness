@@ -60,6 +60,61 @@ _BACKOFF_S = 30.0
 # ("failed to generate", "delimiter") and turn a non-retryable error into a 30s sleep + retry.
 _RATE_LIMIT_RE = re.compile(r"rate.?limit|usage limit|overloaded|429|529")
 
+#: The three fields Anthropic splits a prompt across. `input_tokens` is only the part that was
+#: neither written to nor read from the cache, so it is NOT the prompt size on its own.
+_PROMPT_TOKEN_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+
+
+def _token_count(usage: dict | None, key: str) -> int:
+    """One field of an SDK usage dict as an int, or 0 when it is missing or not a number.
+
+    ``bool`` is excluded deliberately -- it is an ``int`` in Python, so an SDK returning ``True``
+    would otherwise be summed as 1. Every field of ``result.usage`` goes through here; before this
+    release BOTH reads were a bare ``.get(..., 0)``, so a ``None`` in either one reached the
+    ``prompt_tokens + completion_tokens`` below and raised ``TypeError``, failing the whole LM call
+    over a missing count. (``result.total_cost_usd`` is read raw further down -- it is not part of
+    the usage dict, and it is stashed on ``_hidden_params``, off this response's usage path
+    entirely -- dspy is what reads it back. litellm reads that key only in its proxy, which is
+    not in play here.)
+    """
+    value = (usage or {}).get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _prompt_tokens_from_sdk_usage(usage: dict | None) -> int:
+    """The prompt SIZE from an Agent SDK ``result.usage``, summed across all three input fields.
+
+    ``input_tokens`` alone is the UNCACHED REMAINDER, not the prompt. The SDK caches the system
+    prompt and tool definitions by default, so on an RLM turn nearly the whole prompt lands in
+    the cache fields instead. Measured on a live subscription call with a ~2k-token prompt:
+
+        first sight   input_tokens=2  cache_creation=2047  cache_read=0     -> 2049
+        repeat        input_tokens=2  cache_creation=0     cache_read=2047  -> 2049
+
+    Reading ``input_tokens`` alone recorded **2**, which is 0.1% of the real figure, so every
+    consumer reading this adapter's prompt size -- out of ``run_end.payload.usage`` or out of
+    ``lm.history`` -- was three orders of magnitude low. It does NOT touch 1.10.0's truncation
+    ratio, which is ``completion_tokens / cap`` and never divides by this number. (That ratio is
+    usually absent for a subscription run anyway: ``applied_lm_budget`` reads ``lm.kwargs``, and
+    both the default constructor and the auto-routed path build this LM with none, so it returns
+    ``None``. Pass ``max_tokens=`` explicitly and a cap IS recorded -- one the SDK never applied,
+    see the class docstring.) A provider
+    reporting none of the cache fields is unaffected: absent keys contribute nothing and the
+    result equals ``input_tokens``.
+
+    **This is a SIZE, not a COST basis.** The three fields bill at different rates (a cache READ
+    is roughly a tenth of an uncached input token; a cache WRITE somewhat more than one), so
+    pricing this sum at the uncached rate overstates a warm turn by close to an order of
+    magnitude. It is the right number for "how big was the prompt" and the wrong one for "what
+    did it cost" -- the cost the SDK reports for itself lands in ``response_cost`` below, and
+    neither is derived from the other.
+
+    And it is per CALL, not per turn: with an ``output_format`` set the adapter runs ``max_turns=8``
+    (the SDK's structured-output round), so ``result.usage`` aggregates whatever that loop spent.
+    """
+    return sum(_token_count(usage, key) for key in _PROMPT_TOKEN_KEYS)
+
+
 #: The sentinel `ClaudeAgentLM` stamps its own `dspy.LM.model` with (see `__init__` below) — the
 #: kit's own convention, not a consumer-invented one. `runtime.configure()` reads this SAME
 #: constant back to auto-route a `claude-agent-sdk/<id>` `main_model`/`sub_model` string onto a
@@ -175,6 +230,17 @@ class ClaudeAgentLM(dspy.BaseLM):
     `intercept_sub_lm` unchanged. Unknown lm_kwargs (temperature, max_tokens, ...) are
     tolerated and ignored: the SDK exposes no sampling controls.
 
+    **Ignored, but since 1.10.0 no longer invisible.** `_dspy_compat.applied_lm_budget` reads
+    `lm.kwargs`, so a `max_tokens=` passed here is staged into the trace's `budgets.main` — or
+    `budgets.sub`, for this LM in the sub-LM seat — as a cap the call never applied, and
+    `completion_tokens` can then exceed it. That is NOT a case 1.10.0 anticipated: it reads the
+    cap off the LM rather than off `RLMConfig` because dspy's own `_check_truncation` reads that
+    same dict, which is to say on the assumption that an LM's kwargs ARE what it applied. This
+    adapter is where the assumption does not hold, so read a cap recorded for it as configuration
+    rather than as a measurement — and see `applied_lm_budget`, whose "actually APPLIED" is the
+    claim this counterexample qualifies. Build without the kwarg and no cap is recorded for the
+    role.
+
     `model` is an alias (`"opus"` / `"sonnet"` / `"haiku"`) or a full Claude model id; the
     trace label becomes `claude-agent-sdk/<model>`.
     """
@@ -257,20 +323,59 @@ class ClaudeAgentLM(dspy.BaseLM):
                 await asyncio.sleep(_BACKOFF_S)
                 result, text = await self._query_once(user_prompt, options)
         usage = result.usage or {}
-        prompt_tokens = usage.get("input_tokens", 0)
-        completion_tokens = usage.get("output_tokens", 0)
-        response = litellm.ModelResponse(
-            model=self.model,
-            choices=[{"message": {"role": "assistant", "content": text}}],
-            usage={
+        # An unreported usage stays ABSENT rather than becoming three zeroes. litellm
+        # materialises a `Usage(0, 0, 0)` when handed `usage={}`, but leaves the attribute OFF
+        # entirely when the kwarg is omitted. Both dspy reads then report absence rather than a
+        # count: the legacy one (`dict(getattr(response, "usage", {}) or {})`) yields `{}` and
+        # `UsageTracker.add_usage` skips an empty entry, and the typed one under
+        # `dspy.context(experimental=True)` (`usage_from_response`) yields `None`. So omitting is
+        # what keeps "the SDK reported nothing" distinguishable from "this call used zero tokens"
+        # -- the guide's own published promise ("Usage may be absent, and absent is not zero"),
+        # which this adapter was quietly breaking on every call that reported none.
+        #
+        # The guarantee is at the RESPONSE level, not the field level: a usage dict that is
+        # present but carries no number this kit recognises (`{"input_tokens": None}`, or a dict
+        # of nothing but metadata) still reports zeroes. Not because litellm rejects a `None` --
+        # it accepts one and coerces it to 0 -- but because the only two states the
+        # `ModelResponse` CONSTRUCTOR can express are "no attribute" and "a `Usage` object", and
+        # a `Usage` holds numbers.
+        # There is no "present but unreadable" to hand downstream. Absent means absent; zero
+        # still means "zero as far as we could tell".
+        reported: dict[str, Any] = {}
+        if usage:
+            prompt_tokens = _prompt_tokens_from_sdk_usage(usage)
+            completion_tokens = _token_count(usage, "output_tokens")
+            reported["usage"] = {
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": prompt_tokens + completion_tokens,
-            },
+            }
+        response = litellm.ModelResponse(
+            model=self.model,
+            choices=[{"message": {"role": "assistant", "content": text}}],
+            **reported,
         )
         if result.total_cost_usd is not None:
-            # Cosmetic: what the tokens WOULD cost on the API. On a subscription nothing bills
-            # it and no rlm-harness budget reads it; it just keeps `lm.history` honest.
+            # Cosmetic: the SDK's OWN cost figure for the call, NOT derived from the tokens
+            # above. On a subscription nothing bills it and no rlm-harness budget reads it; it
+            # just keeps `lm.history` honest.
+            #
+            # DO NOT reconcile this against the token counts above -- they cover different
+            # things. On the live call this was measured from (n=1, so read it as "this happens"
+            # rather than "this always happens"), `result.model_usage` showed the Agent SDK
+            # routing a second model alongside the requested one -- a haiku, ~1.7k input tokens --
+            # and `total_cost_usd` was the SUM across BOTH, 0.014149 spanning sonnet + haiku,
+            # while `result.usage` reported the requested model alone. `usage` is an untyped
+            # passthrough from the CLI, so that last half is not verifiable from the SDK's types;
+            # what is certain is that the two fields answered different questions on that call,
+            # and anyone dividing one by the other concludes the numbers are broken.
+            #
+            # The side model's tokens are deliberately NOT folded into the per-call usage above.
+            # A trace describes what the POLICY did, and the SDK routing a helper model is
+            # infrastructure the planner never chose -- counting it would attribute work to the
+            # policy that the policy did not do, and a trainer reads this as the trajectory. If
+            # it ever needs to be data, give it its OWN optional field rather than mixing scopes
+            # into a per-call count.
             response._hidden_params["response_cost"] = result.total_cost_usd
         return response
 
