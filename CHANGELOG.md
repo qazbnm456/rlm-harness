@@ -4,6 +4,26 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [Unreleased]
+
+### Changed
+
+- **`usage`'s token ratio is diagnostic after the fact, and whether it gives EARLY warning depends
+  on the caller's cap.** 1.10.0's entry below says the ratio "shows a turn APPROACHING the cap" with
+  no qualification, and that is left standing as the record of what was believed at release. The
+  first production corpus qualified it: 385 runs on one model at a 32768 cap, and the distribution
+  has a HOLE — 364 below 0.6, ZERO between 0.6 and 1.0, 21 at the cap. There a turn stays under
+  ~0.55 or blows straight through and a proximity meter has nothing to point at. But the hole is an
+  artifact of a cap set at roughly twice what that model needed: transposing the same bins onto a
+  16384 cap moves 64 of the 379 successes (16.9%) into the empty band. So a tighter cap gives a real
+  gradient. Measure your own before building either reading. The guide carries the full account.
+- **What the field unambiguously bought, from the same corpus**: 21 of 385 runs (5.5%) hit the cap,
+  and **16 of those 21 (76%) finished anyway** — because a truncated CODE cell is a `SyntaxError`
+  that dspy's own in-loop feedback repairs, while a truncated FINAL answer has no handler and kills
+  the run. Three quarters of truncation was invisible rather than absent, and the failures anyone
+  ever saw are the ~24% that land in the wrong place. That also sizes the upstream request 1.10.0
+  refused: extending dspy's existing feedback path to a parse failure addresses 5 of 21.
+
 ## [1.10.0] - 2026-09-04
 
 `run_end` records the token budget that was in force and what each attempt actually spent, so a
