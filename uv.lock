@@ -2076,7 +2076,7 @@ wheels = [
 
 [[package]]
 name = "rlm-harness"
-version = "1.10.2"
+version = "1.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "dspy" },
