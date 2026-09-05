@@ -4,6 +4,45 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.10.2] - 2026-09-05
+
+`ClaudeAgentLM` recorded 0.1% of the prompt it actually sent, and manufactured a zero-token call
+whenever the SDK reported no usage at all. Both are in the OPTIONAL subscription adapter
+(`rlm-harness[subscription]`) — no public name, no schema change, nothing else moves.
+
+### Fixed
+
+- **The prompt size read one of the three fields Anthropic splits it across.** The adapter mapped
+  `result.usage["input_tokens"]` straight onto litellm's `prompt_tokens`, but `input_tokens` is only
+  the part of the prompt that was neither written to nor read from the cache — and the Agent SDK
+  caches the system prompt and tool definitions by default, so on an RLM turn nearly the whole
+  prompt lands in `cache_creation_input_tokens` or `cache_read_input_tokens` instead. Measured on a
+  live subscription call with a ~2k-token prompt: `input_tokens=2`, `cache_creation=2047` on first
+  sight and `cache_read=2047` on the repeat. The adapter recorded **2** where the prompt was
+  **2049**, so every consumer reading this adapter's prompt size — out of `run_end.payload.usage`
+  or out of `lm.history` — was three orders of magnitude low. All three fields are now summed. A
+  provider reporting none of the cache fields is unaffected: absent keys contribute nothing and the
+  result is exactly today's `input_tokens`. The sum is a SIZE and not a cost basis — the three
+  fields bill at different rates, and the SDK's own cost figure keeps its separate `response_cost`
+  slot. **It does not touch 1.10.0's truncation ratio**, which is `completion_tokens / cap` and
+  never divides by this number — and which is usually absent for a subscription run anyway, since
+  `applied_lm_budget` reads `lm.kwargs` and both the default constructor and the auto-routed path
+  build this LM with none. (Pass `max_tokens=` explicitly and a cap IS recorded, one the SDK never
+  applied — now documented on the class rather than left to be discovered.)
+- **An unreported usage was materialised as three zeroes.** The adapter always passed a `usage=`
+  kwarg, and litellm turns an empty one into `Usage(0, 0, 0)`; omitting the kwarg instead leaves the
+  attribute off entirely, and both of dspy's reads then report absence rather than a count — the
+  legacy `dict(getattr(response, "usage", {}) or {})` yields `{}` and `UsageTracker.add_usage`
+  skips an empty entry, and the typed `usage_from_response` (under `dspy.context(experimental=
+  True)`) yields `None`. So "the SDK reported nothing" was reaching the trace
+  as "this call used zero tokens" — a structural zero indistinguishable from a measurement, which
+  is the failure class `CLAUDE.md` already names as a defect and which the guide publishes a promise
+  against ("Usage may be absent, and absent is not zero"). The adapter now keeps that promise.
+- **Neither token field was read with an int guard.** Both were a bare `.get(..., 0)`, so a `None`
+  from the SDK in either one reached `prompt_tokens + completion_tokens` and raised `TypeError`,
+  failing the whole LM call over a missing count. Every field of `result.usage` now goes through
+  one guard, which also excludes `bool` — an `int` in Python that would otherwise be summed as 1.
+
 ## [1.10.1] - 2026-09-05
 
 Documentation only — no public name, no behaviour, no schema change. It ships because the docstrings
