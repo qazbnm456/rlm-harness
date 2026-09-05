@@ -136,8 +136,10 @@ def make_read_file_tool(
     line carries a gutter that is NOT file content, so a model quoting what it SAW carries the
     gutter into its quote. Feed the tool's output to the MODEL and the RAW file text to
     `verify_quote` — never the same string to both. Since 1.9.0 `verify_quote` reads a gutter as a
-    COORDINATE CLAIM and resolves most of them -- 83.16% of the guttered quotes in this repo's own
-    corpus -- but only under ``normalize_whitespace=True``, and the ones it cannot resolve keep
+    COORDINATE CLAIM and resolves most of them -- 83.16% of the guttered NON-BLANK quotes in this
+    repo's own corpus, or 67.2% of everything this tool renders once blank-line citations are
+    counted (they are refused outright, see above) -- but only under ``normalize_whitespace=True``,
+    and the ones it cannot resolve keep
     their old verdict rather than getting a wrong one. Before that release a correct, guttered
     citation simply FAILED verification. See the guide's "Line numbers and ``verify_quote``", which
     also carries the measured cost of leaving this flag OFF -- the model then counts lines itself
