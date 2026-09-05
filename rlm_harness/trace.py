@@ -563,7 +563,10 @@ class TraceRecorder:
             self._exec_s = []
 
     def note_budgets(self, budgets: dict) -> None:
-        """Stage the generation caps that were APPLIED, for `run_end.payload.budgets`.
+        """Stage the generation caps the LMs CARRY, for `run_end.payload.budgets`.
+
+        Not "were applied" -- `_dspy_compat.applied_lm_budget` has the distinction and the one
+        shipped LM for which the two differ.
 
         Pushed in by the task rather than passed to `__init__`, because `run_start` is written by
         `__enter__` -- before the caller's task ever runs -- and the task does not own the recorder.

@@ -131,7 +131,11 @@ def _live_main_timing(recorder: Any):
 
 
 def _applied_budgets(sub_lm: Any, config: Any, caps_dropped: bool) -> dict[str, Any]:
-    """The generation caps ACTUALLY APPLIED, per role, for `run_end.payload.budgets`.
+    """The generation caps each LM CARRIES, per role, for `run_end.payload.budgets`.
+
+    "Carries", not "applied": see `_dspy_compat.applied_lm_budget`, which explains why the two
+    coincide for every LM that honours its own kwargs and names the shipped exception that does
+    not. The two words were used interchangeably here until 1.11.1.
 
     Read off the LMs rather than from `RLMConfig`: `runtime` builds an LM from config only for a
     role still `None`, so an injected `main_lm`/`sub_lm` is used VERBATIM and the configured cap can

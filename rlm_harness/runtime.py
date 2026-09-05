@@ -156,8 +156,12 @@ def configure(
     if ``cfg.main_model``/``cfg.sub_model`` starts with ``claude_agent_lm.SUBSCRIPTION_PREFIX``
     (``"claude-agent-sdk/"`` — the sentinel ``ClaudeAgentLM`` stamps its own model string with),
     that role is built as a ``ClaudeAgentLM`` instead of a plain ``dspy.LM``, with ONLY the
-    stripped model id — never ``lm_kwargs`` (``api_key``/``base_url``/``custom_llm_provider``),
-    which are meaningless (or, for ``base_url``, actively misleading) for this adapter. An
+    stripped model id — never ``lm_kwargs``
+    (``api_key``/``base_url``/``custom_llm_provider``/``max_tokens``), which are meaningless (or,
+    for ``base_url``, actively misleading) for this adapter. **``max_tokens`` is in that list, so
+    ``RLM_MAX_TOKENS`` is inert for an auto-routed subscription role** — the SDK exposes no output
+    cap, so nothing would honour it. The upside is that no cap is recorded either, where passing
+    ``max_tokens=`` to a hand-built ``ClaudeAgentLM`` stages one the call never applies. An
     explicit ``main_lm=``/``sub_lm=`` kwarg always wins outright regardless of the model string —
     the prefix is only consulted for a role left ``None``. This can raise, in addition to this
     function's own errors: ``ValueError`` for a bare prefix with no model id (e.g.

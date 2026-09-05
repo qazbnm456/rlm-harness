@@ -1354,8 +1354,25 @@ place, and the rest self-heal without anyone knowing they happened.
 
 Five things to know:
 
-- **`budgets` is the cap APPLIED, read off the LM, not `RLMConfig`.** An injected `main_lm`/`sub_lm`
-  is used verbatim, so the configured value can be one the call never used. `key` says which name
+- **`budgets` is the cap the LM CARRIES, read off the LM, not `RLMConfig`.** An injected
+  `main_lm`/`sub_lm` is used verbatim, so the configured value can be one the call never used. It
+  is the cap APPLIED for every LM that honours its own kwargs — which is the assumption dspy's own
+  truncation check makes too — but an LM that accepts a kwarg and ignores it reports a cap nothing
+  enforced, and `completion_tokens` can then exceed it. `ClaudeAgentLM` is the shipped case: the
+  subscription SDK exposes no sampling controls. **The trace can FALSIFY that a cap was applied and
+  can never CONFIRM it** — but only against the largest of the per-role token caps (`main`/`sub`),
+  never one role's. `budgets` records no model name and `usage` is keyed by MODEL, so nothing in
+  the trace maps a usage entry to a role at all — sharing a model string makes it vivid (the calls
+  land in one list nothing can key apart, see the `usage` bullet below) but differing model
+  strings do not rescue it either. So a `completion_tokens` above `sub.cap` may simply be a main-LM
+  call: in the example above, 16384 exceeds `sub`'s 4096 while being an ordinary main truncation at
+  exactly `main`'s 16384. Above every per-role cap, no role can account for it and the equality is
+  broken. (An operator who knows their own config can attribute out of band, and a per-role
+  comparison is valid for them; "never" is about what the trace ALONE licenses.) For this LM
+  specifically the model key carries `SUBSCRIPTION_PREFIX`, so a reader can recognise it by name
+  alone, with no attribution needed. And note which direction the exposure runs: the auto-routed path builds this LM with no
+  kwargs at all, so a cap appears for it only when you constructed the LM yourself and passed
+  `max_tokens=`. `key` says which name
   held it: dspy rewrites `max_tokens` to `max_completion_tokens` for OpenAI reasoning models, and a
   reader of the first name alone sees nothing for exactly that class of model. An absent
   `main`/`sub` means no cap was set on that role — never `0`, and never `False` for the derived truncation. (`budgets` itself is
