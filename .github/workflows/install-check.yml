@@ -1,0 +1,209 @@
+name: install check
+
+# Does `pip install rlm-harness` WORK, from PyPI, on the platforms people use?
+#
+# Every other job in this repo answers a question about the SOURCE TREE. `ci.yml`'s `packaging`
+# job comes closest — it builds a wheel, installs it into a clean environment with no lockfile, and
+# runs a real task from it — but it builds that wheel LOCALLY, and every job here and in
+# `release.yml` and `dspy-latest.yml` is `ubuntu-latest`. So two axes had no reader:
+#
+#   1. The PUBLISHED artifact. A wheel that builds here is not evidence that the thing on PyPI
+#      installs: what was actually uploaded, the metadata PyPI serves, and the dependency set a
+#      fresh resolve picks TODAY are all outside this repo.
+#   2. macOS. `CLAUDE.md` documents the OS axis, but only in the direction that got caught —
+#      `RLIMIT_AS` enforces on Linux and the macOS kernel refuses it, found by a red Linux run. A
+#      break that is green on Linux and red on macOS has never had an instrument, and a consumer's
+#      macOS install can fail on a transitive wheel gap this repo never resolves for itself.
+#
+# Measured before adding this, so the job's claim is honest: on 2026-09-06 a fresh macOS install of
+# the published 1.11.1 resolved dspy 3.3.1 + litellm 1.99.0 and passed the smoke below. Nothing was
+# broken. This is a TRIPWIRE, not a fix — added because the alternative was a manual probe that runs
+# only when someone remembers, and "an instrument that fires only if you remember" is this project's
+# most expensive recurring failure (see the `sub_call` invariant in CLAUDE.md).
+#
+# **THIS JOB IS INFORMATIONAL. A red is fix-forward, never a rollback.** It runs after `Release`
+# has completed, so the upload already happened, and PyPI never lets a version be reused: there is
+# no undo. A red means yank and ship `X.Y.Z+1`. Nor does a red always mean broken-for-everyone —
+# CDN lag past the retry window, a PyPI 5xx, or a runner hiccup all redden a healthy artifact. Read
+# it as "go look", not as "the release failed".
+#
+# **There is deliberately NO `actions/checkout`.** Installing from the checkout would defeat the
+# entire job, and leaving the source off the runner makes that mistake unavailable rather than
+# merely discouraged. The smoke body is inline below.
+#
+# **Two limits, stated rather than discovered.** This installs the RELEASED artifact, so a break on
+# `main` is invisible here until it ships — that is the right trade for "is the front door open",
+# and it is why the release-chained trigger matters. And it probes ONE interpreter (3.13) where
+# `requires-python` is `>=3.11` and `ci.yml` runs all three; a macOS transitive-wheel gap is at
+# least as likely at the floor. Widening the matrix to 3 x 2 for a weekly cron was judged not worth
+# it; revisit if a wheel gap is ever found at the floor.
+#
+# **Never exercised yet, as of this file landing:** that `workflow_run` fires at all when the
+# upstream run's `head_branch` is a TAG rather than a branch (no `branches:` filter is present,
+# which is the only documented blocker, so it should — but "should" is not "did"), and the retry
+# loop against a real post-publish index. The control flow was verified by hand; the post-publish
+# path can only be learned from at the next release.
+#
+# **Why `workflow_run` and not `workflow_call` from `release.yml`.** A called workflow gets the
+# version from a job OUTPUT, which cannot disagree with what was published — strictly better
+# attribution than reading an event payload. It was declined here for two reasons specific to this
+# repo: `release.yml`'s `build` job has no outputs and no version guard, so adopting it means adding
+# both to the highest-blast-radius workflow in the repo (the one holding `id-token: write` and the
+# PyPI Trusted Publishing binding) — a file whose own comments already reason about its supply-chain
+# surface: SHA-pinned actions, an uncached release build because "a release build is the
+# highest-value thing in this repo to poison", and a fork guard sized by its probe surface. It does
+# not state a "keep it minimal" rule, so this is an argument from that surface rather than a
+# principle quoted from it. And `needs: [build, publish]` makes a red here conclude the RELEASE run
+# as failed, which is exactly the misreading the INFORMATIONAL paragraph above exists to prevent.
+# If `release.yml` ever grows a version output for its own reasons, revisit — at that point the
+# called-workflow shape is the better one.
+#
+# **No `concurrency:` block, and that is a decision.** `dspy-latest.yml` groups on `github.ref` with
+# `cancel-in-progress: true`. Copying that here would be wrong: `schedule` and `workflow_run` both
+# resolve `github.ref` to the default branch, so a Monday cron tick would CANCEL a release-chained
+# run — losing the one signal that closes the window between publishing and finding out.
+
+on:
+  schedule:
+    # Mondays 07:43 UTC — off the hour to dodge the cron stampede, and off `dspy-latest.yml`'s
+    # 06:17 so a bad week does not start both at once and make the two reds look related.
+    - cron: "43 7 * * 1"
+  workflow_dispatch:
+  workflow_run:
+    # NOT `on: release: [published]`. That is the SAME event `release.yml` keys on, so this would
+    # start while the PyPI upload is still in flight and fail against an index that has nothing yet
+    # — a red that means nothing, on the one job whose red must always mean something. Chaining off
+    # Release COMPLETING is what makes the trigger honest.
+    workflows: ["Release"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: install (${{ matrix.os }})
+    # A failed or cancelled Release published nothing; only a successful one is worth checking.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ${{ matrix.os }}
+    # Two network installs plus up to 2.5 min of deliberate sleeps, on two OSes. Without this the
+    # 6-hour default applies — the same reasoning `dspy-latest.yml` states for its own bound, and
+    # this job is more network-bound than that one.
+    timeout-minutes: 15
+    strategy:
+      # The PLATFORM DIFFERENCE is the whole point. The default cancels the sibling the moment one
+      # goes red, throwing away the comparison that says which axis broke — "macOS red, Linux green"
+      # and "both red" call for completely different work.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Install uv
+        # SHA-pinned, same as every other workflow here; bump the SHA and its version comment
+        # together.
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.13"
+          # A cache would defeat the fresh resolve this job exists to perform, and it owns no
+          # lockfile to key on.
+          enable-cache: false
+
+      - name: Work out which version to demand
+        id: spec
+        # Through `env:`, never `${{ }}` inline in `run:` — the convention `dspy-latest.yml` states
+        # and its reasoning. That convention was written for a PyPI version string, which PEP 440
+        # makes inert; a GIT TAG NAME is not inert. `git check-ref-format` accepts `v1.0.0$(id)`,
+        # backticks, quotes and semicolons, and inline interpolation would expand them in the shell.
+        # Write-access-gated, so not anonymous — and one line to prevent.
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_run" ]; then
+            # Demand the version just published — NOT bare "rlm-harness". Installing "latest" on
+            # this path has a silent failure worse than a red one: if PyPI's CDN has not caught up,
+            # the resolve quietly succeeds with the PREVIOUS release, the smoke passes, the job goes
+            # green, and the artifact this run exists to check was never installed.
+            #
+            # `workflow_run.head_branch` carries the tag for a release-triggered run (verified
+            # across this repo's 20 Release runs, v1.2.1 through v1.11.1). It is NULLABLE in
+            # GitHub's schema, though, so an empty one FAILS here rather than falling back to
+            # "latest" — a fallback would re-open the exact hole this branch exists to close, from
+            # the other side, and print a reassuring message while doing it.
+            if [ -z "$HEAD_BRANCH" ]; then
+              echo "::error::release-chained run with no head_branch — refusing to guess a version"
+              exit 1
+            fi
+            echo "spec=rlm-harness==${HEAD_BRANCH#v}" >> "$GITHUB_OUTPUT"
+            echo "demanding the just-released ${HEAD_BRANCH#v}"
+          else
+            echo "spec=rlm-harness" >> "$GITHUB_OUTPUT"
+            echo "$EVENT run: taking whatever PyPI currently serves as latest"
+          fi
+
+      - name: Install from PyPI, retrying past CDN lag
+        env:
+          SPEC: ${{ steps.spec.outputs.spec }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv /tmp/fresh --python 3.13
+          # A release-chained run races PyPI's CDN, which can serve a stale index for a minute or
+          # two after an upload. Failing on the first 404 would redden this job on timing alone, and
+          # a release job that cries wolf stops being read — which costs more than the gap it closes.
+          #
+          # `--no-cache` is LOAD-BEARING, not tidiness: without it uv answers each retry from the
+          # index cache the too-early attempt populated, so the wait never observes the new version
+          # and all six attempts burn on stale data. The retry then LOOKS like it is working while
+          # doing nothing — a fast clear failure turned into a slow confusing one.
+          #
+          # The attempt is reported on EVERY success, not only a late one. "attempt 1/6, always,
+          # forever" is otherwise indistinguishable from "this loop is not wired up", and whether a
+          # retry has ever produced output is the first thing someone checks before deleting it.
+          for attempt in 1 2 3 4 5 6; do
+            if VIRTUAL_ENV=/tmp/fresh uv pip install --no-cache "$SPEC"; then
+              echo "installed $SPEC on attempt $attempt/6"
+              if [ "$attempt" -gt 1 ]; then
+                echo "::notice::the CDN retry paid out — $SPEC needed attempt $attempt/6"
+              fi
+              exit 0
+            fi
+            if [ "$attempt" -lt 6 ]; then
+              echo "attempt $attempt/6 failed; the index may not have it yet — waiting 30s"
+              sleep 30
+            fi
+          done
+          echo "::error::$SPEC did not install after 6 attempts"
+          exit 1
+
+      - name: Run a real task from the installed package
+        shell: bash
+        run: |
+          set -euo pipefail
+          # BYTE-IDENTICAL to `ci.yml`'s packaging smoke except for the final print's wording, and
+          # kept that way on purpose: "it imports" is not evidence an install works, and this body
+          # already goes through `_build_rlm` and dspy's `RLM` while pinning the invariant that
+          # `import rlm_harness` does not drag dspy in. If you change one, change both — and prefer
+          # changing neither. (Nothing imports `litellm` here: it is a TRANSITIVE dependency via
+          # dspy, absent from `pyproject.toml`, so asserting on it would redden this job for a
+          # reason that has nothing to do with whether the front door is open.)
+          /tmp/fresh/bin/python - <<'PY'
+          import sys, rlm_harness
+          assert "dspy" not in sys.modules, "import rlm_harness pulled in dspy"
+          import dspy
+          from rlm_harness import RLMConfig, RLMTask, configure
+          from rlm_harness.testing import ScriptedInterpreter, scripted_lm, submit
+          print("rlm-harness", rlm_harness.__version__, "on dspy", dspy.__version__)
+
+          class T(RLMTask):
+              signature = "q: str -> a: str"
+              output_field = "a"
+
+          configure(RLMConfig(main_model="d/m", sub_model="d/s"),
+                    main_lm=scripted_lm([{"reasoning": "r", "code": "SUBMIT(a='ok')"}]))
+          out = T(interpreter=ScriptedInterpreter([submit({"a": "ok"})])).run(q="hi")
+          assert out == "ok", out
+          print("published-install task run:", out)
+          PY
