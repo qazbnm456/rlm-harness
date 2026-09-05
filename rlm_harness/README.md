@@ -1321,13 +1321,14 @@ enables is one this kit has already documented once, under `max_tokens`.
 
 Read `completion_tokens == cap` as a truncation. **Whether the RATIO gives early warning depends on
 how generous your cap is, and 1.10.0 shipped claiming it always does.** On the first production
-corpus — 385 runs, one model, cap 32768 — the distribution has a HOLE: 363 runs below 0.6, **zero
-between 0.6 and 1.0**, 21 at exactly 1.0. There a turn stays under ~0.55 or blows straight through,
-and a proximity meter has nothing to point at.
+corpus — one model, cap 32768, **385 runs reaching `run_end`: 379 that succeeded and 6 that
+failed** — the distribution has a HOLE. Across all 385: **364 below 0.6, ZERO between 0.6 and
+1.0, 21 at exactly the cap** (16 of the successes, 5 of the failures). A turn stays under ~0.55
+or blows straight through, and a proximity meter has nothing to point at.
 
 But the hole is an artifact of that cap, not of the model. Converting the bins back to absolute
-tokens and re-dividing by a 16384 cap moves **64 of those 379 runs (16.9%) into the empty band**,
-with the median max-turn going 0.209 → 0.418 and p90 0.378 → 0.756. So a cap set at roughly twice
+tokens and re-dividing by a 16384 cap moves **64 runs into the empty band** — 16.9% of the 379
+successes whose bins these are, 16.6% of all 385 — with the median max-turn going 0.209 → 0.418 and p90 0.378 → 0.756. So a cap set at roughly twice
 what the model needs produces the hole; a tighter one produces a real gradient, and there the
 warning reading works. Measure your own before building either. (The transposition assumes token
 counts do not change with the cap — `max_tokens` is a hard stop rather than a hint, so that should
