@@ -100,6 +100,11 @@ The deep documentation lives in
 
 Real projects using rlm-harness as their RLM scaffold:
 
+- **[rlm-notebook](https://github.com/qazbnm456/rlm-notebook)**: a research notebook. Paste in sources
+  of any kind (text, web pages, PDFs including scanned ones, YouTube captions), ask questions grounded
+  in them, and get back a citation you can open and check against the original. Ships an HTTP API and
+  a browser workspace with a Trajectory drawer over the run that produced each answer.
+  [Try it without installing anything](https://www.boik.tw/rlm-notebook/).
 - **[ctx-distillery](https://github.com/qazbnm456/ctx-distillery)**: distils an AI coding agent's
   session transcripts and memory store into a judgement-only distillation plan — what to prune,
   cross-reference, or promote into durable memory or a reusable Skill. It proposes; it writes nothing.
