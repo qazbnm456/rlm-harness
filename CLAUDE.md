@@ -97,6 +97,20 @@ One companion rule ships under `.claude/rules/`:
   window, a PyPI 5xx or a runner hiccup redden a healthy artifact. And green is narrow — it tests
   the RELEASED artifact on ONE interpreter, so a break on `main`, or one at the 3.11 floor, is
   invisible to it.
+- **`.githooks/` refuses a commit carrying a private project name, and the denylist is NOT in this
+  repo.** The vendor-neutrality rule below held for every FILE and every published release note and
+  failed twice in commit MESSAGES — two prose mentions of a private consumer, 128 and 176 commits
+  deep, found only because someone thought to look. Removing them cost a history rewrite and a
+  force-push of all 25 tags. So it is a machine check now: `pre-commit` scans ADDED lines and staged
+  paths, `commit-msg` scans the message, and `check-private-names all` audits the whole tree, every
+  commit message and every tag message on demand. Enable it in a fresh clone with **`git config
+  core.hooksPath .githooks`** — hooks are not versioned state, so a clone does not inherit it.
+  **The list lives at `~/.claude/private-names.txt` (override with `PRIVATE_NAMES_FILE`), outside
+  every repo on purpose: putting the names into a public repo's own checker would publish exactly
+  what the checker exists to keep private.** No file means no check — a contributor without one is
+  told once and not blocked. Two limits that follow from that design and are not defects: **CI
+  cannot run it** (the runner has no list, so it would skip), and `--no-verify` bypasses it. It
+  guards the moment the mistake is actually made, which is local.
 - A *live* `dspy.RLM` run needs real model credentials **and** a Deno sandbox
   (`brew install deno`, or `pip install "dspy[deno]"`; dspy 3.3.1 hard-gates the version to
   `>=2.0.0,<3.0.0` and raises at startup otherwise). Don't run it in CI; it costs money.

@@ -4,6 +4,21 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [Unreleased]
+
+### CI
+
+- **`.githooks/` blocks a commit carrying a private project name, with the denylist kept OUTSIDE
+  the repo.** The vendor-neutrality rule held for every file and every published release note and
+  failed twice in commit MESSAGES — two prose mentions of a private downstream consumer, 128 and
+  176 commits deep, found only because someone thought to look. `pre-commit` scans added lines and
+  staged paths, `commit-msg` scans the message, and `check-private-names all` audits the tree, every
+  commit message and every tag message on demand. The list is read from `~/.claude/private-names.txt`
+  (or `$PRIVATE_NAMES_FILE`): putting the names into a public repo's own checker would publish
+  exactly what the checker exists to keep private, so a missing list SKIPS rather than blocks, CI
+  cannot run the check, and `--no-verify` bypasses it. It guards the moment the mistake is made,
+  which is local. Enable in a clone with `git config core.hooksPath .githooks`.
+
 ## [1.11.2] - 2026-09-11
 
 A trace is not written in the order it happened, and the RL exporter sorted by the order it was
