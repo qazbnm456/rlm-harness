@@ -4,7 +4,60 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
-## [Unreleased]
+## [1.11.2] - 2026-09-11
+
+A trace is not written in the order it happened, and the RL exporter sorted by the order it was
+written. Every `state` it produced was wrong, systematically, in opposite directions per kind.
+
+### Fixed
+
+- **`export_actions` sequenced by `step_id`, which is WRITE order, so every `state` was wrong.**
+  `record_main_trajectory` flushes the whole trajectory once `aforward()` has returned, so a turn's
+  `step_id` is higher than every live `tool_call`/`sub_call` of the same attempt. Sorting the three
+  action types together by it therefore put EVERY turn after EVERY tool call — and `state`,
+  documented as "the ordered list of prior actions", came out wrong in one direction for each kind:
+  **a tool record's prior actions contained no turns at all, and a turn's contained every tool
+  call.** Not occasional; every record of every run that used tools, in every corpus, since the
+  exporter shipped. Records now interleave on `ts`, which is the field whose documented purpose is
+  placing a turn against the live events around it — and a turn's stamp is taken when its reasoning
+  was PARSED, so it correctly precedes the tool calls that turn's own code then makes. Turns keep
+  `payload["turn"]` order among themselves, never `ts`, because a turn whose live stamp could not be
+  matched falls back to the flush time. A corpus with no timestamps at all falls back to `step_id`,
+  which for such input is the only order there is.
+
+  **Why it survived this long: no test ever exported a MIXED-family run.** Several use a real
+  `TraceRecorder` with real timestamps, but none of those traces contains a `main_step`, and the
+  exporter's own fixtures were hand-written in causal order with interleaved `step_id`s and no `ts`
+  — a shape the recorder never produces. The new tests use a realistic one.
+
+  **Downstream effect, with its limit stated.** A dataset previously exported from a tool-using run
+  has wrong `state` fields and is worth re-exporting — but re-exporting recovers nothing for a run
+  whose turn stamps were never matched, because a flush time is later than every live event and the
+  merge then reproduces the old order exactly. That is not a pre-1.0.0 problem: `dspy.streamify`
+  drops `_MainStepTimer` by capturing `settings.callbacks` at construction (CHANGELOG 1.6.0), and so
+  does any failure entering `_live_main_timing`, and any caller of `record_main_trajectory` outside
+  `RLMTask.arun`. `_sequenced_actions` emits a `logger.debug` on the detectable symptom — a run whose
+  first turn is not stamped before its first live event — because the output is otherwise
+  indistinguishable from a correct interleave. It is a hint, not a verdict: an earlier retry
+  attempt, or a host-side `record_tool_call` under the same recorder, reads the same way with
+  nothing wrong. The record SHAPE is unchanged,
+  so nothing else has to move.
+- **`replay.reconstruct`'s `step_id` sort is the same write order**, and is left alone deliberately —
+  every `Timeline` accessor filters to one event type, where write order IS causal order. Its
+  comment now says so, and warns that iterating `Timeline.events` across types does not.
+
+
+- **The guide's ordering rules left ADJACENCY to be inferred, and the inference a reader reaches
+  for is out by four orders of magnitude.** The section already said `main_step` events are written
+  in one batch after the run, that `payload["turn"]` is authoritative for them, and — in bold —
+  never to sort them by `ts`. It never mentioned `step_id`. A consumer building "which tool calls
+  shared a turn" from runs of consecutive `step_id` measured a burst-parallelism ceiling of 90.5%
+  where the answer was 0.0037%, with the alarming number being the wrong one: because the
+  `main_step` batch lands last, a whole run's live events carry an unbroken `step_id` range and the
+  grouping collapses the run into one burst. The section now separates ORDER from ADJACENCY —
+  `step_id` is a fine order key for live events and is in fact sturdier than `ts` (a strict counter
+  against a wall clock that can step backwards), while `step_id` ADJACENCY means nothing and turn
+  grouping must come from timestamp gaps.
 
 ### CI
 
