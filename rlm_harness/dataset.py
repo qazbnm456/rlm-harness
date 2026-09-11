@@ -24,6 +24,7 @@ responsibility (the deferred Unknown from the plan).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -42,12 +43,125 @@ RewardFn = Callable[[list[dict]], float]
 # A label function maps one run's events -> a dict of intrinsic FACTS/LABELS (never a score).
 LabelFn = Callable[[list[dict]], dict]
 
-# The three action event types, in the order they should be sequenced (by step_id).
+logger = logging.getLogger(__name__)
+
+# The three action event types. Sequencing them is `_sequenced_actions`'s job, not
+# this tuple's order and — since 1.11.2 — not `step_id`'s.
 _ACTION_TYPES = (EVENT_MAIN_STEP, EVENT_TOOL_CALL, EVENT_SUB_CALL)
 
 
 def _main_steps(events: list[dict]) -> list[dict]:
     return [e for e in events if e["type"] == EVENT_MAIN_STEP]
+
+
+def _sequenced_actions(events: list[dict]) -> list[dict]:
+    """Action events in CAUSAL order — the order they HAPPENED, not the order they were written.
+
+    ``main_step`` events are written in one batch once ``aforward()`` has returned, so every turn's
+    ``step_id`` is HIGHER than every live ``tool_call``/``sub_call`` of the same attempt. Sorting
+    the three types together by ``step_id`` therefore put every turn after every tool call, and
+    ``state`` -- documented as "the ordered list of prior actions" -- was wrong in one direction for
+    each kind: a tool record's prior actions contained NO turns at all, and a turn's contained
+    EVERY tool call. Systematic, not occasional.
+
+    ``ts`` is the field that places a turn against the live events around it, and that is the only
+    thing the guide says it is for. A turn's ``ts`` is stamped when its reasoning was PARSED, so it
+    precedes the tool calls that turn's own code then makes -- which is what makes the interleave
+    causal rather than merely different. But it is BACKFILLED, and for a turn whose live stamp could
+    not be matched it falls back to the flush time, so it is not trustworthy for ordering turns
+    against EACH OTHER; ``payload["turn"]`` is. So turns keep ``turn`` order, live events keep
+    ``ts`` order, and the two sequences are merged on ``ts``.
+
+    **An unmatched stamp costs more than turn-vs-turn order, and this is the limit of the fix.** A
+    flush time is LATER than every live event of the run, so a turn that falls back to one drags
+    every subsequent live event in front of itself — and if EVERY turn falls back, the merge
+    reproduces the pre-1.11.2 order exactly, wrong ``state`` included. Re-exporting such a corpus
+    changes nothing, because the trace holds no signal to interleave on. Reachable in practice, not
+    just in theory: `dspy.streamify` captures `settings.callbacks` at construction and so drops
+    `_MainStepTimer` (see CHANGELOG 1.6.0), any failure entering `_live_main_timing`'s
+    `dspy.context` does the same, and so does any caller of ``record_main_trajectory`` outside
+    ``RLMTask.arun``. The ``logger.debug`` below reports the detectable SYMPTOM — the first turn
+    not stamped before the run's first live event — because the output of a degraded interleave is
+    indistinguishable from a correct one. It is a one-sided hint and not a proof: a retry attempt or
+    a host-side ``record_tool_call`` reads the same way with nothing wrong, and the comment there
+    names both.
+
+    **Turn order is guaranteed by the pre-sort alone, not by anything in the merge.** A clamp
+    holding each turn to no earlier than its predecessor was written here first and removed as
+    provably dead: the merge has already consumed every live event up to the previous turn's
+    position, so a turn whose backfilled ``ts`` went BACKWARDS emits nothing either way and lands in
+    the same place. A mutation deleting the clamp left the whole suite green, which is what exposed
+    it -- the surviving guarantee is the ``_turn_key`` sort, and that one does go red when broken.
+
+    A corpus with no timestamps at all (hand-written fixtures, and any trace predating the field)
+    falls back to ``step_id`` order, which for such input is the only order there is.
+    """
+    actions = [e for e in events if e["type"] in _ACTION_TYPES]
+    if not any("ts" in e for e in actions):
+        return sorted(actions, key=lambda e: e.get("step_id", 0))
+
+    def _turn_key(e: dict) -> tuple:
+        turn = e["payload"].get("turn")
+        # `turn` absent (a pre-1.x trace, or a fixture) -> fall back to write order among turns.
+        return (0, turn) if isinstance(turn, int) and not isinstance(turn, bool) else (
+            1, e.get("step_id", 0))
+
+    turns = sorted((e for e in actions if e["type"] == EVENT_MAIN_STEP), key=_turn_key)
+    live = sorted(
+        (e for e in actions if e["type"] != EVENT_MAIN_STEP),
+        key=lambda e: (_ts(e), e.get("step_id", 0)),
+    )
+
+    if turns and live and _ts(turns[0]) >= _ts(live[0]):
+        # A ONE-SIDED HINT, not a proof, and the difference matters because this is the only thing
+        # that speaks. Turn 0 should be stamped BEFORE the run's first live event: a turn is
+        # stamped when its reasoning is parsed, and a turn's own code is what produces live
+        # events. When it is not, the usual cause is an unmatched stamp that fell back to the
+        # flush time. But the first live event need not belong to a RECORDED turn at all, so there
+        # are two readings that are not degradation:
+        #   * live events from an execution whose turns never reached the trace. `run_with_retry`
+        #     re-runs the whole trajectory, and what gets flushed is the last attempt that RETURNED
+        #     a prediction -- not the last attempt (see `trace.note_usage`, which documents the
+        #     same distinction for usage: a run whose final attempt RAISES keeps an earlier
+        #     attempt's turns). So an attempt's live events can sit in the trace with none of its
+        #     turns, and the recorded turn 0 legitimately postdates them. Needs `max_retries >= 2`,
+        #     or a run that raised mid-`aforward` under a shared recorder.
+        #   * a host-side `record_tool_call` before the run. Needs no opt-in.
+        # Two healthy `arun`s sharing a recorder and `run_id` do NOT trigger it, which is worth
+        # knowing because it is the shape a reader pictures first: `turns` is stable-sorted on
+        # `payload["turn"]`, so `turns[0]` is the FIRST run's turn 0 and the second run's is never
+        # compared. All three readings were checked by running them, not reasoned about: two
+        # healthy runs stay silent, while an orphaned live event and a pre-run host-side call both
+        # fire.
+        # Chosen over "are ALL the turns late" because ONE unmatched stamp is enough to damage a
+        # run, and that version stayed silent on exactly that case. Known miss in the other
+        # direction: a LATER turn unmatched while turn 0 is fine degrades the interleave from that
+        # point on and is not reported, because a genuinely late turn looks identical.
+        logger.debug(
+            "main_step turn %r is not stamped before this run's first live event, so the action "
+            "order below may be degraded — the usual cause is a turn stamp that was never matched "
+            "and fell back to the flush time, and a run whose stamps ALL fell back exports in the "
+            "old step_id order with wrong `state`. An earlier retry attempt, or a host-side "
+            "tool_call under the same recorder, reads the same way with nothing wrong",
+            turns[0]["payload"].get("turn"),
+        )
+
+    out: list[dict] = []
+    i = 0
+    for turn in turns:
+        at = _ts(turn)
+        while i < len(live) and _ts(live[i]) <= at:
+            out.append(live[i])
+            i += 1
+        out.append(turn)
+    out.extend(live[i:])
+    return out
+
+
+def _ts(event: dict) -> float:
+    """An event's timestamp as a float, or -inf when it carries none."""
+    ts = event.get("ts")
+    return float(ts) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else float("-inf")
 
 
 def _action_record(event: dict) -> dict:
@@ -119,7 +233,7 @@ def export_actions(
     *,
     reward: RewardFn | None = None,
 ) -> list[dict]:
-    """Every action in a run as a first-class RL record, in step order.
+    """Every action in a run as a first-class RL record, in the order it happened.
 
     Unlike :func:`export_rl` (planner-trajectory only), this emits one record per
     *action event* — `main_step` (planner), `tool_call` (a model-as-tool generator
@@ -128,14 +242,15 @@ def export_actions(
     records, the orchestrator on `kind=="planner"`). `state` is the ordered list of
     prior actions' (kind, outcome). `reward` is the run-level score, attached to every
     record (credit assignment left to the trainer).
+
+    **Records come out in CAUSAL order, which is not the order the trace was written** — see
+    `_sequenced_actions`. Until 1.11.2 this sorted by `step_id`, which put every turn after every
+    tool call of the same attempt and made `state` systematically wrong for both kinds.
     """
     records: list[dict] = []
     for run_id, events in runs.items():
         run_reward = reward(events) if reward is not None else None
-        actions = sorted(
-            [e for e in events if e["type"] in _ACTION_TYPES],
-            key=lambda e: e.get("step_id", 0),
-        )
+        actions = _sequenced_actions(events)
         history: list[dict] = []
         for e in actions:
             rec = _action_record(e)

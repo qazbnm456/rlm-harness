@@ -50,7 +50,14 @@ def reconstruct(events: list[dict]) -> Timeline:
     if not events:
         return Timeline(run_id="", events=[])
     run_id = events[0].get("run_id", "")
-    # Events are already in step order within a run; sort defensively by step_id.
+    # Events are already in step order within a run; sort defensively by step_id. That is WRITE
+    # order, not causal order: `main_step` events are flushed in one batch after the run, so they
+    # land after every live `tool_call`/`sub_call` of the same attempt. Harmless here -- every
+    # accessor below filters to ONE event type, and within a type write order IS causal order --
+    # but a caller iterating `Timeline.events` across types is reading the write order. For a
+    # CAUSAL interleave see `dataset._sequenced_actions`, which exists because `export_actions`
+    # got this wrong; this sort is left alone on purpose, since changing it would silently reorder
+    # what existing readers of `.events` already receive.
     ordered = sorted(events, key=lambda e: e.get("step_id", 0))
     return Timeline(run_id=run_id, events=ordered)
 

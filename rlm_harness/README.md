@@ -1490,8 +1490,36 @@ better — the `steps >= cap` form is a false positive on a run that submits on 
 
 ## Reading a trace — the ordering rules
 
-Three facts a reader needs and cannot infer from the file. A downstream consumer got this wrong,
-concluded "file order is unreliable, sort by `ts`", and reordered its turns.
+Three facts a reader needs and cannot infer from the file, plus one about how they interact. A
+downstream consumer got the first two wrong, concluded "file order is unreliable, sort by `ts`",
+and reordered its turns; a second one got the fourth wrong and was out by four orders of magnitude.
+
+**ORDER is not the hard part, and `step_id` is a perfectly good key for it.** `record()` assigns
+`step_id` and stamps `ts` inside ONE critical section and writes the line in the same one, so for
+the live events — `tool_call`, `sub_call` — `ts` is SAMPLED in `step_id` order, which is also file
+order. The two therefore agree on real hardware and are not guaranteed to: `ts` comes from
+`time.time`, and a wall clock that steps backwards breaks the agreement while `step_id` cannot.
+So `step_id` is the sturdier key for pure ordering. `main_step` is the exception
+and has its own key, `payload["turn"]` (see the bullets below).
+
+**The hard part is ADJACENCY, and that is where the four orders of magnitude came from.**
+Contiguous `step_id`s among live events do NOT mean "these happened in the same turn". Because
+every `main_step` is written in one batch at the END of the run, the live events of a whole run
+carry an unbroken `step_id` range with nothing between the turns — so grouping by runs of
+consecutive `step_id` collapses an entire run into one burst. A consumer computing which tool calls
+shared a turn that way measured a burst-parallelism ceiling of **90.5%** where the answer was
+**0.0037%**, and the alarming number is the wrong one. To group live events into turns, use the
+GAPS between their timestamps, or place them against a turn with the `ts` bullet below — never
+`step_id` adjacency.
+
+**And never mix the two families in one sort.** Sorting `main_step` together with `tool_call` /
+`sub_call` by `step_id` puts EVERY turn after EVERY tool call of the same attempt, because the
+batch lands last. `dataset.export_actions` did exactly this until 1.11.2, and its `state` field —
+"the ordered list of prior actions" — was wrong in that specific way: a `tool_call` record's prior
+actions contained no turns at all, and a turn's contained every tool call. It now interleaves on
+`ts`; `dataset._sequenced_actions` is the worked version of this rule, including what it cannot do
+when a turn's stamp was never matched. `replay.py`'s single-family `step_id` sort is unaffected and
+deliberately unchanged.
 
 - **`main_step` events are written in one block AFTER the run.** `record_main_trajectory` runs once
   `aforward()` has returned, because dspy.RLM only exposes its trajectory post-hoc. So a `tool_call`
