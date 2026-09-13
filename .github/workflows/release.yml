@@ -14,6 +14,30 @@ name: Release
 # it is worth knowing rather than rediscovering: setup-uv v10 DISABLES its cache by default on a `release`
 # event (cache poisoning -- a release build is the highest-value thing in this repo to poison). This job
 # passes no `enable-cache`, so it takes that default deliberately and builds uncached, once per release.
+#
+# **If this workflow itself is broken, fixing `main` does NOTHING until the TAG moves.** A
+# `release: published` event runs the workflow file at the TAG's commit, not at main's head — so a
+# failed publish is recovered by fixing main AND re-pointing the tag at the fix, not by pushing and
+# re-running. Safe only while nothing was uploaded, since a PyPI version can never be reused; check
+# that first. Reported by a downstream consumer who hit it live and lost the time; not reproduced
+# here, because reproducing it costs a burned version number.
+#
+# **`pyproject.toml`'s `requires = ["hatchling>=1.27"]` is a LOWER bound, so what this job uploads
+# can change with nothing in this repo changing.** The same consumer's release failed on
+# `InvalidDistribution: '2.5' is not a valid metadata version` — hatchling had moved to core
+# metadata 2.5 (PEP 639 `license`/`license-files`) and the twine bundled in `gh-action-pypi-publish`
+# below v1.14.2 did not accept it. This repo is on v1.14.2 and is not exposed TODAY, which was luck:
+# that SHA was pinned for supply-chain reasons, not this one. Left as a lower bound on purpose — the
+# failure is LOUD (the release fails, nothing uploads, the version is not burned), so the cost is a
+# delayed release rather than a corrupted one, which is cheaper than pinning the build backend and
+# taking on the bump treadmill. `install-check.yml` cannot see this class at all: it tests the
+# PUBLISHED artifact, and there is no artifact when the publish is what failed.
+#
+# **Do not verify a publish through `pypi.org/pypi/<name>/json`.** It is CDN-cached and served a
+# stale "latest" while two fresh installs of the new version had already succeeded. `/simple/` is
+# what installers actually read, and `/pypi/<name>/<version>/json` answers for one version; both
+# were correct at the moment the aggregate endpoint was wrong. Observed here publishing 1.11.0 and
+# independently by a consumer on their own release.
 
 on:
   release:

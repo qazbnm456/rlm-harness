@@ -19,6 +19,22 @@ All notable changes to `rlm-harness`. Format loosely follows
   cannot run the check, and `--no-verify` bypasses it. It guards the moment the mistake is made,
   which is local. Enable in a clone with `git config core.hooksPath .githooks`.
 
+## [Unreleased]
+
+### CI
+
+- **`release.yml` now records three things that only bite at publish time**, all from a downstream
+  consumer's live release plus one observed here. A `release: published` event runs the workflow at
+  the TAG's commit, so fixing a broken release workflow on `main` does nothing until the tag is
+  re-pointed. `requires = ["hatchling>=1.27"]` is a lower bound, so what gets uploaded can change
+  with nothing in this repo changing — their release failed on `InvalidDistribution: '2.5' is not a
+  valid metadata version` when hatchling moved to core metadata 2.5 and the twine bundled in
+  `gh-action-pypi-publish` below v1.14.2 rejected it; this repo is on v1.14.2 and was not exposed,
+  which was luck rather than diligence, and the bound is left open deliberately because that failure
+  is loud and burns no version. And `pypi.org/pypi/<name>/json` is CDN-cached: it reported a stale
+  "latest" here while publishing 1.11.0, and for them while two fresh installs of the new version
+  had already succeeded. `/simple/` and `/pypi/<name>/<version>/json` were both correct.
+
 ## [1.11.2] - 2026-09-11
 
 A trace is not written in the order it happened, and the RL exporter sorted by the order it was
