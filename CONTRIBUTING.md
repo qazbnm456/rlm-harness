@@ -9,13 +9,27 @@ extension contract in the guide's [**Building a consumer**](./rlm_harness/README
 
 ```bash
 uv sync --group dev
-uv run --group dev python -m pytest    # the full suite — no live LLM, network, or Deno needed
-uvx ruff check .                       # lint (CI enforces this)
+
+# the full suite, exactly as CI runs it — no live LLM, network, or Deno needed
+uv run --group dev --extra mcp --extra grep --extra gitignore python -m pytest -q
+uvx ruff check .                       # lint, a separate CI gate (not part of pytest)
 ```
+
+**Pass the extras.** Each optional extra carries tests that SKIP when it is absent, so a bare
+`uv run pytest` is green while leaving the MCP client, `make_grep_files_tool`'s real regex timeout,
+and `list_candidate_paths`'s `.gitignore` parsing untested.
 
 The dspy-bearing tests use a `DummyLM` or skip when dspy is absent, so the suite
 runs anywhere. A *live* `dspy.RLM` run additionally needs model credentials and a
-Deno sandbox (`brew install deno`) — only `examples/` exercise that.
+Deno sandbox (`brew install deno`; dspy requires Deno `>=2.0.0,<3.0.0`) — only `examples/`
+exercise that.
+
+**Enable the commit hooks in your clone:** `git config core.hooksPath .githooks`. They refuse a
+commit that would publish a private downstream project's name, reading a denylist from
+`~/.claude/private-names.txt` (or `$PRIVATE_NAMES_FILE`) — kept outside the repo on purpose, since
+putting those names into a public checker would publish exactly what it exists to keep private. No
+list means no check: you are told once, never blocked. CI cannot run it, so it only guards the
+moment the mistake is made, which is local.
 
 Before opening a PR: the suite is green, `ruff check` is clean, and any new
 behavior has a test. CI runs the same on Python 3.11–3.13.
@@ -47,11 +61,16 @@ These are load-bearing; see [`CLAUDE.md`](./CLAUDE.md) for the full list and the
   field is fine; removing, renaming, or re-typing an event type / envelope key /
   established field is a `v2` break. `tests/test_contract.py` pins it — if it goes red,
   you're about to break a downstream reader, not the test.
-- **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`,
-  `tools/`, `trace.py`, `skills.py`, `replay.py`, `dataset.py` must not import dspy at
-  module top, and `import rlm_harness` must not import dspy.
-- **Tools passed to `RLMTask(tools=…)` must be sync.** dspy's interpreter calls them with
-  a plain `()`; an `async def` tool returns an un-awaited coroutine and never runs.
+- **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`, `tools/`,
+  `trace.py`, `skills.py`, `replay.py`, `dataset.py`, `serving.py`, `harness_serve.py`,
+  `_dspy_compat.py`, `metrics.py`, `rubric.py`, `_toolname.py`, `atomic.py`, and `isolation.py`
+  must not import dspy at module top, and `import rlm_harness` must not import dspy.
+- **Tools passed to `RLMTask(tools=…)` must be sync, and must expose EXPLICIT params.** dspy's
+  interpreter calls them with a plain `()`, so an `async def` tool returns an un-awaited coroutine
+  and never runs; and dspy builds the in-sandbox proxy from the wrapped function's signature, so
+  `*args`/`**kwargs` reaches the model as a parameter literally named `args`/`kwargs`. Assert it
+  with `rlm_harness.testing.assert_repl_safe(tool)`, and register a new shipped factory in
+  `tests/test_repl_safety.py`'s `_REPL_FACTORIES`.
 - **rlm-harness produces trajectories, never reward.** The exporters carry a `reward=` hook the
   downstream trainer fills; scoring/training is a separate stage.
 - **`__init__.__all__` is SemVer-frozen since 1.0.0.** Adding a public name is a minor release.

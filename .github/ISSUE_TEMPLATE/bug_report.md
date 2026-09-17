@@ -20,7 +20,8 @@ What you expected instead.
 
 - rlm-harness version / commit:
 - Python version:
-- Interpreter (sandbox `pyodide`/`deno`, or `local`):
+- Interpreter (`pyodide`/`deno` default, `container`, or `local`):
+- Optional extras installed (`mcp` / `grep` / `gitignore` / `jsonschema` / `observe` / `subscription`):
 
 **Notes**
 
