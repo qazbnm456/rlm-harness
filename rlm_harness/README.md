@@ -691,9 +691,12 @@ to `pyodide`/`deno`:
   safety-net deadline. **Unset by default** (deliberately NOT matching the container interpreter's
   own `120.0`-default precedent: this budget has no hook to exclude host-side tool/sub-LM dispatch
   time, so a generous always-on value would misfire on legitimate multi-tool-call turns more often
-  than the container analogy implies). Firing raises dspy's own RECOVERABLE
-  `CodeInterpreterError` — the model sees an `"[Error] ..."` string and gets to retry next turn
-  against a freshly-respawned sandbox.
+  than the container analogy implies). Firing raises dspy's own RECOVERABLE interpreter error —
+  `CodeExecutionError` on dspy >= 3.3.0, resolved at call time through
+  `_dspy_compat.recoverable_interpreter_error()` rather than hardcoded, because 3.3.0 INVERTED the
+  split: the base `CodeInterpreterError` used to be the recoverable one and is now the TERMINAL
+  one. The model sees an `"[Error] ..."` string and gets to retry next turn against a
+  freshly-respawned sandbox.
 - **`RLM_REQUEST_TIMEOUT`** (seconds; `RLMConfig.request_timeout_s`) — a wall-clock cap on ONE
   model HTTP request ATTEMPT, handed to `dspy.LM(timeout=...)` and from there to litellm. This is
   `RLM_SANDBOX_TURN_TIMEOUT`'s sibling on the other side of a turn: the sandbox side was bounded
@@ -720,7 +723,9 @@ to `pyodide`/`deno`:
   the event from another thread; the current sandbox turn is killed and `SandboxCancelled` (exported
   from `rlm_harness`) propagates all the way up through `arun()` as a genuine, NON-recoverable run-ending
   failure — never retried (see `run_with_retry`'s `non_retryable` below), never caught by dspy's own
-  `except (CodeInterpreterError, SyntaxError)`.
+  `except (CodeExecutionError, SyntaxError)` (the class it catches is version-dependent — see the
+  turn-timeout bullet above; `SandboxCancelled` stands outside dspy's hierarchy entirely, which is
+  what makes it non-recoverable on EVERY version).
 
 ```python
 import threading
