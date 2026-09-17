@@ -1091,7 +1091,7 @@ and `max_iterations` there so an offline reader reads the real per-run values, n
 
 `rlm-harness` is the ROLLOUT floor; a consumer is a thin declaration on top of it. `examples/harness_run.py`
 is a minimal worked example — a task that wires the sub-LM hook, skills, tracing, and
-RL export together. Five steps:
+RL export together. Six steps:
 
 1. **Declare the task.** Subclass `RLMTask`: a `signature`, `output_field`, an `output_model`
    (judgement-only — see above), `instructions` (orchestration + a few hard safety rules), and

@@ -52,10 +52,13 @@ pip install rlm-harness
 uv add rlm-harness
 ```
 
-`rlm-harness` needs Python ≥ 3.11
-and pulls in `dspy` + `pydantic`; extras are opt-in — observability (`pip install "rlm-harness[observe]"`)
-and running on a Claude Pro/Max subscription instead of an API key
-(`pip install "rlm-harness[subscription]"` → `rlm_harness.ClaudeAgentLM`, injected via `configure(main_lm=…)`). A
+`rlm-harness` needs Python ≥ 3.11 and pulls in `dspy` + `pydantic`. Everything else is an opt-in
+extra: `[observe]` (Langfuse/OpenInference tracing), `[mcp]` (the MCP client bridge),
+`[jsonschema]` (`make_json_schema_validator`), `[grep]` (a real wall-clock timeout on
+`make_grep_files_tool`'s LM-supplied pattern), `[gitignore]` (`.gitignore`-aware walking in
+`list_candidate_paths`), and `[subscription]` — run the planner and/or sub-LM on a Claude Pro/Max
+login instead of an API key (`pip install "rlm-harness[subscription]"` →
+`rlm_harness.ClaudeAgentLM`, injected via `configure(main_lm=…)`). A
 *live* `dspy.RLM` run additionally needs model credentials (see the guide's
 [Configuration](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#configuration)) and a
 Deno sandbox — the logic and tests run without either. dspy requires Deno `>=2.0.0,<3.0.0`:
@@ -67,7 +70,9 @@ Deno sandbox — the logic and tests run without either. dspy requires Deno `>=2
   selection, budget caps, and observability are inherited.
 - **The whole trajectory, recorded.** `TraceRecorder` writes main steps, every sub-LM
   call, and every tool call into one append-only JSONL stream — replayable and
-  exportable as SFT/RL datasets (reward-free: scoring belongs to your trainer).
+  exportable as SFT/RL datasets (reward-free: scoring belongs to your trainer). Offline readers
+  get the generic half computed for them: run facts, rubric facts, and utilization metrics —
+  including which tool calls produced nothing usable, and what they cost.
 - **The recursion seat, interceptable.** Every sub-LM escalation is traced as a
   `sub_call` automatically — no wrapper needed. `intercept_sub_lm` adds a deterministic
   validate/post-process pipeline on top; `model_as_tool` lets the main LM choose to
@@ -76,6 +81,15 @@ Deno sandbox — the logic and tests run without either. dspy requires Deno `>=2
   `fetch_url`, provider-agnostic web search, the generic model-as-tool core, a
   `run_command` seam over your isolated runner, an MCP client bridge, and
   skills-as-tools progressive disclosure.
+- **A bounded local directory, no shell.** Read, write, edit, and regex-search files under a
+  root you scope — plus safe archive extraction and `git clone`. Every path resolves inside
+  that root (no subprocess, no `rg` on `PATH`), and `verify_quote` checks a model's citation
+  against the bytes it claims to quote.
+- **Delegate to another harness — or be one.** `make_harness_tool` wraps a downstream
+  rlm-harness harness as a tool: the parent records one `tool_call` plus a link to the child,
+  while the child runs its own full RLM loop over the long text and owns its own trace.
+  `serve_harness` is the other end of the same wire. The kit ships no transport and names no
+  harness — the identity lives in your runtime config.
 - **Sandboxed by default.** The pyodide/deno interpreter; the `local` interpreter is
   refused unless explicitly opted into; an opt-in Docker `container` interpreter for
   when the REPL itself needs real subprocesses.
@@ -90,9 +104,13 @@ The deep documentation lives in
 - [Layout](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#layout) — what each module owns.
 - [RLM as harness engineering](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#rlm-as-harness-engineering-sub-lm-hook--tracing) — the sub-LM hook + trajectory tracing.
 - [Sub-LM vs. tool](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#sub-lm-vs-tool-which-model-goes-where) — which model goes where; the choice decides what your RL data records.
-- [Skills](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#skills-progressive-disclosure), [MCP tools](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#mcp-tools-connect-an-external-mcp-server), [running local commands](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#running-local-commands-an-isolated-runner), and the [container interpreter](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#environment-interpreter-interpretercontainer) — the tool & environment surfaces.
+- [Skills](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#skills-progressive-disclosure), [MCP tools](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#mcp-tools-connect-an-external-mcp-server), [running local commands](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#running-local-commands-an-isolated-runner), and [`run_in_subprocess`](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#run_in_subprocess--a-safe-isolated-subprocess-primitive-isolationpy) — the tool surfaces and the isolated-subprocess primitive under them.
+- [Reading and searching local files](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#reading-and-searching-local-files-a-bounded-directory-no-shell), [writing and editing them](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#writing-and-editing-a-bounded-local-directory-toolseditpy), and [extracting archives](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#extracting-archives-safely-toolsarchivepy) — a bounded directory, no shell.
+- [The container interpreter](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#environment-interpreter-interpretercontainer), [sandbox turn timeout + cancellation](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#sandbox-turn-timeout--cancellation-pyodidedeno), and [what bounds what](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#timeouts--what-bounds-what) — the execution environment and its deadlines.
 - [Grounded completeness](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#grounded-completeness--the-sufficiency-critic-recipe) and [judgement-only SUBMIT](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#judgement-only-submit--assemble-facts-dont-let-the-policy-report-them) — the rollout conventions.
-- [Building a consumer](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#building-a-consumer) — the five-step extension contract.
+- [Rubric facts](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#rubric-facts--the-kit-computes-the-generic-half-180) and [trace utilization metrics](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#trace-utilization-metrics) — the generic half of reading a finished run, computed for you and reward-free.
+- [Reading a trace](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#reading-a-trace--the-ordering-rules) — the ordering rules: `step_id` is WRITE order, and `step_id` adjacency means nothing.
+- [Building a consumer](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#building-a-consumer) — the six-step extension contract.
 - [Configuration](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#configuration) — every env var, adapter selection, model naming.
 - [Testing the forward path offline](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#testing-the-forward-path-offline-rlm_harnesstesting) — the scripted offline harness.
 
@@ -139,6 +157,10 @@ tends to retry verbatim. Isolation is unchanged; `RLMTask` owns the teardown.
 uv sync --group dev
 uv run pytest          # logic tests (no live LLM needed)
 ```
+
+The optional extras carry their own tests, which SKIP when the extra is absent — what CI runs is
+`uv run --group dev --extra mcp --extra grep --extra gitignore python -m pytest -q`, plus
+`uvx ruff check .` as a separate gate.
 
 Tests cover config parsing, the retry/validation engine, the sandbox guard, the
 tools, the sub-LM-hook/trace/replay/dataset layer, and a real-`dspy.RLM`
