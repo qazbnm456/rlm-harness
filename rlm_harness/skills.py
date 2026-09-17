@@ -1,4 +1,4 @@
-"""Phase A — expose a directory of Skills to the RLM as tools.
+"""Expose a directory of Skills to the RLM as tools.
 
 A "Skill" here follows the common convention of a folder containing a ``SKILL.md``
 (with optional YAML-ish frontmatter for ``name``/``description``), or a flat

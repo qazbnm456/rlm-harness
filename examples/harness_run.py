@@ -1,7 +1,7 @@
 """Example: RLM-as-Harness — intercepted sub-LM + skills tools + traced run.
 
-Wires every Phase A/B/C piece together (illustrative; needs real model creds and
-a sandbox, so it is NOT imported by the test suite):
+Wires the harness-engineering layer together end to end (illustrative; needs real
+model creds and a sandbox, so it is NOT imported by the test suite):
 
 - a local/base model wrapped via intercept_sub_lm (validate + post-process),
 - a Skills directory whose catalog is injected into the prompt (discovery="inject") with

@@ -1,4 +1,4 @@
-"""Phase C (part 2) — export recorded runs as Agentic-RL / SFT datasets.
+"""Export recorded runs as Agentic-RL / SFT datasets.
 
 The JSONL trace is the source of truth. This module turns it into training-ready
 records, in three shapes:

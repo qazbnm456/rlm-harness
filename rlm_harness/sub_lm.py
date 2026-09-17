@@ -1,4 +1,4 @@
-"""Phase A — ``intercept_sub_lm``: the one hook to intercept the RLM's sub-LM.
+"""``intercept_sub_lm``: the one hook to intercept the RLM's sub-LM.
 
 ``dspy.RLM`` exposes no hook to intercept a sub-LLM response before it returns to
 the main model — and its built-in ``llm_query`` / ``llm_query_batched`` tools just

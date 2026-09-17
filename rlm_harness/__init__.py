@@ -4,7 +4,7 @@ Public surface::
 
     from rlm_harness import RLMConfig, configure, RLMTask
     from rlm_harness.tools import make_schema_validator, make_fetch_tool, is_safe_url
-    # Harness-engineering layer (Phase A/B/C):
+    # Harness-engineering layer (sub-LM hook, tracing, replay + datasets):
     from rlm_harness import intercept_sub_lm, model_as_tool, get_sub_lm  # sub-LM hook
     from rlm_harness import TraceRecorder, current_recorder, record_tool_call  # tracing
     from rlm_harness import load_skills_as_tools                       # skills-as-tools
@@ -83,7 +83,7 @@ __all__ = [
     "configure",
     "get_config",
     "RLMTask",
-    # sub-LM hook (Phase A)
+    # sub-LM hook
     "intercept_sub_lm",
     "SubLMValidationError",
     "model_as_tool",
@@ -91,7 +91,7 @@ __all__ = [
     "load_skills_as_tools",
     "render_skills_manifest",
     "discover_skills",
-    # tracing (Phase B)
+    # tracing
     "TraceRecorder",
     "payload_cause",
     "current_recorder",
@@ -106,7 +106,7 @@ __all__ = [
     "EVENT_FINAL",
     "EVENT_RESULT",
     "EVENT_RUN_END",
-    # replay + dataset (Phase C)
+    # replay + dataset
     "load_timeline",
     "reconstruct",
     "RecordedToolProvider",

@@ -1,4 +1,4 @@
-"""Phase B — unified, replayable trajectory recording.
+"""Unified, replayable trajectory recording.
 
 Two sources must be merged to get a complete picture of an RLM-as-harness run:
 

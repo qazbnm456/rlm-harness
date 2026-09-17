@@ -1,4 +1,4 @@
-"""Phase C (part 1) — reconstruct and replay a recorded run.
+"""Reconstruct and replay a recorded run.
 
 Replay reads the JSONL trace and rebuilds an ordered timeline. For deterministic
 replay it serves *recorded* tool outputs rather than re-executing tools (which
