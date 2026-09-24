@@ -141,6 +141,10 @@ def test_public_surface_includes_the_consumer_contract():
         # DELIBERATELY: the assertion below is a SUBSET check, so a new __all__ entry passes on
         # its own: being in `must_export` is what makes an accidental removal go red.
         "is_valid_tool_name", "sanitize_tool_name", "unique_tool_names",
+        # the budget READERS (1.13.0). A consumer calls these to put the budget in its `run_start`
+        # meta, which is the only copy that survives a run killed before `run_end` is written.
+        # Removing either sends it back to importing a private name or keeping a second key list.
+        "applied_lm_budget", "applied_thinking_budget",
         # the generic rubric-fact surface (1.8.0): a consumer's lens imports RUN_FACT_KEYS
         # instead of hand-copying names, so removing either is a downstream break
         "compute_run_facts", "compute_run_facts_by_run", "RUN_FACT_KEYS",

@@ -1454,6 +1454,31 @@ kit owns no vocabulary on the wire, so a name it does not know is still SENT and
 annotated here. And a recognised key proves only what was sent: pair it with `usage`'s
 `reasoning_tokens` to find out whether the server honoured it.
 
+**`budgets` lives in `run_end`, which a KILLED run never writes.** A run that dies by exception
+still records it, since `__exit__` runs during propagation, but a process stopped by a signal does
+not get there at all, and a thinking runaway is exactly the kind of run an external timeout kills.
+`applied_lm_budget(lm)` and `applied_thinking_budget(lm)` are public for that case (1.13.0): read
+them off `dspy.settings.lm` and `get_sub_lm()` after `configure()`, and put the result in the
+`run_start` meta, which is written before the run begins.
+
+```python
+from rlm_harness import applied_lm_budget, applied_thinking_budget, get_sub_lm, configure
+import dspy
+
+configure(RLMConfig.from_env())
+meta = {"budgets": {role: {"tokens": applied_lm_budget(lm),        # {"cap": int, "key": str}
+                           "thinking": applied_thinking_budget(lm)}  # {"value": int, "key": str}
+                    for role, lm in (("main", dspy.settings.lm), ("sub", get_sub_lm()))}}
+with TraceRecorder("traces/run.jsonl", run_id="r1", meta=meta):
+    ...
+```
+
+`get_sub_lm()` is the LM a task will use unless you hand it an explicit `sub_lm=`, so both roles are
+readable before the task exists. Use the kit's readers rather than a key list of your own: the names
+a server may use for a thinking ceiling live in one place on purpose, and a second copy is what
+drifts. The shapes are the same ones `budgets.main` and `budgets.thinking` publish, so the two
+records cannot disagree.
+
 **`budgets` covers a DIFFERENT exhaustion from `budget_exhausted`.** The `metrics` snapshot's
 `budget_exhausted` reports the ITERATION cap: the run used up its turns. `budgets.iterations` shows
 what those caps were, `budgets.main`/`.sub` show the TOKEN cap, and `budgets.iterations.dropped`
@@ -1835,6 +1860,16 @@ the fact, in the trace: `run_end.payload.budgets.thinking` records what the LM c
 `run_end.payload.usage` carries the provider's own `reasoning_tokens`. A run supposedly capped at
 16384 that reports 32768 of reasoning is the key doing nothing, and that comparison is available on
 every run rather than in a one-off script.
+
+**A budget set for one task binds on every task in the process, and that has been measured.** The
+env var is read once per process, so a ceiling chosen for the task that runs away also applies to
+tasks that never did. On the deployment above, the pre-budget baseline had 2 of 29 planner calls in
+one task and 6 of 84 in another reasoning past 16384, all of them finishing well under the 32768
+cap: ordinary long reasoning, not a runaway. A 16384 ceiling now cuts exactly that population.
+Every cut call still produced a usable turn there (988-1413 tokens of content after the cut), and
+whether the RESULT is worse is a question an ok rate cannot answer, so measure the output rather
+than the completion. If it costs you, set the variable per task rather than per deployment, which
+is available wherever a task gets its own process.
 
 **Keys `configure()` owns are refused at parse time**, not silently dropped and not silently
 winning:

@@ -161,6 +161,42 @@ def test_a_non_dict_kwargs_attribute_does_not_raise():
     assert compat.applied_thinking_budget(object()) is None
 
 
+# --- the readers are PUBLIC (1.13.0) -------------------------------------------------------
+
+def test_both_readers_are_importable_from_the_top_level():
+    """A consumer records the budget in its own `run_start` meta, which is the only copy that
+    survives a run killed before `run_end` is written. Without these it would have to import a
+    private name or keep a second key list, and a second list is the drift the read-path design
+    exists to avoid."""
+    import rlm_harness
+    assert rlm_harness.applied_lm_budget(_LM({"max_tokens": 32768})) == {"cap": 32768,
+                                                                        "key": "max_tokens"}
+    assert rlm_harness.applied_thinking_budget(_LM(VLLM)) == {
+        "value": 16384, "key": "extra_body.thinking_token_budget"}
+
+
+def test_importing_the_package_still_does_not_import_dspy():
+    """The readers touch only `lm.kwargs`, so exporting them must not drag dspy into
+    `import rlm_harness`. Checked in a FRESH interpreter: this process has already imported dspy."""
+    import subprocess
+    import sys
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import sys, rlm_harness; print('dspy' in sys.modules)"],
+        capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "False", out.stdout
+
+
+def test_the_readers_agree_with_what_the_trace_records(tmp_path):
+    """The point of making them public is that a consumer's OWN record cannot drift from the
+    kit's. Same LMs, same numbers, whichever side reads them."""
+    cfg = _cfg(interpreter="mock", max_tokens=32768, main_lm_kwargs=VLLM)
+    budgets = _run_end(tmp_path, cfg)["budgets"]
+    import rlm_harness
+    assert rlm_harness.applied_thinking_budget(dspy.settings.lm) == budgets["thinking"]["main"]
+    assert rlm_harness.applied_lm_budget(dspy.settings.lm) == budgets["main"]
+
+
 # --- configure(): the merge is per-ROLE, and the default sends nothing ----------------------
 
 def _configure(cfg, **kw):

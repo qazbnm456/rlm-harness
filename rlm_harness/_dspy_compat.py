@@ -532,6 +532,13 @@ _LM_BUDGET_KEYS = ("max_tokens", "max_completion_tokens")
 def applied_lm_budget(lm: Any) -> dict[str, Any] | None:
     """The generation cap ``lm`` CARRIES, as ``{"cap": int, "key": str}`` or ``None``.
 
+    PUBLIC since 1.13.0, re-exported as ``rlm_harness.applied_lm_budget``. A consumer needs it to
+    record the budget somewhere DURABLE: the kit writes ``budgets`` into ``run_end``, which a run
+    killed by a signal never reaches, and a runaway is exactly the kind of run that gets killed.
+    Reading it here and putting it in the ``run_start`` meta closes that, with no second copy of
+    the key list to drift. The return SHAPE was already frozen before this became public, since it
+    is what ``budgets.main`` publishes in trace/v1.
+
     Read off the LM, never from ``RLMConfig``: ``runtime`` builds an LM from config ONLY for a role
     that is still ``None``, and an injected ``main_lm``/``sub_lm`` is used verbatim -- so the
     configured cap can be one the call never used, which is exactly the consumer whose run died.
@@ -602,6 +609,12 @@ def _int_or_none(value: Any) -> int | None:
 
 def applied_thinking_budget(lm: Any) -> dict[str, Any] | None:
     """The THINKING-token ceiling ``lm`` carries, as ``{"value": int, "key": str}`` or ``None``.
+
+    PUBLIC since 1.13.0, re-exported as ``rlm_harness.applied_thinking_budget``, for the same
+    reason as :func:`applied_lm_budget`: a consumer recording this in its ``run_start`` meta keeps
+    the budget on a run that dies before ``run_end`` is written. Call it on
+    ``dspy.settings.lm`` for the main role and on ``get_sub_lm()`` for the sub role, which is the
+    LM a task uses unless it was given an explicit ``sub_lm=``.
 
     ``key`` is the dotted path the value was found at (``"extra_body.thinking_token_budget"``), so
     a trace reader can tell a top-level litellm parameter from a raw ``extra_body`` key without

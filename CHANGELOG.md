@@ -4,6 +4,52 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.13.0] - 2026-09-24
+
+1.12.0 records the budget a run carried in `run_end`. A run killed by a signal never writes one.
+
+### Added
+
+- **`applied_lm_budget` and `applied_thinking_budget` are PUBLIC**, re-exported from
+  `rlm_harness`. A consumer calls them after `configure()` and puts the result in its `run_start`
+  meta, which is written before the run begins and therefore survives a run that never reaches
+  `run_end`.
+
+  The gap is not hypothetical. `run_end` is written from `TraceRecorder.__exit__`, which still runs
+  when a run dies by EXCEPTION, so that case already records its budget. A process stopped by a
+  signal does not get there at all, and a consumer reported the population it matters for: their
+  runner enforces a wall-clock timeout with `killpg`, and a thinking runaway is exactly the kind of
+  run that reaches it. The traces with no budget recorded are the ones anyone diagnosing a runaway
+  would want it from.
+
+  **The kit could not close this itself, which is why the fix is a seam rather than a field.**
+  `TraceRecorder.__enter__` writes `run_start` before the task exists in that scope, so it cannot
+  reach that task's sub-LM; `budgets.iterations.dropped` is only knowable after `_build_rlm` has
+  tried the kwargs; and the trace is append-only, so `run_start` cannot be amended later. The
+  recorder could therefore write only a partial, main-only copy of a key that already exists in
+  full elsewhere. Exposing the reader lets the consumer record it in the meta it already owns.
+
+  Both roles are readable before the task exists: `get_sub_lm()` returns the LM a task will use
+  unless it is handed an explicit `sub_lm=`.
+
+  The commitment is smaller than a new public name usually is. `{"cap": int, "key": str}` and
+  `{"value": int, "key": str}` were already frozen as the shapes `budgets.main` and
+  `budgets.thinking` publish in trace/v1, so this adds no promise the wire format had not made.
+  What it removes is the consumer's alternative: importing a private name, or keeping a second list
+  of the key names a server may use for a thinking ceiling, which is the drift the read-path design
+  exists to avoid.
+
+### Documented
+
+- **A thinking budget set for one task binds on every task in the process**, with numbers from the
+  first production deployment of 1.12.0. The env var is read once per process, so a ceiling chosen
+  for the task that runs away also applies to tasks that never did. Measured against that
+  deployment's pre-budget baseline: 2 of 29 planner calls in one task and 6 of 84 in another
+  reasoned past 16384 and all finished well under the 32768 cap, which is ordinary long reasoning
+  rather than a runaway, and a 16384 ceiling now cuts exactly that population. Every cut call there
+  still produced a usable turn. Whether the RESULT is worse is a question an ok rate cannot answer,
+  so the guide says to measure the output rather than the completion.
+
 ## [1.12.0] - 2026-09-24
 
 A reasoning model whose THINKING runs away does not present as a long answer. It presents as a parse

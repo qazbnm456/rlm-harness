@@ -21,6 +21,7 @@ when actually called.
 
 from __future__ import annotations
 
+from ._dspy_compat import applied_lm_budget, applied_thinking_budget
 from ._retry import RLMTaskError, short_error
 from ._toolname import (
     is_valid_tool_name,
@@ -76,6 +77,8 @@ from .trace import (
 __all__ = [
     # core
     "RLMConfig",
+    "applied_lm_budget",
+    "applied_thinking_budget",
     "RLMTaskError",
     "SandboxSecurityError",
     "SandboxCancelled",
@@ -160,7 +163,7 @@ __all__ = [
     "run_in_subprocess",
 ]
 
-__version__ = "1.12.0"
+__version__ = "1.13.0"
 
 
 def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import
