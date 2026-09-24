@@ -107,7 +107,7 @@ def test_model_tool_circuit_breaker_trips_after_consecutive_declines():
 
 
 def test_model_tool_circuit_breaker_resets_on_ok():
-    # A validator-ok resets the streak, so interleaved declines never trip — only an UNBROKEN run does.
+    # A validator-ok resets the streak, so interleaved declines never trip: only an UNBROKEN run does.
     seq = iter([False, False, True, False, False])  # max consecutive declines = 2
     call = make_model_tool(lambda s: "x", lambda raw: _V(ok=next(seq)),
                            max_consecutive_invalid=3)
@@ -116,7 +116,7 @@ def test_model_tool_circuit_breaker_resets_on_ok():
 
 
 def test_model_tool_endpoint_error_does_not_trip_breaker():
-    # An endpoint error is infra flakiness, not a content decline — it must not advance the breaker.
+    # An endpoint error is infra flakiness, not a content decline. It must not advance the breaker.
     state = {"fail": True}
     def chat(spec):
         if state["fail"]:
@@ -483,7 +483,7 @@ def test_command_tool_guard_none_allows():
 
 
 def test_command_tool_guard_empty_string_still_refuses(tmp_path):
-    # The protocol is "None allows, ANY string refuses" — an empty-string reason must not
+    # The protocol is "None allows, ANY string refuses". An empty-string reason must not
     # silently fall through to the runner (that would run the command a guard meant to block).
     called = {"n": 0}
     def runner(command):
@@ -517,14 +517,14 @@ def test_git_guard_refuses_shell_string_form_too():
 
 
 def test_git_guard_handles_global_flag_prefixed_invocations():
-    # `--no-pager` and `-C <path>` legally precede the subcommand — the walk must not mistake
+    # `--no-pager` and `-C <path>` legally precede the subcommand. The walk must not mistake
     # either for the subcommand itself, nor stop before reaching the real `log --all`.
     assert refuse_broad_git_history(["git", "--no-pager", "log", "--all"]) is not None
     assert refuse_broad_git_history(["git", "-C", "/some/path", "log", "--all"]) is not None
 
 
 def test_git_guard_is_token_based_not_substring():
-    # A commit message that merely CONTAINS the text "git log --all" must not trip the guard —
+    # A commit message that merely CONTAINS the text "git log --all" must not trip the guard:
     # matching walks discrete tokens (second token is "commit", not "log"), never a raw substring
     # search over the whole string.
     assert refuse_broad_git_history(["git", "commit", "-m", "please git log --all this"]) is None
@@ -532,7 +532,7 @@ def test_git_guard_is_token_based_not_substring():
 
 def test_git_guard_does_not_decompose_chained_shell_strings():
     # Known, documented non-goal: this guard is not a shell parser. shlex.split has no concept of
-    # `&&` as a command separator, so tokens[0] here is "echo", not "git" — the chained `git log
+    # `&&` as a command separator, so tokens[0] here is "echo", not "git": the chained `git log
     # --all` is not detected. This is the guard's stated limitation, not a bug: it is shape-only,
     # never a security boundary (prefer argv-list commands, where there is no such ambiguity).
     assert refuse_broad_git_history("echo hi && git log --all") is None
@@ -631,7 +631,7 @@ def test_cause_endpoint_when_the_call_failed_and_the_validator_never_ran():
 
 
 def test_cause_circuit_broken_when_the_breaker_short_circuited():
-    """No model call AND no validator call — the furthest thing from "the output was rejected"."""
+    """No model call AND no validator call: the furthest thing from "the output was rejected"."""
     calls, checks = [], []
 
     def chat(spec):
@@ -678,7 +678,7 @@ def _broken_call():
 
 def test_the_harness_result_inherits_the_same_distinction():
     """`HarnessToolResult` subclasses `ModelToolResult`, so a delegation client gets `cause` for
-    free — and needs it for the same reason: a transport failure is not a content decline."""
+    free, and needs it for the same reason: a transport failure is not a content decline."""
     from rlm_harness.tools.harness import HarnessToolResult
 
     assert HarnessToolResult(ok=False, raw="", endpoint_error="conn reset").cause == CAUSE_ENDPOINT
@@ -694,7 +694,7 @@ def test_an_endpoint_failure_whose_str_is_EMPTY_records_the_exception_TYPE():
     about whether an endpoint error had occurred, which is how `payload_cause` came to read six
     failure modes as content declines. The class name is always available.
 
-    `endpoint_error` and `errors[0]` must carry the SAME detail — consumers read whichever is nearer,
+    `endpoint_error` and `errors[0]` must carry the SAME detail. Consumers read whichever is nearer,
     and a split between them is a difference no test elsewhere would notice.
     """
     import http.client
@@ -720,7 +720,7 @@ def test_an_endpoint_failure_whose_str_is_EMPTY_records_the_exception_TYPE():
 
 
 def test_a_normal_exception_still_records_its_MESSAGE_not_its_type():
-    """The fallback must not swallow a real message — it applies only when there is none."""
+    """The fallback must not swallow a real message. It applies only when there is none."""
 
     def boom(_spec):
         raise RuntimeError("502 Bad Gateway")
@@ -759,7 +759,7 @@ def test_resolve_within_root_refuses_absolute_path_escape(tmp_path):
 
 
 def test_resolve_within_root_refuses_a_symlink_escape(tmp_path):
-    # realpath (not normpath) is what makes this work — a symlink INSIDE root pointing OUTSIDE it
+    # realpath (not normpath) is what makes this work: a symlink INSIDE root pointing OUTSIDE it
     # must be refused exactly like a literal `..` escape is.
     root = _make_repo(tmp_path)
     outside = tmp_path.parent / "outside.py"
@@ -796,7 +796,7 @@ def test_read_file_missing_file_is_an_error_string_not_an_exception(tmp_path):
 
 
 def test_read_file_directory_path_is_an_error_string_not_a_raised_exception(tmp_path):
-    # open(<directory>) raises IsADirectoryError, an OSError subclass already caught — this must
+    # open(<directory>) raises IsADirectoryError, an OSError subclass already caught. This must
     # degrade the same way a missing file does, not surface an unhandled exception. An LM is
     # entirely likely to try passing a directory to a file-reading tool at some point.
     root = _make_repo(tmp_path)
@@ -864,12 +864,12 @@ def test_make_grep_files_tool_raises_friendly_import_error_when_regex_missing(tm
 
 
 # A real pathological pattern, built with BOTH length AND shape empirically pinned:
-# `(a+)+$` only backtracks catastrophically when the string FAILS to match — a string of PURE
+# `(a+)+$` only backtracks catastrophically when the string FAILS to match: a string of PURE
 # "a" characters matches this pattern INSTANTLY (the greedy group consumes it all in one pass, `$`
 # succeeds immediately), so length alone, without a trailing non-"a" character forcing the match
 # to fail, tests nothing at any size. `regex`'s own engine is also far more resistant to this
-# shape than stdlib `re` is — it needs roughly 2,000-3,000 characters before it actually gets slow,
-# not the ~25-40 characters that trips stdlib `re` — so 10,000 chars is a deliberately generous
+# shape than stdlib `re` is. It needs roughly 2,000-3,000 characters before it actually gets slow,
+# not the ~25-40 characters that trips stdlib `re`, so 10,000 chars is a deliberately generous
 # margin, not an arbitrary round number.
 _TEST_PATHOLOGICAL_LINE = "a" * 10_000 + "!"
 
@@ -885,7 +885,7 @@ def test_grep_files_pathological_pattern_is_bounded_by_per_match_timeout(tmp_pat
 
 
 def test_grep_files_whole_call_budget_bounds_one_large_file_of_pathological_lines(tmp_path):
-    # A SINGLE file containing MANY pathological lines — not spread across several files, the
+    # A SINGLE file containing MANY pathological lines: not spread across several files, the
     # shape a per-file-only budget check would have missed (it would only re-check the clock
     # between files, never between lines of the same file).
     pytest.importorskip("regex")
@@ -924,7 +924,7 @@ from rlm_harness.testing import assert_task_repl_safe
 
 def _duck_task(signature="q: str -> a: str", tools=()):
     """Minimal duck-typed stand-in `assert_task_repl_safe` accepts (see test_repl_safety.py's
-    own `_task` fixture for the same shape) — no real RLMTask/dspy runtime configuration needed."""
+    own `_task` fixture for the same shape): no real RLMTask/dspy runtime configuration needed."""
     return _types.SimpleNamespace(signature=signature, tools=list(tools), output_field="a")
 
 
@@ -953,7 +953,7 @@ def test_grep_files_name_override_sets_repl_identity_and_trace_tag(tmp_path):
 
 def test_name_override_fixes_the_real_multi_root_collision():
     # The load-bearing fix: two make_read_file_tool instances (different roots) at their DEFAULT
-    # names collide — dspy keys its tool dict by name, so registration aborts for EVERY tool on
+    # names collide: dspy keys its tool dict by name, so registration aborts for EVERY tool on
     # the task, not just the second one. Proven with assert_task_repl_safe, not just __name__.
     a = make_read_file_tool("/tmp/source-root")
     b = make_read_file_tool("/tmp/docs-root")
@@ -1012,7 +1012,7 @@ def test_read_file_encoding_reads_non_utf8_file(tmp_path):
 
 def test_read_file_default_encoding_unchanged_for_plain_utf8(tmp_path):
     root = _make_repo(tmp_path)
-    tool = make_read_file_tool(root)  # no encoding= — matches the prior default exactly
+    tool = make_read_file_tool(root)  # no encoding=: matches the prior default exactly
     assert "def main" in tool("main.py")
 
 
@@ -1147,7 +1147,7 @@ def test_grep_files_ignore_case(tmp_path):
 
 
 # The single most important test in this round: proves the per-line timeout check still runs in
-# EVERY output_mode x ignore_case combination, not just the default — the previous, unparametrized
+# EVERY output_mode x ignore_case combination, not just the default: the previous, unparametrized
 # version of this test could not have caught a timeout regression confined to one specific mode.
 _TEST_PATHOLOGICAL_LINE = "a" * 10_000 + "!"
 

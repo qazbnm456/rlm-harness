@@ -1,12 +1,12 @@
 name: Release
 
-# Publish to PyPI via Trusted Publishing (OIDC) — NO API token. This is INERT until a
+# Publish to PyPI via Trusted Publishing (OIDC): NO API token. This is INERT until a
 # GitHub Release is published, and requires one-time setup before the first release:
 #   1. On PyPI, add a Trusted Publisher for project `rlm-harness`:
 #        owner = qazbnm456, repo = rlm-harness, workflow = release.yml, environment = pypi
 #   2. In this repo's settings, create an environment named `pypi`.
 # Then publishing a GitHub Release (from a `vX.Y.Z` tag) builds + uploads automatically.
-# Supply-chain: the two third-party actions are SHA-pinned — setup-uv, and (highest blast radius, it
+# Supply-chain: the two third-party actions are SHA-pinned, setup-uv, and (highest blast radius, it
 # uploads to PyPI) pypi-publish. Bump a SHA and its trailing version comment together. GitHub-owned
 # checkout/*-artifact stay on major tags -- setup-uv stopped publishing major tags at v8, so it can only
 # be named by full version or SHA now. Every action here targets Node 24: GitHub deprecated Node 20 and was
@@ -16,7 +16,7 @@ name: Release
 # passes no `enable-cache`, so it takes that default deliberately and builds uncached, once per release.
 #
 # **If this workflow itself is broken, fixing `main` does NOTHING until the TAG moves.** A
-# `release: published` event runs the workflow file at the TAG's commit, not at main's head — so a
+# `release: published` event runs the workflow file at the TAG's commit, not at main's head, so a
 # failed publish is recovered by fixing main AND re-pointing the tag at the fix, not by pushing and
 # re-running. Safe only while nothing was uploaded, since a PyPI version can never be reused; check
 # that first. Reported by a downstream consumer who hit it live and lost the time; not reproduced
@@ -24,10 +24,10 @@ name: Release
 #
 # **`pyproject.toml`'s `requires = ["hatchling>=1.27"]` is a LOWER bound, so what this job uploads
 # can change with nothing in this repo changing.** The same consumer's release failed on
-# `InvalidDistribution: '2.5' is not a valid metadata version` — hatchling had moved to core
+# `InvalidDistribution: '2.5' is not a valid metadata version`: hatchling had moved to core
 # metadata 2.5 (PEP 639 `license`/`license-files`) and the twine bundled in `gh-action-pypi-publish`
 # below v1.14.2 did not accept it. This repo is on v1.14.2 and is not exposed TODAY, which was luck:
-# that SHA was pinned for supply-chain reasons, not this one. Left as a lower bound on purpose — the
+# that SHA was pinned for supply-chain reasons, not this one. Left as a lower bound on purpose: the
 # failure is LOUD (the release fails, nothing uploads, the version is not burned), so the cost is a
 # delayed release rather than a corrupted one, which is cheaper than pinning the build backend and
 # taking on the bump treadmill. `install-check.yml` cannot see this class at all: it tests the
@@ -67,7 +67,7 @@ jobs:
     # would fire this job and ask PyPI to publish `rlm-harness` over OIDC. The Trusted Publisher binding
     # (owner+repo+workflow+environment) would reject it, but that is a rejected publish attempt against
     # OUR project, plus a probe surface and a confusing red run in someone else's repo. `build` above is
-    # deliberately NOT guarded — it only builds an artifact, and a fork verifying its own build is fine.
+    # deliberately NOT guarded: it only builds an artifact, and a fork verifying its own build is fine.
     if: github.repository == 'qazbnm456/rlm-harness'
     environment: pypi
     permissions:
@@ -78,7 +78,7 @@ jobs:
           name: dist
           path: dist/
       # v1.14.2+ required: hatchling>=1.27 (PEP 639 SPDX license) emits Metadata-Version 2.5,
-      # which v1.14.0/v1.14.1's bundled twine does not recognize — the 1.2.1 release run failed
+      # which v1.14.0/v1.14.1's bundled twine does not recognize: the 1.2.1 release run failed
       # here with `InvalidDistribution: '2.5' is not a valid metadata version` before ever
       # reaching PyPI. v1.14.2 bumped twine to v7, which added 2.5 support.
       - name: Publish to PyPI

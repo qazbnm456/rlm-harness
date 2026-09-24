@@ -1,23 +1,23 @@
 """Run rlm-harness on a Claude Pro/Max SUBSCRIPTION via the official Claude Agent SDK.
 
 `ClaudeAgentLM` is a `dspy.BaseLM` adapter over `claude-agent-sdk`, injected through the
-kit's existing public seam `configure(main_lm=..., sub_lm=...)` — the kit itself is
+kit's existing public seam `configure(main_lm=..., sub_lm=...)`. The kit itself is
 unchanged. Each LM call is one stateless `query()` through the Claude Code CLI on YOUR OWN
 subscription login: the officially sanctioned path for individual subscribers, as opposed
-to the blocked OAuth-token-against-the-API routes. Every call is a pure completion — no
+to the blocked OAuth-token-against-the-API routes. Every call is a pure completion: no
 agent loop, no tools, no filesystem access, no settings leakage (`tools=[]`,
-`setting_sources=[]`) — so rlm-harness's sandbox stays the only place code runs. `max_turns` is
+`setting_sources=[]`), so rlm-harness's sandbox stays the only place code runs. `max_turns` is
 1 for a plain completion, 8 when structured `output_format` needs the SDK's extra validation
 round.
 
 Optional: needs `pip install "rlm-harness[subscription]"` (the `claude-agent-sdk` client) plus a
-logged-in Claude Code CLI. `import rlm_harness` stays dspy/SDK-free — this module is imported only
+logged-in Claude Code CLI. `import rlm_harness` stays dspy/SDK-free. This module is imported only
 on first `rlm_harness.ClaudeAgentLM` access (PEP 562), and the SDK only when an instance is built.
 
 Setup:
   1. Install the Claude Code CLI and log in with your Pro/Max account (`claude` → `/login`),
      or mint a long-lived token: `claude setup-token` → export `CLAUDE_CODE_OAUTH_TOKEN`.
-  2. `unset ANTHROPIC_API_KEY` — the CLI silently prefers it over subscription OAuth, so a
+  2. `unset ANTHROPIC_API_KEY`: the CLI silently prefers it over subscription OAuth, so a
      leftover key bills API credit; the constructor refuses to start while it is set.
   3. `pip install "rlm-harness[subscription]"` (or `uv sync --extra subscription`) into this venv,
      `brew install deno` for the default pyodide sandbox. See `examples/claude_agent_lm.py`
@@ -30,7 +30,7 @@ Politeness policy (this adapter is for ORDINARY, INDIVIDUAL use of your own acco
     10), the adapter retries once after 30s on a rate-limit-shaped error, and the kit's
     `max_retries` default of 1 means no whole-trajectory re-runs. When the usage window is
     exhausted the run fails cleanly instead of grinding it.
-  - Do NOT point this at batch RL-rollout generation or eval sweeps — that is not "ordinary,
+  - Do NOT point this at batch RL-rollout generation or eval sweeps: that is not "ordinary,
     individual usage"; use the API for scale. Expect ~2-5s CLI-spawn overhead per call.
 
 Trade-offs vs. a plain `dspy.LM`: no temperature/top_p/n controls (the SDK exposes none), no
@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING, Any
 import dspy
 import litellm
 
-if TYPE_CHECKING:  # annotations only — never imported at runtime (the SDK is an optional extra)
+if TYPE_CHECKING:  # annotations only, never imported at runtime (the SDK is an optional extra)
     from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
 
 logger = logging.getLogger(__name__)
@@ -214,7 +214,7 @@ def _prompt_tokens_from_sdk_usage(usage: dict | None) -> int:
     return sum(_token_count(usage, key) for key in _PROMPT_TOKEN_KEYS)
 
 
-#: The sentinel `ClaudeAgentLM` stamps its own `dspy.LM.model` with (see `__init__` below) — the
+#: The sentinel `ClaudeAgentLM` stamps its own `dspy.LM.model` with (see `__init__` below), the
 #: kit's own convention, not a consumer-invented one. `runtime.configure()` reads this SAME
 #: constant back to auto-route a `claude-agent-sdk/<id>` `main_model`/`sub_model` string onto a
 #: `ClaudeAgentLM` for a role the caller didn't already override with an explicit `main_lm=`/
@@ -244,7 +244,7 @@ class _Bridge:
     """Process-wide background event loop the async SDK is driven from (the `mcp.py` pattern).
 
     dspy calls the LM synchronously (the sub-LM seat is `target_lm(prompt)` from worker
-    threads) and the planner's `aforward` runs on a loop that `repl.execute` blocks — so SDK
+    threads) and the planner's `aforward` runs on a loop that `repl.execute` blocks, so SDK
     coroutines must run on a SEPARATE loop that sync callers reach via
     `run_coroutine_threadsafe(...).result(timeout)`.
     """
@@ -303,7 +303,7 @@ def _split_messages(
 def _translate_response_format(response_format: Any) -> dict[str, Any] | None:
     """Translate dspy's `response_format` into the SDK's native `output_format`.
 
-    The kit's default `json` adapter (`_LenientJSONAdapter`) injects a pydantic model CLASS —
+    The kit's default `json` adapter (`_LenientJSONAdapter`) injects a pydantic model CLASS:
     exactly what the SDK's schema-validated structured output wants. A dict form (stock
     adapters' `{"type": "json_object"}` fallback) has no SDK equivalent and is dropped: the
     prompt already demands JSON and the parse side (`json_repair`) is tolerant.
@@ -325,24 +325,24 @@ class ClaudeAgentLM(dspy.BaseLM):
 
     Satisfies both rlm-harness seats: the planner calls `aforward(messages=...)` through the
     adapter, the sub-LM seat calls `forward(prompt)` synchronously from `llm_query[_batched]`
-    worker threads — both funnel into one coroutine on the shared bridge loop. Works under
+    worker threads: both funnel into one coroutine on the shared bridge loop. Works under
     `intercept_sub_lm` unchanged. Unknown lm_kwargs (temperature, max_tokens, ...) are
     tolerated and ignored: the SDK exposes no sampling controls.
 
     **Ignored, but since 1.10.0 no longer invisible.** `_dspy_compat.applied_lm_budget` reads
-    `lm.kwargs`, so a `max_tokens=` passed here is staged into the trace's `budgets.main` — or
-    `budgets.sub`, for this LM in the sub-LM seat — as a cap the call never applied, and
+    `lm.kwargs`, so a `max_tokens=` passed here is staged into the trace's `budgets.main`, or
+    `budgets.sub`, for this LM in the sub-LM seat: as a cap the call never applied, and
     `completion_tokens` can then exceed it. That is NOT a case 1.10.0 anticipated: it reads the
     cap off the LM rather than off `RLMConfig` because dspy's own `_check_truncation` reads that
     same dict, which is to say on the assumption that an LM's kwargs ARE what it applied. This
     adapter is where the assumption does not hold, so read a cap recorded for it as configuration
-    rather than as a measurement — and see `applied_lm_budget`, which names this LM as the reason
+    rather than as a measurement, and see `applied_lm_budget`, which names this LM as the reason
     it reports what an LM CARRIES rather than what it applied. Build without the kwarg and no cap
     is recorded for the role, which is what the auto-routed path does.
 
     Token usage is recorded per CALL, and with `output_format` set a call can span more than one
     API request. `_api_rounds` carries the provider's per-sampling-iteration breakdown into the
-    trace beside it — so a reader can get the context size unconditionally, rather than only on
+    trace beside it, so a reader can get the context size unconditionally, rather than only on
     the calls where the totals happen to coincide with it.
 
     `model` is an alias (`"opus"` / `"sonnet"` / `"haiku"`) or a full Claude model id; the
@@ -362,7 +362,7 @@ class ClaudeAgentLM(dspy.BaseLM):
         _require_claude_agent_sdk()
         if os.environ.get("ANTHROPIC_API_KEY") and not allow_api_key:
             raise RuntimeError(
-                "ANTHROPIC_API_KEY is set — the Claude Code CLI silently prefers it over your "
+                "ANTHROPIC_API_KEY is set: the Claude Code CLI silently prefers it over your "
                 "subscription OAuth, so this run would bill API credit. Unset it (or pass "
                 "allow_api_key=True if that is genuinely what you want)."
             )
@@ -387,7 +387,7 @@ class ClaudeAgentLM(dspy.BaseLM):
         future = asyncio.run_coroutine_threadsafe(
             self._acomplete(prompt, messages, kwargs), _bridge().loop
         )
-        # wait_for cancels the wrapped future on timeout, propagating to the bridge-loop task —
+        # wait_for cancels the wrapped future on timeout, propagating to the bridge-loop task:
         # the async twin of forward's cancel-on-timeout.
         return await asyncio.wait_for(asyncio.wrap_future(future), self._timeout_s)
 
@@ -406,7 +406,7 @@ class ClaudeAgentLM(dspy.BaseLM):
             # auto-approve, not restrict) and `setting_sources=[]` so the user's CLAUDE.md /
             # settings / MCP servers never leak into RLM planner calls. max_turns caps the agent
             # loop: 1 for a plain completion (the sub-LM seat), a generous 8 when output_format is
-            # set — the SDK's structured-output step spends turns BEYOND the model's own answer (a
+            # set: the SDK's structured-output step spends turns BEYOND the model's own answer (a
             # reformat/validation round), and a complex RLM planner call exhausted a tight cap of 2
             # in a live run. tools=[] keeps the headroom from ballooning: with no tools each turn is
             # just the model, so a clean structured output still returns in 1-2 turns; the cap only
@@ -505,7 +505,7 @@ class ClaudeAgentLM(dspy.BaseLM):
         else:
             text = result.result or ""
         if not text:
-            # Never hand dspy empty text — it would become a bare "empty or null response"
+            # Never hand dspy empty text. It would become a bare "empty or null response"
             # AdapterParseError with less context than this.
             raise RuntimeError("claude-agent-sdk returned an empty result")
         return result, text

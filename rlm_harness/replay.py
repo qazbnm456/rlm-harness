@@ -75,7 +75,7 @@ class RecordedToolProvider:
     that tool name. Raises if the recording is exhausted, so a replay that drifts
     from the original path fails loudly instead of silently re-executing.
 
-    ``tool`` is matched against the trace's ``payload["tool"]`` — the RAW name (for MCP, the
+    ``tool`` is matched against the trace's ``payload["tool"]``: the RAW name (for MCP, the
     server's own name, e.g. ``get-weather``). A caller holding the sanitised REPL name the model
     typed (``get_weather``) will match nothing; the ``repl_name`` payload field carries that
     mapping when the two differ.
@@ -94,17 +94,17 @@ class RecordedToolProvider:
             )
         self._cursor[tool] = idx + 1
         payload = calls[idx]["payload"]
-        # A tool_call carries its output under one of several keys — `record_tool_call` pins
+        # A tool_call carries its output under one of several keys: `record_tool_call` pins
         # none, and the kit's own tools disagree: MCP and read_skill use `preview`, web_search
         # uses `results`, the make_model_tool convention uses `raw`, list_skills uses `result`.
         # Reading only `result` meant THREE of the four shipped tool families replayed as `None`,
-        # silently — measured, not theorised — while `dataset.py:_action_record` already read the
+        # silently (measured, not theorised) while `dataset.py:_action_record` already read the
         # fallback. Two readers of one trace disagreeing is the bug; this aligns them.
         for key in ("raw", "result", "results"):
             if payload.get(key) is not None:
                 return payload[key]
         # `preview` is deliberately NOT in that list. It is a TRUNCATED head of the output, so
-        # serving it would hand a replay silently-wrong bytes — worse than failing. Raise the
+        # serving it would hand a replay silently-wrong bytes: worse than failing. Raise the
         # same loud error this class already uses for drift, since a replay that cannot be
         # served faithfully should stop, not improvise.
         if payload.get("preview") is not None:

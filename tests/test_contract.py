@@ -1,4 +1,4 @@
-"""Contract test — PIN the cross-project surface a consumer builds on, so a change that would
+"""Contract test: PIN the cross-project surface a consumer builds on, so a change that would
 silently break a downstream reader (a consumer's report renderer + RL export, a trajectory-replay
 UI, a future RL trainer) fails HERE, in rlm-harness's own suite, instead of in the consumer with no
 clue why.
@@ -8,7 +8,7 @@ Three frozen things (see CLAUDE.md "The trace is a VERSIONED wire format"):
   2. the recorded-event ENVELOPE shape,
   3. the dataset-exporter RECORD shapes (export_actions / export_sft_turns / export_rl / run_label_bundle),
 plus the public ``__all__`` surface a consumer imports. ADDITIVE change is fine (a new optional
-payload field, a new ``__all__`` entry); removing / renaming / re-typing any of these is a v1 break —
+payload field, a new ``__all__`` entry); removing / renaming / re-typing any of these is a v1 break:
 bump SCHEMA to ``rlm-harness/trace/v2`` with a migration instead of editing this test to be green.
 """
 
@@ -22,7 +22,7 @@ def test_schema_id_is_frozen_at_v1():
 
 
 def test_event_type_strings_are_frozen():
-    # downstream readers key on these literal STRINGS, not the constant names — so pin the values.
+    # downstream readers key on these literal STRINGS, not the constant names, so pin the values.
     assert (
         T.EVENT_RUN_START,
         T.EVENT_MAIN_STEP,
@@ -104,7 +104,7 @@ def test_run_label_bundle_shape():
 
 def test_the_1_6_0_payload_additions_are_all_OPTIONAL():
     """`rlm_harness` on run_start, `duration_s` on tool_call, `exec_duration_s` on main_step are
-    ADDITIVE within v1 — which only holds if a reader that has never seen them still works. Pinned
+    ADDITIVE within v1, which only holds if a reader that has never seen them still works. Pinned
     by reading a trace shaped like one written BEFORE they existed: every exporter must produce the
     same records it always did. A future change that starts REQUIRING one of these keys goes red
     here, which is the moment it would otherwise start breaking nine consumers' stored corpora."""
@@ -130,7 +130,7 @@ def test_the_1_6_0_payload_additions_are_all_OPTIONAL():
 
 
 def test_public_surface_includes_the_consumer_contract():
-    # the load-bearing names a consumer imports — a representative subset, not the whole list (which
+    # the load-bearing names a consumer imports: a representative subset, not the whole list (which
     # may GROW). Removing any breaks a downstream consumer / its UI / the trainer.
     must_export = {
         "RLMTask", "RLMConfig", "configure", "get_config", "RLMTaskError", "short_error",
@@ -139,22 +139,22 @@ def test_public_surface_includes_the_consumer_contract():
         "export_sft_turns", "export_rl", "export_actions", "run_label_bundle",
         # REPL-safety rules a CONSUMER needs when it builds its own tools (1.1.0). Listed here
         # DELIBERATELY: the assertion below is a SUBSET check, so a new __all__ entry passes on
-        # its own — being in `must_export` is what makes an accidental removal go red.
+        # its own: being in `must_export` is what makes an accidental removal go red.
         "is_valid_tool_name", "sanitize_tool_name", "unique_tool_names",
-        # the generic rubric-fact surface (1.8.0) — a consumer's lens imports RUN_FACT_KEYS
+        # the generic rubric-fact surface (1.8.0): a consumer's lens imports RUN_FACT_KEYS
         # instead of hand-copying names, so removing either is a downstream break
         "compute_run_facts", "compute_run_facts_by_run", "RUN_FACT_KEYS",
         "signature_from_json_schema",
         # reward-free rubric primitives (opaque category)
         "Criterion", "RubricCriteria", "CriterionFact",
         "rubric_to_meta", "rubric_from_meta", "validate_rubric", "criteria_facts",
-        # trace/v1 contract constants — a consumer reads a trace against these, not raw strings
+        # trace/v1 contract constants. A consumer reads a trace against these, not raw strings
         "EVENT_RUN_START", "EVENT_MAIN_STEP", "EVENT_SUB_CALL", "EVENT_TOOL_CALL",
         "EVENT_FINAL", "EVENT_RESULT", "EVENT_RUN_END",
     }
     assert must_export <= set(rlm_harness.__all__)
     # ...and each is actually REACHABLE. `__all__` membership alone would pass for a name with
-    # no binding behind it — a real hazard here, since several are lazy `__getattr__` exports.
+    # no binding behind it: a real hazard here, since several are lazy `__getattr__` exports.
     for name in must_export:
         assert getattr(rlm_harness, name, None) is not None, f"{name} is in __all__ but unbound"
 
@@ -163,13 +163,13 @@ def test_run_fact_keys_are_a_CLOSED_set_pinned_here():
     """`RUN_FACT_KEYS` is the mechanism, not a docstring promise.
 
     1.8.0 deleted a proposed runtime "refuse a reward-ish key" check because it would have been dead
-    code — the kit writes these keys itself, so there is no caller-supplied name to refuse. What
+    code: the kit writes these keys itself, so there is no caller-supplied name to refuse. What
     replaces it is this: the set is CLOSED and pinned HERE, so a new key cannot reach a consumer's
     dataset without a diff to a SemVer-governed public name that a reviewer sees. That matters most
     for a key shaped like a score: everything in this set is a count, a rate, a duration or a
     boolean, and the moment one is not, this test is where it surfaces.
 
-    A `must_export` entry alone would not do it — that assertion is a SUBSET check, so an ADDED key
+    A `must_export` entry alone would not do it: that assertion is a SUBSET check, so an ADDED key
     passes on its own."""
     from rlm_harness import RUN_FACT_KEYS, compute_run_facts
 
@@ -179,5 +179,5 @@ def test_run_fact_keys_are_a_CLOSED_set_pinned_here():
         "tool_wasted_seconds", "tool_total_seconds", "tool_ok", "tool_measured_calls",
         "fence_refused_turns", "budget_exhausted",
     )
-    # ...and what is EMITTED is exactly that set, in that order — the constant is not decorative.
+    # ...and what is EMITTED is exactly that set, in that order. The constant is not decorative.
     assert tuple(compute_run_facts([])) == RUN_FACT_KEYS

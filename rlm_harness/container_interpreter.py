@@ -1,18 +1,18 @@
-"""``ContainerInterpreter`` — the environment interpreter (``interpreter="container"``).
+"""``ContainerInterpreter``: the environment interpreter (``interpreter="container"``).
 
 Runs the RLM's REPL INSIDE a real isolated container instead of the default Deno/Pyodide
 (WASM) sandbox, so the model's own Python can ``subprocess.run(...)`` natively and hold
 persistent filesystem/process state. It is the container analog of dspy's
 ``PythonInterpreter``: same ``CodeInterpreter`` protocol, same JSON-RPC message shapes, same
-``FinalOutput`` encoding for ``SUBMIT`` — but a host↔container broker (over the ``docker run
+``FinalOutput`` encoding for ``SUBMIT``, but a host↔container broker (over the ``docker run
 -i`` stdio pipe) replaces the Deno bridge. See ``_sandbox_agent.py`` for the in-container half.
 
 This module is dspy-bearing (it needs ``FinalOutput``); ``sandbox.build_interpreter`` imports it
-LAZILY in the ``"container"`` branch, so ``import rlm_harness`` stays dspy-free (and docker-free — the
+LAZILY in the ``"container"`` branch, so ``import rlm_harness`` stays dspy-free (and docker-free: the
 ``docker`` CLI is an external binary checked at ``start()``, not a Python dependency).
 
 Security: the runner's isolation IS the boundary, and it is a STRONGER one than Deno for the
-subprocess case — ``--network=none`` makes the stdio broker the ONLY channel in/out, and the LM
+subprocess case: ``--network=none`` makes the stdio broker the ONLY channel in/out, and the LM
 credentials never enter the container (tool/``llm_query`` callbacks run HOST-side; only results
 cross the pipe). This is the OPPOSITE of the refused ``local`` interpreter, not a relaxation of it.
 """
@@ -52,7 +52,7 @@ def _jsonrpc(method: str, params: dict | None, id: Any = None) -> str:
 
 
 class _Sandbox:
-    """A spawned agent process + its duplex line pipe — the transport seam. Docker is the
+    """A spawned agent process + its duplex line pipe: the transport seam. Docker is the
     default (``_spawn_docker``); a bare-subprocess variant (``_spawn_subprocess``, for tests) or a
     future E2B/Modal transport swaps in behind the same surface. The broker logic in
     ``ContainerInterpreter`` is transport-agnostic."""
@@ -98,7 +98,7 @@ def _docker_argv(agent_src: str, config: ContainerConfig, name: str) -> list:
 
     Safety caps ride unconditionally (``--network=none`` + ``--memory`` + ``--pids-limit`` +
     ``--cap-drop=ALL``). ``--cpus`` is emitted only when set (uncapped by default). ``--read-only``
-    (opt-in) requires a writable tmpfs ``/tmp`` — the agent's ``tempfile`` capture needs it — and
+    (opt-in) requires a writable tmpfs ``/tmp``, the agent's ``tempfile`` capture needs it, and
     pins ``TMPDIR=/tmp`` so a custom image's ``TMPDIR`` can't defeat it. ``workdir`` is mounted
     READ-ONLY so model code can inspect it but never mutate host files."""
     argv = [
@@ -130,7 +130,7 @@ def _spawn_docker(agent_src: str, config: ContainerConfig) -> _Sandbox:
         )
     if config.workdir:
         # Reject a non-absolute workdir: docker reads a bare relative name as an (empty) NAMED
-        # VOLUME, not a bind mount — a silent-wrong footgun. `from_env` normalizes to absolute, but
+        # VOLUME, not a bind mount: a silent-wrong footgun. `from_env` normalizes to absolute, but
         # a programmatic `ContainerConfig(workdir="reldir")` reaches here unnormalized.
         if not os.path.isabs(config.workdir):
             raise CodeInterpreterError(
@@ -152,7 +152,7 @@ def _spawn_docker(agent_src: str, config: ContainerConfig) -> _Sandbox:
         # --rm reaps the container when the client exits, but force-remove by name in case the
         # client was killed before the container stopped (e.g. a watchdog timeout).
         # check=False: a best-effort reap. The container is usually already gone via --rm, and a
-        # non-zero exit here means exactly that — not a failure worth raising out of a killer.
+        # non-zero exit here means exactly that: not a failure worth raising out of a killer.
         subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
         try:
             p.kill()
@@ -163,7 +163,7 @@ def _spawn_docker(agent_src: str, config: ContainerConfig) -> _Sandbox:
 
 
 def _spawn_subprocess(agent_src: str, config: ContainerConfig | None = None) -> _Sandbox:
-    """Test/CI transport: run the (stdlib-only) agent as a bare child process — NO isolation.
+    """Test/CI transport: run the (stdlib-only) agent as a bare child process, NO isolation.
     Exercises the full broker without Docker so CI stays green. Never a production runner."""
     proc = subprocess.Popen(
         [sys.executable, "-u", "-c", agent_src],
@@ -189,12 +189,12 @@ class ContainerInterpreter:
 
         dspy renders this (via `_dspy_compat.interpreter_instructions_kwargs`); without it dspy
         describes EVERY run as Pyodide, i.e. tells this interpreter's model that subprocesses are
-        unavailable — the one capability this interpreter exists to provide.
+        unavailable: the one capability this interpreter exists to provide.
 
         Derived from `self._config`, not a fixed string: `network`, `read_only` and `workdir` are
         all operator-configurable, so a constant would eventually assert the opposite of what was
         built. Telling the model a capability is absent when it is present is the same class of
-        defect as the Pyodide default this exists to replace — it just costs turns instead of
+        defect as the Pyodide default this exists to replace. It just costs turns instead of
         failing loudly.
         """
         cfg = self._config
@@ -277,7 +277,7 @@ class ContainerInterpreter:
     def _recv_guarded(self, remaining: float, context: str):
         """Read one frame, killing the sandbox if it stays blocked longer than ``remaining``
         seconds. Returns ``(msg | None, elapsed, timed_out)``. ``remaining`` is the caller's
-        REMAINING sandbox-compute budget — the watchdog clocks ONLY time blocked here, never the
+        REMAINING sandbox-compute budget: the watchdog clocks ONLY time blocked here, never the
         host tool dispatch between frames, so a slow ``llm_query`` or long build never trips it."""
         from dspy.primitives.code_interpreter import CodeInterpreterError
 
@@ -299,13 +299,13 @@ class ContainerInterpreter:
         try:
             line = self._sandbox.recv()
         except (ValueError, OSError):
-            # the watchdog closed the pipe under a blocked readline — treat as no data
+            # the watchdog closed the pipe under a blocked readline: treat as no data
             line = ""
         finally:
             timer.cancel()
         elapsed = time.monotonic() - t0
         # A real timeout always leaves ``line`` empty (the kill EOFs the readline). If the timer
-        # RACED a valid frame — fired after recv() returned data but before cancel() — honour the
+        # RACED a valid frame, fired after recv() returned data but before cancel(), honour the
         # frame rather than discarding a completed result (possibly a final SUBMIT); _fire already
         # killed the sandbox, so the next execute() respawns fresh.
         if fired["v"] and not line:
@@ -313,7 +313,7 @@ class ContainerInterpreter:
         if not line:
             code = self._sandbox.poll()
             if code is None:
-                # stdout hit EOF while the process is still ALIVE — untrusted model code can close
+                # stdout hit EOF while the process is still ALIVE. Untrusted model code can close
                 # the RPC fd and keep running. Kill it so the stderr drain below cannot block
                 # forever on a live process (a model-triggerable host hang that would otherwise
                 # bypass the watchdog and teardown entirely).
@@ -394,7 +394,7 @@ class ContainerInterpreter:
         self._tools_registered = True
 
     def _send_request(self, method: str, params: dict, context: str) -> dict:
-        """A request with no in-flight tool callbacks (register) — bounded by the budget. Any
+        """A request with no in-flight tool callbacks (register): bounded by the budget. Any
         failure tears the sandbox down so a later start() respawns rather than reusing a broken one."""
         from dspy.primitives.code_interpreter import CodeInterpreterError
 
@@ -444,7 +444,7 @@ class ContainerInterpreter:
             reply = {"jsonrpc": "2.0", "id": rid,
                      "error": {"code": -32007, "message": str(exc), "data": {"type": type(exc).__name__}}}
         # Sending the reply is separate: a send failure means the sandbox died (e.g. a watchdog kill
-        # raced this callback), which must surface as the interpreter error dspy CATCHES — not a
+        # raced this callback), which must surface as the interpreter error dspy CATCHES: not a
         # bare BrokenPipeError it does not. Which class that is moved in dspy 3.3.0, so resolve it
         # rather than hardcode (see `_dspy_compat.recoverable_interpreter_error`).
         from ._dspy_compat import recoverable_interpreter_error
@@ -492,12 +492,12 @@ class ContainerInterpreter:
 
         A thin timing shell over :meth:`_execute_inner`, whose body is untouched. The duration is
         what tells a trace reader whether a turn's wall-clock was the root LM GENERATING or the
-        sandbox EXECUTING — two things with completely different fixes that `trace/v1` could not
+        sandbox EXECUTING: two things with completely different fixes that `trace/v1` could not
         separate before 1.6.0. `sandbox.py` does the same for the pyodide/deno interpreter, so the
         `container` kind is not the one blind spot.
 
         Observability never breaks a run: an absent recorder, a caller's own duck-typed one, or one
-        that raises all degrade to "no duration recorded". A failed turn is still timed — the
+        that raises all degrade to "no duration recorded". A failed turn is still timed: the
         sandbox really did spend that time, and dspy keeps the turn in the trajectory either way.
         """
         from .trace import current_recorder
@@ -521,7 +521,7 @@ class ContainerInterpreter:
         #   CodeInterpreterError → terminal; it ends the run.
         # dspy 3.3.0 split them and made the base TERMINAL, so raising the base everywhere
         # would end the whole run the first time the model's own code threw an exception in
-        # the sandbox — the single most ordinary thing that happens in a REPL loop.
+        # the sandbox: the single most ordinary thing that happens in a REPL loop.
         # Setup/protocol failures below deliberately keep the base class.
         _Recoverable = recoverable_interpreter_error()
 
@@ -543,7 +543,7 @@ class ContainerInterpreter:
             if timed_out:
                 self._teardown_dead()
                 # RECOVERABLE: the safety net fired, the container is gone, and the next
-                # call respawns it clean — the model is meant to get another turn. Mirrors
+                # call respawns it clean. The model is meant to get another turn. Mirrors
                 # `sandbox.py`'s `turn_timeout_s` outcome for the pyodide/deno kind.
                 raise _Recoverable(
                     f"execution timed out after {self._config.timeout_s:g}s of sandbox compute; "
@@ -568,7 +568,7 @@ class ContainerInterpreter:
                     raise SyntaxError(f"Invalid Python syntax: {err.get('message')}")
                 etype = err.get("data", {}).get("type", "Error")
                 # RECOVERABLE: the MODEL's code raised inside the healthy sandbox. This is
-                # the ordinary REPL case — hand it back as text and let it fix its own bug.
+                # the ordinary REPL case: hand it back as text and let it fix its own bug.
                 raise _Recoverable(f"{etype}: {err.get('message')}")
             raise CodeInterpreterError(f"unexpected frame from sandbox: {msg}")
 

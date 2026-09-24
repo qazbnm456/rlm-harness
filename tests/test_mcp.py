@@ -1,4 +1,4 @@
-"""MCP client tests — the async->sync bridge is the load-bearing mechanic, so these run a REAL
+"""MCP client tests: the async->sync bridge is the load-bearing mechanic, so these run a REAL
 stdio MCP server (a tiny echo, built against whichever SDK major is installed) as a subprocess and
 drive it through ``mcp_tools``. Skips
 when the optional ``mcp`` extra (or dspy) is absent, like the other dspy-bearing tests."""
@@ -49,7 +49,7 @@ except ImportError:                                          # pragma: no cover 
 
 
 def _build(name, host=None, port=None):
-    """(server, run_kwargs) — host/port belong to the constructor on 1.x, to run() on 2.x."""
+    """(server, run_kwargs): host/port belong to the constructor on 1.x, to run() on 2.x."""
     if host is None:
         return _Server(name), {}
     if _V2:
@@ -149,7 +149,7 @@ def test_a_non_tool_result_is_named_rather_than_flattened_to_empty():
 # ---- _make_tool: the REPL sandbox proxy exposes the schema's param NAMES --
 #
 # dspy.RLM injects `tool.func` into its PythonInterpreter, which builds the sandbox tool proxy from
-# ``inspect.signature(func)`` — NOT ``dspy.Tool.args``. A bare ``**kwargs`` wrapper registers a single
+# ``inspect.signature(func)``: NOT ``dspy.Tool.args``. A bare ``**kwargs`` wrapper registers a single
 # param literally named "kwargs", so the model calls e.g. ``get_vulnerability(kwargs=...)`` and the
 # server rejects the unexpected property. These pin the fix WITHOUT a live server or Deno.
 
@@ -173,13 +173,13 @@ def _fake_tool(schema, *, name="get_vulnerability"):
 
 
 def _dspy_params(fn):
-    """dspy's own tool-proxy param extraction — the exact contract the sandbox registers against."""
+    """dspy's own tool-proxy param extraction: the exact contract the sandbox registers against."""
     from dspy.primitives.python_interpreter import PythonInterpreter
     return PythonInterpreter._extract_parameters(None, fn)  # self is unused by the method
 
 
 def _sandbox_stub_compiles(tool_name, parameters):
-    """Mirror of dspy runner.js ``makeToolWrapper`` — the def it generates must be valid Python.
+    """Mirror of dspy runner.js ``makeToolWrapper``: the def it generates must be valid Python.
     An optional (defaulted) param BEFORE a required (no-default) one is a SyntaxError that aborts the
     whole sandbox registration; this reproduces that check with no Deno."""
     sig = ", ".join(
@@ -199,7 +199,7 @@ def test_make_tool_stamps_real_param_names_for_the_repl():
 
 
 def test_make_tool_orders_required_first_so_the_sandbox_stub_compiles():
-    # properties list the OPTIONAL param first — the ordering landmine. Keyword-only hides it host-side,
+    # properties list the OPTIONAL param first: the ordering landmine. Keyword-only hides it host-side,
     # so the fix must reorder required-first for the Deno stub to compile.
     tool = _make_tool(dspy, _FakeBridge(), _fake_tool(
         {"type": "object",
@@ -252,9 +252,9 @@ def test_make_tool_tolerates_malformed_schema_fields():
     params = inspect.signature(bad_required.func).parameters
     assert list(params) == ["id"] and params["id"].default is None       # required treated as empty
     # A non-dict inputSchema now yields a ZERO-PARAM signature, not the old `**kwargs` proxy.
-    # `**kwargs` was never usable here anyway — dspy builds the sandbox proxy from the wrapped
+    # `**kwargs` was never usable here anyway: dspy builds the sandbox proxy from the wrapped
     # func's signature, so the model could only call `tool(kwargs=…)` and the server would reject
-    # the unexpected property — and it is a shape `assert_repl_safe` rejects, i.e. the kit was
+    # the unexpected property, and it is a shape `assert_repl_safe` rejects, i.e. the kit was
     # shipping a tool its own guard fails. (The SDK makes `inputSchema` a required dict, so this
     # is unreachable through `mcp_tools`; it is reachable by calling `_make_tool` directly.)
     non_dict = _make_tool(dspy, _FakeBridge(), _fake_tool(None), "sc_")   # inputSchema not a dict
@@ -281,7 +281,7 @@ def test_mcp_tool_call_is_traced(tmp_path):
              if e["type"] == "tool_call" and e["payload"]["tool"] == "echo"]
     assert calls and calls[0]["payload"]["ok"] is True
     assert "echo: hi" in calls[0]["payload"]["preview"]
-    # An MCP call leaves this process, so that wait is the whole cost of the tool — and both the
+    # An MCP call leaves this process, so that wait is the whole cost of the tool, and both the
     # README and the CHANGELOG claim "every MCP tool" carries a duration. The `make_*` sweep in
     # tests/test_tool_durations.py structurally cannot reach here (`mcp_tools` is not a
     # `tools.__all__` factory), so this is the only thing pinning that claim.
@@ -294,7 +294,7 @@ def test_mcp_tools_teardown_leaves_no_live_thread(tmp_path):
     before = {t.name for t in threading.enumerate()}
     with mcp_tools(_server(tmp_path), timeout=30) as tools:
         tools[0](text="x")
-    # the background MCP thread is joined on exit — no leaked "rlm-harness-mcp" thread.
+    # the background MCP thread is joined on exit: no leaked "rlm-harness-mcp" thread.
     after = {t.name for t in threading.enumerate()}
     assert "rlm-harness-mcp" not in (after - before)
 
@@ -305,7 +305,7 @@ def test_bad_server_spec_raises_and_cleans_up():
     before = {t.name for t in threading.enumerate()}
     with pytest.raises(ValueError), mcp_tools({"nonsense": 1}, timeout=5):
         pass
-    # start() failed, but mcp_tools' finally still closed the bridge — no leaked background thread.
+    # start() failed, but mcp_tools' finally still closed the bridge: no leaked background thread.
     assert "rlm-harness-mcp" not in ({t.name for t in threading.enumerate()} - before)
 
 
@@ -322,7 +322,7 @@ mcp, _run_kw = _build("shapes-test")
 
 @mcp.tool()
 def boom(text: str) -> str:
-    """Always raises — the server turns this into an error result."""
+    """Always raises: the server turns this into an error result."""
     raise RuntimeError(f"exploded on {text}")
 
 
@@ -356,7 +356,7 @@ def test_live_error_result_is_reported_as_an_error(tmp_path):
 def test_the_result_fields_we_probe_exist_on_a_live_result(tmp_path):
     """The rename risk, stated as a property of the INSTALLED SDK rather than of a fake.
 
-    A live server cannot exercise the `structured_content` READ path here — a dict-returning
+    A live server cannot exercise the `structured_content` READ path here: a dict-returning
     tool is serialised to text content on both majors, so `result_text` returns before it looks
     (checked, on 1.28.0 and 2.1.1). What a live result CAN prove is the thing that actually
     broke: that each field this module reads is present on a real object under at least one of
@@ -369,7 +369,7 @@ def test_the_result_fields_we_probe_exist_on_a_live_result(tmp_path):
 
         Absent is legitimate: `structuredContent` postdates mcp 1.8.1 entirely, which is exactly
         why `_sdk_field` returns a sentinel instead of guessing. What must NEVER happen is the
-        model DECLARING the field under a spelling neither of ours matches — that is the rename,
+        model DECLARING the field under a spelling neither of ours matches: that is the rename,
         and it is what made a failed tool call read as a success.
         """
         declared = {
@@ -510,7 +510,7 @@ def test_hung_tool_times_out_and_session_survives(tmp_path):
         out = by_name["slow"]()
         assert time.monotonic() - t0 < 20              # tripped at ~5s, NOT the 30s sleep
         assert "timed out" in out.lower()              # surfaced as a reactable string
-        # the cancel kept the session usable — a fast call still works afterwards.
+        # the cancel kept the session usable: a fast call still works afterwards.
         assert by_name["echo"](text="ok") == "echo: ok"
 
 
@@ -548,7 +548,7 @@ def test_mcp_catalog_lazy_is_per_transport(tmp_path):
     cat = McpCatalog(specs, connect="lazy", timeout=5)
     try:
         assert cat.tool_names("echo") == ["echo"]   # stdio connected in __init__ despite lazy
-        assert cat.tools("remote") == []            # url deferred — never connected, no attempt made
+        assert cat.tools("remote") == []            # url deferred: never connected, no attempt made
     finally:
         cat.close()
 
@@ -573,7 +573,7 @@ def test_mcp_catalog_records_nothing(tmp_path):
             cat.call("echo", "echo", {"text": "hi"})
         finally:
             cat.close()
-    # a pure transport — the CONSUMER's meta-tool owns the tool_call event, not the catalog.
+    # a pure transport: the CONSUMER's meta-tool owns the tool_call event, not the catalog.
     assert [e for e in load_events(str(p), "r") if e["type"] == "tool_call"] == []
 
 
@@ -599,7 +599,7 @@ def test_mcp_catalog_partial_eager_failure_cleans_up(tmp_path):
     specs = [_named(tmp_path, "echo"), {"name": "bad", "command": "/nonexistent-cmd-xyz"}]
     with pytest.raises(Exception):
         McpCatalog(specs, timeout=5)
-    # the good server connected first, then 'bad' failed — the partial connect was torn down, no leak.
+    # the good server connected first, then 'bad' failed. The partial connect was torn down, no leak.
     assert "rlm-harness-mcp" not in ({t.name for t in threading.enumerate()} - before)
 
 
@@ -615,7 +615,7 @@ def test_mcp_catalog_lazy_refused_connect_raises_fast(tmp_path):
         t0 = time.monotonic()
         with pytest.raises(Exception):
             cat.load("dead")
-        assert time.monotonic() - t0 < 10   # refused fast — did not burn the whole timeout
+        assert time.monotonic() - t0 < 10   # refused fast. Did not burn the whole timeout
     finally:
         cat.close()
 
@@ -626,7 +626,7 @@ def test_mcp_catalog_lazy_wedged_http_connect_is_bounded_and_reaped():
     import time
 
     # A TARPIT: accepts the TCP connection but never answers the MCP handshake. A lazy load() against
-    # it must (a) stay BOUNDED (raise, not wedge the caller forever) and (b) leave no leaked thread —
+    # it must (a) stay BOUNDED (raise, not wedge the caller forever) and (b) leave no leaked thread:
     # close()'s phase-2 cancel unwinds the httpx stream and reaps the background thread.
     tarpit = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     tarpit.bind(("127.0.0.1", 0))
@@ -661,7 +661,7 @@ def test_mcp_catalog_lazy_wedged_http_connect_is_bounded_and_reaped():
         t0 = time.monotonic()
         worker.start()
         worker.join(2.0 + 2 * _CLOSE_GRACE + 10)     # generous watchdog: a REGRESSION wedges, not fails
-        assert not worker.is_alive(), "load() on a tarpit wedged — not bounded"
+        assert not worker.is_alive(), "load() on a tarpit wedged: not bounded"
         assert "error" in outcome                    # it RAISED (timeout / connect error), didn't hang
         assert time.monotonic() - t0 < 2.0 + 2 * 2.0 + 8   # grace = min(_CLOSE_GRACE, timeout=2) = 2
         cat.close()
@@ -719,7 +719,7 @@ def test_mcp_connection_wedged_stdio_child_is_reaped(tmp_path):
 def test_mcp_connection_healthy_close_is_fast_and_uncancelled(tmp_path):
     import time
 
-    # A HEALTHY connection is awaiting _stop, so close()'s phase 1 exits the thread in ms — phase 2
+    # A HEALTHY connection is awaiting _stop, so close()'s phase 1 exits the thread in ms: phase 2
     # (cancel) must NOT fire (it would add a whole grace window and cancel the serve task).
     conn = McpConnection(_server(tmp_path), timeout=30)
     conn.start()

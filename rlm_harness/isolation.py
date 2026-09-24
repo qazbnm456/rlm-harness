@@ -1,33 +1,33 @@
-"""``run_in_subprocess`` — a safe, isolated-subprocess primitive.
+"""``run_in_subprocess``: a safe, isolated-subprocess primitive.
 
 A small PRIMITIVE only: "safely run one picklable callable in an isolated OS process, get its
 result or a clear error back, bounded by a timeout." Queue/scheduling logic (how a web server
-actually schedules many of these — Celery, RQ, a plain thread/process pool) is explicitly the
-CONSUMER's own concern, not shipped here — matching this kit's standing base/wrap posture
+actually schedules many of these: Celery, RQ, a plain thread/process pool) is explicitly the
+CONSUMER's own concern, not shipped here: matching this kit's standing base/wrap posture
 (``make_command_tool`` ships no executor, ``make_git_clone_tool`` ships no cloner) applied to
 "run a whole task," not a REPL tool.
 
 **Why this is a genuinely different gap than three things in this kit that already sound
 similar**: ``interpreter="container"`` isolates the RLM's own REPL SANDBOX in a Docker
 container, but the ROOT process still runs the RLM's own orchestration (LM calls, retries, tool
-dispatch) directly — a hang/crash there is not covered. ``rlm_harness.tools.run_isolated``
-bridges an async coroutine into a sync call site on a dedicated THREAD — same process, no OS-level
+dispatch) directly: a hang/crash there is not covered. ``rlm_harness.tools.run_isolated``
+bridges an async coroutine into a sync call site on a dedicated THREAD: same process, no OS-level
 isolation, solves an event-loop-nesting problem, not a fault-isolation one. ``cancel_event``
-stops an IN-FLIGHT run the calling code already owns and is watching — it doesn't hand a whole
+stops an IN-FLIGHT run the calling code already owns and is watching: it doesn't hand a whole
 task off to a separate process in the first place. The actual gap this closes: a web-facing
 consumer whose request handler wants to run ONE task without that run's own crash, hang, or
 resource usage taking down the request-handling process itself needs to run it in a SEPARATE OS
 PROCESS.
 
-**Fully generic — no `RLMTask` import, no dependency on this kit's own task machinery.** A
+**Fully generic: no `RLMTask` import, no dependency on this kit's own task machinery.** A
 consumer uses it as ``run_in_subprocess(functools.partial(run_my_task, **inputs))`` where
 ``run_my_task`` is a plain, MODULE-LEVEL function (e.g. ``def run_my_task(**inputs): return
-MyTask().run(**inputs)``) that itself constructs and runs the task — the kit's own task
+MyTask().run(**inputs)``) that itself constructs and runs the task: the kit's own task
 machinery is entirely the consumer's business inside ``factory``, matching ``run_command``'s own
 "the kit wraps, the consumer's callable does the real work" split.
 
 **Why this lives at the top level, not under ``rlm_harness.tools``**: that package's own module
-docstring scopes it as "Reusable tools that RLM tasks can expose to the model inside the REPL" —
+docstring scopes it as "Reusable tools that RLM tasks can expose to the model inside the REPL":
 nothing here is ever placed in a ``tools=[...]`` list or invoked by the model; "run a whole
 separate task in an isolated process" is a host-level orchestration decision a consumer's own
 request-handling code makes.
@@ -113,67 +113,67 @@ def run_in_subprocess(
     max_memory_mb: int | None = None,
     cpu_time_limit_s: float | None = None,
 ) -> T:
-    """Run ``factory()`` to completion in a fresh, isolated OS process and return its result —
+    """Run ``factory()`` to completion in a fresh, isolated OS process and return its result,
     or raise the same exception ``factory()`` raised (or a clear synthesized one), never swallow.
 
-    **``factory`` MUST be picklable** — a real, easy-to-get-wrong gotcha. A local closure or a
+    **``factory`` MUST be picklable**: a real, easy-to-get-wrong gotcha. A local closure or a
     ``lambda`` is NOT picklable across the ``"spawn"`` boundary this uses; ``functools.partial(
-    module_level_function, **kwargs)`` (or a bare module-level function with no arguments) IS —
+    module_level_function, **kwargs)`` (or a bare module-level function with no arguments) IS,
     but only if every value bound into ``args``/``kwargs`` is ALSO picklable, not merely the
     function reference itself: a live socket, open file handle, DB connection, or lock bound as
     one of the ``partial``'s own arguments hits the same class of pickling failure the
     "avoid closures" advice was supposed to prevent.
 
-    Uses ``multiprocessing.get_context("spawn")`` — never ``"fork"``. On POSIX, ``spawn`` is
+    Uses ``multiprocessing.get_context("spawn")``: never ``"fork"``. On POSIX, ``spawn`` is
     itself still fork()+exec() internally, but exec runs BEFORE any user code executes in the
     freshly-forked child, which is what actually avoids the corruption class a bare ``fork``
     risks (a forked child inheriting a lock held by a parent thread that doesn't exist in the
-    child, half-open sockets, etc.) — the parent calling this is very plausibly a web server
+    child, half-open sockets, etc.): the parent calling this is very plausibly a web server
     already running an event loop / thread pool / open file descriptors / a live LM client.
     ``spawn`` also requires ``factory``'s entire import chain to be safely re-importable in the
     fresh interpreter (any module-level side effect re-runs in the child); if ``factory`` is
-    defined in a script run as ``__main__``, guard it with ``if __name__ == "__main__":`` —
+    defined in a script run as ``__main__``, guard it with ``if __name__ == "__main__":``:
     ``multiprocessing``'s own spawn bootstrap has special, fragile handling for that case.
 
     ``timeout_s`` (default ``None`` = no limit): on expiry, ``process.terminate()`` (SIGTERM),
     then a ``grace_period_s`` (default ``5.0``) wait, then ``process.kill()`` (SIGKILL) if still
-    alive, followed by a final reap so no zombie is left — raises ``TimeoutError``. SIGTERM does
-    NOT reliably let the child's ``finally``/``atexit`` code run — that's only true if the child
+    alive, followed by a final reap so no zombie is left. Raises ``TimeoutError``. SIGTERM does
+    NOT reliably let the child's ``finally``/``atexit`` code run: that's only true if the child
     itself installs a ``signal.signal(SIGTERM, ...)`` handler; with none (the default), the OS's
     default disposition terminates it immediately.
 
     ``max_memory_mb``/``cpu_time_limit_s`` (default ``None`` = no cap): OPT-IN, POSIX-only,
     best-effort resource caps applied inside the child via ``resource.setrlimit`` before
-    ``factory()`` runs — silent no-ops on a platform without ``resource`` (Windows), never a
+    ``factory()`` runs: silent no-ops on a platform without ``resource`` (Windows), never a
     crash. ``cpu_time_limit_s`` (``RLIMIT_CPU``) works as expected on every POSIX platform tested,
     including macOS. ``max_memory_mb`` bounds VIRTUAL address space (``RLIMIT_AS``), NOT resident/
-    physical memory — a Python process's baseline VSZ plus ordinary overcommitted allocations can
+    physical memory: a Python process's baseline VSZ plus ordinary overcommitted allocations can
     overshoot a physical-memory intent by a real margin, and exceeding it (where the OS honors the
-    limit at all) does not trigger an OS-level kill — the next allocation simply fails, typically
+    limit at all) does not trigger an OS-level kill: the next allocation simply fails, typically
     surfacing as an ordinary ``MemoryError`` raised INSIDE the child's own code, relayed through
     the same exception path as any other error. **A real, empirically-confirmed platform gap,
     disclosed rather than silently discovered**: on macOS, the kernel refuses to LOWER
-    ``RLIMIT_AS`` from its default of unlimited at all — every ``resource.setrlimit(RLIMIT_AS,
+    ``RLIMIT_AS`` from its default of unlimited at all: every ``resource.setrlimit(RLIMIT_AS,
     ...)`` call, regardless of the requested value, raises ``ValueError: current limit exceeds
     maximum limit`` outright (confirmed directly: tried 50, 200, 500, and 1000 MB on macOS
     14.2.1/arm64, all failed identically; `RLIMIT_CPU` on the same platform succeeded normally).
     Setting the resource caps happens INSIDE the same try/except as ``factory()`` itself, so this
     failure is relayed to the caller as a clear ``ValueError`` (via the same test-pickle-then-
-    relay path as any other error) — a caller passing ``max_memory_mb`` on macOS should expect
+    relay path as any other error): a caller passing ``max_memory_mb`` on macOS should expect
     this raised outright, NOT a silently-unenforced cap and NOT actual memory enforcement.
     Effectively, `max_memory_mb` is Linux-only in practice today; `cpu_time_limit_s` is not.
 
     **A second real, empirically-confirmed edge case (found via a real Linux CI run, not
-    reasoning alone) — an aggressively low ``max_memory_mb`` can starve the relay mechanism
+    reasoning alone): an aggressively low ``max_memory_mb`` can starve the relay mechanism
     itself.** On a platform where ``RLIMIT_AS`` genuinely enforces (Linux), the child correctly
-    hits ``MemoryError`` — but by that point it may be so memory-constrained that
+    hits ``MemoryError``, but by that point it may be so memory-constrained that
     ``multiprocessing.Queue.put()``'s own internal feeder thread fails to even START
     (``RuntimeError: can't start new thread``), crashing the child before ANYTHING can be
     relayed. There is no viable fallback for this: a resource-exhausted process cannot reliably
     report its own resource exhaustion through a mechanism (spawning a thread) that itself needs
-    spare resources. This is handled correctly, not silently — it degrades to the exact same
+    spare resources. This is handled correctly, not silently: it degrades to the exact same
     safety net an external kill would (the parent's own bounded ``queue.get()`` times out and
-    raises the generic "child exited without delivering a result" error) — but a caller should
+    raises the generic "child exited without delivering a result" error), but a caller should
     expect THIS outcome, not a specific ``MemoryError``, as one real possibility when
     ``max_memory_mb`` is set low enough to matter.
     """

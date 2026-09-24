@@ -84,7 +84,7 @@ def test_model_as_tool_records_and_returns(tmp_path):
 def test_bind_recorder_records_batched_escalations_else_lost(tmp_path):
     # Mimics dspy.RLM.llm_query_batched: the intercepted sub-LM called from ThreadPoolExecutor workers.
     # Worker threads do NOT inherit the recorder ContextVar, so the UNBOUND sub-LM records nothing there
-    # (the bug — lifeline under-counts); the per-run binding re-establishes the recorder per call.
+    # (the bug: lifeline under-counts); the per-run binding re-establishes the recorder per call.
     from concurrent.futures import ThreadPoolExecutor
 
     from rlm_harness.sub_lm import bind_recorder_to_sub_lm
@@ -118,7 +118,7 @@ def test_bind_recorder_to_sub_lm_is_a_noop_without_a_recorder():
 #
 # `RLM._query_lm` accepts a typed `dspy.LMResponse` OR the legacy `list[str | dict]`. The wrapper
 # used to collapse anything non-list into `[outputs]`, so an `LMResponse` became `[LMResponse]` and
-# dspy raised "Sub-LM response must contain text, got LMResponse" — invisible on the default path
+# dspy raised "Sub-LM response must contain text, got LMResponse": invisible on the default path
 # and fatal under `dspy.context(experimental=True)`, which dspy's own source says becomes the norm
 # after 3.4.
 
@@ -133,7 +133,7 @@ def _typed(*texts, extra_parts=()):
 
 
 def _as_dspy_reads_it(response):
-    """dspy's `RLM._query_lm` return handling, mirrored — the contract the wrapper must satisfy."""
+    """dspy's `RLM._query_lm` return handling, mirrored: the contract the wrapper must satisfy."""
     if isinstance(response, dspy.LMResponse):
         text = response.text
     elif isinstance(response, list) and response:
@@ -165,7 +165,7 @@ def test_a_typed_response_survives_dspys_own_return_handling():
 
 
 def test_a_no_op_pipeline_returns_the_base_objects_IDENTITY():
-    """Not an equal reconstruction — the same object. This is what makes auto-wrapping safe: a
+    """Not an equal reconstruction: the same object. This is what makes auto-wrapping safe: a
     sub-LM the kit wrapped on the caller's behalf must be indistinguishable from the bare one."""
     for response in (_typed("x"), ["x"], [{"text": "x"}], ["a", "b"]):
         base = ShapedLM(response)
@@ -174,7 +174,7 @@ def test_a_no_op_pipeline_returns_the_base_objects_IDENTITY():
 
 def test_a_shape_the_shim_does_not_recognise_is_returned_UNTOUCHED():
     """The loud-error-to-silent-empty regression, pinned. Rebuilding an unrecognised shape as
-    `[""]` would hand the planner an empty completion that dspy would otherwise have rejected —
+    `[""]` would hand the planner an empty completion that dspy would otherwise have rejected,
     and it would land in the RL data as a real escalation answer. dspy must get to raise."""
     from dspy.core.types import LMThinkingPart
 
@@ -211,7 +211,7 @@ def test_substitution_leaves_non_text_parts_and_sibling_fields_alone():
 
 def test_model_as_tool_reads_a_typed_response_too():
     """The same defect lived 60 lines away: `outputs[0]` on an `LMResponse` handed the model
-    `str(LMResponse)` — the whole repr — and wrote it to the trace as the tool's result."""
+    `str(LMResponse)`, the whole repr, and wrote it to the trace as the tool's result."""
     tool = model_as_tool("l", ShapedLM(_typed("THE ANSWER")))
     assert getattr(tool, "func", tool)(prompt="q") == "THE ANSWER"
 
@@ -231,7 +231,7 @@ def test_auto_wrap_records_a_plain_lm_and_leaves_a_wrapped_one_alone():
 
 def test_the_marker_probe_is_identity_not_truthiness():
     """`getattr` on a mock manufactures a truthy attribute for ANY name, so a truthiness probe
-    would decide a mock "already records" and skip it — recreating, one layer up, the exact
+    would decide a mock "already records" and skip it: recreating, one layer up, the exact
     absent-event failure this feature exists to remove."""
     from unittest.mock import MagicMock
 
@@ -244,7 +244,7 @@ def test_the_marker_probe_is_identity_not_truthiness():
 
 def test_auto_wrap_never_raises_and_degrades_to_the_bare_lm():
     """Auto-wrapping is an observability convenience the caller never asked for. It must never be
-    the reason a run fails to start — and the probe alone is not enough, because `intercept_sub_lm`
+    the reason a run fails to start, and the probe alone is not enough, because `intercept_sub_lm`
     reads `.model`/`.kwargs` off the base and dies one line after a successful probe."""
     from unittest.mock import Mock
 
@@ -291,7 +291,7 @@ def test_the_auto_payload_matches_an_explicit_no_argument_wrap():
 
 def test_the_wrapper_survives_copy_deepcopy_and_dspys_own_copy():
     """`__getattr__` delegates through `_base`, and `copy`/`deepcopy`/`pickle` rebuild an instance
-    WITHOUT calling `__init__` — so reading it as `self._base` re-enters the method forever.
+    WITHOUT calling `__init__`, so reading it as `self._base` re-enters the method forever.
     `dspy.BaseLM.copy()` does exactly that and is the documented way to get a rollout-id variant,
     so the recursion fires on a supported path. Since 1.7.0 the kit auto-wraps every sub-LM, which
     would have made it universal rather than opt-in."""
@@ -301,14 +301,14 @@ def test_the_wrapper_survives_copy_deepcopy_and_dspys_own_copy():
     wrapped = intercept_sub_lm(base)
     assert type(copy_module.copy(wrapped)) is type(wrapped)
     assert type(copy_module.deepcopy(wrapped)) is type(wrapped)
-    assert wrapped.copy() is not None          # dspy.BaseLM.copy — unguarded copy_module.copy
+    assert wrapped.copy() is not None          # dspy.BaseLM.copy: unguarded copy_module.copy
     assert wrapped.records_sub_call is True    # ...and the marker still resolves normally
 
 
 def test_delegation_reaches_the_base_lms_own_attributes():
     """`__init__` copies only `model`/`kwargs`. Everything else a real dspy.LM carries has to come
     through delegation, or "observationally identical to the bare one" is false for attribute
-    access — which matters now that the kit substitutes this object automatically."""
+    access, which matters now that the kit substitutes this object automatically."""
     from dspy.utils.dummies import DummyLM
 
     base = DummyLM([{"answer": "a"}] * 3)
@@ -321,7 +321,7 @@ def test_delegation_reaches_the_base_lms_own_attributes():
 
 def test_a_typed_response_survives_dspys_REAL_return_handling(tmp_path):
     """The mirror in `_as_dspy_reads_it` can drift from dspy. This drives dspy's actual
-    `_query_lm` under `experimental=True`, where a `dspy.LM` returns the typed shape — the exact
+    `_query_lm` under `experimental=True`, where a `dspy.LM` returns the typed shape: the exact
     configuration that used to raise `Sub-LM response must contain text, got LMResponse`."""
     from dspy.utils.dummies import DummyLM
 

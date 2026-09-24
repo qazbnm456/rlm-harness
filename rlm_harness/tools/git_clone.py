@@ -1,4 +1,4 @@
-"""``make_git_clone_tool`` — safe git clone with fallback auth, base/wrap, same shape as
+"""``make_git_clone_tool``: safe git clone with fallback auth, base/wrap, same shape as
 ``make_fetch_tool``/``make_command_tool`` (not a new pattern).
 
 A task that wants to clone a repository to analyze it has no safe way to do so without this: (1)
@@ -10,22 +10,22 @@ root, exactly like every other filesystem-touching tool in this kit.
 
 **The kit does NOT shell out to ``git`` itself.** ``command.py``'s own module docstring is explicit
 about why: executing a model-adjacent operation host-side needs ISOLATION, and "the kit ships NO
-executor and picks NO isolation mechanism" for ``run_command`` — the exact same reasoning applies
+executor and picks NO isolation mechanism" for ``run_command``: the exact same reasoning applies
 here. A ``git clone`` is not meaningfully safer to execute un-isolated than an arbitrary command (a
 malicious git server can exploit a client vulnerability; a cloned repo's own hooks can execute code
-unless disabled). So ``make_git_clone_tool`` takes a CONSUMER-SUPPLIED, isolated ``cloner`` — the
+unless disabled). So ``make_git_clone_tool`` takes a CONSUMER-SUPPLIED, isolated ``cloner``: the
 kit's job is the same "enforce the safe half, never the isolation" role ``make_fetch_tool`` already
 plays for its ``fetcher`` and ``make_command_tool`` plays for its ``runner``.
 
-**URL safety reuses ``is_safe_url`` directly** — no reinvented SSRF check. Same caveat as
+**URL safety reuses ``is_safe_url`` directly**: no reinvented SSRF check. Same caveat as
 ``fetch.py`` documents for itself: a SYNTACTIC pre-flight only, not a DNS-rebinding-safe check (a
-public hostname resolving to a private address at actual connect time) — the wrapper cannot itself
+public hostname resolving to a private address at actual connect time): the wrapper cannot itself
 call ``resolved_host_is_safe`` at the right moment, since the real network connection happens
 INSIDE the isolated ``cloner``, not here. The ``cloner`` should call ``resolved_host_is_safe``
-internally at connect time if that matters for its deployment — the exact same division of
+internally at connect time if that matters for its deployment: the exact same division of
 responsibility ``make_fetch_tool`` already documents for its own ``fetcher``.
 
-**Destination confinement reuses ``resolve_within_root`` directly** — ``dest_dir`` is resolved
+**Destination confinement reuses ``resolve_within_root`` directly**: ``dest_dir`` is resolved
 exactly like ``write_file``'s ``path``; a ``..``-escape or symlink-outside-root is refused before
 the cloner ever runs.
 """
@@ -76,23 +76,23 @@ def make_git_clone_tool(
     get_credentials: CredentialsProvider | None = None,
     default_depth: int | None = 1,
 ) -> Callable[[str, str], str]:
-    """Build a ``git_clone``-shaped tool scoped to ``root`` — wired in a task's ``__init__``
+    """Build a ``git_clone``-shaped tool scoped to ``root``: wired in a task's ``__init__``
     (per-run state, never a classvar).
 
     ``name`` (default ``"git_clone"``): same rationale and mechanism as
-    :func:`rlm_harness.tools.make_read_file_tool`'s ``name`` — ``git_clone`` binds to a ``root``
+    :func:`rlm_harness.tools.make_read_file_tool`'s ``name``: ``git_clone`` binds to a ``root``
     at construction time, so a task wanting two differently-scoped clone tools needs the same
     multi-root collision fix every filesystem-mutating factory in this kit already has.
 
-    ``cloner`` — a CONSUMER-SUPPLIED, ISOLATED, sync callable: ``(url, dest_path, depth, creds) ->
+    ``cloner``: a CONSUMER-SUPPLIED, ISOLATED, sync callable: ``(url, dest_path, depth, creds) ->
     CommandResult``. The kit ships none; see the module docstring for why. ``cloner`` should call
     :func:`rlm_harness.tools.resolved_host_is_safe` internally at connect time if DNS-rebinding
-    matters for its deployment — ``is_safe_url`` below is syntactic only.
+    matters for its deployment: ``is_safe_url`` below is syntactic only.
 
     ``get_credentials`` (default ``None``): an optional ``(url) -> dict | None`` provider for the
     fallback-auth retry (see ``git_clone`` below). ``default_depth`` (default ``1``): a shallow
     clone by default, passed through to ``cloner`` as a plain argument (the cloner decides how to
-    honor it) — the "avoid being tricked into cloning an enormous repository" mitigation; ``None``
+    honor it): the "avoid being tricked into cloning an enormous repository" mitigation; ``None``
     opts out for a caller that explicitly wants full history. Both are factory (operator)
     parameters, never model-controlled, matching ``make_grep_files_tool``'s own
     factory-level-not-call-level configuration precedent.
@@ -109,9 +109,9 @@ def make_git_clone_tool(
         """Clone ``url`` into ``dest_dir`` (relative to the root) via the injected, isolated
         ``cloner``. Refuses (returns a string, never raises) an unsafe URL or a ``dest_dir`` that
         escapes the root, before the cloner ever runs. On a failed first attempt, if a
-        credentials provider is configured, retries ONCE with credentials — never more than two
+        credentials provider is configured, retries ONCE with credentials: never more than two
         clone attempts total. A supplied credential's raw secret value is redacted (exact-string
-        match only — does not catch a derived/transformed leak such as URL-encoding or a
+        match only. Does not catch a derived/transformed leak such as URL-encoding or a
         truncated echo) from every model/trace-visible string after a credentialed attempt."""
         if not is_safe_url(url):
             record_tool_call(
@@ -145,7 +145,7 @@ def make_git_clone_tool(
         record_tool_call(
             name,
             args={"url": url, "dest_dir": dest_dir},
-            # Covers BOTH attempts when the credentialed fallback ran — that is the honest total
+            # Covers BOTH attempts when the credentialed fallback ran: that is the honest total
             # this tool cost the turn, and on a large repo it is routinely the slowest call in it.
             duration_s=time.perf_counter() - _t0,
             ok=(result.exit_code == 0),

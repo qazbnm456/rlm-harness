@@ -1,10 +1,10 @@
-"""Provider-agnostic ``make_harness_tool`` — delegate a sub-task to ANOTHER rlm-harness harness, wrapped
+"""Provider-agnostic ``make_harness_tool``: delegate a sub-task to ANOTHER rlm-harness harness, wrapped
 as a tool (the promoted "wrap a downstream harness as a tool" shape; mirrors ``model.py``).
 
 A *harness* is a full RLM in its own right: it takes a long-text input, runs its own Root LM in a REPL
 loop over that text with its OWN tools (MCP / skills / fetch), and SUBMITs a validated artifact. When a
 task wants to hand a hard sub-problem to a more specialized harness, that delegation is a recurring
-shape — and mechanically it is IDENTICAL to a model-as-tool call (a ``Callable[[str], Any]`` in, a
+shape, and mechanically it is IDENTICAL to a model-as-tool call (a ``Callable[[str], Any]`` in, a
 domain validator on the artifact out, degrade on failure). So this module REUSES ``make_model_tool``'s
 retry → validate → circuit-break core (kept in one place, per the kit's hardening rule) and adds only
 the one thing a harness has that a model does not: a **child-rollout link** (the child ran its own
@@ -12,18 +12,18 @@ trajectory; the parent records a pointer to it, never the child's turns).
 
 THE LONG-TEXT-ENVIRONMENT CONTRACT (the reason this exists). The native advantage of the RLM framework
 is that a signature input field holds near-unbounded text that dspy injects as the Root LM's REPL
-ENVIRONMENT — a variable it reads/slices and loops over with its own tools. ``make_harness_tool`` makes
+ENVIRONMENT. A variable it reads/slices and loops over with its own tools. ``make_harness_tool`` makes
 that the DEFAULT, enforced by SHAPE: a :data:`HarnessInvoke` takes ONE long-text argument and nothing
-else, so the only thing a caller can hand across the boundary is its pre-assembled, full context — which
+else, so the only thing a caller can hand across the boundary is its pre-assembled, full context, which
 :func:`harness_from_endpoint` binds to the downstream harness's long-text input field (the field dspy
 injects as the child's REPL environment). The point is not "call a sub-model"; it is "hand a big context
 to a harness that runs a full RLM loop over it."
 
 BASE/WRAP split (like the rest of ``tools/``). rlm-harness owns ONLY the generic core + the long-text-env
-adapter. The consuming project supplies the ``call_endpoint`` (HOW to reach ITS harness — a subprocess
+adapter. The consuming project supplies the ``call_endpoint`` (HOW to reach ITS harness: a subprocess
 command, an in-process entry, an HTTP URL; the kit ships NONE and names NONE, exactly as
-``make_command_tool`` demands an injected ``Runner`` and ships no executor), a ``validate`` callable, and
-— around the returned :class:`HarnessToolResult` — its own tool name, messages, and tracing. The kit
+``make_command_tool`` demands an injected ``Runner`` and ships no executor), a ``validate`` callable, and,
+around the returned :class:`HarnessToolResult`: its own tool name, messages, and tracing. The kit
 never imports or names any specific downstream harness; the harness's identity lives only in the
 consumer's runtime config. dspy-free (it only reuses ``make_model_tool``).
 """
@@ -37,7 +37,7 @@ from typing import Any
 from ..serving import HarnessPointer
 from .model import ModelToolResult, Validate, make_model_tool
 
-# A harness invocation maps ONE long text — the child Root LM's REPL environment — to the child's
+# A harness invocation maps ONE long text, the child Root LM's REPL environment, to the child's
 # outcome. It may RAISE on a transient transport failure (spawn/connect flakiness); that is retried,
 # exactly like a ``ChatFn``. A validator that returns ``ok=False`` is the caller's repair loop, not a
 # transient error.
@@ -49,7 +49,7 @@ class HarnessInvocation:
     """What an adapter's ``invoke_fn`` returns for one delegation.
 
     ``content`` / ``reasoning`` are read by ``make_model_tool``'s normaliser (so a harness invocation
-    slots into the reused core unchanged); the ``child_*`` fields are the delegation-boundary LINK —
+    slots into the reused core unchanged); the ``child_*`` fields are the delegation-boundary LINK:
     the child harness ran its OWN trajectory, and the caller records a pointer to it, never the child's
     turns."""
 
@@ -62,7 +62,7 @@ class HarnessInvocation:
 
 def pointer_to_invocation(pointer: HarnessPointer) -> HarnessInvocation:
     """Map a server-side :class:`rlm_harness.serving.HarnessPointer` onto a client-side
-    :class:`HarnessInvocation` — the one canonical field mapping between the two delegation-boundary
+    :class:`HarnessInvocation`: the one canonical field mapping between the two delegation-boundary
     shapes, so a ``read_output`` callback doesn't have to re-derive it by hand.
 
     ``HarnessPointer`` (``serving.py``) is what a served harness prints (or, for an in-process
@@ -71,7 +71,7 @@ def pointer_to_invocation(pointer: HarnessPointer) -> HarnessInvocation:
     ``content`` / ``reasoning`` / ``child_run_id`` / ``child_trace`` / ``child_meta``. The two exist
     on opposite sides of the delegation boundary for a reason (a served harness cannot know about
     the client's tool wrapper, and vice versa), so this is a pure, explicit mapping rather than a
-    shared dataclass — but the mapping itself is exactly the same regardless of transport, whether
+    shared dataclass, but the mapping itself is exactly the same regardless of transport, whether
     the pointer arrived over a subprocess's stdout JSON line, an HTTP reply, or (see
     ``examples/harness_local_run.py``) an in-process call that built the pointer directly.
     """
@@ -111,7 +111,7 @@ def make_harness_tool(
     NOT retried (that is the caller's re-spec / escalate / finalize loop); ``max_consecutive_invalid``
     (default off) is a run-scoped circuit breaker that short-circuits after that many consecutive
     invalid artifacts WITHOUT invoking the child. So a hung, crashing, or looping child degrades to
-    ``endpoint_error`` / ``circuit_broken`` (``ok=False``) — never an exception — and the parent run
+    ``endpoint_error`` / ``circuit_broken`` (``ok=False``), never an exception, and the parent run
     completes. Sync and side-effect-free (no tracing, no messages): wrap the result in your project's
     tool with its own name / messages / tracing, and record the parent→child link from the returned
     ``child_*`` fields. Breaker state lives in the closure, so build ONE per run (as the consumers do)
@@ -160,12 +160,12 @@ def harness_from_endpoint(
     :func:`make_harness_tool`.
 
     ``call_endpoint(long_text)`` MUST run the downstream harness with ``long_text`` bound to its
-    long-text INPUT field — the field dspy injects as the child Root LM's REPL environment variable — so
+    long-text INPUT field, the field dspy injects as the child Root LM's REPL environment variable, so
     the child fully exploits its own RLM loop (REPL + its own MCP / skills / fetch) over the whole
     context. ``read_output`` maps the transport's raw reply into a :class:`HarnessInvocation`
     (extracting the artifact text + the child's run_id / trace pointer). The kit picks NO transport and
-    names NO harness: ``call_endpoint`` is OPAQUE and consumer-supplied — a subprocess spawn, an
-    in-process entry, an HTTP POST — exactly as ``make_command_tool`` takes an injected ``Runner`` and
+    names NO harness: ``call_endpoint`` is OPAQUE and consumer-supplied, a subprocess spawn, an
+    in-process entry, an HTTP POST: exactly as ``make_command_tool`` takes an injected ``Runner`` and
     ships no executor. A transport failure should RAISE (so :func:`make_harness_tool` retries/degrades
     it); do not swallow it into an empty artifact."""
     def invoke(long_text: str) -> HarnessInvocation:

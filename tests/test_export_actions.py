@@ -111,7 +111,7 @@ def _realistic_run():
              "payload": {"tool": "grep_repo", "ok": True, "result": "a"}},
             {"type": "sub_call", "step_id": 2, "ts": 103.5,
              "payload": {"model": "m", "input": "q", "processed": "a"}},
-            # the whole trajectory, flushed at the end — note the step_ids
+            # the whole trajectory, flushed at the end: note the step_ids
             {"type": "main_step", "step_id": 3, "ts": 101.0,
              "payload": {"turn": 0, "reasoning": "first", "code": "c0"}},
             {"type": "main_step", "step_id": 4, "ts": 103.0,
@@ -141,7 +141,7 @@ def test_state_is_the_actions_that_actually_preceded():
 
 
 def test_turn_order_survives_a_backfilled_ts_that_went_backwards():
-    """`payload["turn"]` is authoritative among turns, never `ts` — a turn whose live stamp could
+    """`payload["turn"]` is authoritative among turns, never `ts`: a turn whose live stamp could
     not be matched falls back to the flush time, which is LATER than every real stamp, so ordering
     turns by `ts` would move it to the end. The pre-sort on `payload["turn"]` is the whole
     guarantee; there is no clamp in the merge (the first version had one and it was provably dead).
@@ -168,8 +168,8 @@ def test_a_corpus_with_no_timestamps_keeps_write_order():
 
 
 def test_a_run_with_no_interleave_signal_says_so(caplog):
-    """When every turn carries a FLUSH time the merge reproduces the pre-1.11.2 order exactly —
-    same records, same wrong `state` — so a re-export looks like it did something and did not.
+    """When every turn carries a FLUSH time the merge reproduces the pre-1.11.2 order exactly.
+    same records, same wrong `state`, so a re-export looks like it did something and did not.
     That state is undetectable from the output, which is why it is logged."""
     import logging
 
@@ -199,7 +199,7 @@ def test_a_run_with_no_interleave_signal_says_so(caplog):
 
 
 def test_detector_silent_when_only_one_family_is_present(caplog):
-    """A run of only turns, or only live calls, has nothing to interleave — reporting "no signal"
+    """A run of only turns, or only live calls, has nothing to interleave: reporting "no signal"
     there would fire on every run that makes no tool calls, which is a whole task shape."""
     import logging
 
@@ -216,7 +216,7 @@ def test_detector_silent_when_only_one_family_is_present(caplog):
 
 def test_one_unmatched_stamp_is_enough_to_report(caplog):
     """A flush time is later than everything live, so a SINGLE bad stamp on turn 0 swallows the
-    rest of the run — the detector must not wait for every turn to be bad."""
+    rest of the run. The detector must not wait for every turn to be bad."""
     import logging
 
     partial = {"r": [
@@ -236,7 +236,7 @@ def test_one_unmatched_stamp_is_enough_to_report(caplog):
 def test_a_turn_zero_stamped_after_the_first_live_event_is_reported(caplog):
     """The comparison is against the run's FIRST live event, not its last, and this is the case
     that separates them. Nothing live can happen before turn 0 is parsed, so a live event EARLIER
-    than turn 0's stamp proves that stamp is not a live one — even when turn 0 still sits in the
+    than turn 0's stamp proves that stamp is not a live one: even when turn 0 still sits in the
     middle of the live events rather than after all of them."""
     import logging
 

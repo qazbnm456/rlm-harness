@@ -1,4 +1,4 @@
-"""The ``RLMTask`` base class — the one abstraction this scaffold exists for.
+"""The ``RLMTask`` base class: the one abstraction this scaffold exists for.
 
 A task is declared by subclassing ``RLMTask`` and filling four fields:
 
@@ -9,8 +9,8 @@ A task is declared by subclassing ``RLMTask`` and filling four fields:
         instructions = "Summarize the document into a title and a paragraph."
         tools = [make_schema_validator(Article)]
 
-Everything else — building ``dspy.RLM``, choosing the sandbox, budget caps,
-retrying on validation failure, observability — is inherited. A consumer's
+Everything else: building ``dspy.RLM``, choosing the sandbox, budget caps,
+retrying on validation failure, observability. Is inherited. A consumer's
 near-identical RLM call sites collapse to a few lines each (see
 ``examples/harness_run.py``).
 """
@@ -49,14 +49,14 @@ class _MainStepTimer(BaseCallback):  # type: ignore[misc, valid-type]
     so without this the recorder stamps every main_step at finalize time.
 
     A ROOT-planner turn is the only adapter parse carrying BOTH ``reasoning`` and ``code`` (a lifeline
-    parse lacks ``code``; the extract-fallback parse carries the output fields, not these) — the same
+    parse lacks ``code``; the extract-fallback parse carries the output fields, not these): the same
     filter a streaming consumer's callback uses. Holds a DIRECT recorder reference (not the
     contextvar) so it works regardless of which thread dspy parses on; the recorder's note_main_step
     is itself thread-safe.
 
     **Stages the OUTERMOST parse only, and that is load-bearing.** ``Adapter.__init_subclass__``
-    re-wraps ``format`` and ``parse`` with ``with_callbacks`` for EVERY subclass — unconditionally,
-    whether or not that subclass redefines them — so each subclass level adds a callback fire that
+    re-wraps ``format`` and ``parse`` with ``with_callbacks`` for EVERY subclass: unconditionally,
+    whether or not that subclass redefines them, so each subclass level adds a callback fire that
     a ``super().parse(...)`` call then traverses. Measured, one root turn:
 
         stock ``JSONAdapter``                     1 fire
@@ -66,13 +66,13 @@ class _MainStepTimer(BaseCallback):  # type: ignore[misc, valid-type]
 
     So this is not a fixed double to divide by two: the depth is a property of the caller's adapter
     hierarchy, which is why the fix counts nesting rather than assuming a count. A consumer
-    subclassing the kit's adapter — a plausible thing to do — was affected before this and needed
+    subclassing the kit's adapter, a plausible thing to do, was affected before this and needed
     no change to be covered by it. Two stamps per turn made ``record_main_trajectory``'s
     earliest-unused match order-unsafe: when a model repeats a ``reasoning`` string across turns
     (a retry loop emitting ``"Retrying tool call - …"`` does exactly this), a later turn consumed
     an earlier turn's spare stamp and inherited a time from several turns back. Measured on 85 real
     traces: every trace with a ts inversion had a duplicated reasoning, none of the 58 with unique
-    reasoning inverted, and 2.1% of per-turn deltas came out NEGATIVE — one of them -338.7s, which
+    reasoning inverted, and 2.1% of per-turn deltas came out NEGATIVE: one of them -338.7s, which
     a consumer rendered. Deduplicating HERE keeps the staged list 1:1 with turns, which is what
     makes the match an identity map; fixing it in the matcher instead cannot repair the case where
     the duplicate turns are ADJACENT (it merely stops the delta going negative while the stamp
@@ -82,7 +82,7 @@ class _MainStepTimer(BaseCallback):  # type: ignore[misc, valid-type]
     decrement, so ``n == 1`` is the outermost frame. ``n <= 1`` rather than ``n == 1`` is the
     deliberate degrade path: if a future dspy stops firing ``on_adapter_parse_start`` the counter
     never rises, every fire is treated as outermost, and behaviour falls back to exactly what it
-    was before this change — not to staging NOTHING, which would silently return every main_step ts
+    was before this change: not to staging NOTHING, which would silently return every main_step ts
     to the flush-time fallback with no test going red.
     """
 
@@ -97,7 +97,7 @@ class _MainStepTimer(BaseCallback):  # type: ignore[misc, valid-type]
         depth = getattr(self._depth, "n", 0)
         self._depth.n = max(0, depth - 1)
         if depth > 1:
-            return  # a nested parse (the kit's own adapter calling super()) — the outer one stages
+            return  # a nested parse (the kit's own adapter calling super()): the outer one stages
         if isinstance(outputs, dict) and "reasoning" in outputs and "code" in outputs:
             self._recorder.note_main_step(outputs.get("reasoning"))
 
@@ -107,7 +107,7 @@ def _live_main_timing(recorder: Any):
     """Install :class:`_MainStepTimer` into dspy's callback list for the duration, MERGING with any
     callbacks the consumer already set (dspy gathers ``settings.callbacks + instance.callbacks``, so
     appending coexists with e.g. a consumer's SSE callback). A no-op when there is no recorder, or when
-    dspy's callback context can't be entered — the trace then keeps post-hoc main_step ts, no worse
+    dspy's callback context can't be entered. The trace then keeps post-hoc main_step ts, no worse
     than before.
     """
     if recorder is None or not hasattr(recorder, "note_main_step"):
@@ -207,14 +207,14 @@ class RLMTask:
     instructions: ClassVar[str] = ""
     #: Tools (plain callables) the RLM may invoke inside the REPL.
     #: NOT a ``ClassVar``: since 1.1.0 an instance may carry its own tool list (declare it in the
-    #: class body, set ``self.tools`` in a subclass ``__init__``, or pass ``tools=`` — see below).
+    #: class body, set ``self.tools`` in a subclass ``__init__``, or pass ``tools=``, see below).
     #: The annotation said ``ClassVar`` while ``examples/harness_run.py`` was already assigning
     #: per instance, so it was describing a rule the kit itself did not follow; the package ships
     #: ``py.typed``, so that lie reached consumers' type checkers.
     tools: Sequence[Callable[..., Any]] = ()
 
     #: Class-level default so `resolved_tools` still answers for a subclass that forgets to call
-    #: `super().__init__()` — it would otherwise raise AttributeError from a read-only property.
+    #: `super().__init__()`. It would otherwise raise AttributeError from a read-only property.
     _tools_override: Sequence[Callable[..., Any]] | None = None
 
     def __init__(
@@ -238,8 +238,8 @@ class RLMTask:
             max_retries if max_retries is not None else self._config.max_retries
         )
         # An explicit interpreter OBJECT overrides `config.interpreter` (the string that
-        # `sandbox.build_interpreter` maps to a sandbox). This is a TEST/advanced seam — mainly
-        # `rlm_harness.testing.ScriptedInterpreter`, to drive the forward path offline — and it bypasses
+        # `sandbox.build_interpreter` maps to a sandbox). This is a TEST/advanced seam: mainly
+        # `rlm_harness.testing.ScriptedInterpreter`, to drive the forward path offline, and it bypasses
         # `build_interpreter` (and its insecure-interpreter guard) exactly like an injected `sub_lm`
         # bypasses the real model: the caller supplies and owns the double. The default (None) keeps the
         # string path and the guard.
@@ -248,7 +248,7 @@ class RLMTask:
         # `arun()` for the same reason: every real consumer already constructs a fresh RLMTask
         # instance per run, so per-instance placement loses nothing versus per-call. Threaded into
         # `build_interpreter(...)` in `_build_rlm()`; has NO effect when `interpreter=` (above)
-        # bypasses `build_interpreter` entirely — a caller supplying their own interpreter object
+        # bypasses `build_interpreter` entirely: a caller supplying their own interpreter object
         # owns its cancellation behavior too, exactly like `ScriptedInterpreter` owns its own.
         self._cancel_event = cancel_event
         # Set per build by `_build_rlm`: the interpreter that `arun` passes to forward() as
@@ -264,7 +264,7 @@ class RLMTask:
         # and the second is the more idiomatic ordering. Resolving at build time means the
         # explicit kwarg always wins, whichever way the subclass is written.
         #
-        # This is NOT an injection seam like `interpreter=` / `sub_lm=` above — those bypass a
+        # This is NOT an injection seam like `interpreter=` / `sub_lm=` above: those bypass a
         # guard (the sandbox builder, the real model) and the caller owns the double. This
         # bypasses nothing; it is a per-instance override of a declaration field. Keep the two
         # ideas apart: conflating them dilutes a distinction the sandbox guard depends on.
@@ -274,7 +274,7 @@ class RLMTask:
 
     @property
     def resolved_tools(self) -> Sequence[Callable[..., Any]]:
-        """The tools this task will actually hand the model — the ONE derivation.
+        """The tools this task will actually hand the model: the ONE derivation.
 
         An explicit ``tools=`` kwarg REPLACES the class-body / ``self.tools`` declaration; it
         never merges, because merging would make the effective list depend on inheritance depth.
@@ -285,7 +285,7 @@ class RLMTask:
         this task give the model?" is otherwise unanswerable from outside: ``self.tools`` stops
         being the whole truth once ``tools=`` is in play, and anything that needs the real list
         (``rlm_harness.testing.assert_task_repl_safe``, a consumer's own introspection, a
-        debugger) would have to re-derive the rule — the two-derivations-of-one-value hazard.
+        debugger) would have to re-derive the rule: the two-derivations-of-one-value hazard.
         """
         if self._tools_override is not None:
             return self._tools_override
@@ -294,7 +294,7 @@ class RLMTask:
     def _build_rlm(self) -> dspy.RLM:
         # Resolve a custom output type (e.g. "-> finding: Finding") explicitly via
         # dspy's custom_types. Otherwise dspy.Signature resolves the type *name* by
-        # walking the call stack's globals/locals — which works only while a caller
+        # walking the call stack's globals/locals, which works only while a caller
         # frame happens to hold the name, and raises "Unknown name" for
         # dynamically-built types or runner-driven call paths. (See CHANGELOG.md.)
         sig_kwargs: dict[str, Any] = {}
@@ -334,7 +334,7 @@ class RLMTask:
         }
 
         # The caller's interpreter goes to forward()/aforward() as the first POSITIONAL
-        # argument (dspy >= 3.3.0), not to the constructor — so stash it for `arun`.
+        # argument (dspy >= 3.3.0), not to the constructor, so stash it for `arun`.
         # OWNERSHIP stays ours: dspy shuts down only an interpreter it created itself, which
         # is what keeps `_teardown_interpreter` correct. So never SUPPLY the interpreter via
         # `interpreter_factory=`: dspy DOES shut down whatever that factory returns, which
@@ -345,14 +345,14 @@ class RLMTask:
         # contain an `interpreter_factory`, and it is NOT a way of supplying an interpreter.
         # dspy sources the prompt's "Execution environment:" text from that object's
         # `execution_instructions` attribute, so this passes a metadata CARRIER dspy only ever
-        # reads — never calls, and it raises if it ever is. Without it every run is described to
+        # reads: never calls, and it raises if it ever is. Without it every run is described to
         # the model as Pyodide, including a `container` run that can genuinely spawn
         # subprocesses. See `_dspy_compat.interpreter_instructions_kwargs`.
         kwargs.update(_dspy_compat.interpreter_instructions_kwargs(interpreter))
 
         # Budget caps are mapped onto the names the installed dspy accepts (3.3.x renamed
         # `max_iterations` to `max_iters`). The `except TypeError` below is now only a
-        # backstop for an unknown future signature — and it is a LOSSY one, so the
+        # backstop for an unknown future signature, and it is a LOSSY one, so the
         # mapping has to be right: it drops every cap to dspy's defaults, silently.
         # RESET per build, not just set on failure: without this the flag survives into a later
         # run of the SAME task instance and claims caps were dropped when they were not.
@@ -370,7 +370,7 @@ class RLMTask:
             # line rotates; the trace is what outlives the run.
             self._budget_caps_dropped = True
             logger.warning(
-                "dspy.RLM rejected the budget kwargs %s — building WITHOUT budget caps "
+                "dspy.RLM rejected the budget kwargs %s: building WITHOUT budget caps "
                 "(max_iterations/max_llm_calls/max_output_chars fall back to dspy's own "
                 "defaults). This usually means dspy renamed them again; update "
                 "rlm_harness._dspy_compat._BUDGET_ALIASES.",
@@ -391,7 +391,7 @@ class RLMTask:
         #
         # INNER (`_ensure_sub_call_recording`, 1.7.0): make the escalation record itself even when
         # the caller never asked. Without it a plain `dspy.LM` sub_lm emits NO sub_call at all, and
-        # a corpus of zeros is indistinguishable from "the model never escalated" — an ambiguity
+        # a corpus of zeros is indistinguishable from "the model never escalated": an ambiguity
         # that reached a design decision in this repo before it was caught. A caller who wrapped
         # its own sub-LM (for a validate/post-process pipeline) declares `records_sub_call` and is
         # left untouched, so the customisation tier is unaffected.
@@ -400,7 +400,7 @@ class RLMTask:
         # dspy's llm_query_batched fans the sub-LM across workers. It must stay outermost: its
         # __call__ enters `recorder_scope` and only then calls inward, while the interceptor reads
         # `current_recorder()` at call time. Reversed, the interceptor sees None and SILENTLY skips
-        # the record — no error, no event, which is the failure mode hardest to notice.
+        # the record: no error, no event, which is the failure mode hardest to notice.
         #
         # Per-run (this rlm is fresh), so concurrent runs sharing the base sub-LM don't
         # cross-contaminate. Both are skipped entirely when there is no recorder.
@@ -494,20 +494,20 @@ class RLMTask:
                     max_retries=self._max_retries,
                     logger=logger,
                     # A SandboxCancelled means a caller explicitly asked for this run to
-                    # STOP — retrying would transparently respawn the sandbox and restart
+                    # STOP: retrying would transparently respawn the sandbox and restart
                     # the whole trajectory from scratch, silently absorbing the cancel.
                     non_retryable=(SandboxCancelled,),
                     # An LM error dspy itself calls non-retryable (auth/billing/config/
                     # invalid-request/unsupported-model) burns the whole retry budget
                     # re-running the same doomed trajectory for nothing. Fails fast instead,
-                    # except ContextWindowExceededError — see is_fast_fail_lm_error's docstring
+                    # except ContextWindowExceededError: see is_fast_fail_lm_error's docstring
                     # for why that one keeps retrying.
                     is_fast_fail=_dspy_compat.is_fast_fail_lm_error,
                 )
             except Exception:
                 # The run FAILED (e.g. the result never coerced into output_model after the retry
                 # budget). Still record the LAST attempt's trajectory so the failed run is
-                # navigable/debuggable — recording only on success left a failed run with ZERO
+                # navigable/debuggable: recording only on success left a failed run with ZERO
                 # main_steps, blind on the planner side (exactly when you most need to see what it
                 # did). We do NOT record a result (there is none); run_end already carries the error,
                 # and every reader keys success off the RESULT event, so the run stays correctly

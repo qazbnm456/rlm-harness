@@ -5,7 +5,7 @@ Two sources must be merged to get a complete picture of an RLM-as-harness run:
 1. The main LM's REPL trajectory, which ``dspy.RLM`` already returns on the
    ``Prediction`` object as ``trajectory`` (a list of ``{reasoning, code,
    output}`` dicts, verified against dspy 3.3.0) plus ``final_reasoning``.
-2. The intercepted sub-LM pipeline and any LM-decided tool calls — which live
+2. The intercepted sub-LM pipeline and any LM-decided tool calls, which live
    *inside* the intercepted ``sub_lm`` / tool wrappers and are therefore invisible
    to the RLM trajectory. These are exactly the steps most valuable for Agentic RL.
 
@@ -67,17 +67,17 @@ def _ensure_tool_timing(tool: Any) -> Any:
     """Wrap ``tool`` so :func:`record_tool_call` can fill ``duration_s`` without being asked.
 
     **Why this is not each tool's job.** ``duration_s`` used to exist only where its author
-    remembered to measure — six of the kit's own tool sources did, and the filesystem and knowledge tools
+    remembered to measure: six of the kit's own tool sources did, and the filesystem and knowledge tools
     (27 ``record_tool_call`` sites) did not, so ``metrics.compute_tool_waste``'s ``*_seconds`` read
     ``None`` for them everywhere. That is the same shape as the ``sub_call`` event before 1.7.0: a
     field that depends on every author remembering is missing for someone, and `None` then reads as
-    "nothing measured" when the truth is "nobody wired it". A consumer could not fix it either —
+    "nothing measured" when the truth is "nobody wired it". A consumer could not fix it either:
     one whose tools are pure delegation to these factories has no seam of its own, and wrapping the
     callable to add a duration would emit a SECOND ``tool_call`` and double every count derived
     from it.
 
-    So the timing is applied once, at ``RLMTask._build_rlm``, to whatever the task hands the model
-    — the kit's tools and the consumer's alike. **This wrapper never calls ``record_tool_call``**;
+    So the timing is applied once, at ``RLMTask._build_rlm``, to whatever the task hands the model,
+    the kit's tools and the consumer's alike. **This wrapper never calls ``record_tool_call``**;
     it only publishes a start time, which is what keeps it from double-recording.
 
     Three properties it must keep:
@@ -92,7 +92,7 @@ def _ensure_tool_timing(tool: Any) -> Any:
     * **``functools.wraps``**, and applied AFTER the factory has stamped ``__name__``. dspy builds
       the sandbox proxy from ``inspect.signature(tool.func)`` and its ``Tool`` metadata from
       ``typing.get_type_hints``; both follow ``__wrapped__``, the latter to reach the original
-      module's globals — which matters because every ``tools/*.py`` uses
+      module's globals, which matters because every ``tools/*.py`` uses
       ``from __future__ import annotations``, so the annotations ``wraps`` copies are STRINGS that
       only resolve there. Verified against dspy 3.3.1 on the 3.11 floor.
 
@@ -196,7 +196,7 @@ def recorder_scope(recorder: TraceRecorder | None) -> Iterator[None]:
 
 
 #: What produced a model-backed tool's outcome. `ok=False` means THREE different things and they
-#: are not interchangeable — see `payload_cause`. Defined HERE, in the lowest layer, because the
+#: are not interchangeable, see `payload_cause`. Defined HERE, in the lowest layer, because the
 #: same four names have to mean the same thing for a live `ModelToolResult` (which re-exports them)
 #: and for a recorded payload a dataset/replay reader gets back off disk. Two vocabularies for one
 #: distinction is how it gets collapsed again.
@@ -207,13 +207,13 @@ CAUSE_CIRCUIT_BROKEN = "circuit_broken"  # short-circuited; no model call, no va
 
 
 def payload_cause(payload: dict) -> str:
-    """Which of the four outcomes a recorded ``tool_call`` payload is — the read-side mirror of
+    """Which of the four outcomes a recorded ``tool_call`` payload is: the read-side mirror of
     :attr:`rlm_harness.tools.ModelToolResult.cause`.
 
     A consumer reading a trace has only the payload, and ``ok`` alone cannot tell a validator
     rejection from an endpoint failure or a circuit break. Reading it as one thing has shipped in
     four separate consumers, into training labels, a scored rubric criterion, and delivered report
-    text — in the worst measured case a run whose validator ran ZERO times was reported as 113
+    text: in the worst measured case a run whose validator ran ZERO times was reported as 113
     format-quality failures, and scored against the planner's spec quality for them.
 
     Reads three keys, in the order that cannot disagree with itself: ``circuit_broken`` (nothing was
@@ -225,7 +225,7 @@ def payload_cause(payload: dict) -> str:
     **The endpoint keys are tested for PRESENCE, not truthiness**, which is what makes this an actual
     mirror of :attr:`rlm_harness.tools.ModelToolResult.cause` rather than a near-copy that disagrees on
     one case. The write side has always been ``self.endpoint_error is not None``; this side shipped
-    as ``payload.get("endpoint_error") or ...``, and the two differ on the EMPTY STRING — which is
+    as ``payload.get("endpoint_error") or ...``, and the two differ on the EMPTY STRING, which is
     not a corner case but the COMMON one, because the field is filled with ``str(exc)`` and that is
     ``''`` for ``httpx.ConnectTimeout`` / ``ReadTimeout`` / ``ConnectError``, ``TimeoutError``,
     ``OSError`` and ``http.client.RemoteDisconnected``. Under truthiness every one of those fell
@@ -245,13 +245,13 @@ def record_tool_call(
 ) -> dict | None:
     """Record a ``tool_call`` event on the active recorder; return it, or ``None``.
 
-    Every tool wrapper otherwise repeats the same three lines — look up the active
-    recorder, guard against ``None``, then ``record("tool_call", {...})`` — and in
+    Every tool wrapper otherwise repeats the same three lines: look up the active
+    recorder, guard against ``None``, then ``record("tool_call", {...})``, and in
     doing so re-derives by hand the canonical payload shape the replay/dataset
     readers consume (``payload["tool"]`` to match a call, ``payload.get("args")``,
     ``payload.get("result")`` / ``"ok"`` / ``"raw"`` / ``"reasoning"`` / ``"errors"``
-    as the outcome). Centralising emission here keeps that format — the replay/RL
-    source of truth — owned in ONE place instead of copied across every tool.
+    as the outcome). Centralising emission here keeps that format: the replay/RL
+    source of truth: owned in ONE place instead of copied across every tool.
 
     ``args`` (when given) and any extra keyword fields are merged into the payload
     verbatim, so a caller stays free to attach tool-specific fields (``note``,
@@ -271,27 +271,27 @@ def record_tool_call(
       ``payload.get("ok")`` then returns ``None``, which is falsy, so every ``not payload.get("ok")``
       counter downstream silently absorbs infrastructure failures as content declines.
 
-    Passing ``cause=result.cause`` explicitly is the cheapest way to be sure — the derivation is
+    Passing ``cause=result.cause`` explicitly is the cheapest way to be sure. The derivation is
     then done once, by the code that knows, rather than re-derived by every reader.
 
-    **``duration_s`` — how long the tool actually took, in seconds.** An explicit parameter rather
+    **``duration_s``: how long the tool actually took, in seconds.** An explicit parameter rather
     than one more ``**fields`` entry so the name and the unit are documented in ONE place. Since
     1.8.3 it is also FILLED FOR YOU when you pass none, the call came through a tool a task wrapped
     (:func:`_ensure_tool_timing`), AND the ``tool`` name here matches that wrapped function's
-    ``__name__`` — so a tool that does not measure is no longer silently unmeasured, while a call
+    ``__name__``, so a tool that does not measure is no longer silently unmeasured, while a call
     made INSIDE another tool is not charged that tool's window. Passing your own value still wins, and is worth doing whenever you can scope the
-    window more tightly than the whole call: measure with a MONOTONIC clock around the work itself
-    — ``time.perf_counter()``, or ``time.monotonic()`` as ``make_command_tool`` already uses —
+    window more tightly than the whole call: measure with a MONOTONIC clock around the work itself,
+    ``time.perf_counter()``, or ``time.monotonic()`` as ``make_command_tool`` already uses:
     never with wall-clock.
 
     ``0.0`` is a MEASUREMENT and is written as one; only ``None`` means "not measured". That is
-    why the fill below tests ``is None`` rather than falsiness — the same distinction
+    why the fill below tests ``is None`` rather than falsiness: the same distinction
     ``ToolWaste``'s ``*_seconds`` rests on, and the one this release exists to stop losing.
 
     **PRECONDITION for anything that reads these as an INTERVAL:** the envelope ``ts`` must be the
     END of the window ``duration_s`` measures, because :mod:`rlm_harness.metrics` reconstructs
     ``[ts - duration_s, ts]`` from the pair to stop a nested call being counted twice. Every tool
-    here records immediately after its window closes, so the kit satisfies it — but the tighter
+    here records immediately after its window closes, so the kit satisfies it, but the tighter
     scoping invited above puts it in your hands: work
     done between the window's end and this call shifts the interval later, and enough of it stops
     an outer interval containing its inner one. Note ``record`` stamps ``ts`` inside its own lock,
@@ -300,7 +300,7 @@ def record_tool_call(
 
     Worth the two lines at every call site: without it a trace's only clock is the envelope ``ts``,
     stamped when the event is RECORDED, so the sole way to attribute wall-clock is the gap between
-    consecutive events — which charges a whole turn's model generation to that turn's first tool
+    consecutive events, which charges a whole turn's model generation to that turn's first tool
     call. Every attribution made against this kit's own corpus before 1.6.0 had that error in it.
     """
     recorder = current_recorder()
@@ -364,7 +364,7 @@ class TraceRecorder:
         self._meta = meta or {}
         self._clock = clock
         # Optional LIVE observer: every recorded event is also handed to this callback as it happens
-        # (best-effort). Lets a consumer stream the trajectory in real time — a streaming UI uses
+        # (best-effort). Lets a consumer stream the trajectory in real time: a streaming UI uses
         # it for tool_calls/sub_calls, which the planner's REPL invokes INSIDE the sandbox (so dspy's
         # on_tool callback never sees them, but the recorder does). Never mutates the persisted trace.
         self._on_event = on_event
@@ -391,7 +391,7 @@ class TraceRecorder:
         # on the FINAL Prediction, so record_main_trajectory() would otherwise stamp every main_step
         # at finalize time (all identical). A per-turn callback (rlm_harness.task) feeds note_main_step()
         # AS each turn is parsed; record_main_trajectory() then matches by reasoning and backfills the
-        # real ts — keeping the full {reasoning,code,output} payload, only correcting the timestamp.
+        # real ts: keeping the full {reasoning,code,output} payload, only correcting the timestamp.
         # Empty (no callback wired, or replay) → record_main_trajectory falls back to clock().
         self._main_ts: list[tuple[Any, float]] = []
         # Sandbox execute() durations, staged by the interpreter wrappers the kit owns and matched
@@ -400,14 +400,14 @@ class TraceRecorder:
         # llm_query_batched fans sub_lm calls across threads; a wrapped sub_lm
         # records a sub_call per thread. Serialise step assignment + the JSONL
         # write so concurrent escalations can't race step_ids or interleave lines
-        # (the JSONL is the replay/RL source of truth — it must stay intact).
+        # (the JSONL is the replay/RL source of truth. It must stay intact).
         self._lock = threading.Lock()
 
     # -- lifecycle ---------------------------------------------------------
 
     def __enter__(self) -> Self:
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
-        # Stashed HERE, where `open()` resolves the relative path — a caller that constructs, then
+        # Stashed HERE, where `open()` resolves the relative path: a caller that constructs, then
         # `chdir`s, then enters would otherwise have the teardown re-read aimed at a different file
         # than the one written. PRIVATE: the public `self.path` stays exactly what the caller passed.
         self._abs_path = os.path.abspath(self.path)
@@ -434,11 +434,11 @@ class TraceRecorder:
         self._token = _active.set(self)
         # `rlm_harness` sits BESIDE `meta`, never inside it: `meta` is the caller's namespace
         # (`rubric_to_meta` writes there) and the kit must not squat in it. Deferred import
-        # because `trace.py` is imported BY `__init__.py` — at module top this is circular, and
+        # because `trace.py` is imported BY `__init__.py`: at module top this is circular, and
         # by the time a recorder is entered the package is fully imported.
         #
         # Why at all: `schema` is the FORMAT version (`trace/v1`), which says nothing about which
-        # kit wrote the file. A corpus spanning several releases is then un-attributable — you
+        # kit wrote the file. A corpus spanning several releases is then un-attributable: you
         # cannot tell a behaviour change from a version change, which is exactly the wall this
         # release's own measurement work hit.
         from . import __version__
@@ -497,10 +497,10 @@ class TraceRecorder:
         Filtered by ``run_id`` because the handle is opened in append mode and the file may hold
         several runs.
 
-        **Returns ``None`` — emitting NOTHING — unless the re-read contains this run's own
+        **Returns ``None``, emitting NOTHING, unless the re-read contains this run's own
         ``run_start``.** ``load_events`` returns ``[]`` for a rotated file, a ``/dev/null`` path, or
         a mismatched id, and `compute_run_facts([])` would then produce ``main_steps: 0`` and the
-        rest — indistinguishable from a measured zero, and streamed live to every consumer's
+        rest: indistinguishable from a measured zero, and streamed live to every consumer's
         ``on_event``. An absent event is not a measurement, one layer over. A torn line from a
         concurrent appender raises ``JSONDecodeError`` (a ``ValueError``) and degrades to absent
         too, which is the right direction.
@@ -594,7 +594,7 @@ class TraceRecorder:
 
         Matched back to the post-hoc trajectory (by ``reasoning``) in ``record_main_trajectory`` to
         backfill the event ts. Thread-safe (a dspy callback may fire from a worker thread). Never
-        touches the JSONL — it only stages a timestamp for later reconciliation.
+        touches the JSONL: it only stages a timestamp for later reconciliation.
 
         **Callers must stage exactly ONE entry per turn.** The match is by ``reasoning``, and a
         model that repeats a reasoning string across turns (a retry loop does) makes any surplus
@@ -618,24 +618,24 @@ class TraceRecorder:
         **What this measures is ``execute()`` WALL-CLOCK, which is not the same as time the sandbox
         spent running Python.** dspy's interpreter dispatches a tool call synchronously from inside
         ``execute()`` (``PythonInterpreter._handle_tool_call``), and ``llm_query`` / the sub-LM are
-        injected as tools, so a cell whose code calls one BLOCKS here for the whole round trip —
-        host-side network time, a subprocess, another model's generation — and every second of it
+        injected as tools, so a cell whose code calls one BLOCKS here for the whole round trip:
+        host-side network time, a subprocess, another model's generation, and every second of it
         lands in ``exec_duration_s``. There is no hook to subtract it (the same limitation
         ``RLMConfig.sandbox_turn_timeout_s`` carries, and for the same reason). A one-line cell that
         calls one slow tool is therefore indistinguishable here from four minutes of real compute.
         **Read a large outlier as "the turn blocked", not as "the sandbox was busy".** Observed in the
         wild and confirmed: a 235.5s value on a 143-character single-line cell that was
-        ``print(llm_query(...))`` — the whole of it a sub-LM round trip, with the generated text
+        ``print(llm_query(...))``: the whole of it a sub-LM round trip, with the generated text
         recorded as the turn's ``output``.
 
         Cross-checking it against the same run's ``tool_call`` / ``sub_call`` events is worth trying
         but **often will not resolve it, and a reader must not take the absence as the field lying**:
 
-        * a ``sub_call`` gives you the escalation but not a duration — it records what was asked
+        * a ``sub_call`` gives you the escalation but not a duration. It records what was asked
           and answered, not how long it took. **Since 1.7.0 the event is always there**: ``RLMTask``
           wraps a plain ``sub_lm`` for tracing automatically. On a trace written BEFORE 1.7.0 by a
           consumer that never called :func:`~rlm_harness.sub_lm.intercept_sub_lm` itself, there is
-          no ``sub_call`` at all and the largest block of time in the run has no event of its own —
+          no ``sub_call`` at all and the largest block of time in the run has no event of its own:
           check ``run_start.rlm_harness`` before reading a zero as a measurement.
         * a ``tool_call``'s ``duration_s`` is OPTIONAL and is set only by the tools whose cost is a
           wait outside this process. The local read/grep/edit tools record the call with no duration
@@ -646,20 +646,20 @@ class TraceRecorder:
 
         Called by the interpreter wrappers the kit owns (``sandbox.py``'s guarded ``execute`` and
         ``ContainerInterpreter.execute``). An interpreter a caller injects directly is NOT wrapped,
-        so its turns carry no ``exec_duration_s`` at all — absent, rather than a wrong zero.
+        so its turns carry no ``exec_duration_s`` at all: absent, rather than a wrong zero.
 
         **Matched by ``code``, never by position.** A turn does NOT always reach the sandbox: dspy
         raises ``SyntaxError`` out of ``_strip_code_fences`` for an explicitly non-Python fence
         (```` ```json ````, ```` ```bash ````) and records that turn from the *unstripped* text
         without calling ``execute()`` at all. Zipping positionally therefore shifts every later
-        turn's duration by one and silently drops the last — a confidently WRONG attribution with
+        turn's duration by one and silently drops the last: a confidently WRONG attribution with
         nothing to signal it, which is worse than having no attribution. Matching on the code that
         actually ran makes the skipped turn match nothing, so its key is simply absent. Same
         earliest-unused-at-or-after-the-cursor rule ``note_main_step``'s ``reasoning`` match uses.
 
         Unlike ``note_main_step`` this stages ONE entry per ``execute()`` call from dspy's strictly
         sequential loop, so the staged list is already 1:1 with the turns that ran and in their
-        order — a duplicated code cell is NOT a defect here. The cursor is symmetry plus one real
+        order: a duplicated code cell is NOT a defect here. The cursor is symmetry plus one real
         if unlikely guard: dspy runs a setup ``execute()`` before the loop, whose staged entry a
         turn with a colliding code string could otherwise claim.
 
@@ -673,15 +673,15 @@ class TraceRecorder:
         """Extract the RLM ``Prediction`` trajectory into ``main_step`` events.
 
         Each turn's ``ts`` is the LIVE time it was parsed (from ``note_main_step``), matched by
-        ``reasoning`` — so a re-rendered trace reflects when turns actually happened, not when the
+        ``reasoning``, so a re-rendered trace reflects when turns actually happened, not when the
         trajectory was flushed. The match consumes the earliest unused live stamp with the same
         reasoning AT OR AFTER the previous match (see the cursor comment below); a turn with no live
-        stamp (no callback wired, or replay) falls back to ``clock()`` — unchanged from before.
+        stamp (no callback wired, or replay) falls back to ``clock()``: unchanged from before.
         Payload shape, ``step_id`` and file order are identical either way; only the ts value
         of a main_step improves, which leaves step_id-ordered readers (RL dataset, replay) and the
         ``max(ts)-min(ts)`` elapsed metric untouched.
 
-        **How a reader must order these events** — a downstream consumer got this wrong, so it is
+        **How a reader must order these events**: a downstream consumer got this wrong, so it is
         written down here rather than left to be inferred:
 
         * ``main_step`` events are emitted in ONE BLOCK once ``aforward()`` has returned, so a
@@ -689,7 +689,7 @@ class TraceRecorder:
           LATER. Measured at 70 of 76 real traces. This is by design, not a defect.
         * ``payload["turn"]`` is AUTHORITATIVE for ordering, and file order among ``main_step``
           events already matches it (72 of 72 traces). **Never sort main_steps by ``ts`` to
-          "recover" their order** — that reorders turns.
+          "recover" their order**: that reorders turns.
         * ``ts`` is for placing a turn against the tool calls around it, and nothing else.
 
         Tolerant of shape drift: a missing/oddly-typed ``trajectory`` is recorded
@@ -706,16 +706,16 @@ class TraceRecorder:
         # The cursor alone is what makes each entry single-use: it only ever advances to `i + 1`
         # after consuming index `i`, and every scan starts AT the cursor, so no index can be
         # revisited. (A separate `used` flag list lived here until 1.6.1 and became provably dead
-        # the moment the cursor arrived — every index the loop can reach is, by construction,
+        # the moment the cursor arrived: every index the loop can reach is, by construction,
         # past everything already consumed.)
         # Trajectory order IS chronological order, so consuming staged entries in non-decreasing
-        # index order is true by construction — and enforcing it means a later turn can never be
+        # index order is true by construction, and enforcing it means a later turn can never be
         # handed a stamp/duration that belongs to an earlier one. Each cursor is a single-element
         # list so the closures can advance it. Note the cursor advances ONLY on a match: a turn
         # that matches nothing must not push the cursor past a LATER turn's entry (that would
         # break `test_a_turn_dspy_never_executed_does_not_steal_the_next_turns_duration`).
         #
-        # This is defence in depth, NOT the fix for the ts inversions — those are fixed at source
+        # This is defence in depth, NOT the fix for the ts inversions. Those are fixed at source
         # by `task.py:_MainStepTimer` staging one entry per turn instead of two. A cursor alone
         # cannot repair ADJACENT duplicate keys (turn 1 would still take turn 0's spare entry),
         # which merely hides the symptom while leaving the value wrong.
@@ -750,7 +750,7 @@ class TraceRecorder:
                 "code": entry.get("code"),
                 "output": entry.get("output"),
             }
-            # Matched on the CODE that ran, never on position — see `note_exec_duration`. A turn
+            # Matched on the CODE that ran, never on position: see `note_exec_duration`. A turn
             # dspy recorded without executing (a non-Python fence tag) matches nothing and the key
             # is ABSENT, instead of stealing the next turn's duration and shifting every one after
             # it. Conditional for the same reason `args` is: an unconditional null would land on

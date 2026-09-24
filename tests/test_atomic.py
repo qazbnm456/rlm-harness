@@ -1,4 +1,4 @@
-"""atomic_write_text / atomic_write_stream — write-without-partial-file. All offline, dspy-free."""
+"""atomic_write_text / atomic_write_stream: write-without-partial-file. All offline, dspy-free."""
 from __future__ import annotations
 
 import os
@@ -33,7 +33,7 @@ def test_atomic_write_text_creates_a_nested_directory(tmp_path):
 
 
 def test_atomic_write_text_bare_relative_filename(tmp_path, monkeypatch):
-    # os.path.dirname("checkpoint.json") == "" — os.makedirs("", exist_ok=True) raises
+    # os.path.dirname("checkpoint.json") == "": os.makedirs("", exist_ok=True) raises
     # FileNotFoundError without the `dirname or "."` guard. An entirely ordinary usage pattern
     # (write relative to the cwd) must not crash.
     monkeypatch.chdir(tmp_path)

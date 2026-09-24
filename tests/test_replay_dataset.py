@@ -62,7 +62,7 @@ def test_export_sft_turns_per_turn_with_seeded_initial(tmp_path):
     runs = group_by_run(load_events(path))
     turns = export_sft_turns(runs)
     assert len(turns) == 2                                   # one sample per root turn
-    # turn 0: history empty, but the initial state (source + instructions) IS the seed —
+    # turn 0: history empty, but the initial state (source + instructions) IS the seed:
     # this is the "first user input" the bare trajectory otherwise lacks.
     assert turns[0]["input"]["initial"] == {"source": "ADVISORY", "instructions": "SYS"}
     assert turns[0]["input"]["history"] == []
@@ -122,7 +122,7 @@ def test_final_outputs(tmp_path):
 # `record_tool_call` pins no key for a tool's output and the kit's own tools disagree:
 # MCP and read_skill record under `preview`, web_search under `results`, the
 # make_model_tool convention under `raw`, list_skills under `result`. `replay` read only
-# `result`, so THREE of the four shipped families replayed as None — silently, while
+# `result`, so THREE of the four shipped families replayed as None: silently, while
 # `dataset.py:_action_record` already read the fallback. Two readers of one trace
 # disagreeing was the bug.
 
@@ -145,7 +145,7 @@ def test_replay_serves_every_shipped_output_key(tmp_path):
 
 def test_replay_refuses_to_serve_a_truncated_preview(tmp_path):
     """`preview` is deliberately NOT in the fallback: it is a TRUNCATED head of the output,
-    so serving it would hand the replay silently-wrong bytes. Fail loudly instead — the same
+    so serving it would hand the replay silently-wrong bytes. Fail loudly instead: the same
     posture this class already takes for drift."""
     from rlm_harness import TraceRecorder, load_timeline
     from rlm_harness.replay import RecordedToolProvider
@@ -178,8 +178,8 @@ def test_replay_matches_the_raw_name_not_the_repl_alias(tmp_path):
 
 
 def test_export_actions_carries_repl_name_only_when_it_differs(tmp_path):
-    """§4's other half. The MCP mapping is UNRECOVERABLE offline — it depends on the server's
-    whole tool list at run time, which never enters the trace — so the exporter must carry it.
+    """§4's other half. The MCP mapping is UNRECOVERABLE offline: it depends on the server's
+    whole tool list at run time, which never enters the trace, so the exporter must carry it.
     Conditional, mirroring `mcp._repl_alias`: a `null` key on every non-MCP tool record would
     churn every consumer's golden fixtures for nothing."""
     from rlm_harness import TraceRecorder, export_actions, group_by_run, load_events

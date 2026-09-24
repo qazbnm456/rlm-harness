@@ -88,7 +88,7 @@ def test_load_skills_discovery_invalid_raises(tmp_path):
 def test_inject_mode_does_not_point_at_a_tool_it_does_not_register(tmp_path):
     """The docstring is the tool DESCRIPTION the model reads. Under `discovery="inject"` there is
     no `list_skills` tool, so naming it would send the planner to a name that raises NameError in
-    the REPL — the catalog comes from the caller's injected manifest instead."""
+    the REPL. The catalog comes from the caller's injected manifest instead."""
     skill_dir = _make_skill_dir(tmp_path)
 
     (read_skill,) = load_skills_as_tools(skill_dir, discovery="inject")

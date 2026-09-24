@@ -1,9 +1,9 @@
-"""Per-role LM request parameters (1.12.0) — `RLMConfig.main_lm_kwargs` / `sub_lm_kwargs`.
+"""Per-role LM request parameters (1.12.0): `RLMConfig.main_lm_kwargs` / `sub_lm_kwargs`.
 
 The kit ships the MECHANISM and no vocabulary, because the key that bounds a model's thinking is
 server-specific. Measured on one vLLM deployment: `thinking_token_budget` works while
 `max_thinking_tokens`, `thinking_budget`, `reasoning_budget` and
-`chat_template_kwargs.thinking_budget` are silently ignored — and `reasoning_effort`, the one name
+`chat_template_kwargs.thinking_budget` are silently ignored, and `reasoning_effort`, the one name
 litellm maps across providers, moved reasoning the WRONG way on that model. So what the caller
 writes is what reaches the server, and the kit's only vocabulary is on the READ path, for the
 trace.
@@ -61,7 +61,7 @@ def test_malformed_json_raises_naming_the_variable(monkeypatch):
 
 @pytest.mark.parametrize("raw", ['[1, 2]', '"a string"', "42", "null"])
 def test_valid_json_of_the_wrong_shape_raises_TypeError_naming_the_variable(monkeypatch, raw):
-    """TypeError, matching `__post_init__`'s check for the same mistake made in code — one rule,
+    """TypeError, matching `__post_init__`'s check for the same mistake made in code: one rule,
     enforced the same way whichever door the value came through."""
     monkeypatch.setenv("RLM_MAIN_LM_KWARGS", raw)
     with pytest.raises(TypeError, match="RLM_MAIN_LM_KWARGS"):
@@ -95,8 +95,8 @@ def test_a_refused_key_is_refused_through_env_too(monkeypatch):
 
 def test_max_tokens_is_ALLOWED_and_that_is_the_per_role_cap():
     """The line is not "everything the kit sets", it is whether the TRACE can see the override.
-    `max_tokens` is read back off the LM into `budgets`, so a per-role override is self-documenting
-    — and is deliberately how a consumer gets a per-role generation cap with no second field."""
+    `max_tokens` is read back off the LM into `budgets`, so a per-role override is self-documenting,
+    and is deliberately how a consumer gets a per-role generation cap with no second field."""
     cfg = _cfg(max_tokens=32768, sub_lm_kwargs={"max_tokens": 4096})
     assert cfg.sub_lm_kwargs == {"max_tokens": 4096}
 
@@ -141,7 +141,7 @@ def test_the_recognised_shapes_report_the_path_they_were_found_at(kwargs, expect
     {"chat_template_kwargs": {"thinking_budget": 4096}},  # measured: silently ignored by vLLM
 ])
 def test_an_unrecognised_shape_reads_as_absent(kwargs):
-    """Absent means NOT RECOGNISED, never "no budget was set" — the kit owns no wire vocabulary, so
+    """Absent means NOT RECOGNISED, never "no budget was set": the kit owns no wire vocabulary, so
     an unknown key still REACHES the server and is simply not annotated."""
     assert compat.applied_thinking_budget(_LM(kwargs)) is None
 
@@ -185,7 +185,7 @@ def test_a_sub_passthrough_does_not_reach_the_main_LM():
 
 
 def test_unset_puts_NO_new_key_on_the_wire():
-    """Requirement 1: the default is byte-identical to 1.11.2. Not "an empty extra_body" — no key
+    """Requirement 1: the default is byte-identical to 1.11.2. Not "an empty extra_body", no key
     at all, because an empty object is still a key some servers parse."""
     main, sub = _configure(_cfg())
     for lm in (main, sub):
@@ -194,7 +194,7 @@ def test_unset_puts_NO_new_key_on_the_wire():
 
 
 def test_a_role_kwarg_wins_over_the_shared_one_and_the_trace_shows_it():
-    """Per-role `max_tokens` with no second config field — and `applied_lm_budget` reads the
+    """Per-role `max_tokens` with no second config field, and `applied_lm_budget` reads the
     override off the LM, so the trace reports the cap the call actually carried."""
     main, sub = _configure(_cfg(max_tokens=32768, sub_lm_kwargs={"max_tokens": 4096}))
     assert compat.applied_lm_budget(main)["cap"] == 32768
@@ -218,15 +218,15 @@ def test_no_warning_when_the_role_was_built_here(caplog):
 
 
 def test_a_thinking_budget_at_or_above_the_cap_warns(caplog):
-    """Requirement 5. A warning, never an error: the combination is INERT — generation stops at the
-    smaller number either way — so refusing it would be the kit overreaching."""
+    """Requirement 5. A warning, never an error: the combination is INERT, generation stops at the
+    smaller number either way, so refusing it would be the kit overreaching."""
     with caplog.at_level("WARNING", logger="rlm_harness.runtime"):
         _configure(_cfg(max_tokens=8192, main_lm_kwargs={"extra_body": {"thinking_token_budget": 8192}}))
     assert "can never act" in caplog.text
 
 
 def test_a_thinking_budget_below_the_cap_is_silent(caplog):
-    """The shape that works: 16384 against a 32768 cap — measured to leave every capped call usable."""
+    """The shape that works: 16384 against a 32768 cap, measured to leave every capped call usable."""
     with caplog.at_level("WARNING", logger="rlm_harness.runtime"):
         _configure(_cfg(max_tokens=32768, main_lm_kwargs=VLLM))
     assert "can never act" not in caplog.text
@@ -277,7 +277,7 @@ def _run_end(tmp_path, cfg, **configure_kw):
 
 
 def test_the_thinking_budget_reaches_the_trace_per_role(tmp_path):
-    """Requirement 4. Without it a corpus cannot tell the populations apart — which is the whole
+    """Requirement 4. Without it a corpus cannot tell the populations apart, which is the whole
     reason the runaway was diagnosable in the first place."""
     cfg = _cfg(interpreter="mock", max_tokens=32768, main_lm_kwargs=VLLM,
                sub_lm_kwargs={"extra_body": {"thinking_token_budget": 2048}})
@@ -289,7 +289,7 @@ def test_the_thinking_budget_reaches_the_trace_per_role(tmp_path):
 
 
 def test_thinking_is_ABSENT_from_budgets_when_no_role_carries_one(tmp_path):
-    """Absent-or-populated, never empty — the same optionality `test_contract.py` pins for every
+    """Absent-or-populated, never empty: the same optionality `test_contract.py` pins for every
     other payload addition, so a reader can tell "not recorded" from "recorded, and none"."""
     budgets = _run_end(tmp_path, _cfg(interpreter="mock"))["budgets"]
     assert "thinking" not in budgets

@@ -1,10 +1,10 @@
 """REPL-safety guard: every callable injected into the RLM's REPL must expose EXPLICIT params.
 
 dspy.RLM builds the in-sandbox tool proxy from ``inspect.signature(tool.func)`` (on BOTH the Deno and
-container backends), so a ``*args``/``**kwargs`` param — or a required param after a defaulted one —
+container backends), so a ``*args``/``**kwargs`` param, or a required param after a defaulted one:
 breaks the model's ability to call the tool (the ``_make_tool`` kwargs bug). This convention was
 documented across the ecosystem but never enforced; this test turns it into an invariant so a future
-factory can't silently reintroduce the hazard. Pure introspection — no live model, no Deno, no network."""
+factory can't silently reintroduce the hazard. Pure introspection: no live model, no Deno, no network."""
 import inspect
 import types
 
@@ -58,7 +58,7 @@ def test_assert_repl_safe_rejects_var_positional():
 
 
 def test_assert_repl_safe_rejects_required_after_default():
-    def f(**kw):  # body irrelevant — __signature__ drives inspection
+    def f(**kw):  # body irrelevant, __signature__ drives inspection
         ...
     f.__signature__ = inspect.Signature([
         inspect.Parameter("a", inspect.Parameter.KEYWORD_ONLY, default=None),
@@ -85,7 +85,7 @@ def _build_grep_files_tool(tmp_path):
 
 
 # Every shipped factory that produces a REPL-injected tool, with the minimal arguments it needs.
-# Inner runners/searchers/fetchers/cloners are never called at construction — only the RETURNED
+# Inner runners/searchers/fetchers/cloners are never called at construction: only the RETURNED
 # tool's signature is under test, so their own signatures don't matter. Keyed by the factory's
 # EXPORTED NAME so `test_sweep_covers_every_shipped_repl_factory` can check this table against
 # `rlm_harness.tools.__all__` itself.
@@ -115,7 +115,7 @@ _REPL_FACTORIES = {
 # outside this sweep. Named one at a time, with the reason, rather than pattern-matched: the guard
 # below is only worth having if each exemption has to be argued for.
 _NOT_REPL_FACTORIES = {
-    # Returns a HOST-SIDE validator — it takes an already-parsed object and returns a list of
+    # Returns a HOST-SIDE validator. It takes an already-parsed object and returns a list of
     # violation strings, for a consumer's own parse step or `make_model_tool`'s `validate=`.
     # Never placed in a `tools=[...]` list, so the REPL's signature rules don't apply to it.
     "make_json_schema_validator",
@@ -130,8 +130,8 @@ def test_shipped_repl_factory_is_safe(factory, tmp_path):
 def test_sweep_covers_every_shipped_repl_factory():
     """What actually backs CLAUDE.md's "sweeps every shipped factory" claim.
 
-    The table above is hand-built — each factory takes different arguments, so it cannot be driven
-    generically — but NOTICING a new one is automatic: a `make_*` added to
+    The table above is hand-built. Each factory takes different arguments, so it cannot be driven
+    generically, but NOTICING a new one is automatic: a `make_*` added to
     `rlm_harness.tools.__all__` with no entry above (and no argued exemption) fails HERE, at the
     moment it ships, rather than the first time a model can't call it. Six factories landed in
     1.3.0 before this guard existed and not one of them reached the sweep; each was covered only
@@ -142,14 +142,14 @@ def test_sweep_covers_every_shipped_repl_factory():
     shipped = {name for name in tools_pkg.__all__ if name.startswith("make_")}
     unswept = shipped - set(_REPL_FACTORIES) - _NOT_REPL_FACTORIES
     assert not unswept, (
-        f"shipped but not swept: {sorted(unswept)} — add a builder to _REPL_FACTORIES, or list it "
+        f"shipped but not swept: {sorted(unswept)}, add a builder to _REPL_FACTORIES, or list it "
         f"in _NOT_REPL_FACTORIES with the reason it is not a REPL-injected tool."
     )
 
 
 def test_other_repl_tool_producers_are_safe(tmp_path):
     """REPL tools that do NOT come from a `rlm_harness.tools` factory, and so cannot be reached by
-    the table above: progressive-disclosure skills, the sub-LM query tool, and the MCP bridge —
+    the table above: progressive-disclosure skills, the sub-LM query tool, and the MCP bridge.
     the site that HAD the kwargs bug."""
     assert_repl_safe(model_as_tool("m", None, description="d"))
 
@@ -171,7 +171,7 @@ def test_other_repl_tool_producers_are_safe(tmp_path):
 #
 # The shape checks above were never enough on their own: dspy ALSO validates the tool's
 # NAME at `RLM(...)` construction (a Python identifier, not a keyword, unique across the
-# task), and a failure aborts registration for EVERY tool — one bad name silently takes
+# task), and a failure aborts registration for EVERY tool: one bad name silently takes
 # the rest down with it. Four shipped factories derived a name from data the kit does not
 # control and all four were broken; each test below fails on 1.0.1.
 
@@ -195,7 +195,7 @@ def test_model_and_harness_tools_do_not_collide():
     assert model_tool.__name__ != harness_tool.__name__
 
     rlm = dspy.RLM("q: str -> a: str", tools=[model_tool, harness_tool])
-    # BOTH must survive registration — the 1.0.1 bug was a silent drop, not an exception,
+    # BOTH must survive registration. The 1.0.1 bug was a silent drop, not an exception,
     # so asserting on the REGISTERED SET is stronger than asserting an exception was raised.
     assert len(rlm._user_tools) == 2
 
@@ -209,7 +209,7 @@ def test_model_as_tool_accepts_a_real_model_id():
 
 
 def test_schema_validator_accepts_a_dynamic_model_name():
-    """D4. `validate_{model.__name__}` — a `create_model("bad-name")` carries the hyphen
+    """D4. `validate_{model.__name__}`: a `create_model("bad-name")` carries the hyphen
     through. Dynamic output models are exactly what `RLMTask.output_model` exists for."""
     tool = make_schema_validator(create_model("bad-name", x=(int, 1)))
     assert_repl_safe(tool)
@@ -228,7 +228,7 @@ def test_mcp_tool_names_are_repl_safe(server_name):
     tool = _make_tool(dspy, bridge, fake, "", repl)
 
     assert_repl_safe(tool)
-    # dspy validates `Tool.name`, NOT `func.__name__` — sanitising only the latter is a
+    # dspy validates `Tool.name`, NOT `func.__name__`: sanitising only the latter is a
     # placebo that this construction call is here to catch.
     dspy.RLM("q: str -> a: str", tools=[tool])
 
@@ -290,7 +290,7 @@ def test_assert_repl_safe_rejects_a_bad_name():
 
 def test_assert_repl_safe_reads_the_name_dspy_reads():
     """`dspy.Tool(f, name=…)` overrides `f.__name__`, and dspy validates the OVERRIDE.
-    Checking `__name__` would pass a tool dspy refuses — the exact placebo this guards."""
+    Checking `__name__` would pass a tool dspy refuses: the exact placebo this guards."""
     def sanitised_looking(x: str):
         ...
     tool = dspy.Tool(sanitised_looking, name="get-weather")   # func name fine, Tool.name not
@@ -312,7 +312,7 @@ def test_assert_repl_safe_rejects_a_reserved_name():
 @pytest.mark.parametrize("name", ["search_files", "naïve_tool", "café_search", "日本語ツール", "_x"])
 def test_sanitize_is_a_fixpoint_on_valid_names(name):
     """THE property. `str.isidentifier()` accepts non-ASCII letters and so does dspy, so an
-    ASCII-only character class would REWRITE names that work today — collapsing an all-CJK
+    ASCII-only character class would REWRITE names that work today: collapsing an all-CJK
     name to a bare `_`. That would break a working server in the name of fixing a bug."""
     assert is_valid_tool_name(name)
     assert sanitize_tool_name(name) == name
@@ -329,7 +329,7 @@ def test_sanitize_maps_invalid_names(raw, expected):
 
 @pytest.mark.parametrize("raw", ["", "---", "..."])
 def test_sanitize_gives_unnameable_input_a_real_stem(raw):
-    """Input with nothing usable left must not become a bare `_` — that is the throwaway
+    """Input with nothing usable left must not become a bare `_`: that is the throwaway
     convention in a REPL. Scoped to input that NEEDED sanitising: a name that was already
     `_` stays `_`, because the fixpoint outranks this (rewriting a valid name is the one
     thing the sanitiser must never do)."""
@@ -348,7 +348,7 @@ def test_unique_names_reserve_valid_ones_first():
     """Two-pass ordering. One pass lets a sanitised name evict a name that was already
     fine: ['get-weather', 'get_weather'] would rename the SECOND one for no reason."""
     m = unique_tool_names(["get-weather", "get.weather", "get_weather"])
-    assert m["get_weather"] == "get_weather"          # untouched — it was always valid
+    assert m["get_weather"] == "get_weather"          # untouched. It was always valid
     assert len({*m.values()}) == 3                    # and everything stays distinct
     assert all(is_valid_tool_name(v) for v in m.values())
 
@@ -363,7 +363,7 @@ def test_unique_names_are_stable_and_total():
 
 def test_reserved_names_are_a_superset_of_the_hardcoded_floor():
     """Union with dspy's live set, never either-or: a stale fallback may only OVER-reject
-    (loud, local) — under-rejecting would pass here and raise in a consumer's rollout."""
+    (loud, local). Under-rejecting would pass here and raise in a consumer's rollout."""
     assert reserved_tool_names() >= {"llm_query", "llm_query_batched", "SUBMIT", "print"}
 
 
@@ -381,7 +381,7 @@ from rlm_harness.testing import assert_task_repl_safe
 def _task(signature="q: str -> a: str", tools=()):
     """A duck-typed stand-in. `assert_task_repl_safe` must NOT import RLMTask (task.py
     imports dspy eagerly, and testing.py is documented as importable without it), so it
-    duck-types — and this fixture is what pins that it really does."""
+    duck-types, and this fixture is what pins that it really does."""
     return types.SimpleNamespace(signature=signature, tools=list(tools), output_field="a")
 
 
@@ -425,7 +425,7 @@ def test_task_level_still_runs_the_per_tool_checks():
 
 
 def test_task_level_reads_the_INSTANCE_tools_not_the_class():
-    """Runtime-assembled tools (the MCP case) live only on an instance — a class-level
+    """Runtime-assembled tools (the MCP case) live only on an instance: a class-level
     check cannot see them, which is exactly the set these rules bite on."""
     from rlm_harness import RLMTask, configure
     from rlm_harness.testing import ScriptedInterpreter, scripted_lm
@@ -461,7 +461,7 @@ def test_signature_parser_matches_dspy_on_every_repo_signature():
 
 
 def test_signature_parser_rejects_what_dspy_rejects():
-    """A keyword field name and a stray arrow are both things dspy itself raises on —
+    """A keyword field name and a stray arrow are both things dspy itself raises on.
     the helper must not silently no-op on exactly the broken tasks."""
     from rlm_harness.testing import _signature_field_names
 
@@ -475,8 +475,8 @@ def test_signature_parser_rejects_what_dspy_rejects():
 
 def test_task_level_accepts_a_bare_CLASS():
     """The docstring says a subclass is accepted, so pin it. On a CLASS,
-    `getattr(cls, "resolved_tools")` returns the property DESCRIPTOR — truthy and not
-    iterable — so a naive `getattr(...) or getattr(...)` raises
+    `getattr(cls, "resolved_tools")` returns the property DESCRIPTOR: truthy and not
+    iterable, so a naive `getattr(...) or getattr(...)` raises
     `TypeError: 'property' object is not iterable` on exactly the documented path."""
     from rlm_harness import RLMTask
 

@@ -1,4 +1,4 @@
-"""`RLMTask(tools=…)` — the kwarg the guide has always documented but never had.
+"""`RLMTask(tools=…)`: the kwarg the guide has always documented but never had.
 
 Before 1.1.0 `tools` was a ClassVar only, so the guide's own runnable examples
 
@@ -58,7 +58,7 @@ def test_default_none_leaves_the_declaration_untouched():
 
 
 def test_empty_list_is_a_deliberate_no_tools():
-    """`tools=[]` must be distinguishable from the `None` default — otherwise there is no way
+    """`tools=[]` must be distinguishable from the `None` default. Otherwise there is no way
     to say "this instance gets nothing" for a class that declares some."""
     class Declared(Base):
         tools = [_tool("declared")]
@@ -70,8 +70,8 @@ def test_kwarg_wins_REGARDLESS_of_where_the_subclass_calls_super():
     """THE reason the override is resolved at build time instead of assigned in __init__.
 
     Writing `self.tools = tools` inside __init__ makes the winner depend on the subclass's
-    ordering: a subclass that assigns AFTER `super().__init__()` — the more idiomatic
-    ordering — would silently clobber the caller's explicit kwarg.
+    ordering: a subclass that assigns AFTER `super().__init__()`, the more idiomatic
+    ordering. Would silently clobber the caller's explicit kwarg.
     """
     class Before(Base):
         def __init__(self, **kw):

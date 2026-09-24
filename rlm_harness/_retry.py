@@ -31,7 +31,7 @@ def short_error(exc: BaseException, limit: int = _ERR_LOG_CAP) -> str:
     The full completion is not lost for debugging: it is on the wire in the model call.
 
     PUBLIC and SemVer-frozen since 1.5.0, re-exported from ``rlm_harness.__all__``. It was
-    promoted because two independent consumers had reached into ``_retry`` for it — the kit's
+    promoted because two independent consumers had reached into ``_retry`` for it: the kit's
     own signal that an internal seam should become a named hook rather than stay private.
 
     What is frozen is the BEHAVIOUR, not the string. Callers may rely on: a rendering already
@@ -39,10 +39,10 @@ def short_error(exc: BaseException, limit: int = _ERR_LOG_CAP) -> str:
     keeps BOTH ends and states how much was dropped in between; the result is never longer than
     ``limit`` plus the elision marker; and it never raises for an ``Exception`` whose ``__str__``
     raises one (a ``BaseException`` such as ``KeyboardInterrupt`` from ``__str__`` still
-    propagates, deliberately — that is not an error to render, it is an interrupt to honour).
+    propagates, deliberately: that is not an error to render, it is an interrupt to honour).
     NOT frozen: the exact elision marker, how the budget is split between head and tail, the
-    value of the default ``limit`` (only that a positive default exists), and — for a ``limit``
-    too small to hold even the type name — anything beyond the length bound. Parse the output at
+    value of the default ``limit`` (only that a positive default exists), and: for a ``limit``
+    too small to hold even the type name: anything beyond the length bound. Parse the output at
     your own risk; it is for humans and logs."""
     try:
         text = f"{type(exc).__name__}: {exc}"
@@ -56,13 +56,13 @@ def short_error(exc: BaseException, limit: int = _ERR_LOG_CAP) -> str:
         return text
     head = (limit * 2) // 3
     # `max(1, ...)`: at limit<=1 the split leaves tail==0, and `text[-0:]` slices the WHOLE
-    # string — turning the one call whose entire job is bounding output into an amplifier.
+    # string: turning the one call whose entire job is bounding output into an amplifier.
     tail = max(1, limit - head)
     return f"{text[:head]}... [{len(text) - limit} chars elided] ...{text[-tail:]}"
 
 
 #: Pre-1.5.0 spelling, kept because consumers were importing it from here before it was public.
-#: Not documented, not in ``__all__``, and not covered by the SemVer promise — use
+#: Not documented, not in ``__all__``, and not covered by the SemVer promise, use
 #: ``rlm_harness.short_error``. Costs nothing to keep, and dropping it would break the very
 #: callers whose need justified promoting the function.
 _short_error = short_error
@@ -109,12 +109,12 @@ async def run_with_retry(
     """Run ``runner`` until it yields a valid output or the budget is exhausted.
 
     On each attempt: await ``runner``, pull ``output_field`` off the result, and
-    (if ``output_model`` is set) validate/coerce it. Any exception — a model
-    error, a missing field, a validation failure — consumes one attempt. After
+    (if ``output_model`` is set) validate/coerce it. Any exception: a model
+    error, a missing field, a validation failure: consumes one attempt. After
     ``max_retries`` attempts the last error is wrapped in :class:`RLMTaskError`.
 
     ``non_retryable`` is a closed allowlist of exception TYPES a caller has
-    already decided are not worth retrying — e.g. an explicit user-driven
+    already decided are not worth retrying: e.g. an explicit user-driven
     cancellation. A match propagates the ORIGINAL exception object verbatim,
     consuming NO attempt and never wrapped in :class:`RLMTaskError`: retrying an
     exception the caller raised on purpose to STOP the run would silently defeat
@@ -124,7 +124,7 @@ async def run_with_retry(
     The default ``()`` matches nothing, so every existing caller is unaffected.
 
     ``is_fast_fail`` is the same "don't retry, propagate verbatim, consume no
-    attempt" behavior for a caught exception a static type tuple cannot express —
+    attempt" behavior for a caught exception a static type tuple cannot express:
     e.g. "this dspy LM error is in a category dspy itself calls non-retryable,
     except for the one subtype that is worth retrying here for a reason dspy has
     no way to know about" (see ``_dspy_compat.is_fast_fail_lm_error``). Checked

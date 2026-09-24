@@ -1,4 +1,4 @@
-"""serve_harness — the server side of the make_harness_tool delegation contract. All offline: a fake
+"""serve_harness: the server side of the make_harness_tool delegation contract. All offline: a fake
 `run` + StringIO streams, no dspy, no Deno, no live harness. Pins the wire, the exit-code split
 (infra=1 / ran=0), CWD isolation, env loading, stderr-only diagnostics, and byte-compat with the
 client's HarnessInvocation-shaped read."""
@@ -92,7 +92,7 @@ def test_infra_failure_exits_1_and_keeps_stdout_clean(tmp_path):
 
 
 def test_ran_but_empty_artifact_exits_0(tmp_path):
-    # the harness RAN but produced nothing — that's a CONTENT outcome (exit 0); the caller judges it.
+    # the harness RAN but produced nothing: that's a CONTENT outcome (exit 0); the caller judges it.
     def run(source, *, run_id):
         return HarnessPointer(artifact="")
 
@@ -120,7 +120,7 @@ def test_env_files_load_before_the_run(tmp_path, monkeypatch):
 
 
 def test_env_loader_never_invents_an_absent_key(tmp_path, monkeypatch):
-    # the file sets exactly its keys — an absent one stays as the parent left it (a subscription parent's
+    # the file sets exactly its keys. An absent one stays as the parent left it (a subscription parent's
     # unset ANTHROPIC_API_KEY must NOT be invented by loading the harness env).
     envf = tmp_path / "h.env"
     envf.write_text("HARNESS_ROLE=x\n")
@@ -191,10 +191,10 @@ def test_to_pointer_failure_is_a_clean_exit_1_not_a_stdout_leak(tmp_path):
 
 
 def test_harness_stdout_noise_cannot_corrupt_the_pointer(tmp_path):
-    # a harness that prints a banner to stdout during the run must NOT precede/corrupt the pointer —
+    # a harness that prints a banner to stdout during the run must NOT precede/corrupt the pointer:
     # serve_harness redirects the harness's stdout to stderr, so stdout carries ONLY the pointer line.
     def run(source, *, run_id):
-        print("HARNESS BANNER: starting", end="")   # partial line, no newline — the worst case
+        print("HARNESS BANNER: starting", end="")   # partial line, no newline, the worst case
         print("progress 50%")
         return HarnessPointer(artifact="A", run_id="r")
 
@@ -271,7 +271,7 @@ def test_insertion_order_is_preserved():
 
 
 def test_an_empty_mapping_bundles_to_an_empty_artifact():
-    # A harness that produced nothing returns an empty artifact and exit 0 — emptiness is the
+    # A harness that produced nothing returns an empty artifact and exit 0. Emptiness is the
     # CALLER's judgement to make, not a serving failure.
     assert bundle_artifact({}) == ""
     assert parse_artifact_bundle("") == {}
@@ -286,7 +286,7 @@ def test_a_markdown_underline_is_content_not_a_section_break():
 
 def test_a_file_quoting_a_header_line_escalates_the_marker():
     """The collision case that silently corrupts a bundle if unhandled: a file whose CONTENT holds a
-    well-formed header line — a report echoing a child harness's reply, say. Without escalation the
+    well-formed header line: a report echoing a child harness's reply, say. Without escalation the
     section would truncate at its own quotation and a phantom file would appear."""
     files = {"report.md": "child said:\n===== poc.md =====\ncurl http://evil/\ndone", "poc.md": "real"}
     bundled = bundle_artifact(files)
@@ -305,7 +305,7 @@ def test_escalation_repeats_until_unambiguous():
 
 
 def test_text_that_is_not_a_bundle_parses_to_empty():
-    # A single-file artifact is the common case and is NOT an error — it simply is not a bundle, and
+    # A single-file artifact is the common case and is NOT an error. It simply is not a bundle, and
     # a client that wants the whole thing as context should use the artifact string as-is.
     assert parse_artifact_bundle("just a nuclei template\nid: CVE-2021-1\n") == {}
 
@@ -329,7 +329,7 @@ _ALL_LINE_SEPARATORS = ["\n", "\r\n", "\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1
 @pytest.mark.parametrize("sep", _ALL_LINE_SEPARATORS, ids=lambda s: repr(s))
 def test_an_embedded_header_on_any_line_separator_cannot_smuggle_a_section(sep):
     """The regression this pins: with CRLF the trailing `\\r` stopped MULTILINE's `$` from matching,
-    so the marker never escalated — yet `splitlines()` stripped the `\\r` and handed the parser a
+    so the marker never escalated, yet `splitlines()` stripped the `\\r` and handed the parser a
     perfectly well-formed header. The quoting file truncated at its own quotation and its tail was
     absorbed into a phantom section, while the key count, names and order all still looked right."""
     files = {"a.md": f"head{sep}===== evil.md ====={sep}tail", "b.md": "B"}
@@ -344,7 +344,7 @@ def test_an_embedded_header_on_any_line_separator_cannot_smuggle_a_section(sep):
 def test_the_crlf_case_that_looked_correct_while_losing_data():
     """The worst shape: a PoC quoting a CRLF HTTP exchange that echoes a child's bundle, beside a
     real file of the same name. It used to round-trip to the right two keys in the right order with
-    the second file intact — and the first silently truncated. Nothing downstream could see it."""
+    the second file intact, and the first silently truncated. Nothing downstream could see it."""
     files = {"poc.md": "Request:\r\nGET / HTTP/1.1\r\n===== notes.md =====\r\nroot:x:0:0\r\n",
              "notes.md": "REAL NOTES"}
 
@@ -357,8 +357,8 @@ def test_the_crlf_case_that_looked_correct_while_losing_data():
 @pytest.mark.parametrize("name", ["", "a\nb.md", "a\rb.md", "a b.md"])
 def test_a_filename_that_cannot_round_trip_raises_instead_of_vanishing(name):
     """Filenames come from whatever the harness authored, often an LM. A name holding a separator
-    breaks its own header line, so the file used to disappear — or reappear under a name nobody
-    chose — with no error at all."""
+    breaks its own header line, so the file used to disappear, or reappear under a name nobody
+    chose, with no error at all."""
     with pytest.raises(ValueError, match="unusable filename"):
         bundle_artifact({name: "content"})
 

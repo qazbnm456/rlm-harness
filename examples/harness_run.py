@@ -1,4 +1,4 @@
-"""Example: RLM-as-Harness — intercepted sub-LM + skills tools + traced run.
+"""Example: RLM-as-Harness, intercepted sub-LM + skills tools + traced run.
 
 Wires the harness-engineering layer together end to end (illustrative; needs real
 model creds and a sandbox, so it is NOT imported by the test suite):
@@ -57,7 +57,7 @@ class Research(RLMTask):
 
     def __init__(self, skills_dir: str, **kw):
         # NOTE: assembling tools here and passing `tools=` to the constructor are alternatives,
-        # not additions — an explicit `tools=` REPLACES this list (see `RLMTask.resolved_tools`).
+        # not additions: an explicit `tools=` REPLACES this list (see `RLMTask.resolved_tools`).
         # discovery="inject": the skill CATALOG (name + description) is injected into the system
         # prompt via render_skills_manifest, so the LM sees every skill at startup with NO
         # `list_skills` discovery round-trip; `read_skill(name)` pulls a skill's full body JIT.
@@ -65,7 +65,7 @@ class Research(RLMTask):
         self.instructions = (
             render_skills_manifest(
                 skills_dir,
-                header="<available_skills> — reference notes; `read_skill(name)` loads one:",
+                header="<available_skills>: reference notes; `read_skill(name)` loads one:",
             )
             + "\n\n"
             + _INSTRUCTIONS
@@ -78,7 +78,7 @@ async def main() -> None:
 
     # Intercept the configured sub-model: trace every escalation + validate/post-process.
     # get_sub_lm() returns the sub-LM configure() built (with the right base_url/provider/
-    # max_tokens) — wrap THAT rather than reconstructing a dspy.LM that could drift from it.
+    # max_tokens): wrap THAT rather than reconstructing a dspy.LM that could drift from it.
     base_sub = get_sub_lm()
     intercepted_sub = intercept_sub_lm(
         base_sub, validators=[_non_empty], postprocessors=[str.strip], name="local-sub"

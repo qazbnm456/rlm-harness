@@ -1,11 +1,11 @@
-"""GEPA optimization harness — PHASE 1 SKELETON.
+"""GEPA optimization harness: PHASE 1 SKELETON.
 
 The whole point of choosing DSPy for RLM is that tasks can be *compiled*
 (prompt + few-shot demos optimised against a metric) rather than hand-tuned.
 This module wires that interface and ships ready-to-use metric templates.
 
 What is implemented now (Phase 1):
-- Metric templates (``exact_field_metric``, ``schema_valid_metric``) — pure,
+- Metric templates (``exact_field_metric``, ``schema_valid_metric``): pure,
   tested, usable today.
 - ``save_program`` / ``load_program`` thin wrappers over dspy persistence.
 
@@ -87,7 +87,7 @@ def compile_task(
         return CompileResult(program=compiled)
 
     ONE THING TO FIX WHEN ENABLING IT: `optimizer.compile` calls the program WITHOUT a positional
-    interpreter, so dspy builds one from `interpreter_factory` — and since 1.5.0 `_build_rlm` may
+    interpreter, so dspy builds one from `interpreter_factory`, and since 1.5.0 `_build_rlm` may
     pass a metadata CARRIER there that deliberately raises when invoked (see
     `_dspy_compat.interpreter_instructions_kwargs`). This is the one code path that breaks that
     function's "never invoked" premise, and it must supply a real interpreter of its own.

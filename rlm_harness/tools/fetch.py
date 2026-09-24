@@ -2,17 +2,17 @@
 
 Tasks routinely need to pull remote content (web pages, docs, feeds, threat
 intel). Handing an LLM-driven REPL an unrestricted fetcher is an SSRF liability:
-the model can be steered — by the very untrusted content it is analysing — into
+the model can be steered, by the very untrusted content it is analysing, into
 requesting internal services or cloud metadata endpoints.
 
 ``is_safe_url`` is a syntactic pre-flight guard (scheme + obvious
 private/loopback/metadata targets). ``make_fetch_tool`` wraps a caller-supplied
 (SYNC) fetcher with that guard, returning a sync tool ready to hand to
-``RLMTask(tools=…)`` — dspy.RLM invokes tools synchronously, so the tool must be sync.
+``RLMTask(tools=…)``: dspy.RLM invokes tools synchronously, so the tool must be sync.
 
 NOTE: a syntactic guard does not stop DNS rebinding (a public hostname that
 resolves to a private address). ``resolved_host_is_safe`` is that missing
-resolved-address re-check — call it INSIDE your fetcher at connection time (and
+resolved-address re-check: call it INSIDE your fetcher at connection time (and
 on every redirect hop). Its ``allow_nets`` carve-out (build with ``parse_cidrs``)
 accommodates a fake-IP proxy / split-DNS VPN that maps public hosts into a
 reserved range; it is a re-usable primitive so each consumer's ``direct`` fetcher
@@ -79,7 +79,7 @@ def parse_cidrs(cidrs) -> tuple:
 def _ip_blocked(ip_str: str, allow_nets=()) -> bool:
     """True if ``ip_str`` must be refused. Unparseable → blocked (fail closed). An operator-listed
     ``allow_nets`` range is treated as external (the proxy, not the resolved address, is the real
-    endpoint) — everything else falls through to the standard blocked-range check."""
+    endpoint): everything else falls through to the standard blocked-range check."""
     try:
         ip = ipaddress.ip_address(ip_str)
     except ValueError:
@@ -91,7 +91,7 @@ def _ip_blocked(ip_str: str, allow_nets=()) -> bool:
 
 def resolved_host_is_safe(host: str, port: int, *, allow_nets=()) -> bool:
     """The DNS-rebinding defence: resolve ``host`` and return True only if EVERY resolved address is
-    external. Call this INSIDE your fetcher, re-checking each redirect hop — ``is_safe_url`` is
+    external. Call this INSIDE your fetcher, re-checking each redirect hop: ``is_safe_url`` is
     syntactic and cannot see what a hostname resolves to.
 
     ``allow_nets`` (from ``parse_cidrs``) carves out operator-trusted ranges: a fake-IP proxy /
@@ -134,7 +134,7 @@ def is_safe_url(url: str) -> bool:
 
 
 # A fetcher maps a URL to its text content. SYNC: dspy.RLM calls tools synchronously
-# (its sandbox bridge never awaits — an async tool serialises to a coroutine repr and
+# (its sandbox bridge never awaits: an async tool serialises to a coroutine repr and
 # never runs), so both the fetcher and the tool are sync. Wrap an async client yourself.
 Fetcher = Callable[[str], str]
 
@@ -149,7 +149,7 @@ def make_fetch_tool(fetcher: Fetcher) -> Callable[[str], str]:
     The wrapper rejects unsafe URLs before the fetcher ever runs, and turns a fetcher
     error into a short string too (rather than raising), so the RLM can react to either
     as text. Each call records a ``tool_call`` carrying only the outcome (``ok`` +
-    ``result_len`` / ``note``), NOT the fetched body — see below.
+    ``result_len`` / ``note``), NOT the fetched body: see below.
     """
 
     def fetch_url(url: str) -> str:
@@ -165,7 +165,7 @@ def make_fetch_tool(fetcher: Fetcher) -> Callable[[str], str]:
         # therefore wins over it (`record_tool_call` fills only when given nothing). The refusal
         # above no longer records nothing: since 1.8.3 it carries the seam's wall-clock, which is a
         # true ~0 rather than an absent field. That reverses a rule this comment used to state, and
-        # the reason is the kit's own 1.7.0 lesson — `None` means "nobody measured", so using it
+        # the reason is the kit's own 1.7.0 lesson: `None` means "nobody measured", so using it
         # for "measured, and it was instant" makes the two indistinguishable.
         t0 = time.perf_counter()
         try:

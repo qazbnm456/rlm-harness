@@ -3,15 +3,15 @@
 The JSONL trace is the source of truth. This module turns it into training-ready
 records, in three shapes:
 
-- ``export_sft_turns`` — per-root-TURN SFT samples (``input = full history`` seeded with the
+- ``export_sft_turns``: per-root-TURN SFT samples (``input = full history`` seeded with the
   run's initial state, ``output = that turn``), the RLM post-training recipe (arXiv 2512.24601).
-- ``export_rl``      — per-planner-step ``(state, action, outcome, reward)`` tuples
+- ``export_rl``: per-planner-step ``(state, action, outcome, reward)`` tuples
   (the orchestrator's trajectory).
-- ``export_actions`` — EVERY action (planner step, model-as-tool call, sub-LM
+- ``export_actions``: EVERY action (planner step, model-as-tool call, sub-LM
   escalation) as a first-class, `kind`-tagged record, so a trainer can split them
   (fine-tune the generator on `kind=="tool"`, the orchestrator on `kind=="planner"`).
 
-``run_label_bundle`` is a companion MAPPER — ``{surface: {run_id: fn(events)}}`` — for per-run
+``run_label_bundle`` is a companion MAPPER, ``{surface: {run_id: fn(events)}}``, for per-run
 intrinsic LABEL surfaces (validity flags, objective metrics, a rubric's per-criterion facts) that
 ride BESIDE the reward-free records; it refuses a ``reward`` surface (the trainer attaches reward).
 
@@ -46,7 +46,7 @@ LabelFn = Callable[[list[dict]], dict]
 logger = logging.getLogger(__name__)
 
 # The three action event types. Sequencing them is `_sequenced_actions`'s job, not
-# this tuple's order and — since 1.11.2 — not `step_id`'s.
+# this tuple's order and, since 1.11.2, not `step_id`'s.
 _ACTION_TYPES = (EVENT_MAIN_STEP, EVENT_TOOL_CALL, EVENT_SUB_CALL)
 
 
@@ -55,7 +55,7 @@ def _main_steps(events: list[dict]) -> list[dict]:
 
 
 def _sequenced_actions(events: list[dict]) -> list[dict]:
-    """Action events in CAUSAL order — the order they HAPPENED, not the order they were written.
+    """Action events in CAUSAL order: the order they HAPPENED, not the order they were written.
 
     ``main_step`` events are written in one batch once ``aforward()`` has returned, so every turn's
     ``step_id`` is HIGHER than every live ``tool_call``/``sub_call`` of the same attempt. Sorting
@@ -74,14 +74,14 @@ def _sequenced_actions(events: list[dict]) -> list[dict]:
 
     **An unmatched stamp costs more than turn-vs-turn order, and this is the limit of the fix.** A
     flush time is LATER than every live event of the run, so a turn that falls back to one drags
-    every subsequent live event in front of itself — and if EVERY turn falls back, the merge
+    every subsequent live event in front of itself, and if EVERY turn falls back, the merge
     reproduces the pre-1.11.2 order exactly, wrong ``state`` included. Re-exporting such a corpus
     changes nothing, because the trace holds no signal to interleave on. Reachable in practice, not
     just in theory: `dspy.streamify` captures `settings.callbacks` at construction and so drops
     `_MainStepTimer` (see CHANGELOG 1.6.0), any failure entering `_live_main_timing`'s
     `dspy.context` does the same, and so does any caller of ``record_main_trajectory`` outside
-    ``RLMTask.arun``. The ``logger.debug`` below reports the detectable SYMPTOM — the first turn
-    not stamped before the run's first live event — because the output of a degraded interleave is
+    ``RLMTask.arun``. The ``logger.debug`` below reports the detectable SYMPTOM: the first turn
+    not stamped before the run's first live event: because the output of a degraded interleave is
     indistinguishable from a correct one. It is a one-sided hint and not a proof: a retry attempt or
     a host-side ``record_tool_call`` reads the same way with nothing wrong, and the comment there
     names both.
@@ -139,7 +139,7 @@ def _sequenced_actions(events: list[dict]) -> list[dict]:
         # point on and is not reported, because a genuinely late turn looks identical.
         logger.debug(
             "main_step turn %r is not stamped before this run's first live event, so the action "
-            "order below may be degraded — the usual cause is a turn stamp that was never matched "
+            "order below may be degraded. The usual cause is a turn stamp that was never matched "
             "and fell back to the flush time, and a run whose stamps ALL fell back exports in the "
             "old step_id order with wrong `state`. An earlier retry attempt, or a host-side "
             "tool_call under the same recorder, reads the same way with nothing wrong",
@@ -174,7 +174,7 @@ def _action_record(event: dict) -> dict:
             "outcome": p.get("output"),
         }
     if t == EVENT_TOOL_CALL:
-        # A tool_call payload may carry its output under any of several keys — record_tool_call pins
+        # A tool_call payload may carry its output under any of several keys: record_tool_call pins
         # none, and the kit's tools disagree: model_as_tool/list_skills use "result", read_skill/MCP
         # use "preview", web_search uses "results", and the make_model_tool consumer convention is
         # "raw". Read a fallback so an action record doesn't silently drop a tool's output; "raw" wins
@@ -189,7 +189,7 @@ def _action_record(event: dict) -> dict:
             # `get_weather`, the trace records `get-weather`). CONDITIONAL, mirroring
             # `mcp._repl_alias`: an unconditional key would put `"repl_name": null` on every
             # tool record including non-MCP ones, churning every consumer's golden fixtures for
-            # nothing. TOP LEVEL beside `tool` because both are IDENTITY — putting it under
+            # nothing. TOP LEVEL beside `tool` because both are IDENTITY: putting it under
             # `action` would imply the model supplied it. A trainer joining the planner's code
             # (`main_step.payload.code` shows `get_weather(...)`) to this record needs it, and
             # the mapping is unrecoverable offline: it depends on the server's whole tool list
@@ -201,14 +201,14 @@ def _action_record(event: dict) -> dict:
                 "output": output,
                 "errors": p.get("errors"),
                 # WHY it is not ok. `ok` alone cannot tell a validator rejection from an endpoint
-                # failure or a circuit break, and this record is what reaches a TRAINER — a dataset
+                # failure or a circuit break, and this record is what reaches a TRAINER: a dataset
                 # that labels infrastructure failures as content declines teaches exactly that. The
                 # endpoint string rode nowhere at all before this: it is recorded under `error` (or
                 # `endpoint_error`) by consumer convention, and neither was carried, so a downstream
                 # reader could not even reconstruct the split by hand. For a tool with no validator
                 # this is simply `ok`/`invalid`, which is what `ok` already said.
                 "cause": p.get("cause") or payload_cause(p),
-                # PRESENCE, not truthiness — the same empty-string trap `payload_cause` carries
+                # PRESENCE, not truthiness: the same empty-string trap `payload_cause` carries
                 # a note about. `str(exc)` is `''` for the common transport failures, so `or` would
                 # skip a present-but-empty `endpoint_error`, fall through to an absent `error`, and
                 # emit `null` for a call that really did fail at the endpoint. The record would then
@@ -236,14 +236,14 @@ def export_actions(
     """Every action in a run as a first-class RL record, in the order it happened.
 
     Unlike :func:`export_rl` (planner-trajectory only), this emits one record per
-    *action event* — `main_step` (planner), `tool_call` (a model-as-tool generator
-    call), and `sub_call` (an escalation to the expensive sub-LM) — each tagged with
+    *action event*: `main_step` (planner), `tool_call` (a model-as-tool generator
+    call), and `sub_call` (an escalation to the expensive sub-LM): each tagged with
     `kind` so a trainer can split them (e.g. fine-tune the generator on `kind=="tool"`
     records, the orchestrator on `kind=="planner"`). `state` is the ordered list of
     prior actions' (kind, outcome). `reward` is the run-level score, attached to every
     record (credit assignment left to the trainer).
 
-    **Records come out in CAUSAL order, which is not the order the trace was written** — see
+    **Records come out in CAUSAL order, which is not the order the trace was written**: see
     `_sequenced_actions`. Until 1.11.2 this sorted by `step_id`, which put every turn after every
     tool call of the same attempt and made `state` systematically wrong for both kinds.
     """
@@ -267,7 +267,7 @@ def run_label_bundle(
     """Map named per-run LABEL surfaces over a set of runs: ``{surface: {run_id: fn(events)}}``.
 
     A companion to the reward-free exporters: each ``label_fns`` entry is a consumer-supplied function
-    turning one run's events into a dict of intrinsic labels — validity flags, objective metrics, or a
+    turning one run's events into a dict of intrinsic labels: validity flags, objective metrics, or a
     rubric's deterministic per-criterion facts (where a criterion is just a dict with ``name`` /
     ``description`` / ``weight`` and an OPAQUE ``category`` string the kit never interprets). These ride
     BESIDE the trajectory records so a downstream trainer reads ONE canonical bundle shape instead of
@@ -276,14 +276,14 @@ def run_label_bundle(
         run_label_bundle(runs, labels=run_labels, metrics=run_metrics)
         # -> {"labels": {run_id: {...}}, "metrics": {run_id: {...}}}
 
-    ``reward`` is a REFUSED surface name: rlm-harness produces trajectories, never reward — the trainer
+    ``reward`` is a REFUSED surface name: rlm-harness produces trajectories, never reward, the trainer
     composes reward from these labels (plus its own credit assignment), so a label fn must emit FACTS,
     not a score. The kit can only refuse the NAME; that a fn returns facts and not a hidden score is the
     same convention-not-enforcement trust model as ``reward=`` on the exporters.
     """
     if "reward" in label_fns:
         raise ValueError(
-            "'reward' is not a label surface — rlm-harness exports trajectories, never reward; attach "
+            "'reward' is not a label surface: rlm-harness exports trajectories, never reward; attach "
             "reward in the trainer, and emit facts (not scores) as labels here."
         )
     return {name: {rid: fn(ev) for rid, ev in runs.items()} for name, fn in label_fns.items()}
@@ -296,19 +296,19 @@ def _run_meta(events: list[dict]) -> dict:
 
 
 def export_sft_turns(runs: dict[str, list[dict]]) -> list[dict]:
-    """Per-root-turn SFT samples — the RLM post-training recipe (arXiv 2512.24601, App. A).
+    """Per-root-turn SFT samples: the RLM post-training recipe (arXiv 2512.24601, App. A).
 
     The paper fine-tunes by separating *each root RLM turn* (iteration) into its own SFT
     sample: ``input = the full history`` up to that turn, ``output = the output the root LM
     gave at that step``. Unlike a single whole-trajectory record per run, this is one record per
-    turn, and the input is complete: the history here is SEEDED with the run's initial state —
+    turn, and the input is complete: the history here is SEEDED with the run's initial state:
     the ``run_start`` ``meta`` (e.g. the prompt /
-    source + the task instructions, which the RLM stores as the REPL's starting variables) — so
+    source + the task instructions, which the RLM stores as the REPL's starting variables), so
     the FIRST turn's input is the real starting context, not an empty list. That seed is the
     "first user input" an RLM trajectory otherwise lacks (the prompt lives in a REPL variable,
     not a chat turn).
 
-    Each record is ``{run_id, turn, input: {initial, history}, output: {reasoning, code}}`` —
+    Each record is ``{run_id, turn, input: {initial, history}, output: {reasoning, code}}``:
     format-agnostic. The trainer renders ``initial + history`` into its chat template and masks
     the loss to ``output`` only (the assistant-only-loss multi-turn SFT the paper describes).
     """

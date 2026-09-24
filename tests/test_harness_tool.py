@@ -1,4 +1,4 @@
-"""make_harness_tool — the generic 'delegate to a downstream harness as a tool' primitive. All offline:
+"""make_harness_tool: the generic 'delegate to a downstream harness as a tool' primitive. All offline:
 the transport (invoke_fn / call_endpoint) is injected, so no live child, no dspy, no Deno. Verifies it
 reuses make_model_tool's retry/validate/circuit-break semantics AND carries the child-rollout link."""
 import types
@@ -69,7 +69,7 @@ def test_invalid_artifact_keeps_child_link_and_is_not_retried():
 
     r = make_harness_tool(invoke, lambda raw: _V(ok=False, errors=["nope"]))("ctx")
     assert not r.ok and r.errors == ["nope"]
-    assert r.raw == "draft" and r.child_run_id == "c9"   # a child DID run — link preserved
+    assert r.raw == "draft" and r.child_run_id == "c9"   # a child DID run: link preserved
     assert n["count"] == 1                               # validator-false is the repair loop, NOT retried
 
 
@@ -99,14 +99,14 @@ def test_breaker_resets_after_a_valid_artifact():
     assert not tool("ctx").ok           # 1 invalid
     assert not tool("ctx").ok           # 2 invalid
     assert tool("ctx").ok               # valid → resets the counter
-    r = tool("ctx")                     # 1 invalid again — well under the threshold, so it still runs
+    r = tool("ctx")                     # 1 invalid again: well under the threshold, so it still runs
     assert not r.ok and not r.circuit_broken
 
 
 def test_harness_from_endpoint_binds_the_long_text_and_maps_the_reply():
     seen = {}
 
-    def call_endpoint(long_text):        # OPAQUE transport — a stand-in for spawn/import/POST
+    def call_endpoint(long_text):        # OPAQUE transport, a stand-in for spawn/import/POST
         seen["text"] = long_text
         return {"yaml": "ARTIFACT", "run_id": "cx", "trace": "children/cx.jsonl"}
 
@@ -131,7 +131,7 @@ def test_harness_from_endpoint_propagates_a_transport_raise():
 
 
 def test_non_invocation_return_degrades_child_link_to_none():
-    # a transport that returns a bare string (no child_* attributes) still yields a valid artifact —
+    # a transport that returns a bare string (no child_* attributes) still yields a valid artifact:
     # the child link just defaults to None via getattr, no crash.
     r = make_harness_tool(lambda t: "BARE ARTIFACT", lambda raw: _V(ok=True))("ctx")
     assert r.ok and r.raw == "BARE ARTIFACT"
@@ -161,7 +161,7 @@ def test_endpoint_error_after_a_prior_success_does_not_leak_a_stale_link():
     assert second.child_run_id is None         # the start-of-call clear prevents a stale-link leak
 
 
-# ---- pointer_to_invocation — the HarnessPointer -> HarnessInvocation mapping ----------------
+# ---- pointer_to_invocation: the HarnessPointer -> HarnessInvocation mapping ----------------
 
 def test_pointer_to_invocation_maps_every_field():
     pointer = HarnessPointer(
@@ -186,11 +186,11 @@ def test_pointer_to_invocation_handles_a_minimal_pointer():
     assert inv.child_meta is None
 
 
-# ---- in-process transport wiring — the same composition as examples/harness_local_run.py ---
+# ---- in-process transport wiring: the same composition as examples/harness_local_run.py ---
 
 def test_in_process_transport_wiring():
     """run_isolated + pointer_to_invocation + harness_from_endpoint + make_harness_tool, composed
-    exactly as examples/harness_local_run.py does — with a stub async child instead of a real
+    exactly as examples/harness_local_run.py does, with a stub async child instead of a real
     dspy.RLM, so the wiring itself is protected by CI rather than left as unexercised prose."""
     calls = []
 

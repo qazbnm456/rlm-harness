@@ -4,7 +4,7 @@
 # Why this exists: this repo's vendor-neutrality rule (CLAUDE.md, "Keep the public surface
 # vendor-neutral") says the kit refers to downstream consumers generically and never by project
 # name. That rule held for every FILE and every published release note, and failed twice in commit
-# MESSAGES — two prose mentions, 128 and 176 commits deep, found only because someone thought to
+# MESSAGES: two prose mentions, 128 and 176 commits deep, found only because someone thought to
 # look. Removing them cost a history rewrite and a force-push of 25 tags. A rule enforced by
 # remembering is the failure mode this project has paid for most; this makes it a machine check.
 #
@@ -26,7 +26,7 @@ LIST="${PRIVATE_NAMES_FILE:-$HOME/.claude/private-names.txt}"
 MODE="${1:-staged}"
 
 if [ ! -r "$LIST" ]; then
-    echo "check-private-names: no denylist at $LIST — skipping." >&2
+    echo "check-private-names: no denylist at $LIST, skipping." >&2
     echo "  (set PRIVATE_NAMES_FILE, or create that file, to enable the check)" >&2
     exit 0
 fi
@@ -35,7 +35,7 @@ fi
 # containing `.` or `-` cannot behave as a regex metacharacter.
 PATTERNS="$(grep -vE '^[[:space:]]*(#|$)' "$LIST" || true)"
 if [ -z "$PATTERNS" ]; then
-    echo "check-private-names: $LIST has no patterns — skipping." >&2
+    echo "check-private-names: $LIST has no patterns, skipping." >&2
     exit 0
 fi
 
@@ -45,8 +45,8 @@ fail() {
     echo "" >&2
     printf '%s\n' "$2" | sed 's/^/    /' >&2
     echo "" >&2
-    echo "  These names must not appear in a public repo. Rewrite the wording generically —" >&2
-    echo "  \"a consumer\", \"a downstream harness\" — the way CLAUDE.md's vendor-neutrality" >&2
+    echo "  These names must not appear in a public repo. Rewrite the wording generically," >&2
+    echo "  \"a consumer\", \"a downstream harness\": the way CLAUDE.md's vendor-neutrality" >&2
     echo "  rule requires for every other mention." >&2
     echo "" >&2
     echo "  Deliberate exception? Commit with --no-verify, and be sure it is deliberate:" >&2
@@ -78,7 +78,7 @@ case "$MODE" in
         if [ -n "$hits" ]; then
             fail "this repository" "$hits"
         fi
-        echo "check-private-names: clean — tree at HEAD, every commit message, every tag message."
+        echo "check-private-names: clean, tree at HEAD, every commit message, every tag message."
         ;;
     *)
         echo "usage: check-private-names [staged|msg <file>|all]" >&2

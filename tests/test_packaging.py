@@ -1,12 +1,12 @@
-"""Packaging guard — keep the co-dev editable overlay from shadowing a consumer's tests.
+"""Packaging guard: keep the co-dev editable overlay from shadowing a consumer's tests.
 
 A consumer co-develops rlm-harness by overlaying an editable install (``uv pip install -e ../rlm-harness``),
 which puts the repo ROOT on the consumer's ``sys.path`` via a bare-path ``.pth``. A regular package
-(a directory with ``__init__.py``) at the repo root — or nested anywhere outside ``rlm_harness/`` —
+(a directory with ``__init__.py``) at the repo root, or nested anywhere outside ``rlm_harness/``:
 SHADOWS a consumer's same-named namespace package regardless of ``sys.path`` order (PEP 420: a regular
 package at ANY later path entry beats an earlier namespace portion). ``tests/__init__.py`` once did
 exactly that to a consumer's namespace ``tests/``, breaking its ``from tests.conftest import ...``
-collection. So keep ``rlm_harness`` the ONLY regular package in the repo — ``tests/`` stays a namespace
+collection. So keep ``rlm_harness`` the ONLY regular package in the repo: ``tests/`` stays a namespace
 dir (shared fixtures go in a ``conftest.py``, never an importable ``tests.*`` module backed by an
 ``__init__.py``). The scan is recursive: a nested ``tests/helpers/__init__.py`` re-creates the same
 shadow one level down inside the merged namespace.

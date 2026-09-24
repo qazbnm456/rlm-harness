@@ -1,4 +1,4 @@
-"""In-container agent for the ``container`` interpreter — runs INSIDE the sandbox.
+"""In-container agent for the ``container`` interpreter: runs INSIDE the sandbox.
 
 STDLIB ONLY. Imports nothing from ``rlm_harness`` or ``dspy``: it is delivered to a bare
 ``python:*-slim`` container via ``python -u -c <this source>`` (see
@@ -14,7 +14,7 @@ host ``ContainerInterpreter`` is a drop-in analog of dspy's ``PythonInterpreter`
     {"method":"execute","params":{"code": "..."},"id":N}
     {"method":"shutdown"}                                          (notification)
 
-  agent -> host (while an execute is in flight — a tool/llm_query callback):
+  agent -> host (while an execute is in flight: a tool/llm_query callback):
     {"method":"tool_call","params":{"name":T,"kwargs":{...}},"id":"cb-K"}
       -> host replies {"result":{"value":V,"type":"string"|"json"},"id":"cb-K"}
                  or   {"error":{"code":C,"message":M,"data":{"type":E}},"id":"cb-K"}
@@ -28,7 +28,7 @@ host ``ContainerInterpreter`` is a drop-in analog of dspy's ``PythonInterpreter`
 fd hygiene: fds 0/1 are dup'd for the RPC channel at startup, then fd 0 is pointed at
 /dev/null. During execute, fds 1/2 are redirected into a temp file, so Python ``print()``
 AND a native ``subprocess`` child both inherit the capture file and cannot corrupt the
-RPC channel — this is what makes native ``subprocess.run(...)`` in the REPL safe here.
+RPC channel. This is what makes native ``subprocess.run(...)`` in the REPL safe here.
 """
 import json
 import os

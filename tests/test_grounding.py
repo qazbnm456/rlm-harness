@@ -227,7 +227,7 @@ def test_normalize_whitespace_false_is_unaffected():
 
 def test_reported_match_position_is_the_leftmost_occurrence():
     """Loosening a junction makes an EARLIER occurrence match where only a later one did before,
-    which MOVES the reported character offset — `a . b` used to be found at char 8 and is now
+    which MOVES the reported character offset: `a . b` used to be found at char 8 and is now
     found at char 0. A consumer parsing "found at line N (char M)" sees that directly, so it is
     pinned. Note the LINE number is unchanged here, which is why asserting on it alone would pass
     both before and after and pin nothing."""
@@ -330,15 +330,15 @@ def test_a_block_running_past_EOF_is_refused():
     """Two inputs, because a trailing newline in `source` changes WHICH check fires.
 
     Getting this docstring right took three tries and the first two shipped a wrong mechanism, so
-    the accurate account: the bounds and the slice are each individually REDUNDANT — deleting
-    either leaves the whole suite green — but they are not JOINTLY redundant. Remove both and a
+    the accurate account: the bounds and the slice are each individually REDUNDANT, deleting
+    either leaves the whole suite green, but they are not JOINTLY redundant. Remove both and a
     fabricated coordinate one line past EOF verifies:
 
         verify_quote("x\ny\nb\nc\nz\nb", "     6\tb\n     7\tc")  ->  MATCH at line 6
 
     That is the false-positive class this feature exists to close, so neither is decoration. And it
     is not the uniqueness scan that refuses an overhang, which an earlier version of this docstring
-    claimed — uniqueness found that block exactly once, at lines 3-4, which is why it verified."""
+    claimed: uniqueness found that block exactly once, at lines 3-4, which is why it verified."""
     # WITH a trailing newline there is no overhang at all: `split("\n")` leaves a phantom empty
     # last element, so `2-1+2 == 3 == len(lines)` passes the bound and the CONTENT comparison is
     # what refuses (`["b", ""] != ["b", "c"]`).

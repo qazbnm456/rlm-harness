@@ -1,7 +1,7 @@
 """Tests for the container (environment) interpreter.
 
 The broker is exercised in CI WITHOUT Docker by running the stdlib-only in-container agent
-(`_sandbox_agent.py`) as a bare subprocess — the real bidirectional protocol, just no
+(`_sandbox_agent.py`) as a bare subprocess: the real bidirectional protocol, just no
 isolation. A separate Docker-gated test proves real container isolation. The whole file is
 skipped if dspy is absent (the interpreter returns dspy's `FinalOutput` / raises
 `CodeInterpreterError`).
@@ -30,7 +30,7 @@ def _interp(**cfg_kw) -> ContainerInterpreter:
 def test_execution_instructions_say_subprocesses_are_available():
     """THE motivating case for the whole `execution_instructions` seam. dspy sources the action
     prompt's "Execution environment:" text from the interpreter factory, which defaults to
-    PythonInterpreter — so without this attribute a container run is told "subprocesses and
+    PythonInterpreter, so without this attribute a container run is told "subprocesses and
     native extensions are unavailable", which is the one capability it exists to provide."""
     text = _interp().execution_instructions
     assert "Subprocesses" in text and "ARE available" in text
@@ -49,7 +49,7 @@ def test_execution_instructions_say_subprocesses_are_available():
 )
 def test_execution_instructions_describe_the_container_the_config_builds(cfg_kw, present, absent):
     """`network` / `read_only` / `workdir` are all operator-configurable, so a FIXED string would
-    eventually assert the opposite of what was built — telling the model a capability is absent
+    eventually assert the opposite of what was built: telling the model a capability is absent
     when it is present, which is the same defect class as the Pyodide default this replaces."""
     text = _interp(**cfg_kw).execution_instructions
     assert present in text
@@ -162,7 +162,7 @@ def test_shutdown_is_idempotent():
 
 def test_stdout_eof_on_a_live_process_does_not_hang():
     # Regression (HIGH): untrusted model code can close the RPC fd (stdout EOF) while staying
-    # alive. The interpreter must KILL the live sandbox before draining its stderr — otherwise the
+    # alive. The interpreter must KILL the live sandbox before draining its stderr: otherwise the
     # blocking read-to-EOF hangs the host forever, bypassing the watchdog and teardown.
     interp = _interp()
 
@@ -355,7 +355,7 @@ def test_execute_stages_its_duration_on_the_active_recorder():
 
 def test_a_failing_turn_is_still_timed():
     """The sandbox really did spend that time, and dspy keeps the turn in the trajectory either
-    way — so dropping the duration would silently misalign every later turn's."""
+    way, so dropping the duration would silently misalign every later turn's."""
     from rlm_harness.trace import recorder_scope
 
     staged: list[float] = []
@@ -364,7 +364,7 @@ def test_a_failing_turn_is_still_timed():
         def note_exec_duration(self, seconds, code=None):
             staged.append((seconds, code))
 
-    # RECOVERABLE — the model's own code raised, so dspy catches this and hands it another turn.
+    # RECOVERABLE: the model's own code raised, so dspy catches this and hands it another turn.
     # The turn still exists in the trajectory, so its duration must still be staged.
     with _interp() as interp, recorder_scope(_Rec()), pytest.raises(CodeInterpreterError):
         interp.execute("raise ValueError('boom')")

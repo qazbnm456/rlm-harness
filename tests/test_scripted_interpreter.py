@@ -1,7 +1,7 @@
 """The scripted-interpreter forward-path test seam (`rlm_harness.testing`).
 
 Unlike `test_integration_dspy.py` (which builds the RLM but never forwards), this drives the REAL
-`dspy.RLM.aforward` loop OFFLINE — no live model, no Deno — via a scripted DummyLM + `ScriptedInterpreter`
+`dspy.RLM.aforward` loop OFFLINE (no live model, no Deno) via a scripted DummyLM + `ScriptedInterpreter`
 injected through `RLMTask(interpreter=...)`. This is the layer that catches wiring bugs a construction
 test can't (e.g. a prompt naming a tool the interpreter can't resolve). Skipped if dspy is absent.
 """
@@ -87,7 +87,7 @@ def test_scripted_forward_dispatches_a_real_tool_and_submits(tmp_path):
 
 
 def test_dict_step_submits_without_a_tool(tmp_path):
-    """A bare dict step is a SUBMIT — a one-turn run that finalizes immediately."""
+    """A bare dict step is a SUBMIT: a one-turn run that finalizes immediately."""
     _configure([{"reasoning": "submit", "code": "SUBMIT(answer={'x': 9})"}])
 
     class T(RLMTask):

@@ -1,13 +1,13 @@
 """Demo: run a tiny RLMTask through a real dspy.RLM on a Claude Pro/Max SUBSCRIPTION.
 
-`ClaudeAgentLM` now ships in the kit — `from rlm_harness import ClaudeAgentLM`. The adapter's
+`ClaudeAgentLM` now ships in the kit: `from rlm_harness import ClaudeAgentLM`. The adapter's
 setup, politeness policy, and trade-offs live in its module docstring
 (`rlm_harness/claude_agent_lm.py`); this file is just the runnable demo. Prereqs:
 
   1. Log in to the Claude Code CLI with your Pro/Max account (`claude` → `/login`).
   2. `unset ANTHROPIC_API_KEY` (a leftover key would bill API credit; the adapter refuses).
   3. `uv sync --extra subscription` (or `pip install "rlm-harness[subscription]"`), plus Deno
-     `>=2.0.0,<3.0.0` — `brew install deno`, or `pip install "dspy[deno]"` for dspy's managed one.
+     `>=2.0.0,<3.0.0`: `brew install deno`, or `pip install "dspy[deno]"` for dspy's managed one.
   4. `uv run --no-sync python -m examples.claude_agent_lm`
 """
 
@@ -37,7 +37,7 @@ class Summarize(RLMTask):
 
 async def main() -> None:
     # The config's model names are inert once LMs are injected (configure builds LMs from
-    # config ONLY for seats not supplied) — they label the log line and the trace.
+    # config ONLY for seats not supplied): they label the log line and the trace.
     cfg = configure(
         RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="claude-agent-sdk/haiku"),
         main_lm=ClaudeAgentLM("sonnet"),

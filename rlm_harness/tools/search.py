@@ -2,16 +2,16 @@
 
 A search tool needs two halves: the PROVIDER (an HTTP call to DuckDuckGo / Tavily /
 TinyFish / … plus its API key) and the generic GUARD/NORMALISE step. rlm-harness owns only
-the generic half — it picks NO provider. The consuming project supplies a ``searcher``
+the generic half: it picks NO provider. The consuming project supplies a ``searcher``
 (``query -> raw results``) and rlm-harness turns the raw results into a safe, capped,
 uniform ``[{"title","url","snippet"}]`` list.
 
 Two entry points, matching ``fetch.py``'s ``is_safe_url`` (primitive) + ``make_fetch_tool``
 (factory):
 
-- ``normalise_search_results`` — the reusable primitive. Sync, dependency-free. Use it
+- ``normalise_search_results``: the reusable primitive. Sync, dependency-free. Use it
   inside your own tool, exactly as the fetch tool reuses ``is_safe_url``.
-- ``make_web_search_tool`` — a SYNC factory that builds the whole tool for you (parallel to
+- ``make_web_search_tool``: a SYNC factory that builds the whole tool for you (parallel to
   ``make_fetch_tool``), ready to hand to ``RLMTask(tools=…)``. Sync because dspy.RLM invokes
   tools synchronously; an async tool there never runs.
 
@@ -28,7 +28,7 @@ from typing import Any
 from ..trace import record_tool_call
 from .fetch import is_safe_url
 
-# A provider searcher maps a query string to a list of raw result dicts. SYNC — dspy.RLM
+# A provider searcher maps a query string to a list of raw result dicts. SYNC: dspy.RLM
 # tools must be sync (see make_web_search_tool). Each raw dict should carry at least a
 # "url"; "title"/"snippet" are optional.
 Searcher = Callable[[str], list]
@@ -38,7 +38,7 @@ def normalise_search_results(
     raw: Any, *, max_results: int = 5, drop_unsafe_urls: bool = True
 ) -> list[dict]:
     """Turn a provider's raw results into a safe, capped, uniform list of
-    ``{"title","url","snippet"}`` dicts. Drops entries with no URL and — by default —
+    ``{"title","url","snippet"}`` dicts. Drops entries with no URL and: by default:
     internal-looking URLs (reusing ``is_safe_url``), then caps to ``max_results``. The
     provider-specific shape (mapping the provider's field names onto title/url/snippet)
     is the caller's job; this is the shared guard/normalise step every provider needs."""
@@ -67,14 +67,14 @@ def make_web_search_tool(
     searcher: Searcher, *, max_results: int = 5, drop_unsafe_urls: bool = True
 ) -> Callable[[str], list[dict] | str]:
     """Wrap a project-supplied (SYNC) ``searcher`` into a sync ``web_search(query)`` tool:
-    validates the query, calls the searcher, and returns the normalised result list — or a
+    validates the query, calls the searcher, and returns the normalised result list, or a
     short error string (rather than raising) on an empty query or a searcher failure, so the
     RLM can react to it as text (mirrors ``make_fetch_tool``). Picks NO provider. Sync because
     dspy.RLM invokes tools synchronously; an async tool there returns a coroutine that never runs."""
 
     def web_search(query: str) -> list[dict] | str:
         # Both ``ok=False`` paths (empty query, searcher error) return an explanatory string,
-        # not ``[]`` — an error string is reactable in the REPL where an empty list reads as
+        # not ``[]``. An error string is reactable in the REPL where an empty list reads as
         # "searched, found nothing". Symmetric with ``make_fetch_tool``.
         q = (query or "").strip()
         if not q:

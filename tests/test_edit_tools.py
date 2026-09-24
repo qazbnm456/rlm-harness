@@ -1,4 +1,4 @@
-"""make_write_file_tool / make_edit_file_tool — the write side of the filesystem tools. All
+"""make_write_file_tool / make_edit_file_tool: the write side of the filesystem tools. All
 offline, dspy-free.
 """
 import os
@@ -14,7 +14,7 @@ from rlm_harness.trace import EVENT_TOOL_CALL, TraceRecorder, load_events
 
 def _duck_task(signature="q: str -> a: str", tools=()):
     """Minimal duck-typed stand-in `assert_task_repl_safe` accepts (mirrors the same-shaped
-    helper already independently defined in tests/test_repl_safety.py and tests/test_tools.py —
+    helper already independently defined in tests/test_repl_safety.py and tests/test_tools.py.
     each test file keeps its own local copy, matching existing convention; there is no shared
     conftest.py fixture for it)."""
     return types.SimpleNamespace(signature=signature, tools=list(tools), output_field="a")
@@ -43,7 +43,7 @@ def test_write_file_refuses_a_path_that_escapes_root(tmp_path):
 
 def test_write_file_creates_a_not_yet_existing_nested_subdirectory(tmp_path):
     # A real behavioral difference from the read-only tools, which only ever touch pre-existing
-    # paths — exercises atomic_write_text's own os.makedirs, and confirms resolve_within_root's
+    # paths: exercises atomic_write_text's own os.makedirs, and confirms resolve_within_root's
     # containment check still holds for a path whose intermediate directories don't exist yet.
     tool = make_write_file_tool(str(tmp_path))
     tool("a/b/c/out.txt", "nested")
@@ -371,7 +371,7 @@ def test_edit_file_snippet_never_appended_to_refusal_or_error_paths(tmp_path):
         "Refused: old_string must be non-empty (an empty anchor is ambiguous)."
     )
     assert tool("file.py", "hello", "hello") == (
-        "Refused: old_string and new_string are identical — nothing to edit."
+        "Refused: old_string and new_string are identical, nothing to edit."
     )
     assert tool("../../etc/passwd", "x", "y").startswith("Refused")
     assert "error" in tool("does/not/exist.py", "x", "y").lower()

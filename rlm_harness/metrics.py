@@ -1,15 +1,15 @@
-"""Trace utilization metrics — how a run's activity was distributed across the root LM's own
+"""Trace utilization metrics: how a run's activity was distributed across the root LM's own
 turns, tool calls, and sub-LM escalations. A sibling to ``rubric.py``'s "derive facts from a trace"
 shape, but structurally different: ``rubric.criteria_facts`` slices a CALLER-SUPPLIED facts dict
 against a caller-supplied lens; this module COMPUTES fixed counts/rates directly from the raw
 ``trace/v1`` event stream, with no caller input beyond the events themselves. Reward-free, like
 every other trace-derived module here: raw counts and rates, never a score.
 
-Reads only already-frozen ``trace/v1`` fields — ``event["type"]``, ``payload["tool"]``, the
+Reads only already-frozen ``trace/v1`` fields: ``event["type"]``, ``payload["tool"]``, the
 optional ``payload["duration_s"]``, ``payload["code"]`` and ``payload["final_reasoning"]`` (both
 1.8.0, for :func:`compute_run_facts`), and (through :func:`rlm_harness.trace.payload_cause`, never
 directly) ``circuit_broken`` / ``endpoint_error`` / ``error`` / ``ok``. No new event type, nothing
-the trace contract needs to change for. dspy-free at module top — :func:`compute_run_facts` reaches
+the trace contract needs to change for. dspy-free at module top: :func:`compute_run_facts` reaches
 ``_dspy_compat`` for two dspy behavioural facts, and that module keeps its own dspy imports lazy.
 """
 
@@ -36,7 +36,7 @@ from .trace import (
 @dataclass(frozen=True)
 class RunUtilization:
     """One run's activity, counted and rated. Both rates are denominated over ``main_steps`` (root
-    LM turns) — "how many tool calls / sub-LM escalations happened per root-LM turn taken," the
+    LM turns): "how many tool calls / sub-LM escalations happened per root-LM turn taken," the
     framing closest to how much of the agent's own activity routed through a given channel. This is
     a judgment call, not a uniquely correct answer: the raw counts are exposed alongside the rates,
     so a consumer wanting a different denominator can recompute one from the same fields.
@@ -44,7 +44,7 @@ class RunUtilization:
     ``None`` (not ``0.0``) when ``main_steps == 0``: a run that never took a root-LM turn has no
     denominator, and ``0.0`` would misleadingly read as "measured and found to be zero usage"
     rather than "undefined." A crashed/cancelled run that failed before its first ``Prediction``
-    ever returned is a real, reachable example — it can carry live-recorded ``tool_call``/
+    ever returned is a real, reachable example. It can carry live-recorded ``tool_call``/
     ``sub_call`` events with zero ``main_step`` events (``RLMTask.arun()`` only records the main
     trajectory `if "prediction" in captured`), which is exactly the case this ``None`` distinguishes
     from a genuinely idle run.
@@ -90,7 +90,7 @@ def compute_run_utilization(events: Iterable[dict]) -> RunUtilization:
 
 def compute_utilization_by_run(events: Iterable[dict]) -> dict[str, RunUtilization]:
     """Convenience: group ``events`` by ``run_id`` (reusing ``trace.group_by_run``) and compute
-    each run's :class:`RunUtilization` in one call — a batch/dataset-level view across many runs."""
+    each run's :class:`RunUtilization` in one call: a batch/dataset-level view across many runs."""
     return {
         run_id: compute_run_utilization(run_events)
         for run_id, run_events in group_by_run(events).items()
@@ -103,7 +103,7 @@ class ToolWaste:
 
     The question this answers: how much of a run's time went into tool calls that produced nothing
     usable? On the corpus that motivated it, 57% of all tool wall-clock produced output the
-    consumer's own validator rejected — a number nobody could see, because a trace carried no
+    consumer's own validator rejected. A number nobody could see, because a trace carried no
     durations and ``ok`` alone cannot tell a rejection from an endpoint failure.
 
     Outcomes come from :func:`rlm_harness.trace.payload_cause`, never from raw ``ok``: ``ok`` is
@@ -113,7 +113,7 @@ class ToolWaste:
 
     ``*_seconds`` are a per-tool SUM and may double-count: a call nested inside another call of the
     SAME name, or two concurrent calls of it, contribute their durations twice over one stretch of
-    wall clock. That is deliberate — "what this tool's calls cost, added up" stays well defined
+    wall clock. That is deliberate: "what this tool's calls cost, added up" stays well defined
     under overlap, and it is the cross-tool AGGREGATE that must not double-count. Use
     :func:`compute_run_facts`'s ``tool_total_seconds``, which measures the union, for "how much of
     the run went into tools".
@@ -122,13 +122,13 @@ class ToolWaste:
     that is a NARROWER set than it used to be: a task fills the field for nearly every tool it
     hands the model, so ``None`` now means a pre-1.8.3 trace, a tool called outside a task, or one
     of the shapes the seam does not reach, or a call recorded under a name other than the wrapped
-    function's ``__name__`` (see :func:`rlm_harness.trace._ensure_tool_timing`) — not simply
+    function's ``__name__`` (see :func:`rlm_harness.trace._ensure_tool_timing`): not simply
     "a tool that does not measure itself". ``None`` means "not recorded"; ``0.0``
     would read as "measured and found to be free". Deliberately NOT inferred from the gaps between
     events: that charges a whole turn's model generation to the turn's first tool call, which is
     the exact error this class exists to stop people making.
 
-    Reward-free, like every other module here: counts, seconds and rates — never a score.
+    Reward-free, like every other module here: counts, seconds and rates, never a score.
     """
 
     tool: str
@@ -148,7 +148,7 @@ class ToolWaste:
         Denominated over ``invalid + ok`` rather than ``calls``: a circuit-broken call never ran a
         validator and an endpoint failure never got an output to judge, so counting either in the
         denominator understates how often the model's output was actually rejected. ``None`` when
-        the validator never ran — undefined, not zero.
+        the validator never ran: undefined, not zero.
         """
         judged = self.invalid + self.ok
         return (self.invalid / judged) if judged else None
@@ -157,7 +157,7 @@ class ToolWaste:
     def wasted_share(self) -> float | None:
         """``wasted_seconds`` over ``total_seconds``.
 
-        ``None`` when nothing was measured — and also when everything measured summed to exactly
+        ``None`` when nothing was measured, and also when everything measured summed to exactly
         zero, which is indistinguishable from unmeasured here and would otherwise divide by zero.
         """
         if self.total_seconds is None or not self.total_seconds:
@@ -168,7 +168,7 @@ class ToolWaste:
 def compute_tool_waste(events: Iterable[dict]) -> dict[str, ToolWaste]:
     """Per-tool outcome and cost breakdown for one run's events, keyed by tool name.
 
-    Pure function over ``trace/v1`` events, same shape as :func:`compute_run_utilization` — pass
+    Pure function over ``trace/v1`` events, same shape as :func:`compute_run_utilization`: pass
     one run's events, or use :func:`compute_tool_waste_by_run` across many.
     """
     calls: dict[str, int] = {}
@@ -219,11 +219,11 @@ def compute_tool_waste_by_run(events: Iterable[dict]) -> dict[str, dict[str, Too
     }
 
 
-#: The exact key set :func:`compute_run_facts` emits — a CLOSED, public constant, not a docstring
+#: The exact key set :func:`compute_run_facts` emits, a CLOSED, public constant, not a docstring
 #: promise. The dict is BUILT against this tuple, `tests/test_contract.py` pins its contents
 #: exactly, and a consumer's rubric lens imports it instead of hand-copying names. Adding a key
 #: therefore means editing a SemVer-governed public name that shows up in a diff, which is the
-#: mechanism keeping a reward-shaped scalar from drifting into the source of truth — the kit writes
+#: mechanism keeping a reward-shaped scalar from drifting into the source of truth, the kit writes
 #: these keys itself, so `run_label_bundle`'s "refuse a caller-supplied name" analogue would have
 #: been dead code here.
 #:
@@ -240,47 +240,47 @@ RUN_FACT_KEYS: tuple[str, ...] = (
 
 
 def _union_seconds(events: Iterable[dict], causes: tuple[str, ...] | None = None) -> float | None:
-    """Wall-clock OCCUPIED by tool calls — the measure of the UNION of their intervals, not a sum.
+    """Wall-clock OCCUPIED by tool calls: the measure of the UNION of their intervals, not a sum.
 
     A SUM double-counts a NESTED call. An outer tool whose recorded duration contains an inner
     tool's is two CORRECT ``tool_call`` events describing one stretch of wall clock, and adding
     them reports time that was never spent. On a real trace that reached **136.5% of the run's own
-    span** — an impossible share, and the defect this replaces. It needs both halves to appear:
+    span**: an impossible share, and the defect this replaces. It needs both halves to appear:
     the kit auto-times the outer tool (1.8.3), and the inner call is recorded explicitly by the
     tool itself. A consumer whose tool graph is flat never sees it.
 
-    Each event contributes ``[ts - duration_s, ts]``. That is sound across the two clocks involved
-    — ``ts`` is ``time.time``, ``duration_s`` a ``time.perf_counter`` DELTA — because a delta is
+    Each event contributes ``[ts - duration_s, ts]``. That is sound across the two clocks involved,
+    ``ts`` is ``time.time``, ``duration_s`` a ``time.perf_counter`` DELTA: because a delta is
     clock-agnostic: it fixes the interval's LENGTH. It does NOT fix the POSITION. The two clocks
     differ in RATE, so a reconstructed start is displaced by roughly ``duration_s x drift`` and the
     error GROWS with the call being measured. Two observations in one corpus put that at >= 26.3
-    and >= 29.9 ppm — 7.8 ms and 17.3 ms on calls of 298 s and 577 s. Every such observation is a
+    and >= 29.9 ppm: 7.8 ms and 17.3 ms on calls of 298 s and 577 s. Every such observation is a
     LOWER bound, because it is visible only where it crosses a KNOWN ordering and the true gap
     before the later call is unknown and >= 0. So the union can INVENT a small overlap between
     strictly sequential calls, or erase a real one. It moves the fifth decimal place of a metric
     against a nesting effect measured in hundreds of seconds.
 
     ``ts`` must therefore be the END of the measured window. Every tool in this kit records
-    immediately after its window closes — but :meth:`TraceRecorder.record` stamps ``ts`` INSIDE its
+    immediately after its window closes, but :meth:`TraceRecorder.record` stamps ``ts`` INSIDE its
     lock, so a call contending with the batched sub-LM fan-out is stamped after the wait rather
     than at window end. Treat it as a precondition, not a guarantee.
 
     ONE additive fallback covers every event whose interval cannot be soundly formed: no usable
     ``ts``, or a ``duration_s`` that is not finite and non-negative. That reproduces the previous
     arithmetic for exactly those events (a ``nan`` still propagates, a negative still subtracts),
-    which keeps this consistent with ``tool_measured_calls`` — that counts ANY numeric duration,
+    which keeps this consistent with ``tool_measured_calls``: that counts ANY numeric duration,
     and excluding malformed ones here would emit "one call measured, total unmeasured" in one dict.
     A ``nan``/``inf`` ``ts`` MUST take the fallback rather than build an interval: ``nan`` fails
     every comparison in the sort-merge, so it opens its own run and propagates through the whole
-    accumulator — it would destroy the total, not merely its own event.
+    accumulator. It would destroy the total, not merely its own event.
 
-    ``None``, never ``0.0``, when nothing carried a duration — and that gate is decided over ALL
+    ``None``, never ``0.0``, when nothing carried a duration, and that gate is decided over ALL
     tool calls, NEVER over the ``causes`` subset. :class:`ToolWaste` gates the same way, which is
     why a run with measured calls and nothing wasted reports ``0.0`` rather than ``None``; gating
     on the subset here would silently invert that.
 
     Note ``tool_wasted_seconds <= tool_total_seconds`` holds only while every duration is
-    non-negative — the subset-of-terms argument needs non-negative terms, and negatives reach the
+    non-negative. The subset-of-terms argument needs non-negative terms, and negatives reach the
     additive path by design.
     """
     intervals: list[tuple[float, float]] = []
@@ -328,7 +328,7 @@ def _union_seconds(events: Iterable[dict], causes: tuple[str, ...] | None = None
 
 
 def compute_run_facts(events: Iterable[dict]) -> dict:
-    """The GENERIC half of a rubric's facts for ONE run — everything the kit can observe without
+    """The GENERIC half of a rubric's facts for ONE run: everything the kit can observe without
     knowing the consumer's domain.
 
     Feeds :func:`rlm_harness.rubric.criteria_facts`, which is documented pure and stays that way:
@@ -339,21 +339,21 @@ def compute_run_facts(events: Iterable[dict]) -> dict:
     Reward-free by construction: counts, rates and one boolean. Keys are exactly
     :data:`RUN_FACT_KEYS`.
 
-    **Single-run**, like :func:`compute_run_utilization` — pass one run's events, or use
+    **Single-run**, like :func:`compute_run_utilization`: pass one run's events, or use
     :func:`compute_run_facts_by_run` for a file holding several. A multi-run list silently
     conflates, which is why both existing computers already ship a ``_by_run`` sibling.
 
     Three readings that need care, all stated rather than implied:
 
-    * ``fence_refused_turns`` is ``0`` on a run with no ``main_step`` events at all — UNMEASURED,
+    * ``fence_refused_turns`` is ``0`` on a run with no ``main_step`` events at all: UNMEASURED,
       not measured-zero. ``main_steps`` rides in the same dict to disambiguate.
     * ``budget_exhausted`` is ``None`` whenever the answer is unknown (see below), never ``False``.
     * ``tool_total_seconds`` / ``tool_wasted_seconds`` measure the UNION of the tool calls'
       intervals, so they do NOT equal ``sum(w.total_seconds for w in compute_tool_waste(...))``
-      once any call nests inside another — a sum counts one stretch of wall clock twice, and
+      once any call nests inside another. A sum counts one stretch of wall clock twice, and
       reported 136.5% of a run's own span before this changed. The relation is strictly SMALLER
       when something nests and otherwise equal only up to reconstruction error, where it can be a
-      few 1e-7 s LARGER — so do not assert ``<=`` across the two.
+      few 1e-7 s LARGER, so do not assert ``<=`` across the two.
     """
     events = list(events)
     util = compute_run_utilization(events)
@@ -379,7 +379,7 @@ def compute_run_facts(events: Iterable[dict]) -> dict:
 
 
 def compute_run_facts_by_run(events: Iterable[dict]) -> dict[str, dict]:
-    """:func:`compute_run_facts` per ``run_id`` — the sibling both other computers already have."""
+    """:func:`compute_run_facts` per ``run_id``: the sibling both other computers already have."""
     return {rid: compute_run_facts(evs) for rid, evs in group_by_run(events).items()}
 
 
@@ -387,7 +387,7 @@ def _count_fence_refused(events: list[dict]) -> int:
     """Turns dspy refused to execute because of a markdown fence tag in the cell.
 
     **Named and documented for the MECHANISM, never a cause**, because the obvious cause is wrong.
-    Running dspy's own stripper over three real corpora — 1,406 + 137 + 252 turns — found 60
+    Running dspy's own stripper over three real corpora (1,406 + 137 + 252 turns) found 60
     refusals and **zero** that START with a fence; 55 of the 60 are valid Python assigning a
     documentation page whose TEXT contains a fenced example::
 
@@ -399,7 +399,7 @@ def _count_fence_refused(events: list[dict]) -> int:
     documentation generator behaving correctly. A consumer read it as format non-compliance and
     spent two prompt generations suppressing the blocks its own pages needed.
 
-    The decision is `_dspy_compat.dspy_refuses_fence` — one place, mirroring dspy's private parser
+    The decision is `_dspy_compat.dspy_refuses_fence`: one place, mirroring dspy's private parser
     verbatim, because a shortcut disagrees with it on thousands of real cells.
     """
     from . import _dspy_compat
@@ -416,18 +416,18 @@ def _budget_exhausted(events: list[dict]) -> bool | None:
 
     dspy marks that branch itself: falling out of the turn loop without a ``FINAL`` sets
     ``final_reasoning`` to a fixed marker, which the kit has always recorded on the ``final`` event.
-    So this needs no configured cap staged into the trace — it works on every trace ever written,
+    So this needs no configured cap staged into the trace. It works on every trace ever written,
     and it avoids the ``main_steps >= cap`` formula's false positive on a run that SUBMITs
     successfully on its last allowed turn.
 
     ``None``, never ``False``, when: there is no ``final`` event (a run whose ``aforward`` raised
-    records none — 31 of 503 real runs), or ``final_reasoning`` is absent from shape drift.
+    records none: 31 of 503 real runs), or ``final_reasoning`` is absent from shape drift.
 
     **Validated against the REAL deno/pyodide interpreter, not only the scripted one.** The kit's
     own test drives the fall-through through ``ScriptedInterpreter``, which proves dspy writes the
     marker and the kit reads it back but says nothing about whether the real sandbox path reaches
     that branch the same way. A consumer ran all three states against `dspy.PythonInterpreter` on
-    deno 2.8.2 — scripting only the LM, since the interpreter is the seam that matters — and the
+    deno 2.8.2 (scripting only the LM, since the interpreter is the seam that matters) and the
     field discriminated: ``True`` on a run that never submits, ``False`` on one that does, ``None``
     on a run that raises before the flush. **Two traps that fake a negative result:** the forced
     -final path makes a SECOND LM call for the task's own output field, so a scripted LM that runs
@@ -435,12 +435,12 @@ def _budget_exhausted(events: list[dict]) -> bool | None:
     looks lost when it is not; and a ``True`` without a submitting control run is not a measurement,
     since a field that is always ``True`` produces it too.
 
-    **What it can and cannot answer.** Only a run that FINISHED inside its budget — the trajectory
+    **What it can and cannot answer.** Only a run that FINISHED inside its budget: the trajectory
     is recorded after ``aforward()`` returns, so a SIGKILLed job is exactly the case an operator
     asks about and exactly the case this reports ``None`` for. Exact
     EQUALITY, never a substring test: the success path writes the model's own reasoning, so ``in``
     would let a model quoting the phrase flip the fact. Last ``final`` wins if a ``run_id`` somehow
-    carries two. Detects the ITERATION cap only — ``max_llm_calls`` exhaustion raises inside the
+    carries two. Detects the ITERATION cap only: ``max_llm_calls`` exhaustion raises inside the
     sandbox and comes back as a turn, so it reads ``False`` here.
     """
     from . import _dspy_compat

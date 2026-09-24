@@ -1,6 +1,6 @@
 # Contributing to rlm-harness
 
-Thanks for helping improve `rlm-harness` — a small, reusable scaffold over `dspy.RLM`
+Thanks for helping improve `rlm-harness`: a small, reusable scaffold over `dspy.RLM`
 (Recursive Language Models) for building tasks of any kind. This guide is the short
 version; the deep design rules live in [`CLAUDE.md`](./CLAUDE.md) and the
 extension contract in the guide's [**Building a consumer**](./rlm_harness/README.md#building-a-consumer).
@@ -10,7 +10,7 @@ extension contract in the guide's [**Building a consumer**](./rlm_harness/README
 ```bash
 uv sync --group dev
 
-# the full suite, exactly as CI runs it — no live LLM, network, or Deno needed
+# the full suite, exactly as CI runs it: no live LLM, network, or Deno needed
 uv run --group dev --extra mcp --extra grep --extra gitignore python -m pytest -q
 uvx ruff check .                       # lint, a separate CI gate (not part of pytest)
 ```
@@ -21,20 +21,20 @@ and `list_candidate_paths`'s `.gitignore` parsing untested.
 
 The dspy-bearing tests use a `DummyLM` or skip when dspy is absent, so the suite
 runs anywhere. A *live* `dspy.RLM` run additionally needs model credentials and a
-Deno sandbox (`brew install deno`; dspy requires Deno `>=2.0.0,<3.0.0`) — only `examples/`
+Deno sandbox (`brew install deno`; dspy requires Deno `>=2.0.0,<3.0.0`): only `examples/`
 exercise that.
 
 **Enable the commit hooks in your clone:** `git config core.hooksPath .githooks`. They refuse a
 commit that would publish a private downstream project's name, reading a denylist from
-`~/.claude/private-names.txt` (or `$PRIVATE_NAMES_FILE`) — kept outside the repo on purpose, since
+`~/.claude/private-names.txt` (or `$PRIVATE_NAMES_FILE`): kept outside the repo on purpose, since
 putting those names into a public checker would publish exactly what it exists to keep private. No
 list means no check: you are told once, never blocked. CI cannot run it, so it only guards the
 moment the mistake is made, which is local.
 
 Before opening a PR: the suite is green, `ruff check` is clean, and any new
-behavior has a test. CI runs the same on Python 3.11–3.13.
+behavior has a test. CI runs the same on Python 3.11-3.13.
 
-## The virtuous cycle — how this kit improves
+## The virtuous cycle: how this kit improves
 
 `rlm-harness` is hardened by **dogfooding**: a real downstream consumer builds on the
 scaffold, hits friction, and that friction becomes a fix *in the kit* so every
@@ -45,11 +45,11 @@ consumer benefits. When you find a rough edge, the question is "is this generic?
   guard + factory live here; the provider + tracing live in the consumer. This is
   how `make_model_tool` / `make_fetch_tool` / `make_web_search_tool` are shaped.
 - A **consumer-specific value** (a model name, a schema, a product term, a path)
-  stays in the consumer, never here. Keep the public surface vendor-neutral —
+  stays in the consumer, never here. Keep the public surface vendor-neutral:
   refer to consumers generically ("a consumer"), not by a specific project name.
 
 So a good contribution either makes the generic half cleaner, or adds a new
-primitive in the base/wrap shape — not a special case for one user.
+primitive in the base/wrap shape: not a special case for one user.
 
 ## What not to break
 
@@ -59,7 +59,7 @@ These are load-bearing; see [`CLAUDE.md`](./CLAUDE.md) for the full list and the
   (`pyodide`/`deno`); the `local` interpreter stays refused unless explicitly opted in.
 - **The trace is a frozen `rlm-harness/trace/v1` wire format.** Adding an optional payload
   field is fine; removing, renaming, or re-typing an event type / envelope key /
-  established field is a `v2` break. `tests/test_contract.py` pins it — if it goes red,
+  established field is a `v2` break. `tests/test_contract.py` pins it: if it goes red,
   you're about to break a downstream reader, not the test.
 - **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`, `tools/`,
   `trace.py`, `skills.py`, `replay.py`, `dataset.py`, `serving.py`, `harness_serve.py`,
@@ -75,8 +75,8 @@ These are load-bearing; see [`CLAUDE.md`](./CLAUDE.md) for the full list and the
   downstream trainer fills; scoring/training is a separate stage.
 - **`__init__.__all__` is SemVer-frozen since 1.0.0.** Adding a public name is a minor release.
   Renaming or removing one ships the new name plus an alias that emits a `DeprecationWarning`, and
-  the alias survives until the next major. The pre-1.0 hard rename — change it and fix the consumers
-  in lockstep — is no longer available. `_`-prefixed names and module internals stay free to move.
+  the alias survives until the next major. The pre-1.0 hard rename: change it and fix the consumers
+  in lockstep. Is no longer available. `_`-prefixed names and module internals stay free to move.
 
 ## Submitting changes
 
@@ -89,4 +89,4 @@ By contributing, you agree your contributions are licensed under the project's
 [MIT License](./LICENSE), and you are expected to follow the
 [Code of Conduct](./CODE_OF_CONDUCT.md).
 
-Security issues should **not** be filed as public issues — see [`SECURITY.md`](./SECURITY.md).
+Security issues should **not** be filed as public issues: see [`SECURITY.md`](./SECURITY.md).

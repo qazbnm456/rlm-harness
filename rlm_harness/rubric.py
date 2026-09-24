@@ -1,4 +1,4 @@
-"""Reward-free rubric primitives — the shared substrate for decomposing "did this run succeed?" into
+"""Reward-free rubric primitives: the shared substrate for decomposing "did this run succeed?" into
 observable CRITERIA carried as LABELS.
 
 ``category`` is an OPAQUE, caller-defined label: rlm-harness never interprets it, hardcodes no taxonomy, and
@@ -6,13 +6,13 @@ carries no domain vocabulary. A consumer defines its own category set, criterion
 ``lens`` mapping each category to the trace facts it surfaces; this module owns only the generic types, the
 run_start-meta (de)serialization, a structural lint, and the pure per-criterion fact-assembly loop.
 
-Scoring — turning facts into a per-criterion or aggregate value — is the downstream TRAINER's job, never
+Scoring, turning facts into a per-criterion or aggregate value, is the downstream TRAINER's job, never
 here: this keeps the rubric inside rlm-harness's "trajectories, never reward" invariant (emit the criteria +
 per-criterion FACTS as data; scoring stays downstream). Pure pydantic + stdlib; dspy-free, so
 ``import rlm_harness`` stays cheap and this module is testable in isolation.
 
-A consumer wraps these — supplying its own category set + criterion skeleton, its own ``trace -> facts``
-function, and its own ``category -> keys`` lens — and re-exports the types so its own call sites are
+A consumer wraps these: supplying its own category set + criterion skeleton, its own ``trace -> facts``
+function, and its own ``category -> keys`` lens, and re-exports the types so its own call sites are
 unchanged. rlm-harness stays taxonomy-agnostic; the meaning of a category lives entirely in the consumer.
 """
 
@@ -24,16 +24,16 @@ from .trace import EVENT_RUN_START
 
 
 class Criterion(BaseModel):
-    """One rubric criterion — the STRUCTURE only. Scoring is the trainer's job, never here."""
+    """One rubric criterion: the STRUCTURE only. Scoring is the trainer's job, never here."""
 
     name: str = Field(..., description="short unique criterion id")
     description: str = Field(..., description="what the trajectory must satisfy, observable from the trace")
     weight: float = Field(1.0, description="relative weight WITHIN its category (the trainer aggregates)")
-    category: str = Field(..., description="caller-defined category label — OPAQUE to rlm-harness")
+    category: str = Field(..., description="caller-defined category label, OPAQUE to rlm-harness")
 
 
 class RubricCriteria(BaseModel):
-    """A rubric — a set of criteria, carried in a run's run_start meta as LABELS (never a reward)."""
+    """A rubric: a set of criteria, carried in a run's run_start meta as LABELS (never a reward)."""
 
     criteria: list[Criterion] = Field(default_factory=list)
 
@@ -51,7 +51,7 @@ class CriterionFact(BaseModel):
 
 
 def rubric_to_meta(rubric: RubricCriteria) -> list[dict]:
-    """Serialize a rubric for run_start meta (LABELS carried alongside the run — never a reward)."""
+    """Serialize a rubric for run_start meta (LABELS carried alongside the run: never a reward)."""
     return [c.model_dump() for c in rubric.criteria]
 
 
@@ -59,9 +59,9 @@ def rubric_from_meta(events: list[dict], *, categories: tuple[str, ...] | None =
     """Recover the rubric stored under a run's ``run_start`` meta ``['rubric']`` (empty if none recorded).
 
     Tolerant: a non-dict or malformed entry is skipped rather than crashing the read path (legacy traces
-    that stored extra keys still coerce — pydantic ignores unknown keys). If ``categories`` is given (the
+    that stored extra keys still coerce: pydantic ignores unknown keys). If ``categories`` is given (the
     caller's allowed label set), entries whose ``category`` is not in it are dropped; if None, any truthy
-    category is accepted — rlm-harness imposes no taxonomy."""
+    category is accepted: rlm-harness imposes no taxonomy."""
     for e in events:
         if e.get("type") == EVENT_RUN_START:
             raw = ((e.get("payload") or {}).get("meta") or {}).get("rubric")
@@ -76,7 +76,7 @@ def rubric_from_meta(events: list[dict], *, categories: tuple[str, ...] | None =
                             continue
                     elif not cat:
                         continue
-                    try:  # skip a malformed entry (missing name/description) — never crash the read path
+                    try:  # skip a malformed entry (missing name/description), never crash the read path
                         crits.append(Criterion(**c))
                     except (TypeError, ValueError):
                         continue
@@ -95,7 +95,7 @@ def validate_rubric(
 
     Always checks: non-empty rubric, unique names, non-empty descriptions. When ``categories`` is given,
     also checks every category is represented. When ``observable_vocab`` is given, also runs a weak
-    trace-observability heuristic — each description should mention at least one vocab term (deeper
+    trace-observability heuristic. Each description should mention at least one vocab term (deeper
     "is this rubric GOOD" validation needs a real training signal and is out of scope)."""
     criteria = rubric.criteria
     if not criteria:
@@ -129,8 +129,8 @@ def criteria_facts(
 
     PURE: takes the already-resolved ``criteria``, a ``facts`` dict (whatever the consumer's trace yields),
     and a ``lens`` mapping each category to the fact keys it surfaces. A category absent from ``lens``
-    yields empty facts (``.get`` — never ``KeyError``, which matters for an opaque category the lens does
-    not cover). NO trace/event/domain knowledge here — the consumer supplies criteria, facts, and lens.
+    yields empty facts (``.get``: never ``KeyError``, which matters for an opaque category the lens does
+    not cover). NO trace/event/domain knowledge here: the consumer supplies criteria, facts, and lens.
     This NEVER decides met/unmet or a score."""
     out: list[CriterionFact] = []
     for c in criteria:

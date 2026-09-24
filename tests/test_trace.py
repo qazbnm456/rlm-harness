@@ -52,7 +52,7 @@ def test_recorder_writes_jsonl_with_monotonic_steps(tmp_path):
 
 
 def test_on_event_observer_fires_live_for_every_event(tmp_path):
-    # The live observer gets each event AS it is recorded (run_start, the calls, run_end) — what
+    # The live observer gets each event AS it is recorded (run_start, the calls, run_end): what
     # a streaming UI uses to stream sandbox-invoked tool_calls that dspy's on_tool never sees.
     seen = []
     path = str(tmp_path / "trace.jsonl")
@@ -111,7 +111,7 @@ def test_record_main_trajectory_from_fake_prediction(tmp_path):
 
 def test_main_step_ts_backfilled_from_live_capture(tmp_path):
     # The live per-turn stamps (captured while the run was in flight) override the post-hoc clock,
-    # matched to the trajectory by reasoning — so a main_step's ts is WHEN it happened, not finalize.
+    # matched to the trajectory by reasoning, so a main_step's ts is WHEN it happened, not finalize.
     path = str(tmp_path / "trace.jsonl")
     pred = types.SimpleNamespace(
         trajectory=[
@@ -145,7 +145,7 @@ def test_main_step_double_parse_resolves_to_first_stamp(tmp_path):
     # Two stamps staged for one turn → consume the EARLIEST. This USED to be the production
     # shape: the kit's own `_LenientJSONAdapter.parse` calls `super().parse(...)` and dspy wraps
     # `parse` per defining class, so each turn fired the callback twice. `_MainStepTimer` dedupes
-    # that at source since 1.6.1 — NOT dspy's behaviour, ours. The recorder-level rule is kept and
+    # that at source since 1.6.1: NOT dspy's behaviour, ours. The recorder-level rule is kept and
     # pinned anyway: any caller staging two stamps for one turn still gets the true (first) time.
     path = str(tmp_path / "trace.jsonl")
     pred = types.SimpleNamespace(
@@ -276,7 +276,7 @@ def test_jsonl_is_valid_json_per_line(tmp_path):
 
 def test_recorder_scope_reestablishes_recorder_in_a_worker_thread(tmp_path):
     # A ThreadPoolExecutor worker does NOT inherit the recorder ContextVar (unlike an asyncio task), so
-    # current_recorder() is None there — which is why dspy's llm_query_batched lost batched sub_calls.
+    # current_recorder() is None there, which is why dspy's llm_query_batched lost batched sub_calls.
     # recorder_scope re-establishes it so a record() from the worker lands in the trace.
     from concurrent.futures import ThreadPoolExecutor
 
@@ -301,13 +301,13 @@ def test_recorder_scope_reestablishes_recorder_in_a_worker_thread(tmp_path):
 #
 # A consumer reading a trace has only the payload, and `ok` alone cannot tell a validator
 # rejection from an endpoint failure or a circuit break. Reading it as one thing has shipped in
-# four separate consumers — into training labels, a scored rubric criterion, and delivered report
+# four separate consumers: into training labels, a scored rubric criterion, and delivered report
 # text. The shapes below are taken from real recorded traces, not invented.
 
 
 def test_an_endpoint_payload_has_NO_ok_key_and_that_is_the_whole_trap():
     """The exact shape a real consumer records on the endpoint path: `error=` only. `ok` is ABSENT,
-    so `payload.get("ok")` is None — falsy — and every `not payload.get("ok")` counter downstream
+    so `payload.get("ok")` is None, falsy, and every `not payload.get("ok")` counter downstream
     silently absorbs infrastructure failures as content declines. In one measured corpus that was
     113 of 116 'declines' in a run whose validator ran zero times."""
     payload = {"tool": "generate_nuclei_template", "error": "harness exited 1"}
@@ -330,7 +330,7 @@ def test_an_endpoint_error_that_STRINGIFIED_TO_NOTHING_is_still_an_endpoint_fail
     wrong for a while.
 
     `endpoint_error` is filled with `str(exc)`, and that is `''` for `httpx.ConnectTimeout` /
-    `ReadTimeout` / `ConnectError`, `TimeoutError`, `OSError` and `RemoteDisconnected` — six of the
+    `ReadTimeout` / `ConnectError`, `TimeoutError`, `OSError` and `RemoteDisconnected`: six of the
     most ordinary transport failures there are. The original `payload.get("endpoint_error") or ...`
     sent every one of them down the `CAUSE_INVALID` branch: a dropped connection recorded as a
     content decline, which is the exact misclassification this function exists to prevent.
@@ -406,7 +406,7 @@ def test_a_non_model_tool_reads_as_ok_or_invalid_which_is_what_ok_already_said()
 
 
 def test_the_live_result_and_the_recorded_payload_agree():
-    """One vocabulary, checked rather than asserted in prose — the constants really are the same
+    """One vocabulary, checked rather than asserted in prose. The constants really are the same
     objects, and the two derivations really do return the same word for the same outcome."""
     from rlm_harness.tools.model import CAUSE_ENDPOINT as LIVE_ENDPOINT
     from rlm_harness.tools.model import ModelToolResult
@@ -423,7 +423,7 @@ def test_the_live_result_and_the_recorded_payload_agree():
 
 def test_export_actions_carries_the_cause_and_the_endpoint_string(tmp_path):
     """The record that reaches a TRAINER. The endpoint string rode nowhere at all before this: it
-    is recorded under `error`, and `_action_record` carried only ok/output/errors — so a downstream
+    is recorded under `error`, and `_action_record` carried only ok/output/errors, so a downstream
     reader could not reconstruct the split even by hand."""
     from rlm_harness.dataset import export_actions
 
@@ -442,7 +442,7 @@ def test_export_actions_carries_the_cause_and_the_endpoint_string(tmp_path):
 
 
 def test_an_explicitly_recorded_cause_wins_over_the_derivation(tmp_path):
-    """The write side is allowed to be authoritative — it is the code that knows. Only the fallback
+    """The write side is allowed to be authoritative. It is the code that knows. Only the fallback
     is a derivation, so a tool whose outcome the three keys cannot express can still say so."""
     from rlm_harness.dataset import export_actions
 
@@ -458,14 +458,14 @@ def test_an_explicitly_recorded_cause_wins_over_the_derivation(tmp_path):
 
 # ---- 1.6.0: the three fields that make a trace measurable ------------------------------
 #
-# All three are ADDITIVE within trace/v1 — no new event type, nothing removed or re-typed. They
+# All three are ADDITIVE within trace/v1: no new event type, nothing removed or re-typed. They
 # exist because an analysis of ~400 real traces could not answer three basic questions: which kit
 # wrote this, how long did that tool take, and was a turn's wall-clock the model generating or the
 # sandbox executing.
 
 def test_run_start_names_the_kit_that_wrote_the_trace(tmp_path):
     """`schema` is the FORMAT version and says nothing about the producer, so a corpus spanning
-    several releases is un-attributable — you cannot tell a behaviour change from a version
+    several releases is un-attributable: you cannot tell a behaviour change from a version
     change. Asserted against a REAL recorder: nothing else pins the actual run_start payload."""
     import rlm_harness
 
@@ -492,7 +492,7 @@ def test_the_version_sits_beside_meta_never_inside_it(tmp_path):
 
 
 def test_tool_call_duration_is_conditional_and_rounded(tmp_path):
-    """Written only when given, like `args` — an unconditional null would land on every tool_call
+    """Written only when given, like `args`. An unconditional null would land on every tool_call
     of every trace forever."""
     p = tmp_path / "t.jsonl"
     with TraceRecorder(str(p), run_id="r"):
@@ -522,7 +522,7 @@ def test_a_turn_dspy_never_executed_does_not_steal_the_next_turns_duration(tmp_p
 
     dspy raises SyntaxError out of `_strip_code_fences` for an explicitly non-Python fence and
     records that turn from the UNSTRIPPED text without calling execute() at all. A positional zip
-    then credits the skipped turn with the next turn's time and shifts every later one — a
+    then credits the skipped turn with the next turn's time and shifts every later one: a
     confidently WRONG attribution with nothing to signal it, which is worse than none."""
     p = tmp_path / "t.jsonl"
     with TraceRecorder(str(p), run_id="r") as rec:
@@ -574,7 +574,7 @@ def test_a_turn_with_no_recorded_execution_has_the_key_ABSENT(tmp_path):
 
 def test_exec_durations_reset_per_attempt(tmp_path):
     """`run_with_retry` re-runs the RLM and only the FINAL attempt is recorded, so the buffer
-    clears with the ts buffer — otherwise attempt 1's durations would shift attempt 2's onto the
+    clears with the ts buffer: otherwise attempt 1's durations would shift attempt 2's onto the
     wrong turns."""
     p = tmp_path / "t.jsonl"
     with TraceRecorder(str(p), run_id="r") as rec:
@@ -618,7 +618,7 @@ def test_a_refusal_called_outside_a_task_records_no_duration(tmp_path):
     """What is pinned here is the seam's BOUNDARY, not the old "a refusal is never timed" rule.
 
     That rule is gone as of 1.8.3: through a task, `_ensure_tool_timing` wraps every tool and the
-    refusal branch carries a true ~0 rather than an absent field — because `None` in `ToolWaste`
+    refusal branch carries a true ~0 rather than an absent field: because `None` in `ToolWaste`
     means "nobody measured", so spending it on "measured, and it was instant" makes the two
     indistinguishable. Called DIRECTLY, as here, there is no wrapper and nothing to read, which is
     unchanged and is why this file's other exact-payload assertions still hold.
@@ -648,8 +648,8 @@ def _traj(*reasonings, code_for=lambda r: f"code-{r}"):
 
 
 def test_a_surplus_staged_stamp_cannot_drag_a_later_turn_backwards(tmp_path):
-    """THE cursor regression. Stages TWO stamps per turn — what production did before
-    `_MainStepTimer` learned to dedupe — with a reasoning repeated at a non-adjacent turn. Under
+    """THE cursor regression. Stages TWO stamps per turn. What production did before
+    `_MainStepTimer` learned to dedupe, with a reasoning repeated at a non-adjacent turn. Under
     the old scan-from-zero rule the last turn claimed the FIRST turn's spare stamp and the emitted
     ts went BACKWARDS, which is what rendered as a negative per-turn duration downstream."""
     path = str(tmp_path / "trace.jsonl")
@@ -665,7 +665,7 @@ def test_a_surplus_staged_stamp_cannot_drag_a_later_turn_backwards(tmp_path):
 
 
 def test_one_stamp_per_turn_is_what_makes_ADJACENT_duplicates_correct(tmp_path):
-    """The cursor CANNOT fix an adjacent duplicate — with two stamps staged, turn 1 takes turn 0's
+    """The cursor CANNOT fix an adjacent duplicate, with two stamps staged, turn 1 takes turn 0's
     spare and lands ~0.1s early: no longer negative, so the symptom hides while the value stays
     wrong. Correctness here comes only from staging ONE stamp per turn, which is why the real fix
     lives in `task.py:_MainStepTimer` and not in this matcher. Both halves are asserted so the
@@ -709,7 +709,7 @@ def test_matched_turns_ts_is_non_decreasing_for_every_duplicate_shape(tmp_path):
 
 def test_a_setup_execution_cannot_be_claimed_by_a_later_turn(tmp_path):
     """dspy runs a setup `execute()` BEFORE the turn loop, so its duration is staged ahead of every
-    turn. A turn whose code collides with it must not claim it — the cursor is what stops that."""
+    turn. A turn whose code collides with it must not claim it. The cursor is what stops that."""
     path = str(tmp_path / "trace.jsonl")
     with TraceRecorder(path, run_id="r1", clock=_counter()) as rec:
         rec.begin_main_capture()
@@ -748,7 +748,7 @@ def test_metrics_snapshot_is_OFF_by_default(tmp_path, monkeypatch):
 def test_an_explicit_record_metrics_False_beats_the_environment(tmp_path, monkeypatch):
     """The kwarg is documented as the way to bypass the environment, and only the bypass-to-ON
     direction was pinned. `if record_metrics is None` narrowed to `if not record_metrics` survived
-    the whole suite — under which an env var silently overrides an explicit caller opt-out and
+    the whole suite: under which an env var silently overrides an explicit caller opt-out and
     writes prompts into a trace the caller asked to keep clean."""
     monkeypatch.setenv("RLM_TRACE_METRICS", "1")
     path = str(tmp_path / "t.jsonl")
@@ -770,12 +770,12 @@ def test_metrics_snapshot_turns_on_by_env_read_at_construction(tmp_path, monkeyp
 
 def test_metrics_snapshot_is_SKIPPED_not_zeroed_when_the_reread_finds_nothing(tmp_path):
     """`load_events` returns `[]` for a rotated file, `/dev/null`, or a `run_id` that does not
-    match — and `compute_run_facts([])` would then emit `main_steps: 0` and the rest, which is
+    match, and `compute_run_facts([])` would then emit `main_steps: 0` and the rest, which is
     indistinguishable from a measured zero AND is streamed live to every consumer's `on_event`.
     An absent event is not a measurement, one layer over.
 
     Driven with a `run_id` mismatch specifically: a path that cannot be READ raises instead, the
-    suppression swallows it, and no `metrics` key appears with or without the guard — so that
+    suppression swallows it, and no `metrics` key appears with or without the guard, so that
     driver would leave the mutation green."""
     path = str(tmp_path / "t.jsonl")
     rec = TraceRecorder(path, run_id="written-as-this", record_metrics=True)
@@ -788,7 +788,7 @@ def test_metrics_snapshot_is_SKIPPED_not_zeroed_when_the_reread_finds_nothing(tm
 
 
 def test_metrics_snapshot_is_computed_from_the_FILE_filtered_by_run_id(tmp_path):
-    """Consistent-by-construction with the bytes it sits beside — and the `run_id` filter matters
+    """Consistent-by-construction with the bytes it sits beside, and the `run_id` filter matters
     because the handle is opened in append mode and one file may hold several runs."""
     path = str(tmp_path / "t.jsonl")
     with TraceRecorder(path, run_id="a", record_metrics=True) as rec:
@@ -803,7 +803,7 @@ def test_metrics_snapshot_is_computed_from_the_FILE_filtered_by_run_id(tmp_path)
 
 def test_run_end_survives_a_BaseException_escaping_the_snapshot(tmp_path, monkeypatch):
     """`suppress(Exception)` does not catch `BaseException`, so `run_end` is recorded from a
-    `finally` — otherwise a Ctrl-C during the re-read loses it on precisely the killed-run path
+    `finally`: otherwise a Ctrl-C during the re-read loses it on precisely the killed-run path
     that is most worth analysing.
 
     The interrupt must be raised INSIDE the snapshot, not in the `with` body: a body raise arrives
@@ -818,7 +818,7 @@ def test_run_end_survives_a_BaseException_escaping_the_snapshot(tmp_path, monkey
     path = str(tmp_path / "t.jsonl")
     # `pytest.raises`, not `suppress`: the interrupt must still PROPAGATE. Asserting only that
     # `run_end` exists holds for `suppress(BaseException)` too, and that mutant survived the whole
-    # suite — a recorder inside a coroutine would then silently eat its own `CancelledError`.
+    # suite: a recorder inside a coroutine would then silently eat its own `CancelledError`.
     with pytest.raises(KeyboardInterrupt), \
             TraceRecorder(path, run_id="k", record_metrics=True) as rec:
         rec.record(EVENT_MAIN_STEP, {"turn": 0, "code": "x=1"})
@@ -846,7 +846,7 @@ def test_the_reread_follows_the_path_as_it_was_at_ENTER_not_at_init(tmp_path, mo
     """`open()` resolves a relative path at `__enter__`, so the re-read must resolve it there too.
 
     Two chdirs, and both matter. The one AFTER entering catches dropping the stash entirely. The one
-    BETWEEN constructing and entering catches stashing at `__init__` instead — that mutant passes an
+    BETWEEN constructing and entering catches stashing at `__init__` instead: that mutant passes an
     enter-then-chdir test, because both placements stash before that chdir, and it survived the whole
     suite. Under it `open()` writes to the new cwd while `_abs_path` points at the old one, so the
     re-read raises, `suppress` eats it, and the snapshot silently disappears."""
@@ -866,7 +866,7 @@ def test_a_truncated_file_with_this_runs_events_but_no_run_start_emits_nothing(t
     """The guard is `run_start present`, not `events non-empty`, and the difference is reachable.
 
     A log-rotated file can drop its head while keeping this `run_id`'s later events. `not events`
-    would then compute facts from a truncated stream and publish them as this run's — a measured-
+    would then compute facts from a truncated stream and publish them as this run's: a measured-
     looking number over a fragment. Weakening the guard that way survived every other test, because
     the drivers the plan specified (`/dev/null`, a `run_id` mismatch) both yield an EMPTY list, and
     an empty list satisfies both forms."""
@@ -1163,8 +1163,8 @@ def test_an_enormous_cause_message_is_bounded(tmp_path):
 
 def test_a_BaseException_from_the_walk_still_writes_run_end_and_resets(tmp_path):
     """`suppress(Exception)` cannot catch a `BaseException`, and `short_error` propagates those by
-    design. Built OUTSIDE the `try/finally` this cost three things at once — the `run_end` event,
-    the contextvar reset, and the file handle — on the failure path, which is the one where the
+    design. Built OUTSIDE the `try/finally` this cost three things at once: the `run_end` event,
+    the contextvar reset, and the file handle: on the failure path, which is the one where the
     trace is the only surviving account.
 
     The metrics snapshot whose posture the comment claims to copy has always been inside that
@@ -1197,7 +1197,7 @@ def test_cause_is_preferred_over_context(tmp_path):
     inconvenience: **CPython sets `__suppress_context__ = True` as a side effect of assigning
     `__cause__`** (which is also what `raise X from Y` does), so on any normally-constructed
     exception `__context__` is already unreachable and the two walk orders agree. The order is only
-    observable on a frame where something reset that flag — so this is a defensive pin on the
+    observable on a frame where something reset that flag, so this is a defensive pin on the
     stated intent, not a scenario seen in the wild. A version of this test that merely assigned
     both attributes could not tell the orders apart, and a `__context__`-first walk survived it."""
     stated = ValueError("the stated cause")

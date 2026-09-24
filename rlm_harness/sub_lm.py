@@ -1,11 +1,11 @@
 """``intercept_sub_lm``: the one hook to intercept the RLM's sub-LM.
 
 ``dspy.RLM`` exposes no hook to intercept a sub-LLM response before it returns to
-the main model — and its built-in ``llm_query`` / ``llm_query_batched`` tools just
+the main model, and its built-in ``llm_query`` / ``llm_query_batched`` tools just
 call ``self.sub_lm(prompt)``. So the ONLY interception point is the sub_lm object
 itself. ``intercept_sub_lm`` wraps a ``dspy.LM``: ``RLM`` only sees "a sub_lm", but
 inside we emit a ``sub_call`` trace event for every escalation and (optionally) run
-a deterministic pipeline — call the base model, validate the format, post-process.
+a deterministic pipeline: call the base model, validate the format, post-process.
 **Since 1.7.0 a consumer no longer has to reach for this to get the event**: ``RLMTask`` wraps a
 plain ``sub_lm`` for recording at the seam that binds the recorder, because an escalation that is
 invisible is indistinguishable from one that never happened. Call it yourself for the
@@ -43,7 +43,7 @@ def bind_recorder_to_sub_lm(sub_lm: Any, recorder: Any) -> Any:
     """Wrap ``sub_lm`` so every call re-establishes ``recorder`` as active in the CALLING thread.
 
     ``dspy.RLM.llm_query_batched`` runs sub-LM calls in a ``ThreadPoolExecutor`` whose workers do NOT
-    inherit the recorder ``ContextVar`` — so without this, a batched escalation runs with
+    inherit the recorder ``ContextVar``, so without this, a batched escalation runs with
     ``current_recorder() is None`` and records no ``sub_call`` (the lifeline metric under-counts; a
     single ``llm_query``, same thread, is fine). The binding is PER RUN (one wrapper per run holds that
     run's recorder), so concurrent runs sharing the base sub-LM never cross-contaminate. dspy stores
@@ -95,7 +95,7 @@ def intercept_sub_lm(
     sits in that ``sub_lm`` slot. On every call it records a ``sub_call`` trace event
     (the escalation's input + the sub-LM's raw/processed output). **Since 1.7.0 most consumers do
     not need to call this at all**: ``RLMTask`` wraps a plain ``sub_lm`` for that recording
-    automatically. Reach for it when you want the deterministic validate → post-process pipeline —
+    automatically. Reach for it when you want the deterministic validate → post-process pipeline:
     pass ``validators`` / ``postprocessors`` and it retries on validation failure up to
     ``max_retries``. Omit them and it is a pure tracing wrapper, which is exactly what the
     automatic path installs.
@@ -126,7 +126,7 @@ def intercept_sub_lm(
         #: ``_ensure_sub_call_recording`` leaves it alone. A duck-typed protocol, not an
         #: isinstance check: a consumer with its OWN recording wrapper sets this to ``True`` and
         #: the kit stays out of the way, the same convention ``execution_instructions`` uses on an
-        #: interpreter. Probed with ``is True``, never truthiness — see that function.
+        #: interpreter. Probed with ``is True``, never truthiness, see that function.
         records_sub_call = True
 
         def __getattr__(self, attr: str) -> Any:
@@ -165,7 +165,7 @@ def intercept_sub_lm(
                 outputs = self._base(*args, **kwargs)
                 # SHAPE-PRESERVING. This used to be `[outputs]` for anything non-list, which turned
                 # a typed `LMResponse` into `[LMResponse]` and made dspy raise "Sub-LM response must
-                # contain text, got LMResponse" — invisible on the default path, fatal under
+                # contain text, got LMResponse": invisible on the default path, fatal under
                 # `dspy.context(experimental=True)`, and on course to become the DEFAULT after dspy
                 # 3.4. Both the read and the rebuild are resolved in `_dspy_compat`, never here.
                 raw = _dspy_compat.sub_lm_response_text(outputs)
@@ -179,8 +179,8 @@ def intercept_sub_lm(
                             # the RLM's built-in llm_query/llm_query_batched (which is
                             # the only thing that calls sub_lm). `kind` labels that role
                             # explicitly; `name` is this wrapper's label. We can't record
-                            # WHICH built-in triggered it — dspy calls sub_lm identically
-                            # for both — so don't infer llm_query vs _batched from here.
+                            # WHICH built-in triggered it: dspy calls sub_lm identically
+                            # for both, so don't infer llm_query vs _batched from here.
                             "kind": "sub_lm",
                             "name": self._name,
                             "model": self.model,
@@ -193,14 +193,14 @@ def intercept_sub_lm(
                     )
 
                 if error is None:
-                    # A no-op pipeline returns the base LM's object UNTOUCHED — identity, not a
+                    # A no-op pipeline returns the base LM's object UNTOUCHED: identity, not a
                     # reconstruction. That is what makes automatic wrapping safe: a sub-LM the kit
                     # wrapped on the caller's behalf must be indistinguishable from the bare one.
                     #
                     # `raw is None` means the shim did not RECOGNISE the shape. Return it untouched
                     # too, so dspy raises its own clear error. Rebuilding it as `[""]` would turn a
                     # loud TypeError into a silent EMPTY completion that reaches the planner and
-                    # then the RL data as a real escalation answer — and since 1.7.0 wraps every
+                    # then the RL data as a real escalation answer, and since 1.7.0 wraps every
                     # sub-LM automatically, that would be inflicted on callers who never opted in.
                     if raw is None or processed == raw:
                         return outputs
@@ -244,7 +244,7 @@ def model_as_tool(name: str, lm: Any, *, description: str = "") -> Callable[[str
         outputs = lm(prompt=prompt)
         # Read through the shim, never by indexing: dspy's LMs return a typed `LMResponse` on the
         # experimental path and the legacy list otherwise, and `outputs[0]` on the former yielded
-        # `str(LMResponse)` — the whole repr, handed to the model AND written to the trace as the
+        # `str(LMResponse)`: the whole repr, handed to the model AND written to the trace as the
         # tool's result. Same defect the sub-LM path carried; fixed in the same place, once.
         text = _dspy_compat.sub_lm_response_text(outputs)
         if text is None:
@@ -255,7 +255,7 @@ def model_as_tool(name: str, lm: Any, *, description: str = "") -> Callable[[str
 
     # SANITISED, because `name` is a model id and a real one is not an identifier:
     # `openai/gpt-4o-mini` gave `query_openai/gpt-4o-mini`, which dspy refuses outright
-    # — the tool could never be registered at all. The RAW id stays on
+    #. The tool could never be registered at all. The RAW id stays on
     # the `record_tool_call(f"model:{name}", …)` above: that is the trace identity and it
     # must not move, so a reader still sees which model was actually consulted.
     query_model.__name__ = sanitize_tool_name(f"query_{name}")
@@ -271,7 +271,7 @@ def _ensure_sub_call_recording(sub_lm: Any) -> Any:
 
     ``CLAUDE.md`` states as an invariant that a sub-LM escalation "is recorded as a ``sub_call``".
     Before 1.7.0 that held only when the CONSUMER remembered to call :func:`intercept_sub_lm`
-    itself — a plain ``dspy.LM`` is invoked by dspy directly and records nothing. Surveyed across
+    itself: a plain ``dspy.LM`` is invoked by dspy directly and records nothing. Surveyed across
     nine consumers, four never wrapped; two of those four had corpora, 141 traces, in which
     ``sub_call`` was identically zero and therefore indistinguishable from "measured, and the model
     never escalated". That ambiguity reached a design decision in this repo before it was caught.
@@ -282,7 +282,7 @@ def _ensure_sub_call_recording(sub_lm: Any) -> Any:
 
     **The probe is ``is True``, deliberately, not truthiness.** ``getattr`` on a ``unittest.mock``
     double manufactures a truthy attribute for any name, so a truthiness test would silently decide
-    a mock "already records" and skip it — recreating the exact absent-event failure this exists to
+    a mock "already records" and skip it: recreating the exact absent-event failure this exists to
     fix, one layer up. The ``except Exception`` covers a lazy proxy whose ``__getattr__`` raises
     something other than ``AttributeError``; a probe must never be able to fail a run.
     """

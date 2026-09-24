@@ -1,4 +1,4 @@
-"""rlm-harness — a clean, reusable harness for building tasks on DSPy RLMs.
+"""rlm-harness: a clean, reusable harness for building tasks on DSPy RLMs.
 
 Public surface::
 
@@ -98,7 +98,7 @@ __all__ = [
     "record_tool_call",
     "load_events",
     "group_by_run",
-    # trace/v1 contract constants — read a trace without hardcoding the wire strings
+    # trace/v1 contract constants: read a trace without hardcoding the wire strings
     "EVENT_RUN_START",
     "EVENT_MAIN_STEP",
     "EVENT_SUB_CALL",
@@ -142,10 +142,10 @@ __all__ = [
     # Claude subscription LM (optional: rlm-harness[subscription])
     "ClaudeAgentLM",
     "SUBSCRIPTION_PREFIX",
-    # atomic filesystem write — never a partial file visible mid-write
+    # atomic filesystem write: never a partial file visible mid-write
     "atomic_write_text",
     "atomic_write_stream",
-    # trace utilization metrics — how a run's activity was distributed (reward-free, like rubric)
+    # trace utilization metrics: how a run's activity was distributed (reward-free, like rubric)
     "RunUtilization",
     "compute_run_utilization",
     "compute_utilization_by_run",
@@ -155,7 +155,7 @@ __all__ = [
     "ToolWaste",
     "compute_tool_waste",
     "compute_tool_waste_by_run",
-    # safe, isolated-subprocess primitive for a web-facing consumer — a host-level orchestration
+    # safe, isolated-subprocess primitive for a web-facing consumer: a host-level orchestration
     # decision, never invoked by the model, so it lives here rather than under rlm_harness.tools
     "run_in_subprocess",
 ]

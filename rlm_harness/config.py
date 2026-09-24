@@ -1,7 +1,7 @@
 """Single source of truth for RLM runtime configuration.
 
-Everything the scaffold needs to stand up a Recursive Language Model — model
-names, credentials, the sandbox interpreter, budget caps, retry policy — lives
+Everything the scaffold needs to stand up a Recursive Language Model: model
+names, credentials, the sandbox interpreter, budget caps, retry policy: lives
 here and is driven by environment variables. No other module reads ``os.environ``.
 
 This module intentionally has **no** ``dspy`` import so it stays trivially
@@ -25,19 +25,19 @@ from typing import Any
 KNOWN_INTERPRETERS = frozenset({"pyodide", "deno", "mock", "container", "local"})
 
 # How the RLM coaxes structured output fields out of the model.
-#   "json"    — DEFAULT. Schema-guided structured output: a brace-tolerant JSONAdapter
+#   "json": DEFAULT. Schema-guided structured output: a brace-tolerant JSONAdapter
 #               (runtime._LenientJSONAdapter) forces the ``json_schema`` response_format and
 #               absorbs guided output. Works on ANY endpoint that supports structured output
-#               — OpenAI-proper AND vLLM/NIM (which reject schema-less json_object but
+#: OpenAI-proper AND vLLM/NIM (which reject schema-less json_object but
 #               accept json_schema). On a constraint-decoding server the decoder enforces
 #               the schema, so even a weak / imperfectly-formatting model emits valid output.
-#   "chat"    — dspy.ChatAdapter with the JSONAdapter fallback DISABLED: text field-markers
+#   "chat": dspy.ChatAdapter with the JSONAdapter fallback DISABLED: text field-markers
 #               only, never sends ``response_format``. For an endpoint that supports NO
-#               structured output at all. The model must follow the markers reliably — a
+#               structured output at all. The model must follow the markers reliably: a
 #               weak model that drops a field has NO recovery (dspy's own ChatAdapter would
 #               fall back to bare json_object, which the kit turns off because vLLM rejects
 #               it; so we don't get that recovery either). Not as portable as it looks.
-#   "default" — impose nothing; leave dspy's stock adapter (ChatAdapter WITH the json
+#   "default": impose nothing; leave dspy's stock adapter (ChatAdapter WITH the json
 #               fallback) in place. Recovers via json_object on OpenAI-proper endpoints,
 #               but that fallback is rejected by vLLM/NIM.
 KNOWN_ADAPTERS = frozenset({"chat", "json", "default"})
@@ -48,7 +48,7 @@ KNOWN_ADAPTERS = frozenset({"chat", "json", "default"})
 #
 # A FLOOR, not a ceiling: a consumer whose turns are long (a reasoning root, or one that
 # assembles a large structured result in a single turn) will need more, and the symptom
-# is NOT the empty-content one this default exists to prevent — see ``max_tokens``.
+# is NOT the empty-content one this default exists to prevent: see ``max_tokens``.
 _DEFAULT_MAX_TOKENS = 8192
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
@@ -135,7 +135,7 @@ def _env_optional_float(name: str) -> float | None:
     """Like ``_env_float``, but for a knob whose "unset" state is genuinely ``None``
     rather than a fallback numeric default (unset/blank -> ``None``; malformed -> lets
     ``float(raw)`` raise, exactly as ``_env_float``/``_env_int`` already do for a
-    malformed value — no new failure mode). Neither existing "optional env var" shape
+    malformed value: no new failure mode). Neither existing "optional env var" shape
     in this module transfers cleanly: ``max_tokens`` is hand-rolled with a non-``None``
     default, and ``ContainerConfig.cpus`` is the only other ``Optional``-typed
     env-sourced field, but it is a string, not a number."""
@@ -206,7 +206,7 @@ class RLMConfig:
     # Options for the ``container`` interpreter; ignored by every other interpreter.
     container: ContainerConfig = field(default_factory=ContainerConfig)
 
-    # Structured-output adapter (see KNOWN_ADAPTERS). Defaults to "json" — schema-guided
+    # Structured-output adapter (see KNOWN_ADAPTERS). Defaults to "json": schema-guided
     # structured output works on any endpoint that supports it (OpenAI-proper AND vLLM/NIM,
     # which accept json_schema) and is robust even when the model formats imperfectly, since
     # the decoder enforces the schema. Switch to "chat" only for an endpoint with no
@@ -223,13 +223,13 @@ class RLMConfig:
     #
     # Raising it is NOT free on every endpoint: an OpenAI-compatible server commonly validates
     # ``prompt_tokens + max_tokens`` against the context window, so a bigger cap removes usable
-    # PROMPT budget — and an RLM planner's prompt grows every turn, which is exactly where that
+    # PROMPT budget, and an RLM planner's prompt grows every turn, which is exactly where that
     # bites. Weigh it against the failure below rather than raising it reflexively.
     #
     # **The default is a floor, and overrunning it presents as a DIFFERENT failure.** 8192 must
     # hold one turn's chain-of-thought AND its structured answer. A long turn that overruns it is
     # cut off mid-JSON, so the adapter cannot parse the reply and the run surfaces as
-    # ``RLMTaskError: Failed to produce a valid '<field>'`` caused by ``AdapterParseError`` — a
+    # ``RLMTaskError: Failed to produce a valid '<field>'`` caused by ``AdapterParseError``: a
     # truncation, not a model that cannot follow the schema, and repeatedly misdiagnosed as the
     # latter because the quoted response looks well-formed right up to where it stops. Reading the
     # END of that quoted text tells them apart: a truncated one has no closing brace. A reasoning
@@ -238,30 +238,30 @@ class RLMConfig:
     # since this bounds generation rather than reserving it.
     max_tokens: int | None = _DEFAULT_MAX_TOKENS
 
-    # Budget controls — passed best-effort to dspy.RLM.
+    # Budget controls: passed best-effort to dspy.RLM.
     max_iterations: int = 10
     max_llm_calls: int = 30
 
-    # Head+tail cap (in CHARACTERS — unrelated to ``max_tokens``) that dspy.RLM applies to each
+    # Head+tail cap (in CHARACTERS: unrelated to ``max_tokens``) that dspy.RLM applies to each
     # REPL output before it enters the planner prompt; the planner never sees the omitted middle.
     # Default matches dspy's own. Raise it when the planner must read large printed results whole,
-    # but prefer slicing/summarising in REPL code — retained chars cost prompt tokens every turn.
+    # but prefer slicing/summarising in REPL code: retained chars cost prompt tokens every turn.
     max_output_chars: int = 10_000
 
     # A per-`execute()` SANDBOX-COMPUTE safety-net timeout for the pyodide/deno interpreter,
-    # mirroring ContainerConfig.timeout_s's own precedent for the container interpreter — but
+    # mirroring ContainerConfig.timeout_s's own precedent for the container interpreter, but
     # `None` (disabled) by default, deliberately NOT matching that precedent's `120.0`. Two
     # independent reasons: (1) this kit has real, already-shipped downstream consumers whose
     # existing long-running-but-legitimate turns must not start failing the moment this exists;
     # (2) unlike ContainerConfig.timeout_s, this budget has no hook to exclude host-side
     # tool/sub-LM dispatch time (dspy's PythonInterpreter.execute() is opaque here), so it is
     # measurably MORE likely to misfire on a legitimate multi-tool-call turn than the container
-    # analogy implies — a "generous" always-on default would be the WRONG default, not merely an
+    # analogy implies: a "generous" always-on default would be the WRONG default, not merely an
     # unnecessary one. See `sandbox.py`'s `_build_sandboxed_interpreter` for the mechanism.
     sandbox_turn_timeout_s: float | None = None
 
     # Wall-clock cap on ONE model HTTP request ATTEMPT (passed to ``dspy.LM(timeout=...)``, which
-    # hands it to litellm). ``None`` (the default) sends nothing — which is NOT the same as no cap:
+    # hands it to litellm). ``None`` (the default) sends nothing, which is NOT the same as no cap:
     # litellm then applies its own ``COMPLETION_HTTP_FALLBACK_SECONDS`` of 600.0
     # (``litellm_core_utils/completion_timeout.py``; verified by execution, not read off the docs).
     # So the real default is 600s per attempt, and this field REPLACES that number rather than
@@ -269,7 +269,7 @@ class RLMConfig:
     #
     # **It does not bound a run to its own value, because an attempt is not a request.** dspy
     # passes ``num_retries=3`` and litellm's first call hands the OpenAI SDK ``max_retries=2``, so
-    # a dead endpoint is retried — the run-level wait is a MULTIPLE of this, plus backoff. Size a
+    # a dead endpoint is retried. The run-level wait is a MULTIPLE of this, plus backoff. Size a
     # caller-side budget on the multiple, not on this number.
     #
     # Why it exists at all: ``sandbox_turn_timeout_s`` bounds the sandbox side of a turn and
@@ -279,7 +279,7 @@ class RLMConfig:
     # ``epoll_wait`` for 38 minutes at 0.3% CPU while that same endpoint answered unrelated
     # requests in half a second. Note 600s x 4 attempts is about 40 minutes, so that observation
     # is consistent with the litellm default being retried rather than with nothing being
-    # watching — an honest reading of it, since no attempt counter was captured at the time.
+    # watching: an honest reading of it, since no attempt counter was captured at the time.
     #
     # Left at ``None`` so the default stays exactly what it was before this field existed. A
     # legitimately long turn does exist (a reasoning model assembling a large structured answer),
@@ -289,14 +289,10 @@ class RLMConfig:
     # Per-ROLE passthrough of extra ``dspy.LM`` kwargs, merged over what ``configure()`` builds for
     # that role only (``None`` = send nothing, byte-identical to not having this field).
     #
-    # It exists because the answer to "bound this model's THINKING" is server-specific and the kit
-    # must not pretend otherwise. Measured on one vLLM deployment: ``thinking_token_budget`` works,
-    # while ``max_thinking_tokens``, ``thinking_budget``, ``reasoning_budget`` and
-    # ``chat_template_kwargs.thinking_budget`` are all silently IGNORED -- and ``reasoning_effort``,
-    # the one name litellm maps across providers, moved reasoning the WRONG way on that model
-    # (``low`` 2443-2562 and ``medium`` 2778-2837 tokens against 2237 at the default) while breaking
-    # the output-format instruction. A kit-owned name for any of this would be a promise that it
-    # means the same thing everywhere, which that data falsifies inside ONE model family. So the kit
+    # It exists because the answer to "bound this model's THINKING" is server-specific, and a
+    # kit-owned name for it would promise that one word means the same thing everywhere. Measurement
+    # on one vLLM deployment falsifies that inside a single model family, ``reasoning_effort``
+    # included; the guide's "Per-role LM request parameters" section has the numbers. So the kit
     # ships the MECHANISM and no vocabulary: what you write is what reaches the server.
     #
     # Two LEVELS, and the difference is where the silent no-ops above come from. A TOP-LEVEL key is
@@ -319,7 +315,7 @@ class RLMConfig:
 
     # Retry policy in _retry.py: how many times to run the WHOLE task (a full RLM trajectory) until
     # its output coerces into output_model. Default 1 = no retry, because a retry re-runs the entire
-    # RLM from scratch — silently MULTIPLYING the max_iterations budget (3 retries ⇒ up to 3×
+    # RLM from scratch: silently MULTIPLYING the max_iterations budget (3 retries ⇒ up to 3×
     # max_iterations turns) and re-doing every fetch/search/tool call. That budget multiplication
     # breaks the contract a consumer (and its UI) builds on, and a re-run rarely fixes a PERSISTENT
     # coercion failure (same model + schema → same bad output). Raise this only when transient infra
@@ -370,43 +366,43 @@ class RLMConfig:
 
         Recognised variables (all optional except where a sane default is shown):
 
-        - ``RLM_MAIN_MODEL`` / ``AI_MODEL_NAME`` (default ``openai/gpt-4o``) — the
+        - ``RLM_MAIN_MODEL`` / ``AI_MODEL_NAME`` (default ``openai/gpt-4o``): the
           REPL/root model. An INSTRUCT or a REASONING model both work: ``_LenientJSONAdapter``
           promotes ``reasoning_content`` to the answer when a reasoning root leaves ``content``
           empty (some emit the whole structured turn into the thinking channel). Caveats for a
           reasoning root: its native chain-of-thought is still DISCARDED (dspy reads only the
           structured turn), so it spends tokens the trace won't keep, and a too-small ``max_tokens``
-          can truncate it mid-thought (→ empty content) — keep the cap generous (see ``max_tokens``).
+          can truncate it mid-thought (→ empty content): keep the cap generous (see ``max_tokens``).
           The second var is a fallback so this scaffold drops into projects that already use
           ``AI_MODEL_NAME`` without re-keying env.
-        - ``RLM_SUB_MODEL`` / ``SUB_AI_MODEL_NAME`` (default: same as main) —
+        - ``RLM_SUB_MODEL`` / ``SUB_AI_MODEL_NAME`` (default: same as main):
           model for recursive subcalls.
-        - ``RLM_API_KEY`` / ``AI_API_KEY`` — API key (the second is a fallback so
+        - ``RLM_API_KEY`` / ``AI_API_KEY``: API key (the second is a fallback so
           this scaffold can drop into projects that already use ``AI_API_KEY``).
-        - ``RLM_BASE_URL`` / ``AI_BASE_URL`` — optional custom OpenAI-compatible endpoint.
+        - ``RLM_BASE_URL`` / ``AI_BASE_URL``: optional custom OpenAI-compatible endpoint.
           When set, ``configure`` pins ``custom_llm_provider="openai"`` so the model names
-          above can be the PLAIN id the endpoint serves (e.g. ``qwen/qwen3-next``) — no
+          above can be the PLAIN id the endpoint serves (e.g. ``qwen/qwen3-next``): no
           ``openai/`` (or other litellm provider) prefix needed; a prefixed name still works.
           With no base_url, write the model's own provider prefix (``openai/gpt-4o``,
           ``anthropic/claude-...``) as litellm expects.
         - ``RLM_INTERPRETER`` (default ``pyodide``).
-        - ``RLM_ADAPTER`` (default ``json``) — ``chat`` | ``json`` | ``default``;
+        - ``RLM_ADAPTER`` (default ``json``): ``chat`` | ``json`` | ``default``;
           see ``KNOWN_ADAPTERS``. ``json`` (schema-guided) works on any endpoint that
           supports structured output; ``chat`` is for endpoints that support none.
-        - ``RLM_MAX_TOKENS`` (default ``8192``) — per-call generation cap for the LM;
+        - ``RLM_MAX_TOKENS`` (default ``8192``): per-call generation cap for the LM;
           generous by default so a reasoning model's chain-of-thought + answer both fit
           instead of hitting a server's small default cap (which truncates → empty content).
         - ``RLM_ALLOW_INSECURE_SANDBOX`` (default ``false``).
         - ``RLM_MAX_ITERATIONS`` (default ``10``).
         - ``RLM_MAX_LLM_CALLS`` (default ``30``).
-        - ``RLM_MAX_OUTPUT_CHARS`` (default ``10000``) — head+tail character cap on REPL
+        - ``RLM_MAX_OUTPUT_CHARS`` (default ``10000``): head+tail character cap on REPL
           output fed back to the planner (distinct from ``RLM_MAX_TOKENS``).
-        - ``RLM_REQUEST_TIMEOUT`` (default: unset, which is NOT no cap — litellm then applies
-          its own 600s) — wall-clock seconds for ONE
+        - ``RLM_REQUEST_TIMEOUT`` (default: unset, which is NOT no cap: litellm then applies
+          its own 600s): wall-clock seconds for ONE
           model HTTP request. Its sibling on the model side of a turn; see
           ``RLMConfig.request_timeout_s`` for the hang it exists to bound and why it has no
           default.
-        - ``RLM_MAIN_LM_KWARGS`` / ``RLM_SUB_LM_KWARGS`` (default: unset) — a JSON OBJECT of
+        - ``RLM_MAIN_LM_KWARGS`` / ``RLM_SUB_LM_KWARGS`` (default: unset), a JSON OBJECT of
           extra ``dspy.LM`` kwargs for that ROLE only, merged over what ``configure()`` builds.
           The kit ships the mechanism and no vocabulary, because the key that bounds a model's
           thinking is server-specific: ``{"extra_body": {"thinking_token_budget": 16384}}`` on
@@ -414,7 +410,7 @@ class RLMConfig:
           ``extra_body`` goes RAW into the request body. Malformed JSON, a non-object, or a
           ``configure()``-owned key (see ``_LM_KWARGS_REFUSED``) raises here rather than being
           silently dropped. See ``RLMConfig.main_lm_kwargs``.
-        - ``RLM_SANDBOX_TURN_TIMEOUT`` (default: unset, i.e. disabled) — a per-``execute()``
+        - ``RLM_SANDBOX_TURN_TIMEOUT`` (default: unset, i.e. disabled), a per-``execute()``
           sandbox-compute safety-net timeout in seconds for the pyodide/deno interpreter. See
           ``RLMConfig.sandbox_turn_timeout_s`` for why this defaults to disabled rather than a
           generous always-on value.

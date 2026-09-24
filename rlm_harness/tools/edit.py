@@ -1,31 +1,31 @@
-"""``make_write_file_tool`` / ``make_edit_file_tool`` — the write side of the filesystem tools,
+"""``make_write_file_tool`` / ``make_edit_file_tool``: the write side of the filesystem tools,
 sitting alongside ``fs.py``'s read side (``make_read_file_tool`` / ``make_grep_files_tool``).
 
-Kept in a SEPARATE module from ``fs.py`` (which is already the largest single file in `tools/` —
+Kept in a SEPARATE module from ``fs.py`` (which is already the largest single file in `tools/`:
 355 lines, ~1.6× the next-largest single file, ``command.py`` at 221 lines) so that "everything in
 this package that can mutate the filesystem" stays physically distinct from "everything that only
-reads it" — a real audit benefit, since this module introduces a genuinely new risk category the
+reads it": a real audit benefit, since this module introduces a genuinely new risk category the
 read-only tools don't carry: DATA LOSS. `read_file`/`grep_files` returning wrong information is a
 bug; `write_file`/`edit_file` doing the wrong thing can destroy content. That's the one dimension
-of risk this module adds — it does NOT add a new SECURITY-boundary category: every tool in this
+of risk this module adds. It does NOT add a new SECURITY-boundary category: every tool in this
 kit already executes host-side outside the sandbox (true of `fetch_url`, `run_command`, and
 `fs.py`'s own read-side pair), and writing a file host-side inside an already-`resolve_within_root`
 -guarded root is the natural write-side mirror of `read_file` reading host-side inside the same
 guard.
 
 Both factories reuse `fs.py`'s `resolve_within_root` guard and `_validate_tool_name` helper
-(the first same-package private-name cross-import in this package — a deliberate, new internal
+(the first same-package private-name cross-import in this package: a deliberate, new internal
 seam, not an existing pattern being followed; justified on its own terms, since the "consumers
 don't reach into private names" rule is about code OUTSIDE this package, not sibling modules the
 kit itself maintains). Both build on `atomic_write_text` (`rlm_harness.atomic`), which is what
-makes an overwrite/edit crash-safe — the write itself is either fully visible or not visible at
+makes an overwrite/edit crash-safe. The write itself is either fully visible or not visible at
 all, never half-written.
 
 **Known, accepted, out-of-scope-for-this-round risk**: `atomic_write_text`'s guarantee is "no torn
-read" — it does NOT serialize a read-modify-write across two SEPARATE `RLMTask` runs (or two
+read". It does NOT serialize a read-modify-write across two SEPARATE `RLMTask` runs (or two
 workers in a batch eval) sharing the same `root`. Two concurrent `edit_file` calls on the same file
 can both read the same original content, compute independent replacements, and the second
-`os.replace` silently wins — a lost update, invisible to either caller (both report success). This
+`os.replace` silently wins: a lost update, invisible to either caller (both report success). This
 is a genuinely new hazard the read-only tools next to these are immune to; it is not addressed
 here.
 """
@@ -49,7 +49,7 @@ def _format_edit_snippet(
     ``context_lines`` unchanged lines on each side, clamped to ``[1, len(lines)]``.
 
     Sharing that convention makes this the SECOND source of gutter-bearing text a model can copy
-    into a citation — ``read_file(line_numbers=True)`` is the documented one, and this reaches the
+    into a citation: ``read_file(line_numbers=True)`` is the documented one, and this reaches the
     model on every successful edit. :func:`~rlm_harness.tools.grounding.verify_quote` must
     therefore be given the raw file text here too. Since 1.8.2 it refuses a quote carrying only a
     line number (what a BLANK line in this window renders as); since 1.9.0 it resolves one carrying
@@ -57,7 +57,7 @@ def _format_edit_snippet(
 
     If the edited region ITSELF spans more than ``2 * context_lines + 1`` lines, only its own
     head and tail (each ``context_lines`` long) are shown, with a visible ``"... N line(s)
-    omitted ..."`` marker between them — bounds the rendered size to a small, fixed multiple of
+    omitted ..."`` marker between them: bounds the rendered size to a small, fixed multiple of
     ``context_lines`` regardless of how large the edit was.
     """
     n = len(lines)
@@ -86,17 +86,17 @@ def make_write_file_tool(
     name: str = "write_file",
     encoding: str = "utf-8",
 ) -> Callable[..., str]:
-    """Build a ``write_file``-shaped tool scoped to ``root`` — wired in a task's ``__init__``
+    """Build a ``write_file``-shaped tool scoped to ``root``: wired in a task's ``__init__``
     (per-run state, never a classvar).
 
     ``name`` (default ``"write_file"``): same rationale and mechanism as
-    :func:`rlm_harness.tools.make_read_file_tool`'s ``name`` — lets a second bounded root coexist
+    :func:`rlm_harness.tools.make_read_file_tool`'s ``name``: lets a second bounded root coexist
     in one task's ``tools=[...]`` list without a duplicate-tool-name collision at dspy's
     ``RLM(...)`` construction. Validated at factory-build time (identifier + not reserved).
 
     ``encoding`` (default ``"utf-8"``): point this at a non-UTF-8 corpus if needed.
 
-    **Unconditional overwrite** — there is no "refuse if the file already exists" mode. A consumer
+    **Unconditional overwrite**. There is no "refuse if the file already exists" mode. A consumer
     wanting a create-only guarantee can call the sibling ``read_file`` tool first and check for its
     "missing file" error string. Kept deliberately minimal for v1 rather than adding an
     untested create-only/overwrite-only flag nobody has asked for yet.
@@ -104,7 +104,7 @@ def make_write_file_tool(
     **No ``max_content_chars`` cap.** Unlike ``read_file``'s ``max_output_chars`` (which protects
     the MODEL's own context budget against an unexpectedly huge file it didn't write), the content
     here was generated by the model itself as part of its own output, so it's already bounded by
-    whatever generated it — capping it further protects nothing new AGAINST A SINGLE CALL. This
+    whatever generated it: capping it further protects nothing new AGAINST A SINGLE CALL. This
     does NOT cover disk exhaustion from a model in a loop calling this repeatedly: many
     individually-bounded files can still fill the host's disk. Accepted as a known,
     out-of-scope-for-v1 gap, not mitigated this round.
@@ -145,7 +145,7 @@ def make_edit_file_tool(
     snippet_context_lines: int = 3,
     max_snippet_occurrences: int = 3,
 ) -> Callable[..., str]:
-    """Build an ``edit_file``-shaped tool scoped to ``root`` — wired in a task's ``__init__``
+    """Build an ``edit_file``-shaped tool scoped to ``root``: wired in a task's ``__init__``
     (per-run state, never a classvar).
 
     ``name`` (default ``"edit_file"``): same rationale and mechanism as
@@ -156,28 +156,28 @@ def make_edit_file_tool(
     **Known failure mode, stated explicitly**: if the file on disk uses different line endings
     than the ``old_string`` the model supplies (e.g. a ``\\r\\n``-normalized file matched against a
     bare-``\\n`` anchor), the match fails CLOSED with "not found" rather than mis-editing. Not a
-    safety bug — it never silently edits the wrong thing — but worth knowing so an unexpected
+    safety bug, it never silently edits the wrong thing, but worth knowing so an unexpected
     refusal on an otherwise-correct anchor isn't a surprise.
 
     **On success, a windowed snippet of the RESULT is appended** (reusing ``read_file``'s own
     ``f"{lineno:>6}\\t{line}"`` numbering convention) so the model can confirm what its edit
     actually did without a separate ``read_file`` round-trip. ``show_snippet`` (default ``True``)
     is the escape hatch back to the terse ``"Replaced N occurrence(s) in {path!r}."`` alone.
-    ``snippet_context_lines`` (default ``3``) bounds each shown region to a small window around it
-    — if the edited region itself spans more, only its own head/tail are shown with an "... N
+    ``snippet_context_lines`` (default ``3``) bounds each shown region to a small window around it:
+    if the edited region itself spans more, only its own head/tail are shown with an "... N
     line(s) omitted ..." marker, so a huge insertion never dumps an unbounded block back. With
     ``replace_all=True`` producing many replaced occurrences, ``max_snippet_occurrences`` (default
-    ``3``) caps how many get their own snippet — the FILE is still fully edited regardless; this
+    ``3``) caps how many get their own snippet. The FILE is still fully edited regardless; this
     only caps how much of it is echoed back, and the returned string says explicitly when some
-    were omitted. Scoped to the SUCCESS path only — ``Refused``/``Read error``/``Write error``
+    were omitted. Scoped to the SUCCESS path only: ``Refused``/``Read error``/``Write error``
     strings are never appended to. Overlapping windows for closely-spaced occurrences are shown
-    independently, not merged — the edited regions themselves never overlap, only their
+    independently, not merged: the edited regions themselves never overlap, only their
     surrounding context can.
 
     **That numbering is ON by default, so a task using this tool feeds the model guttered text
     whether or not it ever considered line numbers.** If you verify citations, give
     :func:`~rlm_harness.tools.grounding.verify_quote` the RAW file text and never this rendered
-    output — the two must not see the same string. See the guide's "Line numbers and
+    output. The two must not see the same string. See the guide's "Line numbers and
     ``verify_quote``".
     """
     _validate_tool_name(name)
@@ -187,7 +187,7 @@ def make_edit_file_tool(
     ) -> str:
         """Replace ``old_string`` with ``new_string`` in the file at ``path`` (relative to the
         root). Refuses (returns a string, never raises) if ``old_string`` is not found, or is
-        found more than once and ``replace_all`` is False — supply more surrounding context to
+        found more than once and ``replace_all`` is False: supply more surrounding context to
         make it unique, or pass ``replace_all=True`` to replace every occurrence. ``old_string``
         and ``new_string`` must differ, and ``old_string`` must be non-empty."""
         resolved = resolve_within_root(root, path)
@@ -200,7 +200,7 @@ def make_edit_file_tool(
             with open(resolved, encoding=encoding) as fh:
                 content = fh.read()
         except (OSError, UnicodeDecodeError) as exc:
-            # IsADirectoryError is an OSError subclass — a directory-shaped `path` degrades the
+            # IsADirectoryError is an OSError subclass: a directory-shaped `path` degrades the
             # same way a missing/unreadable file does, never a raised, unhandled exception.
             record_tool_call(
                 name, args={"path": path}, ok=False, note=f"error: {type(exc).__name__}"
@@ -216,7 +216,7 @@ def make_edit_file_tool(
             record_tool_call(
                 name, args={"path": path}, ok=False, note="refused: old_string == new_string"
             )
-            return "Refused: old_string and new_string are identical — nothing to edit."
+            return "Refused: old_string and new_string are identical, nothing to edit."
 
         occurrences = content.count(old_string)
         if occurrences == 0:
@@ -230,7 +230,7 @@ def make_edit_file_tool(
                 note="ambiguous: multiple occurrences",
             )
             return (
-                f"Refused: old_string appears {occurrences} times in {path!r} — supply more "
+                f"Refused: old_string appears {occurrences} times in {path!r}, supply more "
                 f"surrounding context to make it unique, or pass replace_all=True to replace "
                 f"every occurrence."
             )

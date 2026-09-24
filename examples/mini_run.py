@@ -1,4 +1,4 @@
-"""Minimal real end-to-end RLM run — verifies the forward() path with a live model.
+"""Minimal real end-to-end RLM run: verifies the forward() path with a live model.
 
 Self-contained: configures from RLM_* env, runs one tiny task through a real
 dspy.RLM (real Deno sandbox + real model), records the trajectory, and prints
@@ -46,7 +46,7 @@ async def main() -> None:
     cfg = configure(RLMConfig.from_env())
     print(f"main={cfg.main_model} sub={cfg.sub_model} interpreter={cfg.interpreter}")
 
-    # A single RLM attempt (max_retries defaults to 1 — no whole-RLM re-run). The in-run REPL
+    # A single RLM attempt (max_retries defaults to 1: no whole-RLM re-run). The in-run REPL
     # loop is bounded by max_iterations, not by max_retries.
     task = Summarize()
 

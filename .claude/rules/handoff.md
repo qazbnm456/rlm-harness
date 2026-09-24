@@ -1,6 +1,6 @@
 # Context preservation (read before auto-compacting)
 
-`rlm-harness` already routes durable knowledge into its tracked docs — keep using them, and
+`rlm-harness` already routes durable knowledge into its tracked docs: keep using them, and
 when the conversation is about to compact, preserve only what they do NOT already hold:
 
 - **Stable invariants** → the **Invariants** section of `CLAUDE.md`.
@@ -10,20 +10,20 @@ when the conversation is about to compact, preserve only what they do NOT alread
 So a handoff summary should carry the *in-flight session state* those files miss. Prioritize,
 in order:
 
-1. **Decisions we agreed on this session** that are not yet in CHANGELOG/CLAUDE — design choices
-   ("depth stays 1 — depth>1 recursion is out of scope", "skills are knowledge-only, no script
+1. **Decisions we agreed on this session** that are not yet in CHANGELOG/CLAUDE: design choices
+   ("depth stays 1: depth>1 recursion is out of scope", "skills are knowledge-only, no script
    exec", "dataset split by tool name, not `kind=='tool'`"), API-shape calls, and the *reason*.
    Promote durable ones into CLAUDE.md (invariant) or CHANGELOG.md (change) before they fade.
-2. **Files / symbols changed**, as `path:symbol` one-liners on the *final* shape — e.g.
-   `sub_lm.py:_InterceptedSubLM.__call__ — records the escalation input on the sub_call event`,
-   `dataset.py:export_actions — per-action (planner/tool/sub) records with run reward`. Drop
+2. **Files / symbols changed**, as `path:symbol` one-liners on the *final* shape: e.g.
+   `sub_lm.py:_InterceptedSubLM.__call__ records the escalation input on the sub_call event`,
+   `dataset.py:export_actions emits per-action (planner/tool/sub) records with run reward`. Drop
    diffs and intermediate revisions.
 3. **Current status.** What passes `uv run pytest` (and the count), what is broken, last command
    run + result. One paragraph.
-4. **Open suggestions / TODOs** not yet tracked — mark each `proposed`,
+4. **Open suggestions / TODOs** not yet tracked: mark each `proposed`,
    `accepted-not-done`, or `rejected`, then move the durable ones into the issue tracker.
 5. **In-flight consumer signal.** What the downstream consumer surfaced in the current
-   work and what it needs — the dogfooding driver.
+   work and what it needs: the dogfooding driver.
 6. **In-flight user intent + acceptance criteria** for this session. Without it a resumed
    session drifts.
 
@@ -42,10 +42,10 @@ in order:
 - Status: <what passes pytest, what doesn't, last command + result>
 
 ## Decisions
-- <decision> — <why>   (→ promote to CLAUDE.md invariant / CHANGELOG.md)
+- <decision>: <why>   (→ promote to CLAUDE.md invariant / CHANGELOG.md)
 
 ## Changed
-- <path:symbol> — <what & why>
+- <path:symbol>: <what & why>
 
 ## Open
 - [proposed|accepted-not-done|rejected] <item>   (→ issue tracker if durable)

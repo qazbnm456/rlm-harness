@@ -2,8 +2,8 @@
 
 `metrics.compute_tool_waste` can only attribute wall-clock to the calls that report it, and a tool
 that silently stops reporting is invisible rather than loud. Two factories shipped without it in
-1.6.0's first draft — `make_git_clone_tool` (a network clone) and `model_as_tool` (an actual LM
-call) — which is precisely the failure mode `tests/test_repl_safety.py`'s `_REPL_FACTORIES` table
+1.6.0's first draft: `make_git_clone_tool` (a network clone) and `model_as_tool` (an actual LM
+call), which is precisely the failure mode `tests/test_repl_safety.py`'s `_REPL_FACTORIES` table
 exists for: six factories once shipped with no REPL-safety coverage because each author had to
 remember. Same cure, same shape: every `make_*` is either listed as outbound-and-timed, or
 exempt WITH a written reason, and a new one that is neither fails here at the moment it ships.
@@ -61,14 +61,14 @@ def _build_git_clone(tmp_path):
 # than pattern-matched: the guard is only worth having if each entry has to be argued for.
 #
 # WHAT THIS TABLE MEANS CHANGED IN 1.8.3. It used to list tools that carry NO duration at all. They
-# all carry one now — `RLMTask` wraps every tool it hands the model and `record_tool_call` fills the
+# all carry one now: `RLMTask` wraps every tool it hands the model and `record_tool_call` fills the
 # field from that wrapper. So an entry here says only "does not scope its own window", which is the
 # right answer for a tool with no inner boundary worth timing separately.
 #
 # The filesystem entries used to be argued as "sub-millisecond, and their refusal paths never touch
 # anything". Both halves are retired: the refusal argument is reversed in README's "Which shipped
 # tools carry a duration" (absent means unmeasured, not instant), and `make_grep_files_tool`'s
-# measurement-based exemption was reopened by its own terms — it named "a pathological regex over a
+# measurement-based exemption was reopened by its own terms: it named "a pathological regex over a
 # large tree" as what would reopen it, and a consumer's re-measurement across nine real repositories
 # found median 744ms and max 6.3s on a 2,110-file repo against the n=146/median-0.029s this table
 # used to cite. That tool alone is ~40% of sandbox execution time on that corpus.
@@ -81,7 +81,7 @@ _NOT_OUTBOUND = {
     # Host-side validators, never placed in a `tools=[...]` list and doing no I/O at all.
     "make_json_schema_validator": "host-side validator, no I/O",
     "make_schema_validator": "host-side validator, no I/O",
-    # Side-effect-free BASES that deliberately record nothing at all — the consumer's own wrapper
+    # Side-effect-free BASES that deliberately record nothing at all: the consumer's own wrapper
     # owns the `record_tool_call`, and therefore owns passing `duration_s`.
     "make_model_tool": "base factory; records nothing (consumer's wrapper does)",
     "make_harness_tool": "base factory; records nothing (consumer's wrapper does)",
@@ -94,7 +94,7 @@ def test_every_shipped_factory_is_classified():
     shipped = {n for n in tools_pkg.__all__ if n.startswith("make_")}
     unclassified = shipped - set(_OUTBOUND) - set(_NOT_OUTBOUND)
     assert not unclassified, (
-        f"shipped but unclassified: {sorted(unclassified)} — add it to _OUTBOUND (and make it "
+        f"shipped but unclassified: {sorted(unclassified)}, add it to _OUTBOUND (and make it "
         f"record duration_s), or to _NOT_OUTBOUND with the reason it does not."
     )
 
@@ -256,7 +256,7 @@ def test_two_calls_in_one_run_get_independent_durations(tmp_path):
 def test_a_nested_tool_call_restores_the_outer_start(tmp_path):
     """What the token-based reset is actually for. When one tool calls another, the inner call
     publishes its own start; on the way out it must restore the OUTER one. Without the reset the
-    outer tool's `duration_s` goes ABSENT, not short — the published name stays the inner tool's,
+    outer tool's `duration_s` goes ABSENT, not short. The published name stays the inner tool's,
     so the outer's own record fails the name match and fills nothing.
 
     Sequential calls cannot show this -- they each `set()` on entry regardless."""

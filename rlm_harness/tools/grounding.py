@@ -1,13 +1,13 @@
-"""``verify_quote`` — deterministic host-side quote/citation grounding.
+"""``verify_quote``: deterministic host-side quote/citation grounding.
 
-Closes a real gap this kit's own guide already names. `README.md`'s **"Grounded completeness —
+Closes a real gap this kit's own guide already names. `README.md`'s **"Grounded completeness:
 the sufficiency-critic recipe"** states the problem outright: *"There is often no deterministic
-check for CONTENT correctness — a validator catches structure/format, but not 'this answer
+check for CONTENT correctness: a validator catches structure/format, but not 'this answer
 skipped a clause'."* Its step 2, *"Diff the artifact against it, itemized,"* is entirely
-MODEL-JUDGED today — the main LM compares its own draft to a held ground-truth from memory or a
+MODEL-JUDGED today: the main LM compares its own draft to a held ground-truth from memory or a
 re-read, with nothing deterministic backing that judgment. This is exactly the failure mode the
 neighboring **"Judgement-only SUBMIT"** section already warns about for a different seam ("a
-self-reported validity flag becomes a label that can LIE") — except here it's the completeness
+self-reported validity flag becomes a label that can LIE"), except here it's the completeness
 DIFF itself that's self-reported, with no tool standing behind it the way ``make_schema_validator``
 stands behind structural validation.
 
@@ -15,19 +15,19 @@ stands behind structural validation.
 domain-specific parser: does this specific claimed quote/citation actually appear (verbatim, or
 under whitespace normalization) in the held source text? "Normalization" is junction-aware rather
 than uniform: whitespace between two word characters must be present in the source, everywhere else
-it may be absent — so a quote that reflowed a line break beside a bracket or a quote mark still
+it may be absent, so a quote that reflowed a line break beside a bracket or a quote mark still
 verifies, while ``foo bar`` can never verify against ``foobar``. See ``_whitespace_joiner``.
 It does not replace the model-judged
-itemized diff — it gives that diff a deterministic building block a model can call BEFORE
+itemized diff. It gives that diff a deterministic building block a model can call BEFORE
 finalizing (closing the loop in-trajectory, matching the recipe's "regenerate on the gaps" step),
 and that a consumer can ALSO call AFTER the fact, host-side, to re-derive whether a SUBMITted
-citation was actually grounded — the same "derive facts from bytes, never trust the self-report"
+citation was actually grounded: the same "derive facts from bytes, never trust the self-report"
 posture "Judgement-only SUBMIT" already establishes for validity.
 
-**A single plain function, no factory, no trace call** — a deliberate difference from `fs.py`/
+**A single plain function, no factory, no trace call**: a deliberate difference from `fs.py`/
 `edit.py`: those bind to a `root` (a security boundary) at construction time, so a factory and a
 ``name=`` override exist to give each bound instance its own REPL identity. ``verify_quote`` binds
-to nothing — ``source``/``quote`` are call-time arguments — so there's no state to close over and
+to nothing, ``source``/``quote`` are call-time arguments, so there's no state to close over and
 no multi-instance collision to solve, matching ``make_schema_validator``/
 ``make_json_schema_validator``'s own precedent of neither taking a `name=` nor calling
 ``record_tool_call``: a pure function with no filesystem/network side effect has nothing for a
@@ -49,22 +49,22 @@ def _whitespace_joiner(before: str, after: str) -> str:
     """The pattern a whitespace run in the quote becomes: ``\\s+`` or ``\\s*``.
 
     ``\\s+`` at every junction is what a naive normalization does, and it REFUSES a correct
-    citation wherever the source has no whitespace at that point — e.g. quoting a closing ``\"\"\"``
+    citation wherever the source has no whitespace at that point: e.g. quoting a closing ``\"\"\"``
     onto its own line when the source keeps it on the previous one. Demonstrated on shipped code:
 
         source  x = \"\"\"One line.\\nAnd another.\"\"\"
         quote   \"\"\"One line.\\nAnd another.\\n\"\"\"      -> MISMATCH, wrongly
 
     ``\\s*`` everywhere would fix that and introduce the opposite, worse failure: whitespace
-    DELETION, so ``foo bar`` would verify against ``foobar`` — an invented claim passing. The
+    DELETION, so ``foo bar`` would verify against ``foobar``: an invented claim passing. The
     junction decides. Whitespace between two WORD characters is load-bearing (removing it glues
-    two words into one that was never written), so it stays mandatory; anywhere else — beside a
-    quote mark, a bracket, an operator, punctuation — it is layout the model reflowed, and is
+    two words into one that was never written), so it stays mandatory; anywhere else: beside a
+    quote mark, a bracket, an operator, punctuation. It is layout the model reflowed, and is
     optional.
 
     Word-ness is tested with Python's UNICODE ``\\w``, never an ASCII class: CJK characters are word
     characters, so ``你好 世界`` keeps requiring the space against ``你好世界`` exactly as it does
-    today. An ASCII class would silently start accepting it — the same trap CLAUDE.md's
+    today. An ASCII class would silently start accepting it: the same trap CLAUDE.md's
     ``sanitize_tool_name`` rule names for identifier validity.
 
     Both neighbours are guaranteed non-empty: the quote is stripped before splitting, so no empty
@@ -85,10 +85,10 @@ _NUMBERS_ONLY_LINE = re.compile(r"^\s*[0-9]+\s*$")
 def _carries_only_numbers(quote: str) -> bool:
     """Is every non-blank line of ``quote`` a bare number and nothing else?
 
-    Such a quote asserts no content, so verifying it confirms nothing — the same reason an empty
+    Such a quote asserts no content, so verifying it confirms nothing: the same reason an empty
     or whitespace-only quote is refused. It reaches this function by a route the kit itself opens:
     ``make_read_file_tool(line_numbers=True)`` and ``edit_file``'s confirmation window both render
-    a line as ``f"{n:>6}\\t{line}"``, so a BLANK line renders as ``"     7\\t"`` — whose ``.strip()``
+    a line as ``f"{n:>6}\\t{line}"``, so a BLANK line renders as ``"     7\\t"``: whose ``.strip()``
     is ``"7"``, non-empty, and which then matches any source containing that digit.
 
     Three details are load-bearing and each has a named failure:
@@ -97,7 +97,7 @@ def _carries_only_numbers(quote: str) -> bool:
       load-bearing.** Verified equivalent to reading ``quote.strip()`` across 14,550 exhaustive
       combinations, and necessarily so: ``strip()`` removes exactly the leading/trailing whitespace
       the rule already ignores on both edges. The equivalence is a property of the rule's
-      PERMISSIVENESS, not of the call — tighten either edge (require the separator, say) and the
+      PERMISSIVENESS, not of the call: tighten either edge (require the separator, say) and the
       strip starts destroying the evidence it is meant to weigh, because ``"     7\\t".strip()`` is
       ``"7"``. Reading raw costs nothing and survives that change.
     * **Blank lines are SKIPPED, not disqualifying.** ``read_file``'s real output for a blank line
@@ -107,16 +107,16 @@ def _carries_only_numbers(quote: str) -> bool:
     * **``\\s*`` on both sides and ``[0-9]``, not ``[ ]*`` + a literal tab and not ``\\d``.** A model
       trims the trailing tab (``"     2"``) or writes a space for it (``"     2 "``), and a quote may
       arrive with a leading tab; the tighter form misses all three and buys nothing, since no
-      pattern requiring ``[0-9]+`` can match text starting with a letter. ``\\d`` is UNICODE — it
+      pattern requiring ``[0-9]+`` can match text starting with a letter. ``\\d`` is UNICODE: it
       accepts ``"     \u0662\\t"`` and ``"     \uff12\\t"``, which no renderer here emits.
 
     This encodes NO line-number format. The claim is only that a quote carrying nothing but digits
-    is not a claim, which stands on its own — so ``grounding.py`` stays independent of the tools
+    is not a claim, which stands on its own, so ``grounding.py`` stays independent of the tools
     that render line numbers.
 
     **It closes the fully-blank case, not the whole class, and the residue is not only blank-ish
     lines.** A guttered quote that carries content is not refused here, and the GUTTER NUMBER is
-    then searched as literal content — so the quote matches wherever that number happens to precede
+    then searched as literal content, so the quote matches wherever that number happens to precede
     the line's text, including across a MANDATORY ``\\s+`` junction that spans blank lines. A full
     line of code is therefore reachable, not merely a line that is only punctuation. Live example
     in this repo's own suite:
@@ -228,54 +228,54 @@ def verify_quote(
     normalize_whitespace: bool = True,
     snippet_chars: int = _DEFAULT_SNIPPET_CHARS,
 ) -> str:
-    """Verify that ``quote`` appears in ``source`` — the deterministic half of the
+    """Verify that ``quote`` appears in ``source``: the deterministic half of the
     Grounded-completeness recipe's itemized diff. Returns a ``"MATCH: ..."``/``"MISMATCH: ..."``
     string (never raises), a deliberately parseable prefix mirroring this kit's existing sentinel
-    strings (``"Refused:"``, ``"Invalid regex:"``) — a REPL-side model branches on it directly,
+    strings (``"Refused:"``, ``"Invalid regex:"``): a REPL-side model branches on it directly,
     and a consumer reusing this function host-side (at assembly/export time) can do the same
     check against a recorded tool-call's return value with no separate parsing.
 
-    **Matching mechanic — a whitespace-flexible LITERAL search**, not a normalize-then-search
+    **Matching mechanic: a whitespace-flexible LITERAL search**, not a normalize-then-search
     (which would lose position info this doesn't need to lose): ``quote`` is split on whitespace
-    runs, each literal chunk is ``re.escape()``d (any metacharacter it contains — ``.``, ``(``,
-    ``$`` — is matched as a literal, never as regex syntax) and each whitespace run becomes
-    ``\\s+`` or ``\\s*`` by junction (when ``normalize_whitespace=True``, the default — see
+    runs, each literal chunk is ``re.escape()``d (any metacharacter it contains: ``.``, ``(``,
+    ``$``. Is matched as a literal, never as regex syntax) and each whitespace run becomes
+    ``\\s+`` or ``\\s*`` by junction (when ``normalize_whitespace=True``, the default: see
     ``_whitespace_joiner``) or its own escaped self (when ``False``, for a caller that wants
     byte-exact whitespace too). So the match is whitespace-INSENSITIVE where whitespace is layout
     and whitespace-REQUIRING between two word characters, which is the only place its absence
     would change what was written. The resulting pattern runs
-    directly against the ORIGINAL, un-normalized ``source`` — a real match has a real ``.start()``
+    directly against the ORIGINAL, un-normalized ``source``. A real match has a real ``.start()``
     offset in ``source``, no position-remapping needed.
 
     **This needs no ``regex`` package / no timeout budget**, unlike ``make_grep_files_tool``'s
     ``pattern``: that tool's catastrophic-backtracking risk exists because the model supplies the
-    PATTERN'S STRUCTURE directly. Here, the model supplies ``quote`` — literal text, not regex
-    syntax — and every character of it is either escaped or collapsed to a flat, non-nested
+    PATTERN'S STRUCTURE directly. Here, the model supplies ``quote``: literal text, not regex
+    syntax, and every character of it is either escaped or collapsed to a flat, non-nested
     ``\\s+``/``\\s*``. Neither can ever end up adjacent to the other or nested: the quote is
     stripped before splitting (so no empty literal sits at either edge) and ``\\s+`` is greedy (so
     no two whitespace delimiters are adjacent), which means every quantifier is separated by a
-    non-empty escaped literal that cannot itself contain whitespace — disjoint first-sets, no
+    non-empty escaped literal that cannot itself contain whitespace: disjoint first-sets, no
     ambiguity. The resulting pattern can never contain nested/adjacent quantifiers or overlapping
-    alternation — the shapes that exhibit catastrophic backtracking — so stdlib ``re`` is provably
+    alternation, the shapes that exhibit catastrophic backtracking, so stdlib ``re`` is provably
     safe here regardless of what ``quote`` contains.
 
     **Pass the RAW file text as ``source``, not a line-numbered render.** ``read_file``'s
     ``line_numbers=True`` and ``edit_file``'s success snippet both prefix a line with
     ``f"{n:>6}\\t"``, so both are gutter-bearing text easy to copy by accident. A quote carrying a
-    gutter is READ AS A COORDINATE CLAIM since 1.9.0 and verified as one — see
+    gutter is READ AS A COORDINATE CLAIM since 1.9.0 and verified as one: see
     :func:`_coordinate_match`. The two remain complementary: numbers so the MODEL can cite a
     coordinate without counting lines, raw text so the VERIFIER can check the claim.
 
     **It still does not STRIP the gutter, and that distinction is the whole design.** Removing a
     leading ``spaces + digits + tab`` and searching the remainder repairs most guttered quotes and
-    accepts a citation naming the WRONG line whenever the remainder appears anywhere else — an
+    accepts a citation naming the WRONG line whenever the remainder appears anywhere else: an
     invented claim passing verification. Instead the gutter is used: the content must be at exactly
     the line the gutter names, and that block must occur exactly once. Without the uniqueness half a
     bare position check is WORSE than searching, because 16.84% of non-blank lines in this repo
     recur in their own file. With it, fabrication is closed by construction rather than by rate.
 
     A coordinate-verified MATCH says so in its text, because it means something different: the
-    source holds the CONTENT at that line, but the quoted bytes — gutter included — are not a
+    source holds the CONTENT at that line, but the quoted bytes, gutter included, are not a
     substring of it. A caller re-deriving grounding with ``quote in source`` must branch on that.
     Pass ``normalize_whitespace=False`` to skip this path entirely; byte-exact mode means no
     interpretation, and reading a gutter as a coordinate is an interpretation.
@@ -291,13 +291,13 @@ def verify_quote(
     that path.
 
     The literal path's snippet is there to sanity-check that the RIGHT occurrence was found when
-    ``quote`` is generic enough to match more than one place — it reports the FIRST match only, via
+    ``quote`` is generic enough to match more than one place: it reports the FIRST match only, via
     ``re.search``, a presence check rather than an enumeration; a model wanting every occurrence in
     a FILE already has ``grep_files``. A coordinate match needs no such check: uniqueness is one of
     its four conditions, so there is exactly one place it could be.
 
-    On no match, a cheap, bounded fallback tries one "closest line" diagnostic — only when
-    ``quote`` (stripped) is single-line — via ``difflib.get_close_matches`` against
+    On no match, a cheap, bounded fallback tries one "closest line" diagnostic: only when
+    ``quote`` (stripped) is single-line: via ``difflib.get_close_matches`` against
     ``source.splitlines()``. This is polynomial, not exponential (no catastrophic-blowup risk),
     but it is NOT as cheap per-line as a single regex match; acceptable only because it runs
     solely on the rare mismatch path, over one in-memory string. A multi-line ``quote`` or no
@@ -309,7 +309,7 @@ def verify_quote(
 
     * **Empty or whitespace-only.** It would reduce to the bare pattern ``\\s+``, matching almost
       any real text. Same reasoning ``edit_file`` applies to an empty ``old_string``.
-    * **Only digits and whitespace**, on every non-blank line — which is what a BLANK line of a
+    * **Only digits and whitespace**, on every non-blank line, which is what a BLANK line of a
       line-numbered render is (``"     7\\t"``). It would reduce to that digit and match wherever
       the digit occurs, reporting a line the citation never claimed.
 
@@ -317,7 +317,7 @@ def verify_quote(
     in the source (``"8080"``, or a column of numbers from a numeric file). Quote the surrounding
     text instead, so that a match means something.
 
-    **Leading/trailing whitespace on ``quote`` is stripped before matching** — it's incidental
+    **Leading/trailing whitespace on ``quote`` is stripped before matching**: it's incidental
     padding, not a claim about what precedes/follows the quoted text in ``source``. Without this,
     it would turn into a MANDATORY ``\\s+`` at the pattern's own edges, wrongly requiring
     ``source`` to also have whitespace immediately before/after the quoted content (a real bug

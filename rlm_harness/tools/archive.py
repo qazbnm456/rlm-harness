@@ -1,13 +1,13 @@
-"""``make_extract_archive_tool`` — safe zip/tar extraction into a bounded local directory.
+"""``make_extract_archive_tool``: safe zip/tar extraction into a bounded local directory.
 
 Python's ``zipfile.extractall()``/``tarfile.extractall()`` are not safe by default: a malicious
 archive entry can carry an absolute path, a ``..``-traversal path, or (tar) a symlink/hardlink
-pointing outside the extraction target — "zip slip," a well-known vulnerability class. A task
+pointing outside the extraction target: "zip slip," a well-known vulnerability class. A task
 that fetches an archive (``fetch_url`` + ``write_file``, or the model is simply handed one) and
 wants to unpack it needs a safe way to do so. This mirrors ``resolve_within_root``'s exact
 reasoning, applied to archive ENTRIES rather than a single path argument.
 
-**A REPL tool, not a host-side helper** (unlike ``list_candidate_paths``) — extraction is
+**A REPL tool, not a host-side helper** (unlike ``list_candidate_paths``). Extraction is
 something a model plausibly does MID-TRAJECTORY (it fetched or was handed an archive as part of
 the task), matching ``write_file``/``edit_file``'s own "mutates the filesystem, needs tracing"
 category.
@@ -18,20 +18,20 @@ tar-shaped extension (``.tar``, ``.tar.gz``, ``.tgz``, ``.tar.bz2``, ``.tbz2``, 
 compression from content rather than trusting the extension. An unrecognized extension returns an
 error string, never raises, never attempts to sniff content type.
 
-**Two-pass extraction — validate everything before writing anything**, matching this kit's
+**Two-pass extraction: validate everything before writing anything**, matching this kit's
 "refuse outright, never partially mutate" posture: Pass 1 inspects every entry's METADATA ONLY
-(name, type, declared size, and — zip-only — the encryption/compression-method header fields) and
+(name, type, declared size, and, zip-only, the encryption/compression-method header fields) and
 refuses the WHOLE operation upfront on any violation; Pass 2 (only reached once Pass 1 fully
 passes) streams each entry's real bytes in bounded chunks via :func:`rlm_harness.atomic.
 atomic_write_stream`, so peak memory for any single entry stays bounded by ``_CHUNK_SIZE``
 regardless of that entry's own size.
 
-**A declared size cannot be used to smuggle more decompressed output than it promises** — the
+**A declared size cannot be used to smuggle more decompressed output than it promises**: the
 declared ``file_size``/``size`` field is a HARD CEILING on how much either stdlib read API can
 ever return (``ZipExtFile.read()`` forces end-of-file once the declared size is reached, then
 checks the CRC; ``TarFile.extractfile()``'s reader is bounded the same way by construction).
 Pass 1's cumulative declared-size check is therefore what actually prevents a decompression-bomb-
-shaped archive from being accepted — the streaming design in Pass 2 exists for a separate,
+shaped archive from being accepted: the streaming design in Pass 2 exists for a separate,
 still-real reason: bounding PEAK MEMORY to a small, fixed constant while extracting any single
 entry, rather than materializing a whole entry (which could legitimately be a large fraction of
 the overall budget) in memory at once.
@@ -41,22 +41,22 @@ calls into the archive/compression machinery** (the initial open, Pass 1's entry
 loop, and Pass 2's per-entry read) rather than chasing individual header fields or exception
 types one at a time. ``zipfile``/``tarfile`` internally delegate decompression to ``zlib``/
 ``bz2``/``lzma``, and neither module translates or catches those libraries' own exception types
-on the way through — so a structurally intact archive with a corrupted (not merely truncated)
+on the way through, so a structurally intact archive with a corrupted (not merely truncated)
 compressed PAYLOAD reaches this exact tuple, not just a malformed header. The budget-exceeded
 signal from ``atomic_write_stream`` is its own dedicated
 :class:`rlm_harness.atomic._ExtractionBudgetExceeded` (an ``OSError`` subclass), caught FIRST and
-separately, so it can never collide with — or be misreported as — a plain ``OSError`` a
+separately, so it can never collide with, or be misreported as, a plain ``OSError`` a
 compression library itself raises for corrupted data (confirmed reachable via ``bz2``, which,
 unlike ``zlib``/``lzma``, raises a bare ``OSError`` rather than a dedicated exception type).
 
-**No nested-archive recursion** — an archive found INSIDE the extracted output is not itself
+**No nested-archive recursion**: an archive found INSIDE the extracted output is not itself
 auto-extracted; the model calls this tool again on it, subject to the identical safety checks a
 second time.
 
-**Unconditional overwrite of existing files at the destination** — same posture
+**Unconditional overwrite of existing files at the destination**: same posture
 ``make_write_file_tool`` already takes (no create-only mode).
 
-**No support for password-protected/encrypted archives** — refused upfront, in Pass 1, with a
+**No support for password-protected/encrypted archives**: refused upfront, in Pass 1, with a
 clear reason (the entry's own header flag bits), never a crash.
 """
 
@@ -114,7 +114,7 @@ def _detect_format(path: str) -> str | None:
 
 @dataclass(frozen=True)
 class _SafeEntry:
-    """One Pass-1-approved entry, ready for Pass 2 — deliberately format-agnostic (``raw`` is
+    """One Pass-1-approved entry, ready for Pass 2: deliberately format-agnostic (``raw`` is
     a ``zipfile.ZipInfo`` or ``tarfile.TarInfo``, dispatched on ``fmt``) so Pass 2 can stay a
     single, small loop rather than two near-duplicate ones."""
 
@@ -131,14 +131,14 @@ def _entry_name(entry: _SafeEntry) -> str:
 def _pass1_validate(
     archive: Any, fmt: str, dest_resolved: str, max_entries: int, max_extracted_bytes: int
 ) -> tuple[list[_SafeEntry], str | None]:
-    """Metadata-only validation of EVERY entry — this function itself never deliberately opens or
+    """Metadata-only validation of EVERY entry: this function itself never deliberately opens or
     reads a single byte of payload (unlike Pass 2, which streams real content). **For a
     COMPRESSED tar, this is not quite the same as "zero payload bytes touched" in practice**: the
     underlying ``tarfile`` iteration decompresses-and-discards each prior member's payload as a
     side effect of seeking to the next header (see the module docstring's Pass-1-cost
-    disclosure) — which is also why this loop is wrapped in ``_ARCHIVE_ERROR_TYPES`` rather than
+    disclosure), which is also why this loop is wrapped in ``_ARCHIVE_ERROR_TYPES`` rather than
     assumed exception-free. Returns ``(safe_entries, None)`` on success, or ``([],
-    refusal_message)`` the moment any entry fails any check — refuse the WHOLE operation, never a
+    refusal_message)`` the moment any entry fails any check: refuse the WHOLE operation, never a
     partial list. Callable and testable independent of Pass 2 (see :func:`_pass2_extract`)."""
     safe_entries: list[_SafeEntry] = []
     total_declared = 0
@@ -180,7 +180,7 @@ def _pass1_validate(
             )
             if raw.flag_bits & 0x1:
                 return [], (
-                    f"Refused: {raw_name!r} is encrypted — password-protected archives are not "
+                    f"Refused: {raw_name!r} is encrypted. Password-protected archives are not "
                     "supported."
                 )
             if raw.flag_bits & 0x60:
@@ -226,10 +226,10 @@ def _pass2_extract(
     archive: Any, fmt: str, safe_entries: list[_SafeEntry], max_extracted_bytes: int
 ) -> tuple[int, int, str | None]:
     """Real extraction, streaming each entry in bounded chunks. Takes ``safe_entries`` as a plain
-    argument, independent of ``_pass1_validate`` — a test can construct one directly (bypassing
+    argument, independent of ``_pass1_validate``. A test can construct one directly (bypassing
     Pass 1 entirely) to prove this function's own exception-handling backstop works on its own.
     Returns ``(written_bytes, written_count, None)`` on success, or ``(partial_bytes,
-    partial_count, failure_message)`` the moment one entry fails — entries already written before
+    partial_count, failure_message)`` the moment one entry fails: entries already written before
     the failing one stay on disk, a disclosed, accepted partial-extraction outcome."""
     written_bytes = 0
     written_count = 0
@@ -253,7 +253,7 @@ def _pass2_extract(
 
                 written = atomic_write_stream(entry.target, _chunks(), max_bytes=remaining_budget)
         except _ExtractionBudgetExceeded:
-            # Caught FIRST, specifically — a DEDICATED type, not a bare OSError, so it can never
+            # Caught FIRST, specifically: a DEDICATED type, not a bare OSError, so it can never
             # collide with the plain OSError bz2 itself raises for corrupted payload data, which
             # falls through to the broader `_ARCHIVE_ERROR_TYPES` catch just below instead.
             return written_bytes, written_count, (
@@ -278,17 +278,17 @@ def make_extract_archive_tool(
     max_extracted_bytes: int = 200 * 1024 * 1024,
     max_entries: int = 10_000,
 ) -> Callable[..., str]:
-    """Build an ``extract_archive``-shaped tool scoped to ``root`` — wired in a task's
+    """Build an ``extract_archive``-shaped tool scoped to ``root``: wired in a task's
     ``__init__`` (per-run state, never a classvar).
 
     ``name`` (default ``"extract_archive"``): same rationale and mechanism as
     :func:`rlm_harness.tools.make_read_file_tool`'s ``name``. Validated at factory-build time.
 
     ``max_extracted_bytes`` (default ``200 MiB``)/``max_entries`` (default ``10_000``): factory
-    (operator) parameters, never model-controlled — same posture ``make_grep_files_tool``'s
+    (operator) parameters, never model-controlled: same posture ``make_grep_files_tool``'s
     ``per_match_timeout_s``/``max_total_time_s`` and ``list_candidate_paths``'s ``max_files``
     already take. Checked cumulatively across every entry BEFORE any extraction begins (see the
-    module docstring) — the declared-size sum, not merely each entry individually, is what
+    module docstring): the declared-size sum, not merely each entry individually, is what
     actually bounds a decompression-bomb-shaped archive.
     """
     _validate_tool_name(name)

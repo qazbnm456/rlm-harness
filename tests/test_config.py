@@ -122,7 +122,7 @@ def test_max_output_chars_from_env(monkeypatch):
 def test_request_timeout_defaults_to_none_no_cap():
     """No default on purpose: a legitimately long turn exists (a reasoning model assembling a
     large structured answer; single calls measured at 900s), so any default this kit picked would
-    cut somebody's live generation off. Cutting a live one is worse than waiting for a dead one —
+    cut somebody's live generation off. Cutting a live one is worse than waiting for a dead one:
     the consumer, which knows its own turns, sets it."""
     assert RLMConfig.from_env().request_timeout_s is None
 

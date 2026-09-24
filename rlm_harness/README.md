@@ -1,9 +1,9 @@
-# rlm-harness — the guide
+# rlm-harness: the guide
 
 The deep documentation for `rlm-harness`: what each module owns, the harness-engineering
 layer (sub-LM hook + trajectory tracing), the tool surfaces, the rollout conventions,
-the consumer contract, and every configuration knob. For what the kit *is* — the
-pitch, the quickstart, and installation — start at the
+the consumer contract, and every configuration knob. For what the kit *is*: the
+pitch, the quickstart, and installation: start at the
 [top-level README](../README.md).
 
 ## Layout
@@ -11,30 +11,30 @@ pitch, the quickstart, and installation — start at the
 | Module | Responsibility |
 |---|---|
 | `config.py` | Single source of truth; `RLMConfig.from_env()`. No dspy import. |
-| `runtime.py` | `configure()` — wires dspy + optional observability once, including auto-routing a `claude-agent-sdk/`-prefixed model string onto `ClaudeAgentLM`. |
+| `runtime.py` | `configure()`: wires dspy + optional observability once, including auto-routing a `claude-agent-sdk/`-prefixed model string onto `ClaudeAgentLM`. |
 | `task.py` | `RLMTask` base class. |
-| `_retry.py` | Validation + retry engine (dspy-free, unit-tested). Mostly private, but `short_error` is public — head-and-tail elision for a caught exception, so a giant `AdapterParseError` (which embeds the whole raw completion) becomes one readable log line instead of thousands. |
+| `_retry.py` | Validation + retry engine (dspy-free, unit-tested). Mostly private, but `short_error` is public: head-and-tail elision for a caught exception, so a giant `AdapterParseError` (which embeds the whole raw completion) becomes one readable log line instead of thousands. |
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
-| `atomic.py` | `atomic_write_text` / `atomic_write_stream` — a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write; `atomic_write_stream` takes an iterable of `bytes` chunks instead of one in-memory blob, aborting once a running total exceeds an optional `max_bytes`. dspy-free. |
-| `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` / `RUN_FACT_KEYS` / `compute_run_facts` / `compute_run_facts_by_run` (the generic half of a rubric's facts) — reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded `trace/v1` events. dspy-free. |
-| `isolation.py` | `run_in_subprocess` — a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
-| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema — the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` — see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths` — a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` — safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `make_extract_archive_tool` — safe `zip`/tar extraction in `tools/archive.py` (see below), `verify_quote` — a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool` — a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool` — the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
-| `optimize.py` | GEPA harness — metric templates now, compile in Phase 2. |
-| `sub_lm.py` | Every sub-LM escalation is traced as a `sub_call` automatically (1.7.0). `intercept_sub_lm` — wrap the RLM's sub-LM to ADD a deterministic validate/post-process pipeline; `model_as_tool` for LM-decided multi-model routing. |
-| `skills.py` | `load_skills_as_tools` — expose a Skills directory to the RLM as tools. |
-| `trace.py` | `TraceRecorder` — unified append-only JSONL trajectory (main steps + sub-LM + tool calls). |
+| `atomic.py` | `atomic_write_text` / `atomic_write_stream`: a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write; `atomic_write_stream` takes an iterable of `bytes` chunks instead of one in-memory blob, aborting once a running total exceeds an optional `max_bytes`. dspy-free. |
+| `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` / `RUN_FACT_KEYS` / `compute_run_facts` / `compute_run_facts_by_run` (the generic half of a rubric's facts): reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded `trace/v1` events. dspy-free. |
+| `isolation.py` | `run_in_subprocess`: a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
+| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema: the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` (see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths`) a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` (safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `make_extract_archive_tool`) safe `zip`/tar extraction in `tools/archive.py` (see below), `verify_quote` (a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool`) a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool`: the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
+| `optimize.py` | GEPA harness: metric templates now, compile in Phase 2. |
+| `sub_lm.py` | Every sub-LM escalation is traced as a `sub_call` automatically (1.7.0). `intercept_sub_lm`: wrap the RLM's sub-LM to ADD a deterministic validate/post-process pipeline; `model_as_tool` for LM-decided multi-model routing. |
+| `skills.py` | `load_skills_as_tools`: expose a Skills directory to the RLM as tools. |
+| `trace.py` | `TraceRecorder`: unified append-only JSONL trajectory (main steps + sub-LM + tool calls). |
 | `replay.py` | Reconstruct/replay a recorded run using recorded tool outputs. |
-| `dataset.py` | `export_sft_turns` / `export_rl` / `export_actions` — turn traces into training datasets (`export_sft_turns` = per-root-turn SFT, the RLM recipe of arXiv 2512.24601); `run_label_bundle` — carry per-run LABEL surfaces beside the trajectory. |
+| `dataset.py` | `export_sft_turns` / `export_rl` / `export_actions` (turn traces into training datasets (`export_sft_turns` = per-root-turn SFT, the RLM recipe of arXiv 2512.24601); `run_label_bundle`) carry per-run LABEL surfaces beside the trajectory. |
 | `mcp.py` | MCP **client** (optional `rlm-harness[mcp]`): `mcp_tools` exposes an external server's tools as SYNC `dspy.Tool`s; `McpCatalog`/`McpConnection` for a progressive multi-server surface. |
-| `testing.py` | Offline forward-path harness — `ScriptedInterpreter`, `scripted_lm`, and the REPL-safety assertions `assert_repl_safe` / `assert_task_repl_safe`. |
-| `serving.py` / `harness_serve.py` | Server side of the harness-delegation contract — turn an `RLMTask` into a process that speaks it. |
-| `container_interpreter.py` | The opt-in `interpreter="container"` REPL — model code runs inside an isolated Docker container so it can spawn subprocesses. |
-| `_toolname.py` | REPL-safety rules for a tool's NAME and SIGNATURE. Mostly private, but `is_valid_tool_name` / `sanitize_tool_name` / `unique_tool_names` / `signature_from_json_schema` are public — a consumer building its own tools (e.g. from `McpCatalog`'s raw names) needs the same derivation the kit uses. |
+| `testing.py` | Offline forward-path harness: `ScriptedInterpreter`, `scripted_lm`, and the REPL-safety assertions `assert_repl_safe` / `assert_task_repl_safe`. |
+| `serving.py` / `harness_serve.py` | Server side of the harness-delegation contract: turn an `RLMTask` into a process that speaks it. |
+| `container_interpreter.py` | The opt-in `interpreter="container"` REPL: model code runs inside an isolated Docker container so it can spawn subprocesses. |
+| `_toolname.py` | REPL-safety rules for a tool's NAME and SIGNATURE. Mostly private, but `is_valid_tool_name` / `sanitize_tool_name` / `unique_tool_names` / `signature_from_json_schema` are public: a consumer building its own tools (e.g. from `McpCatalog`'s raw names) needs the same derivation the kit uses. |
 | `_dspy_compat.py` | Private. Every cross-version dspy difference (kwarg renames, the interpreter seam, the recoverable/terminal error split) resolved by introspection in ONE place. |
-| `rubric.py` | Reward-free rubric primitives: the `Criterion`/`RubricCriteria`/`CriterionFact` types, `rubric_to_meta`/`rubric_from_meta`, `validate_rubric`, and a pure `criteria_facts(criteria, facts, lens)`. `category` is an OPAQUE caller-defined label — the kit imposes no taxonomy. See "Building a consumer". |
-| `claude_agent_lm.py` | `ClaudeAgentLM` — run rlm-harness on a Claude Pro/Max subscription: a `dspy.BaseLM` over the official Claude Agent SDK. `configure()` now auto-routes a `SUBSCRIPTION_PREFIX`-carrying (`"claude-agent-sdk/"`) `main_model`/`sub_model` string onto it — no explicit `main_lm=`/`sub_lm=` wiring needed unless you're overriding it. Opt-in `rlm-harness[subscription]`; pure completions (no tools), lazily exported so `import rlm_harness` stays dspy/SDK-free. |
-| `examples/mini_run.py` | Minimal end-to-end live run — config + a tiny `RLMTask` through a real `dspy.RLM`, with the trajectory recorded and summarised. |
-| `examples/claude_agent_lm.py` | Runnable demo of `ClaudeAgentLM` — a tiny `RLMTask` through a real `dspy.RLM` on a subscription login. |
+| `rubric.py` | Reward-free rubric primitives: the `Criterion`/`RubricCriteria`/`CriterionFact` types, `rubric_to_meta`/`rubric_from_meta`, `validate_rubric`, and a pure `criteria_facts(criteria, facts, lens)`. `category` is an OPAQUE caller-defined label, the kit imposes no taxonomy. See "Building a consumer". |
+| `claude_agent_lm.py` | `ClaudeAgentLM`: run rlm-harness on a Claude Pro/Max subscription: a `dspy.BaseLM` over the official Claude Agent SDK. `configure()` now auto-routes a `SUBSCRIPTION_PREFIX`-carrying (`"claude-agent-sdk/"`) `main_model`/`sub_model` string onto it, no explicit `main_lm=`/`sub_lm=` wiring needed unless you're overriding it. Opt-in `rlm-harness[subscription]`; pure completions (no tools), lazily exported so `import rlm_harness` stays dspy/SDK-free. |
+| `examples/mini_run.py` | Minimal end-to-end live run: config + a tiny `RLMTask` through a real `dspy.RLM`, with the trajectory recorded and summarised. |
+| `examples/claude_agent_lm.py` | Runnable demo of `ClaudeAgentLM`: a tiny `RLMTask` through a real `dspy.RLM` on a subscription login. |
 
 ## RLM as Harness Engineering (sub-LM hook + tracing)
 
@@ -45,9 +45,9 @@ multi-sub-model or depth>1 recursion. The clean lever is to **wrap a `dspy.LM`**
 from rlm_harness import intercept_sub_lm, model_as_tool, get_sub_lm, TraceRecorder, RLMConfig, configure
 
 configure(RLMConfig.from_env())
-base = get_sub_lm()          # the configured base sub-LM — single source of truth
+base = get_sub_lm()          # the configured base sub-LM: single source of truth
 # escalations are traced with or without this; intercept_sub_lm ADDS the deterministic pipeline
-# (deterministic only — agentic actions stay LM-decided tools):
+# (deterministic only: agentic actions stay LM-decided tools):
 smart_sub = intercept_sub_lm(base, validators=[...], postprocessors=[str.strip])
 
 with TraceRecorder("traces/run.jsonl", run_id="r1"):
@@ -56,21 +56,21 @@ with TraceRecorder("traces/run.jsonl", run_id="r1"):
 
 `intercept_sub_lm` adds a validate/post-process pipeline (the `sub_call` event itself is automatic since 1.7.0) and, if you pass them,
 runs deterministic validate → post-process. `get_sub_lm()` hands back the base sub-LM
-`configure` built — wrap THAT rather than reconstructing a `dspy.LM`, so it can't drift
+`configure` built: wrap THAT rather than reconstructing a `dspy.LM`, so it can't drift
 from the configured model. External tools are exposed to the main
 LM via `tools=` / `load_skills_as_tools` / `model_as_tool`, so the decision lands in
 the trajectory. `TraceRecorder` records main steps (`Prediction.trajectory`), every
-sub-LM call, and every tool call into one JSONL stream — replayable (`replay.py`) and
+sub-LM call, and every tool call into one JSONL stream: replayable (`replay.py`) and
 exportable as an RL/SFT dataset (`dataset.py`). Langfuse is an optional mirror; the
 JSONL is the dataset's source of truth.
 
 > **Reading a `sub_call`:** every `sub_call` event is exactly one sub-LM escalation,
 > reached through `dspy.RLM`'s built-in `llm_query` / `llm_query_batched` (the only
 > callers of `sub_lm`). The payload carries `kind:"sub_lm"` + the wrapper `name`. It
-> does **not** record which built-in triggered it — dspy calls `sub_lm` identically for
+> does **not** record which built-in triggered it: dspy calls `sub_lm` identically for
 > both. The planner's actual `llm_query(...)` call lives in the `main_step` `code`, so
 > *that* is where a Root-LM trainer learns "call llm_query"; the `sub_call` is the inner
-> view. `llm_query_batched` fans calls across threads — `TraceRecorder.record` is
+> view. `llm_query_batched` fans calls across threads: `TraceRecorder.record` is
 > lock-guarded so concurrent `sub_call`s can't corrupt the JSONL.
 
 > Depth is **1** by design here (main LM + one intercepted sub-LM layer). True
@@ -85,7 +85,7 @@ escalation is recorded whether or not you asked.
 That changed because the opposite default was quietly lossy. Before 1.7.0 the event existed only
 if you called `intercept_sub_lm` yourself; a plain `dspy.LM` was invoked by dspy directly and
 recorded nothing. A corpus with zero `sub_call` events is indistinguishable from one where the
-model never escalated — and reading the first as the second is a mistake that has already been
+model never escalated, and reading the first as the second is a mistake that has already been
 made, in this kit's own design notes, on real data. **An absent event is not a measurement.**
 
 Call `intercept_sub_lm` when you want the deterministic pipeline:
@@ -104,7 +104,7 @@ class MyTracingSubLM:
     ...
 ```
 
-The probe is `is True`, not truthiness — a `unittest.mock` double manufactures a truthy attribute
+The probe is `is True`, not truthiness: a `unittest.mock` double manufactures a truthy attribute
 for any name, and a truthiness test would silently skip wrapping it. Auto-wrapping also never
 raises: a sub-LM it cannot wrap is used bare with a warning, because an observability convenience
 must not be why a run fails to start.
@@ -113,15 +113,15 @@ must not be why a run fails to start.
 
 `intercept_sub_lm` and `model_as_tool` both "wrap a model," which makes them easy
 to confuse. They sit on **opposite sides of the RLM boundary**, and the choice is not
-cosmetic — it decides what your RL data records.
+cosmetic: it decides what your RL data records.
 
 - **A sub-LM is part of the machine.** Wired in as `sub_lm=`, the *framework* decides
-  when to call it — it is the seat the RLM's recursion plugs into (depth-1 here, but
+  when to call it. It is the seat the RLM's recursion plugs into (depth-1 here, but
   structurally the recursive seat). The framework assembles its prompt/context and it
   carries the run's identity (tracing, budget). The main LM never *chooses* to call it.
   → recorded as a **`sub_call`**.
 - **A tool-LM is a leaf the main LM picks up.** Passed via `tools=` (e.g.
-  `model_as_tool`), the *main LM* decides, in the REPL, to call it — with whatever
+  `model_as_tool`), the *main LM* decides, in the REPL, to call it, with whatever
   string it wrote. It takes a string, returns a string, and stops: it can't recurse and
   never becomes an RLM root. The call is the LM's own decision, so it lands in the
   trajectory. → recorded as a **`tool_call`**.
@@ -131,14 +131,14 @@ cosmetic — it decides what your RL data records.
 > recursion-capable); a tool-LM is an optional leaf the main LM reaches for.
 
 **"Deterministic transform" = plain code, no AI.** Both sides may check their model's
-output with ordinary functions — same input, same output: `intercept_sub_lm` runs
+output with ordinary functions: same input, same output: `intercept_sub_lm` runs
 `validators`/`postprocessors` on the sub-LM output; `make_model_tool` runs a `validate`
 callable on a generated artifact (a consumer's generator tool runs a `postprocess()` validator to
-verify the artifact's shape — that lives on the **tool** side, not the sub-LM). What neither may
+verify the artifact's shape: that lives on the **tool** side, not the sub-LM). What neither may
 do is ask *another model* to judge the output: that is an *agentic* decision, and agentic
 decisions must stay with the main LM as a `tools=` call so the choice is visible in the
 trajectory (and honest as RL data). That is exactly why `model_as_tool` is a thin
-pass-through with no validation baked in — **deterministic checks are fine on either side;
+pass-through with no validation baked in. **deterministic checks are fine on either side;
 a model-judgement must be an LM-decided tool call.**
 
 **Pick by question:**
@@ -149,29 +149,29 @@ a model-judgement must be an LM-decided tool call.**
 | the main LM to *choose*, mid-task, to consult another named model | `model_as_tool(name, lm)` | `tools=` |
 | both (a chosen model that also self-checks) | compose them: `model_as_tool("expert", intercept_sub_lm(expert_lm, …))` | `tools=` |
 
-**Escalate to the sub-LM when a tool WALLS — don't circle it.** A convention, not an API. When a
-`make_model_tool` (or any model-backed tool) repeatedly fails on the SAME gap — declines, returns
-INVALID, can't fill the hole — that IS the signal the main LM cannot specify its way out: escalate to
+**Escalate to the sub-LM when a tool WALLS: don't circle it.** A convention, not an API. When a
+`make_model_tool` (or any model-backed tool) repeatedly fails on the SAME gap: declines, returns
+INVALID, can't fill the hole: that IS the signal the main LM cannot specify its way out: escalate to
 the sub-LM for that gap instead of re-spinning the tool. Circling a walled tool burns the iteration
 budget and can hit the cap with the task still unfinished; one focused sub-LM question often unblocks
-it in a single turn (the sub-LM is the recovery seat — its whole purpose; the "expensive" framing is no
+it in a single turn (the sub-LM is the recovery seat: its whole purpose; the "expensive" framing is no
 reason to keep re-spinning a stuck tool). Like grounded completeness this lives in the consumer's task
 INSTRUCTIONS, kept in the trajectory as honest RL data. A consumer can nudge its planner this way after
-a few repeated tool declines on one gap — turning a hard run that would otherwise circle a stuck tool
+a few repeated tool declines on one gap: turning a hard run that would otherwise circle a stuck tool
 until the cap into one that escalates once and converges.
 
 The nudge is a PROMPT, which a weaker root LM can ignore (one may hammer a stuck tool dozens of times). For a
 deterministic backstop, `make_model_tool(max_consecutive_invalid=N)` is a run-scoped CIRCUIT BREAKER:
 after N consecutive validator declines the next call SHORT-CIRCUITS (no model call,
 `circuit_broken=True`), capping the wasted calls and forcing the consumer's redirect (escalate /
-finalize). It resets on any ok; an endpoint error doesn't count. The factory only flags the break —
-the consumer owns the message — and builds one tool per run so the breaker state resets naturally.
+finalize). It resets on any ok; an endpoint error doesn't count. The factory only flags the break:
+the consumer owns the message, and builds one tool per run so the breaker state resets naturally.
 
 **`ok=False` has THREE causes; read `result.cause` before naming one.** The validator rejected the
 output (`"invalid"`), the endpoint failed after retries (`"endpoint"`), or the breaker
 short-circuited without calling the model at all (`"circuit_broken"`). In the last two the validator
 NEVER RAN, so a consumer that reads only `ok` and writes "failed validation" is blaming the model
-for infrastructure. That has shipped in more than one consumer, in both directions that matter — a
+for infrastructure. That has shipped in more than one consumer, in both directions that matter: a
 per-run training label named `*_rejects` whose docstring said "the validator rejected" incrementing
 on a 502, and a reviewer-facing string reading "failed its format check" shown for an endpoint
 timeout. `result.validator_ran` is the direct form of the question:
@@ -184,17 +184,17 @@ if not result.ok:
 ```
 
 Two counting notes that follow from it, both observed downstream: a circuit-broken call carries
-`ok=False` **too**, so a `sum(1 for r in calls if not r.ok)` metric silently includes every break —
+`ok=False` **too**, so a `sum(1 for r in calls if not r.ok)` metric silently includes every break:
 filter on `cause == "invalid"` if you mean rejections. And an endpoint error deliberately does not
 trip the breaker, so `circuit_broken` counts and endpoint counts never overlap with each other.
 
 **Across the trace boundary the same distinction is `trace.payload_cause(payload)`**, reading the
 same four words off a recorded `tool_call`. It exists because `ok` is often ABSENT on an endpoint
-payload (consumers record `error=` alone there), so `payload.get("ok")` returns `None` — falsy —
+payload (consumers record `error=` alone there), so `payload.get("ok")` returns `None`: falsy,
 and every `not payload.get("ok")` counter downstream absorbs infrastructure failures as content
 declines without a word of warning. In the worst measured case that put 113 endpoint failures into
 a metric named `generator_declines`, fed it to a scored rubric criterion about the planner's spec
-quality, and printed "113 partial/retry" in a delivered report — for a run whose validator ran zero
+quality, and printed "113 partial/retry" in a delivered report: for a run whose validator ran zero
 times, and whose planner had correctly concluded the endpoint was unreachable.
 
 `export_actions` now carries `outcome.cause` and `outcome.error` for exactly this reason: that
@@ -231,18 +231,18 @@ just-in-time with `read_skill`. The default `discovery="list"` keeps the `list_s
 instead. See `examples/harness_run.py`.
 
 Scope & caveats:
-- **Knowledge only.** `read_skill` returns the markdown text — it does NOT execute bundled
+- **Knowledge only.** `read_skill` returns the markdown text. It does NOT execute bundled
   scripts or expand linked files. A "just instructions" skill works fully; a skill that ships
   runnable helpers gives you only its prose.
 - **Third-party skills work** if they use the `SKILL.md` + `name`/`description` convention:
   drop them in the dir and they are discoverable. But a skill's text becomes the main LM's
-  context — treat untrusted skills as a **prompt-injection surface** and vet them. Frontmatter
+  context: treat untrusted skills as a **prompt-injection surface** and vet them. Frontmatter
   beyond `name`/`description` is ignored.
 
 ## MCP tools (connect an external MCP server)
 
 `mcp_tools(server)` exposes an **external** [MCP](https://modelcontextprotocol.io) server's tools to
-an `RLMTask` as ready-to-use tools. rlm-harness is a **client only** — it never runs a server and bundles
+an `RLMTask` as ready-to-use tools. rlm-harness is a **client only**: it never runs a server and bundles
 none; you point it at someone else's (a local stdio command, or a remote streamable-HTTP URL):
 
 ```python
@@ -250,7 +250,7 @@ from rlm_harness import mcp_tools
 
 with mcp_tools({"url": "https://mcp.example.com/mcp"}) as tools:        # or {"command": "npx", "args": [...]}
     finding = MyTask(tools=tools).run(...)                              # the server's tools are now callable
-# `tools=` (1.1.0+) is the per-instance override — the sanctioned way to attach tools that exist
+# `tools=` (1.1.0+) is the per-instance override, the sanctioned way to attach tools that exist
 # ONLY inside this `with` block. It REPLACES the class-body `tools` declaration.
 ```
 
@@ -260,17 +260,17 @@ Needs the extra: `pip install "rlm-harness[mcp]"`.
   terminated). Each tool call is recorded as a `tool_call` in the trace, like any other tool.
 - **Sync, despite an async SDK.** The MCP Python SDK is async, but dspy.RLM invokes tools
   synchronously, so rlm-harness runs the session in a background thread and bridges each call across.
-  (dspy's own `Tool.from_mcp_tool` makes an *async* tool for `dspy.ReAct` — it does not work on the
+  (dspy's own `Tool.from_mcp_tool` makes an *async* tool for `dspy.ReAct`. It does not work on the
   RLM sandbox path, which is why `mcp_tools` exists.)
-- **Security: MCP tools run HOST-SIDE**, outside the sandbox — a stdio server is a subprocess this
+- **Security: MCP tools run HOST-SIDE**, outside the sandbox. A stdio server is a subprocess this
   process spawns. Treat an MCP server as a **trusted dependency**, and its output as a
   **prompt-injection surface** (untrusted LM context), exactly like fetched web content.
 
-### Many servers, progressively — `McpCatalog` + `McpConnection`
+### Many servers, progressively: `McpCatalog` + `McpConnection`
 
 `mcp_tools` is the single-server convenience: it materializes one server's tools as self-tracing
-`dspy.Tool`s up front. For a consumer building its OWN progressive tool surface over **several** servers
-— list servers, `load` one on demand, read its tools, `call` — use `McpCatalog`:
+`dspy.Tool`s up front. For a consumer building its OWN progressive tool surface over **several** servers,
+list servers, `load` one on demand, read its tools, `call`: use `McpCatalog`:
 
 ```python
 from rlm_harness import McpCatalog
@@ -278,7 +278,7 @@ from rlm_harness import McpCatalog
 cat = McpCatalog([{"name": "docs", "url": "https://mcp.example.com/mcp"},
                   {"name": "shell", "command": "npx", "args": ["-y", "some-mcp"]}])
 try:
-    cat.servers()                      # [(name, description), ...] — every declared server
+    cat.servers()                      # [(name, description), ...]: every declared server
     cat.load("docs")                   # connect one on demand (a no-op under the eager default)
     for tool in cat.tools("docs"):     # RAW mcp Tool objects (name / description / input schema)
         ...                            # map them onto YOUR own tool shape
@@ -288,18 +288,18 @@ finally:
 ```
 
 - **Raw, and records nothing.** `McpCatalog` returns the server's RAW MCP `Tool`s (not `dspy.Tool`s) and
-  emits no trace events — the consumer maps each tool to its own shape, and its own tool wrapper owns the
+  emits no trace events: the consumer maps each tool to its own shape, and its own tool wrapper owns the
   `tool_call`. That keeps the catalog dspy-free and leaves tracing where the consumer wants it.
 - **`McpConnection`** is the public single-server bridge `McpCatalog` manages one of per server (and that
   `mcp_tools` is built on); **`result_text`** flattens a `CallToolResult` to text. Both are exported for a
   consumer driving a connection directly.
-- **Eager by default** (connect host-side, before the run) — a subprocess spawn inside an async tool loop
+- **Eager by default** (connect host-side, before the run): a subprocess spawn inside an async tool loop
   can hang asyncio; `connect="lazy"` defers each server's connect to its first `load` (opt-in). The same
   HOST-SIDE execution and prompt-injection notes as `mcp_tools` apply.
 
 ## Running local commands (an isolated runner)
 
-`make_command_tool(runner)` gives an `RLMTask` a `run_command` tool — the reusable half of
+`make_command_tool(runner)` gives an `RLMTask` a `run_command` tool: the reusable half of
 letting the model run a local command (a build, a test, a git op) the way a coding agent does.
 It enforces the sync contract, turns a failure into text the RLM reacts to, and records one
 `tool_call` in the canonical shape. The kit ships **no** executor and picks **no** isolation: you
@@ -313,60 +313,60 @@ finding = MyTask(tools=[run_command]).run(...)
 ```
 
 **The runner's isolation IS the security boundary.** `run_command` executes model-CHOSEN commands
-HOST-SIDE — outside the pyodide/deno sandbox that isolates the RLM's own REPL code (same as the
+HOST-SIDE: outside the pyodide/deno sandbox that isolates the RLM's own REPL code (same as the
 fetch/search providers and MCP servers). A naive `subprocess.run` runner is arbitrary code
-execution steered by the model — the same class of danger as the refused `local` interpreter. For
+execution steered by the model: the same class of danger as the refused `local` interpreter. For
 anything processing untrusted input the runner MUST execute inside a disposable, network-restricted
 container / VM / OS-sandbox; `examples/command_runner.py` is a reference Docker runner (`--rm
---network=none`, workspace mounted read-only). A command **allowlist is not a substitute** — a shell
+--network=none`, workspace mounted read-only). A command **allowlist is not a substitute**: a shell
 allowlist is routinely bypassed (`make`/`npm run` script edits, `find -exec`, `git -c`, `$(...)`,
 env-var injection), so the kit ships no allowlist primitive; the optional `guard` hook is a
 shape-only pre-flight, never a security claim. One such guard ships ready-made:
 `refuse_broad_git_history` refuses a `git log` invocation carrying a broad-history option (`--all`,
 `--branches`, `--remotes`, `--tags`, `--glob`, `--reflog`, `--walk-reflogs`, `-g`,
-`--alternate-refs`) — an eval/training-run convention for stopping a model from reading branches,
+`--alternate-refs`): an eval/training-run convention for stopping a model from reading branches,
 tags, or reflogs it should not have task-specific hints from, same shape-only honesty as any other
-`guard` (it is not a shell parser — a chained shell string bypasses it, by design, same as any
+`guard` (it is not a shell parser: a chained shell string bypasses it, by design, same as any
 other `guard`).
 
 - On success the model receives a `{"exit_code", "stdout", "stderr"}` dict (dspy JSON-bridges a
-  `dict` into a real REPL value it reads — `run_command("ls")["stdout"]`; a dataclass would arrive
+  `dict` into a real REPL value it reads: `run_command("ls")["stdout"]`; a dataclass would arrive
   only as its unsliceable `repr`, so the tool returns a dict and the runner returns the typed
   `CommandResult`). The trace keeps only `exit_code` + lengths + a stderr preview + `duration_ms`,
   like `fetch_url` records size not body.
 - **The trace's stdout/stderr asymmetry is deliberate, and it has one blind spot worth knowing.**
-  `stdout` is bulk content, so it gets a LENGTH only — the same rule `fetch_url` applies to a body,
+  `stdout` is bulk content, so it gets a LENGTH only: the same rule `fetch_url` applies to a body,
   and the one that keeps a credential out of the JSONL even when redaction misses. `stderr` is
   diagnostic rather than bulk, so it gets a 500-character preview. **The blind spot: a tool that
-  writes its diagnostics to STDOUT leaves nothing readable in the trace when it fails** — you get
+  writes its diagnostics to STDOUT leaves nothing readable in the trace when it fails**: you get
   `exit_code: 1`, an empty `stderr_preview`, and `stdout_len: 1234`. The model still sees
   everything (it holds the full dict), so this costs a trace READER, not the run. If your commands
   behave that way and you need the text offline, have your `runner` fold the relevant stdout into
-  `CommandResult.stderr`, or record your own event alongside — do not expect the length to
+  `CommandResult.stderr`, or record your own event alongside. Do not expect the length to
   reconstruct it.
-- Sync, like every RLM tool — wrap an async container/sandbox client into a sync call yourself.
+- Sync, like every RLM tool: wrap an async container/sandbox client into a sync call yourself.
 
-**One-shot vs stateful — the runner decides.** `run_command` returns a single command's result and
+**One-shot vs stateful: the runner decides.** `run_command` returns a single command's result and
 holds no shell state; whether cwd, env, filesystem writes, and background processes persist across
-calls is the *runner's* contract. The reference example is a fresh container per call — a stateless
+calls is the *runner's* contract. The reference example is a fresh container per call: a stateless
 **inspect** surface (read-only mount). An edit-build-test loop needs a **stateful** runner: a closure
-over a long-lived sandbox — `docker create` + `docker exec`, an [E2B](https://e2b.dev) /
+over a long-lived sandbox: `docker create` + `docker exec`, an [E2B](https://e2b.dev) /
 [Modal](https://modal.com/docs/guide/sandbox) / [Daytona](https://www.daytona.io) sandbox handle, or
-a [SWE-ReX](https://github.com/SWE-agent/SWE-ReX) `BashSession` — which fits the same seam with no API
+a [SWE-ReX](https://github.com/SWE-agent/SWE-ReX) `BashSession`, which fits the same seam with no API
 change. Interactive tools and tmux-style sessions are out of scope for a one-shot result; if a
 consumer later needs model-managed sessions, that's the moment to add an additive `session_id` to the
 payload, not before. (`dspy.RLM`'s own pyodide/deno interpreter is WASM Python and **cannot** spawn a
-subprocess, so shell execution has to come from a host-side tool like this — there is no in-sandbox
+subprocess, so shell execution has to come from a host-side tool like this. There is no in-sandbox
 alternative.)
 
 ## Reading and searching local files (a bounded directory, no shell)
 
-`make_read_file_tool(root)` / `make_grep_files_tool(root, candidate_paths)` — the filesystem-side
+`make_read_file_tool(root)` / `make_grep_files_tool(root, candidate_paths)`: the filesystem-side
 analogue of `make_fetch_tool`'s SSRF-guarded `is_safe_url`, filling the gap between "no filesystem
-access at all" and `run_command`'s full-shell escape hatch. `root` is not "a repo" — it's any
+access at all" and `run_command`'s full-shell escape hatch. `root` is not "a repo": it's any
 bounded local directory tree a consumer scopes it to: a source repository, a docs corpus, an
 extracted archive, a dataset directory, a log directory. The single most common thing a
-coding-adjacent consumer needs — let the model read or search a bounded directory tree — does not
+coding-adjacent consumer needs, let the model read or search a bounded directory tree, does not
 require a shell: both tools are a pure-Python scan over `resolve_within_root`-guarded paths, no
 subprocess, no `rg`/`grep` binary on `PATH`.
 
@@ -381,9 +381,9 @@ finding = MyTask(tools=[read_file, grep_files]).run(...)
 - **`resolve_within_root(root, path)`** is the shared guard both factories build on (public, like
   `is_safe_url`/`parse_cidrs`, for a consumer building a third filesystem tool the kit doesn't
   ship): refuses a `..` traversal, an absolute path elsewhere, or a symlink INSIDE `root` pointing
-  OUTSIDE it — via `os.path.realpath` (which follows symlinks) then a `commonpath` containment
+  OUTSIDE it: via `os.path.realpath` (which follows symlinks) then a `commonpath` containment
   check, never `os.path.normpath` (purely lexical, which would miss the symlink case).
-- **`candidate_paths` is REQUIRED, consumer-supplied** — no default directory walk, no built-in
+- **`candidate_paths` is REQUIRED, consumer-supplied**: no default directory walk, no built-in
   `.gitignore` handling. Same base/wrap split as `make_command_tool` demanding an injected
   `Runner`: the kit owns the safety guard, the consumer decides which files are even candidates
   (walk a directory, read a manifest, whatever fits).
@@ -391,68 +391,68 @@ finding = MyTask(tools=[read_file, grep_files]).run(...)
   task with more than one bounded root (a source root AND a docs root, say) needs each one's tool
   to have a distinct REPL identity, since dspy keys its tool dict by name and two tools sharing a
   name abort registration for EVERY tool on the task, not just the second one. Validated at
-  factory-build time (a valid, non-reserved identifier) — a bad name raises `ValueError`
+  factory-build time (a valid, non-reserved identifier). A bad name raises `ValueError`
   immediately rather than surfacing as an obscure construction failure later.
 - **`make_read_file_tool`** additionally takes `encoding=` (default `"utf-8"`, for a non-UTF-8
   corpus), `max_output_chars=` (default `None` = unlimited; truncates with a visible, non-silent
   marker when set), and `line_numbers=` (default `False`; prefixes each returned line with its
   REAL 1-indexed file line number, so a model reading a slice starting mid-file doesn't have to
-  compute one itself from `start_line` — removing exactly the off-by-one a model gets wrong when
+  compute one itself from `start_line`: removing exactly the off-by-one a model gets wrong when
   later asked to cite or edit that line). The last two are scoped to the successful-read branch
-  only — a `Refused`/`Read error` string is never numbered or truncated. **If you also verify
-  citations, read "Line numbers and `verify_quote`" below BEFORE turning `line_numbers=` on** — the
+  only: a `Refused`/`Read error` string is never numbered or truncated. **If you also verify
+  citations, read "Line numbers and `verify_quote`" below BEFORE turning `line_numbers=` on**: the
   two must not see the same string, and getting it wrong silently fails correct citations.
 - **`make_grep_files_tool` requires the optional `regex` package outright** (`pip install
-  "rlm-harness[grep]"` — a friendly `ImportError` otherwise, no silent fallback to stdlib `re`).
+  "rlm-harness[grep]"`, a friendly `ImportError` otherwise, no silent fallback to stdlib `re`).
   `pattern` is LM-controlled, unbounded regex, matched against real file lines with no wall-clock
-  budget anywhere else in a tool's call path — a catastrophic-backtracking pattern (`(a+)+$`
+  budget anywhere else in a tool's call path: a catastrophic-backtracking pattern (`(a+)+$`
   against a non-matching line) can hang the host process indefinitely on stdlib `re`, and stdlib
   `re` cannot be bounded by ANY pure-Python mechanism, not even `signal.alarm` (CPython's `re`
-  engine doesn't yield to the signal dispatcher mid-match — one `re.search()` call is a single,
+  engine doesn't yield to the signal dispatcher mid-match: one `re.search()` call is a single,
   uninterruptible C-level operation). `regex`'s own matching loop periodically checks elapsed
-  wall-clock time internally and raises `TimeoutError` when exceeded — a real, working,
+  wall-clock time internally and raises `TimeoutError` when exceeded: a real, working,
   pattern-structure-agnostic mechanism. Same "no silently-weaker substitute" posture
   `make_json_schema_validator` already takes for its own optional `jsonschema` extra.
 - Two composed budgets, both factory (operator) parameters, never model-controlled:
-  `per_match_timeout_s` (default `1.0`) bounds ONE line's match — a timeout skips just that line
+  `per_match_timeout_s` (default `1.0`) bounds ONE line's match: a timeout skips just that line
   (counted, surfaced in the result, never silent); `max_total_time_s` (default `30.0`) bounds the
-  WHOLE call, checked before EVERY line (not merely once per file — a per-file-only check would let
+  WHOLE call, checked before EVERY line (not merely once per file. A per-file-only check would let
   a single large file with many timeout-tripping lines blow past the budget by an arbitrary
   multiple before it ever fired again).
 - **`output_mode=` and `ignore_case=` on `grep_files`.** `output_mode` (default `"content"`,
   unchanged) adds `"files_with_matches"` (distinct matching file paths only, no line text) and
   `"count"` (`path: N`, files with zero matches omitted). `max_results` caps the number of MATCHES
-  found (not total output lines — see `context_before`/`context_after` below). `ignore_case`
+  found (not total output lines: see `context_before`/`context_after` below). `ignore_case`
   (default `False`) is case-insensitive matching as a first-class flag rather than something baked
   into the pattern.
 - **Per-file early-break, `"files_with_matches"` only.** That mode only needs to know "did this
-  file have ≥1 match" — scanning stops the instant one is found, moving to the next candidate
-  file. `"count"` mode cannot do this — it needs the file's exact total match count, so every line
+  file have ≥1 match": scanning stops the instant one is found, moving to the next candidate
+  file. `"count"` mode cannot do this. It needs the file's exact total match count, so every line
   there is still scanned. Both `"files_with_matches"`/`"count"` additionally stop OPENING further
-  candidate files once `max_results` qualifying files are already found (an outer-loop break — it
+  candidate files once `max_results` qualifying files are already found (an outer-loop break: it
   never skips a line of a file already being scanned, only avoids starting further ones).
-- **`context_before=`/`context_after=`** (default `0`, `"content"` mode only — a silent no-op,
+- **`context_before=`/`context_after=`** (default `0`, `"content"` mode only: a silent no-op,
   never an error, in the other two modes, which have no per-line text to attach context to): show
-  that many unchanged lines immediately before/after each match, using grep's own convention — a
+  that many unchanged lines immediately before/after each match, using grep's own convention: a
   match keeps `path:line: text` (colon); a context line uses `path-line- text` (hyphen); a `"--"`
-  line separates two blocks that don't touch (a numbering gap) within the same file — never at a
+  line separates two blocks that don't touch (a numbering gap) within the same file: never at a
   file boundary, since the path prefix already marks that. A line that itself matches is ALWAYS
-  emitted as a match, never as leftover context from an earlier match's `context_after` window — a
+  emitted as a match, never as leftover context from an earlier match's `context_after` window: a
   fresh match resets the after-context countdown outright, it never stacks with one still running.
-  `max_results` counts MATCHES only — context/separator lines are supplementary and uncapped by
+  `max_results` counts MATCHES only: context/separator lines are supplementary and uncapped by
   it, mirroring real `grep -m`; when a match hits the cap, its own trailing context may be
   truncated if the file/budget ends first (an accepted, deliberate simplicity choice, the same one
   `max_total_time_s` already makes for whatever's in-flight). When both are `0` (the default),
-  behavior — including the traced `result_count` — is byte-identical to a build of this tool with
+  behavior, including the traced `result_count`, is byte-identical to a build of this tool with
   no context support at all.
 
-### `list_candidate_paths` — the recommended way to build `candidate_paths` (`tools/discover.py`)
+### `list_candidate_paths`: the recommended way to build `candidate_paths` (`tools/discover.py`)
 
-`candidate_paths` stays a plain, required list — no contract change. But safely walking a
+`candidate_paths` stays a plain, required list: no contract change. But safely walking a
 directory tree to build one (respecting `.gitignore`, never escaping `root` via a symlink, never
 treating VCS internals as candidates) is exactly the kind of mechanic every consumer would
 otherwise reinvent. `list_candidate_paths(root)` is a plain host-side function (no factory, not a
-REPL tool — called from a consumer's own setup code before wiring a tool, the same role
+REPL tool: called from a consumer's own setup code before wiring a tool, the same role
 `resolve_within_root` already plays) returning `CandidatePaths(paths, truncated)`, pipeable
 directly into `make_grep_files_tool`/`make_read_file_tool` with zero reshaping:
 
@@ -465,36 +465,36 @@ grep_files = make_grep_files_tool(repo_root, candidate_paths=candidates.paths)
 ```
 
 - **Needs the optional `rlm-harness[gitignore]` extra (`pathspec`) ONLY when there's an actual
-  `.gitignore` pattern to compile** — a real root `.gitignore` present (with
+  `.gitignore` pattern to compile**: a real root `.gitignore` present (with
   `respect_gitignore=True`, the default) or a non-empty `extra_ignore_patterns`. A caller with
   neither never needs the dependency installed. `.gitignore`'s own subtler syntax (negation,
   directory-only patterns, anchoring) is why this uses `pathspec` rather than a hand-rolled
-  parser — slightly wrong parsing either leaks a file a consumer explicitly meant to exclude
+  parser: slightly wrong parsing either leaks a file a consumer explicitly meant to exclude
   (`.env`, credentials) or wrongly excludes real source; same "don't reinvent a
   correctness-critical mechanic" reasoning behind `make_grep_files_tool`'s `regex` extra and
   `make_json_schema_validator`'s `jsonschema` extra.
-- **Root-level `.gitignore` only, stated honestly** — no nested per-directory `.gitignore`
+- **Root-level `.gitignore` only, stated honestly**: no nested per-directory `.gitignore`
   merging, no global gitignore. `extra_ignore_patterns` (same `gitwildmatch` syntax) is the escape
   hatch for a consumer that needs more than the one root-level file covers.
 - **`.git` is always excluded, unconditionally, by two distinct mechanisms**: a directory named
-  `.git` is pruned from the walk (never descended into), and — independently — a plain FILE
+  `.git` is pruned from the walk (never descended into), and, independently, a plain FILE
   literally named `.git` is also always excluded, since that's git's REAL submodule gitlink shape
   (a one-line pointer file, not a directory); pruning the directory case alone would miss it.
 - **Every candidate file is re-checked through `resolve_within_root`**, independent of
-  `follow_symlinks` (which only gates whether `os.walk` descends into a symlinked directory) — a
+  `follow_symlinks` (which only gates whether `os.walk` descends into a symlinked directory): a
   symlink pointing outside `root` never surfaces as a candidate either way.
 - **`max_files`** (default `5000`) bounds the walk itself, stopping it outright rather than
   slicing an unbounded result after the fact; `CandidatePaths.truncated` makes a partial result
   visible, never a silent cutoff. Directory and file names are sorted at every level of the walk
-  first — `os.walk`'s own order is filesystem/OS-dependent, which would otherwise make WHICH files
+  first: `os.walk`'s own order is filesystem/OS-dependent, which would otherwise make WHICH files
   survive a truncation non-reproducible across runs on the same tree.
-- **No REPL-tool wrapper yet** — this is a setup-time helper a consumer's own code calls, not
+- **No REPL-tool wrapper yet**: this is a setup-time helper a consumer's own code calls, not
   something the model calls mid-trajectory; a `make_list_files_tool` wrapper is a natural,
   separately-reviewable future addition.
 
-### `make_git_clone_tool` — safe git clone with fallback auth (`tools/git_clone.py`)
+### `make_git_clone_tool`: safe git clone with fallback auth (`tools/git_clone.py`)
 
-Base/wrap, the same shape as `make_fetch_tool`/`make_command_tool` — the kit does NOT shell out to
+Base/wrap, the same shape as `make_fetch_tool`/`make_command_tool`. The kit does NOT shell out to
 `git` itself. `command.py`'s own module docstring already explains why for `run_command`: a
 model-adjacent operation executed host-side needs ISOLATION, and a `git clone` is not meaningfully
 safer to run un-isolated than an arbitrary command (a malicious git server can exploit a client
@@ -515,45 +515,45 @@ git_clone = make_git_clone_tool(repo_root, my_cloner)
 finding = MyTask(tools=[git_clone]).run(...)
 ```
 
-- **URL safety reuses `is_safe_url` directly** — no reinvented SSRF check. Syntactic pre-flight
+- **URL safety reuses `is_safe_url` directly**: no reinvented SSRF check. Syntactic pre-flight
   only, same caveat `fetch.py` already documents for its own `fetcher`: a public hostname
   resolving to a private address at actual connect time is NOT caught here, since the real
-  network connection happens inside the isolated `cloner`, not in this wrapper — the `cloner`
+  network connection happens inside the isolated `cloner`, not in this wrapper: the `cloner`
   should call `resolved_host_is_safe` internally at connect time if that matters for its
   deployment.
-- **Destination confinement reuses `resolve_within_root` directly** — `dest_dir` is resolved
+- **Destination confinement reuses `resolve_within_root` directly**: `dest_dir` is resolved
   exactly like `write_file`'s `path`.
-- **Fallback auth — a two-attempt orchestration, never a retry loop.** Tries without credentials
-  first (the common, public-repo case costs nothing extra); on failure — a nonzero exit code OR a
-  raised exception, handled identically — if a `get_credentials` provider was configured, ONE
+- **Fallback auth: a two-attempt orchestration, never a retry loop.** Tries without credentials
+  first (the common, public-repo case costs nothing extra); on failure: a nonzero exit code OR a
+  raised exception, handled identically: if a `get_credentials` provider was configured, ONE
   retry with credentials. Never more than two `cloner` invocations per call.
 - **Credential redaction, disclosed as best-effort, not absolute.** A `get_credentials(url)`
   provider returning a dict MUST include a `"secret"` key (the raw credential string); after a
   credentialed attempt, that exact string is redacted (plain string replacement) before it can
   reach the traced `stderr_preview` or the model-visible return string. `stdout` is redacted too
-  before its (post-redaction) length feeds the trace's `stdout_len` — `stdout` content itself is
+  before its (post-redaction) length feeds the trace's `stdout_len`: `stdout` content itself is
   never traced verbatim, only that length, matching `run_command`'s own existing "lengths + a
   preview, not the full stream" posture. This does NOT catch a derived or transformed leak
   (URL-encoding, case-folding, a truncated echo from a misconfigured credential helper). A
   malformed dict (missing/non-string/empty `"secret"`), or a provider that itself raises, fails
-  CLOSED — treated exactly like a decline, no retry attempted, never crashes the call.
+  CLOSED: treated exactly like a decline, no retry attempted, never crashes the call.
 - **`default_depth=1`** (shallow clone by default) is passed through to the `cloner` as a plain
-  argument — the "avoid being tricked into cloning an enormous repository" mitigation;
+  argument: the "avoid being tricked into cloning an enormous repository" mitigation;
   `default_depth=None` opts out for a caller that explicitly wants full history.
-- **On success**: `"Cloned {url!r} into {dest_dir!r}."` — terse, matching `write_file`'s own
+- **On success**: `"Cloned {url!r} into {dest_dir!r}."`: terse, matching `write_file`'s own
   success-string convention. A consumer wanting to see what landed already has
   `list_candidate_paths`/`read_file`/`grep_files` for that.
-- **Accepted, disclosed gap**: no cleanup of a partially-cloned directory on failure — making the
+- **Accepted, disclosed gap**: no cleanup of a partially-cloned directory on failure, making the
   whole clone atomic would require dictating how the `cloner` itself writes to disk, contradicting
   the base/wrap split this design is built on.
 
 ## Writing and editing a bounded local directory (`tools/edit.py`)
 
-`make_write_file_tool(root)` / `make_edit_file_tool(root)` — the write side of the read/search
+`make_write_file_tool(root)` / `make_edit_file_tool(root)`: the write side of the read/search
 pair above, kept in a separate module (`fs.py` is already the largest single file in `tools/`, so
 "everything that can mutate the filesystem" stays physically distinct from "everything that only
 reads it"). Same `resolve_within_root` guard, same `name=`/`encoding=` parameters and validation
-as `make_read_file_tool`/`make_grep_files_tool` — including the same multi-root name-collision fix.
+as `make_read_file_tool`/`make_grep_files_tool`, including the same multi-root name-collision fix.
 
 ```python
 from rlm_harness.tools import make_edit_file_tool, make_write_file_tool
@@ -564,51 +564,51 @@ finding = MyTask(tools=[read_file, grep_files, write_file, edit_file]).run(...)
 ```
 
 - **`make_write_file_tool`**: creates or overwrites a whole file, atomically
-  (`atomic.atomic_write_text`). Unconditional overwrite (no create-only mode — a consumer wanting
+  (`atomic.atomic_write_text`). Unconditional overwrite (no create-only mode: a consumer wanting
   one can call `read_file` first and check for its "missing file" error string) and no
   `max_content_chars` cap (the content was generated by the model itself, so it's already bounded
-  by whatever produced it — this does NOT cover a model looping on the tool and filling the host's
+  by whatever produced it. This does NOT cover a model looping on the tool and filling the host's
   disk with many individually-bounded files, an accepted, out-of-scope-for-now gap).
-- **`make_edit_file_tool`**: exact-string-anchor replacement — the same uniqueness-checked
+- **`make_edit_file_tool`**: exact-string-anchor replacement, the same uniqueness-checked
   contract Claude Code's own `Edit` tool and `nano-rlm`'s `edit` skill both use independently.
   Refuses (never mis-edits) if `old_string` isn't found, or is found more than once and
-  `replace_all` (a per-call flag the model sets, not a factory-level fixed behavior) is `False` —
+  `replace_all` (a per-call flag the model sets, not a factory-level fixed behavior) is `False`.
   the file is left byte-for-byte untouched on every refusal path. `old_string == ""` and
   `old_string == new_string` are refused as degenerate inputs; `new_string == ""` (delete this
   text) is a legitimate operation and is NOT refused. **Known failure mode**: a file using
   different line endings than the `old_string` the model supplies fails closed with "not found"
-  rather than mis-editing — not a safety bug, just worth knowing.
+  rather than mis-editing: not a safety bug, just worth knowing.
 - **On success, a windowed snippet of the result is appended** (`show_snippet=`, default `True`;
   reuses `read_file`'s own `f"{lineno:>6}\t{line}"` numbering) so a model can confirm what its
-  edit actually did without a separate `read_file` round-trip — `show_snippet=False` is the escape
+  edit actually did without a separate `read_file` round-trip: `show_snippet=False` is the escape
   hatch back to the terse confirmation alone. `snippet_context_lines=` (default `3`) bounds each
   shown region; an edit larger than that shows only its own head/tail with a visible "N line(s)
   omitted" marker, never an unbounded dump regardless of how large `new_string` was.
   `max_snippet_occurrences=` (default `3`) caps how many `replace_all=True` occurrences get their
-  own snippet block — the file is still fully edited regardless of the cap; a truncated result
+  own snippet block. The file is still fully edited regardless of the cap; a truncated result
   says so explicitly ("N more occurrence(s) not shown"). Overlapping windows for closely-spaced
-  occurrences are shown independently, not merged. Scoped to the success path only — a
+  occurrences are shown independently, not merged. Scoped to the success path only: a
   `Refused`/`Read error`/`Write error` string never gets a snippet appended.
-- **This is the kit's first file-mutation/data-loss-capable tool category** — every tool shipped
+- **This is the kit's first file-mutation/data-loss-capable tool category**: every tool shipped
   before this was either read-only against the filesystem or delegated execution/network entirely
   to a consumer-supplied runner/fetcher. Both factories build on `atomic_write_text`, which is
-  what makes an overwrite/edit crash-safe (never half-written) — but its guarantee is "no torn
+  what makes an overwrite/edit crash-safe (never half-written), but its guarantee is "no torn
   read," never "serializes concurrent read-modify-write across processes": two SEPARATE `RLMTask`
   runs (or two workers in a batch eval) racing an edit on the SAME file can silently lose one of
-  the two updates. Accepted, out-of-scope-for-now — stated here rather than silently omitted.
+  the two updates. Accepted, out-of-scope-for-now: stated here rather than silently omitted.
   Building `make_write_file_tool`/`make_edit_file_tool` on `atomic_write_text` also surfaced a
   real bug in that primitive (fixed in `atomic.py` itself, not duplicated per-tool): overwriting
   an existing file through it used to silently reset the file's permission bits to `0600`
   (`tempfile.mkstemp` always creates its temp file at that mode, and `os.replace` doesn't carry
-  the destination's mode across) — now the destination's existing mode is preserved across an
+  the destination's mode across): now the destination's existing mode is preserved across an
   overwrite.
 
 ## Extracting archives safely (`tools/archive.py`)
 
-`make_extract_archive_tool(root)` — a safe `zip`/tar extraction tool. `zipfile.extractall()`/
+`make_extract_archive_tool(root)`: a safe `zip`/tar extraction tool. `zipfile.extractall()`/
 `tarfile.extractall()` are not safe by default: a malicious entry can carry an absolute path, a
 `..`-traversal path, or (tar) a symlink/hardlink pointing outside the extraction target ("zip
-slip") — the same `resolve_within_root` reasoning `read_file`/`write_file` already apply to a
+slip"): the same `resolve_within_root` reasoning `read_file`/`write_file` already apply to a
 single path argument, generalized here to every entry of an archive.
 
 ```python
@@ -619,37 +619,37 @@ finding = MyTask(tools=[extract_archive, read_file, write_file]).run(...)
 ```
 
 - Supports `.zip` and tar variants (`.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/
-  `.txz`), dispatched by extension — an unrecognized extension returns an error string, never
+  `.txz`), dispatched by extension. An unrecognized extension returns an error string, never
   raises, never sniffs content.
 - **Two-pass extraction, matching this kit's "refuse outright, never partially mutate" posture**:
-  Pass 1 validates every entry's metadata ONLY (name, type, declared size, and — zip-only — the
+  Pass 1 validates every entry's metadata ONLY (name, type, declared size, and, zip-only, the
   encryption/compression-method header fields) and refuses the WHOLE operation upfront on any
-  violation, before a single byte is written — a zip-slip path, a symlink/hardlink/device entry,
+  violation, before a single byte is written: a zip-slip path, a symlink/hardlink/device entry,
   an encrypted entry, or an unsupported compression method all fail here, with nothing landing on
   disk. Pass 2 (only reached once Pass 1 fully passes) streams each entry's real bytes via the new
   `atomic_write_stream` primitive (below), bounding peak memory to a small, fixed chunk size
   regardless of that entry's own size.
-- **A declared size cannot smuggle more decompressed output than it promises** — confirmed
+- **A declared size cannot smuggle more decompressed output than it promises**: confirmed
   empirically: both stdlib read APIs hard-ceiling their output at the entry's own declared size
   field, so a "lying header" memory bomb does not exist via either. Pass 1's cumulative
   declared-size check (`max_extracted_bytes`, default 200 MiB) and entry-count check
-  (`max_entries`, default 10,000) are factory (operator) parameters, never model-controlled — same
+  (`max_entries`, default 10,000) are factory (operator) parameters, never model-controlled: same
   posture `make_grep_files_tool`'s timeouts and `list_candidate_paths`'s `max_files` already take.
-- **No password-protected/encrypted archives** — refused upfront in Pass 1, with a clear reason,
-  never a crash. **No nested-archive recursion** — an archive found inside the extracted output is
+- **No password-protected/encrypted archives**: refused upfront in Pass 1, with a clear reason,
+  never a crash. **No nested-archive recursion**: an archive found inside the extracted output is
   not itself auto-extracted; call the tool again on it, subject to the same checks a second time.
   **Unconditional overwrite** of existing files at the destination, matching `make_write_file_tool`.
-- **`atomic_write_stream(path, chunks, *, max_bytes=None)`** (new, in `atomic.py`) — a separate,
+- **`atomic_write_stream(path, chunks, *, max_bytes=None)`** (new, in `atomic.py`): a separate,
   additive primitive alongside `atomic_write_text` (not a refactor of it): the same
   same-directory-temp-file/`fsync`/`os.replace`/permission-preservation idiom, but for a caller
   with an iterable of `bytes` chunks rather than one already-in-memory blob, aborting the moment a
-  running total exceeds `max_bytes` — checked after every chunk, not merely once at the end.
+  running total exceeds `max_bytes`: checked after every chunk, not merely once at the end.
 
 ## Environment interpreter (`interpreter="container"`)
 
-The default `pyodide`/`deno` interpreter is WASM Python — it **cannot spawn a subprocess** (emscripten
-has no processes). When a task needs the model to run real commands as part of its own reasoning — a
-build, a test, `git`, a compiler — set `RLM_INTERPRETER=container` (or `RLMConfig(interpreter="container")`).
+The default `pyodide`/`deno` interpreter is WASM Python: it **cannot spawn a subprocess** (emscripten
+has no processes). When a task needs the model to run real commands as part of its own reasoning: a
+build, a test, `git`, a compiler: set `RLM_INTERPRETER=container` (or `RLMConfig(interpreter="container")`).
 The RLM's REPL then runs **inside an isolated Docker container**, so the model's own Python can
 `subprocess.run(...)` natively and hold real filesystem/process state.
 
@@ -660,17 +660,17 @@ export RLM_INTERPRETER=container         # default stays pyodide; this is opt-in
 
 - **One persistent container per run.** State persists across REPL turns within a run (the model can
   write a file in one cell and run it in the next), and the container is torn down at run end. This is
-  the *environment* model — distinct from the [`run_command`](#running-local-commands-an-isolated-runner)
+  the *environment* model: distinct from the [`run_command`](#running-local-commands-an-isolated-runner)
   tool, which is a model-*chosen* command per call against a runner you supply (and whose reference
   example is a fresh container per call). Use the container interpreter when the REPL itself needs a
   real environment; use `run_command` when commands are occasional, tool-like actions.
 - **A stronger boundary than pyodide for this case, not a weaker one.** `--network=none` makes the
   host↔container stdio broker the only channel in or out (no egress); the LM credentials never enter
-  the container — `llm_query` and tool callbacks execute **host-side**, only results cross the pipe;
+  the container: `llm_query` and tool callbacks execute **host-side**, only results cross the pipe;
   Linux capabilities are dropped (`--cap-drop=ALL`) and memory/pid are capped. It is the *opposite* of
   the refused `local` interpreter (host RCE), not a relaxation of it.
 - **Config** (`RLM_CONTAINER_*`, all optional): `IMAGE` (default `python:3.11-slim`), `TIMEOUT`
-  (per-cell sandbox-compute budget, s, default 120 — host tool time is not counted), `MEMORY`
+  (per-cell sandbox-compute budget, s, default 120. Host tool time is not counted), `MEMORY`
   (`512m`), `PIDS_LIMIT` (`256`), `NETWORK` (`none`), `CPUS` (unset = uncapped), `CAP_DROP` (`true`),
   `READ_ONLY` (`false`; opt-in read-only rootfs for an inspect-only task, paired with a tmpfs `/tmp`),
   `WORKDIR` (a host dir mounted **read-only** at `/workspace`).
@@ -680,31 +680,31 @@ export RLM_INTERPRETER=container         # default stays pyodide; this is opt-in
 ## Sandbox turn timeout + cancellation (`pyodide`/`deno`)
 
 The default `pyodide`/`deno` interpreter blocks on a plain subprocess pipe read with **no timeout
-anywhere in dspy's own code** — a wedged Deno subprocess, or a model-written REPL cell that spins
+anywhere in dspy's own code**: a wedged Deno subprocess, or a model-written REPL cell that spins
 forever, hangs the run with no recourse short of killing the whole process. `asyncio.Task.cancel()`
 cannot help: the blocking call has no `await` inside it, so the event loop never gets a chance to
 run cancellation machinery. rlm-harness closes this with the SAME timer-armed-before-blocking-read,
 kill-to-unblock idiom the container interpreter already uses for its own `TIMEOUT` (above), ported
 to `pyodide`/`deno`:
 
-- **`RLM_SANDBOX_TURN_TIMEOUT`** (seconds; `RLMConfig.sandbox_turn_timeout_s`) — a per-`execute()`
+- **`RLM_SANDBOX_TURN_TIMEOUT`** (seconds; `RLMConfig.sandbox_turn_timeout_s`): a per-`execute()`
   safety-net deadline. **Unset by default** (deliberately NOT matching the container interpreter's
   own `120.0`-default precedent: this budget has no hook to exclude host-side tool/sub-LM dispatch
   time, so a generous always-on value would misfire on legitimate multi-tool-call turns more often
-  than the container analogy implies). Firing raises dspy's own RECOVERABLE interpreter error —
+  than the container analogy implies). Firing raises dspy's own RECOVERABLE interpreter error:
   `CodeExecutionError` on dspy >= 3.3.0, resolved at call time through
   `_dspy_compat.recoverable_interpreter_error()` rather than hardcoded, because 3.3.0 INVERTED the
   split: the base `CodeInterpreterError` used to be the recoverable one and is now the TERMINAL
   one. The model sees an `"[Error] ..."` string and gets to retry next turn against a
   freshly-respawned sandbox.
-- **`RLM_REQUEST_TIMEOUT`** (seconds; `RLMConfig.request_timeout_s`) — a wall-clock cap on ONE
+- **`RLM_REQUEST_TIMEOUT`** (seconds; `RLMConfig.request_timeout_s`): a wall-clock cap on ONE
   model HTTP request ATTEMPT, handed to `dspy.LM(timeout=...)` and from there to litellm. This is
   `RLM_SANDBOX_TURN_TIMEOUT`'s sibling on the other side of a turn: the sandbox side was bounded
   and the model side was not settable at all.
 
   **Unset is not "no cap".** With nothing passed, litellm applies its own
   `COMPLETION_HTTP_FALLBACK_SECONDS` of **600 s** per attempt. So this setting *replaces* that
-  number rather than introducing a bound where there was none — and a consumer whose turns
+  number rather than introducing a bound where there was none, and a consumer whose turns
   legitimately run longer than ten minutes must set it **up**, not leave it alone.
 
   **It does not bound a run to its own value.** dspy passes `num_retries=3`, and litellm's first
@@ -712,18 +712,18 @@ to `pyodide`/`deno`:
   MULTIPLE of this value plus backoff. Size a caller-side budget on the multiple.
 
   What prompted it, and an honest reading of it: against a self-hosted OpenAI-compatible endpoint
-  one request never came back — the socket stayed `ESTABLISHED` with both queues empty and the
+  one request never came back: the socket stayed `ESTABLISHED` with both queues empty and the
   worker slept in `epoll_wait` for 38 minutes at 0.3% CPU, while that same endpoint answered
   unrelated requests in half a second. 600 s across four attempts is about forty minutes, so that
   observation fits "litellm's own default, retried" at least as well as "nothing was watching";
   no attempt counter was captured at the time. Either way the consumer could not choose the
   number, and now it can.
-- **`cancel_event`** (`RLMTask(cancel_event=a_threading.Event)`) — for a caller that wants to stop
+- **`cancel_event`** (`RLMTask(cancel_event=a_threading.Event)`): for a caller that wants to stop
   an in-flight run NOW (e.g. a "Cancel" button in a UI driving `arun()` from a worker thread). Set
   the event from another thread; the current sandbox turn is killed and `SandboxCancelled` (exported
   from `rlm_harness`) propagates all the way up through `arun()` as a genuine, NON-recoverable run-ending
-  failure — never retried (see `run_with_retry`'s `non_retryable` below), never caught by dspy's own
-  `except (CodeExecutionError, SyntaxError)` (the class it catches is version-dependent — see the
+  failure: never retried (see `run_with_retry`'s `non_retryable` below), never caught by dspy's own
+  `except (CodeExecutionError, SyntaxError)` (the class it catches is version-dependent: see the
   turn-timeout bullet above; `SandboxCancelled` stands outside dspy's hierarchy entirely, which is
   what makes it non-recoverable on EVERY version).
 
@@ -744,21 +744,21 @@ Both knobs are `None` by default and cost nothing when unset: no watcher thread 
 `execute()` takes the same direct path it did before either knob existed. `run_with_retry`'s `non_retryable`
 parameter (a closed allowlist of exception types that propagate verbatim, consuming no attempt and
 never wrapped in `RLMTaskError`) is what makes `SandboxCancelled` survive `RLMTask.arun()`'s own
-retry engine untouched — a caller-driven cancellation must never be silently absorbed by a retry
+retry engine untouched. A caller-driven cancellation must never be silently absorbed by a retry
 that respawns the sandbox and restarts the whole trajectory from scratch.
 
-## Timeouts — what bounds what
+## Timeouts: what bounds what
 
 Six different things can end a stuck run, on three different clocks, and no single one of them
 bounds a run's wall time. This is the whole map; reach for it before adding a seventh.
 
 | Knob | Env | Default | Bounds | On expiry |
 |---|---|---|---|---|
-| `RLMConfig.request_timeout_s` | `RLM_REQUEST_TIMEOUT` | unset → litellm's own 600s | **one HTTP request attempt** to a litellm-backed LM | `LMTimeoutError`, which dspy classifies as RETRYABLE — so it is retried, not fatal |
-| `ClaudeAgentLM(timeout_s=…)` | — (constructor only) | 600s | **one whole call**, INCLUDING time queued behind the SDK's concurrency semaphore | `TimeoutError` |
-| `RLMConfig.sandbox_turn_timeout_s` | `RLM_SANDBOX_TURN_TIMEOUT` | unset (disabled) | one whole `execute()` (`pyodide`/`deno`) — host-side tool and sub-LM dispatch time INCLUDED, which is why it is off by default | dspy's **recoverable** interpreter error — the model gets another turn |
+| `RLMConfig.request_timeout_s` | `RLM_REQUEST_TIMEOUT` | unset → litellm's own 600s | **one HTTP request attempt** to a litellm-backed LM | `LMTimeoutError`, which dspy classifies as RETRYABLE, so it is retried, not fatal |
+| `ClaudeAgentLM(timeout_s=…)` |: (constructor only) | 600s | **one whole call**, INCLUDING time queued behind the SDK's concurrency semaphore | `TimeoutError` |
+| `RLMConfig.sandbox_turn_timeout_s` | `RLM_SANDBOX_TURN_TIMEOUT` | unset (disabled) | one whole `execute()` (`pyodide`/`deno`) (host-side tool and sub-LM dispatch time INCLUDED, which is why it is off by default | dspy's **recoverable** interpreter error) the model gets another turn |
 | `ContainerConfig.timeout_s` | `RLM_CONTAINER_TIMEOUT` | 120s | one `execute()`'s sandbox compute (`container`; host tool time excluded) | recoverable, same as above |
-| `RLMTask(cancel_event=…)` | — | unset | anything the caller decides | `SandboxCancelled` — **never** retried, never wrapped |
+| `RLMTask(cancel_event=…)` |, | unset | anything the caller decides | `SandboxCancelled`, **never** retried, never wrapped |
 | `RLMConfig.max_retries` | `RLM_MAX_RETRIES` | 1 (no retry) | the whole trajectory, in attempts not seconds | `RLMTaskError` |
 
 Three things about this table are easy to get wrong.
@@ -766,7 +766,7 @@ Three things about this table are easy to get wrong.
 **`request_timeout_s` does not bound a run to its own value.** An attempt is not a request: dspy's
 `LM` passes `num_retries=3` and litellm hands the OpenAI SDK `max_retries=2` of its own, so a dead
 endpoint is retried and the run-level wait is a MULTIPLE of this number plus backoff. Size a
-caller-side budget on the multiple. Leaving it unset is not "no cap" either — litellm then applies
+caller-side budget on the multiple. Leaving it unset is not "no cap" either: litellm then applies
 its own `COMPLETION_HTTP_FALLBACK_SECONDS` of 600s, so this field REPLACES that number rather than
 introducing a bound where none existed. A consumer whose turns legitimately run longer must set it
 UP, not leave it alone.
@@ -774,7 +774,7 @@ UP, not leave it alone.
 **The two 600s defaults are not the same quantity.** `request_timeout_s` bounds one HTTP request
 with retries around it; `ClaudeAgentLM`'s bounds one whole call including queueing, with nothing
 around it. Which one you get depends on the model string, and `request_timeout_s` deliberately does
-NOT drive the subscription route — under `llm_query_batched`'s thread fan-out, a value that is
+NOT drive the subscription route: under `llm_query_batched`'s thread fan-out, a value that is
 generous per request would make queued sub-LM calls time out from waiting alone. `configure()` warns
 when you set the knob and a role was auto-routed, and
 `configure(main_lm=ClaudeAgentLM(model, timeout_s=…))` is how you choose that number.
@@ -799,20 +799,20 @@ one turn       ~20min + backoff    for ONE wedged model call
 The two retry layers are counts of RETRIES, not attempts, so read those multipliers as lower
 bounds. The point is the shape, not the digits: a "2-minute request timeout" is a wall-clock
 worst case measured in hours, and lowering `max_iterations` moves that number far more than
-lowering the timeout does. `max_retries` multiplies it again — which
+lowering the timeout does. `max_retries` multiplies it again, which
 is why it defaults to 1. If you need a real wall-clock bound on a run, put it in your own
 driver (`asyncio.wait_for` around `arun`, or a `cancel_event`); no knob here is one.
 
 > These semantics assume non-streaming model requests, which is what the kit issues today. A
-> streamed request changes what a per-request HTTP timeout means — an inter-chunk read timeout does
-> not bound a whole generation — so anything that turns streaming on owes this page a revision and
+> streamed request changes what a per-request HTTP timeout means: an inter-chunk read timeout does
+> not bound a whole generation, so anything that turns streaming on owes this page a revision and
 > a deadline of its own.
 
-## `run_in_subprocess` — a safe, isolated-subprocess primitive (`isolation.py`)
+## `run_in_subprocess`: a safe, isolated-subprocess primitive (`isolation.py`)
 
 A small PRIMITIVE only: safely run one picklable callable in an isolated OS process, get its
-result or a clear error back, bounded by a timeout. Task-scheduling — how a web server actually
-queues many of these (Celery, RQ, a plain thread/process pool) — is explicitly the consumer's own
+result or a clear error back, bounded by a timeout. Task-scheduling: how a web server actually
+queues many of these (Celery, RQ, a plain thread/process pool). Is explicitly the consumer's own
 concern, not shipped here, matching this kit's standing base/wrap posture (`make_command_tool`
 ships no executor, `make_git_clone_tool` ships no cloner) applied to "run a whole task."
 
@@ -826,88 +826,88 @@ def run_my_task(**inputs):          # a plain, MODULE-LEVEL function -- see "mus
 result = run_in_subprocess(functools.partial(run_my_task, q="…"), timeout_s=30.0)
 ```
 
-**A genuinely different gap than three things in this kit that already sound similar** — worth
+**A genuinely different gap than three things in this kit that already sound similar**: worth
 naming so this doesn't look redundant with them: `interpreter="container"` (above) isolates the
 RLM's own REPL SANDBOX in a Docker container, but the ROOT process still runs the RLM's own
-orchestration (LM calls, retries, tool dispatch) directly — a hang/crash there isn't covered.
+orchestration (LM calls, retries, tool dispatch) directly: a hang/crash there isn't covered.
 `rlm_harness.tools.run_isolated` bridges an async coroutine into a sync call site on a dedicated
-THREAD — same process, no OS-level isolation, solves an event-loop-nesting problem, not a
+THREAD: same process, no OS-level isolation, solves an event-loop-nesting problem, not a
 fault-isolation one. `cancel_event` (above) stops an IN-FLIGHT run the calling code already owns
-and is watching — it doesn't hand a whole task off to a separate process in the first place. The
+and is watching: it doesn't hand a whole task off to a separate process in the first place. The
 actual gap: a web-facing consumer whose request handler wants to run ONE task without that run's
 own crash, hang, or resource usage taking down the request-handling process itself needs to run
 it in a SEPARATE OS PROCESS.
 
-- **Lives at the top level, not `rlm_harness.tools`** — that package's own module docstring
+- **Lives at the top level, not `rlm_harness.tools`**: that package's own module docstring
   scopes it as "tools RLM tasks can expose to the model inside the REPL"; nothing here is ever
   placed in a `tools=[...]` list or invoked by the model.
-- **`factory` MUST be picklable** — a real, easy-to-get-wrong gotcha. A local closure or
+- **`factory` MUST be picklable**: a real, easy-to-get-wrong gotcha. A local closure or
   `lambda` is NOT picklable across the `"spawn"` boundary this uses; `functools.partial(
-  module_level_function, **kwargs)` IS — but only if every value bound into `args`/`kwargs` is
+  module_level_function, **kwargs)` IS, but only if every value bound into `args`/`kwargs` is
   ALSO picklable, not merely the function reference: a live socket, open file handle, DB
   connection, or lock bound as one of the `partial`'s own arguments hits the same class of
   pickling failure the "avoid closures" advice was supposed to prevent.
-- **Uses `multiprocessing.get_context("spawn")`, never `"fork"`** — the calling process is very
+- **Uses `multiprocessing.get_context("spawn")`, never `"fork"`**: the calling process is very
   plausibly a web server already running an event loop / thread pool / open file descriptors / a
   live LM client; forking that risks a corrupted child (inherited locks held by a thread that
   doesn't exist in the child, half-open sockets). `spawn` is itself still fork()+exec() on POSIX,
   but exec runs BEFORE any user code executes in the freshly-forked child, which is what actually
   avoids the corruption class a bare `fork` risks. `spawn` also requires `factory`'s entire import
-  chain to be safely re-importable in the fresh interpreter — if `factory` is defined in a script
+  chain to be safely re-importable in the fresh interpreter: if `factory` is defined in a script
   run as `__main__`, guard it with `if __name__ == "__main__":`.
 - **A real bug found and fixed during design review**: `multiprocessing.Queue.put()` does not
-  pickle synchronously — a background feeder thread does, and a pickling failure there is logged
+  pickle synchronously: a background feeder thread does, and a pickling failure there is logged
   and silently DROPPED, never raised back to `put()`'s caller, which would leave the parent
   hanging on `get()` forever. Fixed by having the child explicitly test-pickle its payload
-  synchronously, in its own code, BEFORE ever calling `put()` — falling back to a plain-string
+  synchronously, in its own code, BEFORE ever calling `put()`: falling back to a plain-string
   `RuntimeError` only if that test-pickle itself fails. The parent's own `queue.get()` also
   carries its own bounded timeout, independent of the process-level timeout below, as a backstop
   against an out-of-band kill (e.g. the host OOM-killing the child) that bypasses this
   primitive's own signal-based escalation entirely.
 - **`timeout_s`** (default `None` = no limit): on expiry, `process.terminate()` (SIGTERM), then a
   `grace_period_s` (default `5.0`) wait, then `process.kill()` (SIGKILL) if still alive, followed
-  by a final reap so no zombie is left — raises `TimeoutError`. SIGTERM does NOT reliably let the
-  child's `finally`/`atexit` code run — that's only true if the child itself installs a
+  by a final reap so no zombie is left. Raises `TimeoutError`. SIGTERM does NOT reliably let the
+  child's `finally`/`atexit` code run: that's only true if the child itself installs a
   `signal.signal(SIGTERM, ...)` handler; with none (the default), the OS's default disposition
   terminates it immediately.
 - **`max_memory_mb`/`cpu_time_limit_s`** (default `None` = no cap): opt-in, POSIX-only,
   best-effort resource caps applied inside the child via `resource.setrlimit` before `factory()`
-  runs — silent no-ops on a platform without `resource` (Windows). `cpu_time_limit_s`
+  runs: silent no-ops on a platform without `resource` (Windows). `cpu_time_limit_s`
   (`RLIMIT_CPU`) is confirmed to enforce correctly on every POSIX platform tested, including
   macOS. `max_memory_mb` (`RLIMIT_AS`) bounds VIRTUAL address space, not resident/physical
-  memory — and on macOS specifically, the kernel refuses to lower `RLIMIT_AS` from unlimited AT
+  memory, and on macOS specifically, the kernel refuses to lower `RLIMIT_AS` from unlimited AT
   ALL (empirically confirmed: every attempted value, from 50 MB to 1000 MB, failed identically
   with `ValueError: current limit exceeds maximum limit`), so this parameter is effectively
-  Linux-only in practice today. Either way it fails LOUDLY — relayed as a clear exception through
-  the same test-pickle-then-relay path as any other error — never silently leaving the cap
+  Linux-only in practice today. Either way it fails LOUDLY: relayed as a clear exception through
+  the same test-pickle-then-relay path as any other error: never silently leaving the cap
   unenforced. **A second edge case, confirmed on real Linux CI, not just reasoned about**: an
-  aggressively low `max_memory_mb` can starve the relay mechanism itself — the child correctly
+  aggressively low `max_memory_mb` can starve the relay mechanism itself: the child correctly
   hits `MemoryError`, but by then is so memory-constrained that `multiprocessing.Queue.put()`'s
   own internal feeder thread fails to even start (`RuntimeError: can't start new thread`),
-  crashing the child before anything can be relayed. No fallback is possible for this — a
+  crashing the child before anything can be relayed. No fallback is possible for this: a
   resource-exhausted process can't reliably report its own exhaustion through a mechanism
-  (spawning a thread) that itself needs spare resources — so it degrades to the exact same
+  (spawning a thread) that itself needs spare resources, so it degrades to the exact same
   safety net an external kill would (the parent's own bounded `queue.get()` times out and raises
   a generic "child exited without delivering a result" error). This is the correct, accepted
-  outcome for this scenario, not a bug — the cap was still genuinely enforced.
-- **No process pooling/reuse** — a fresh `multiprocessing.Process` per call, matching
-  `run_isolated`'s own "one thread per call, by design — simplest correct answer" precedent,
+  outcome for this scenario, not a bug. The cap was still genuinely enforced.
+- **No process pooling/reuse**: a fresh `multiprocessing.Process` per call, matching
+  `run_isolated`'s own "one thread per call, by design: simplest correct answer" precedent,
   transplanted to the process level. A consumer wanting a persistent worker pool builds one using
   this primitive as the per-task unit.
 
-## Grounded completeness — the sufficiency-critic recipe
+## Grounded completeness: the sufficiency-critic recipe
 
 A convention, not an API. When the RLM generates an artifact that must MATCH a retrieved
 ground-truth (a spec, a contract, a source document), "am I done?" is the dangerous judgment:
 a model asked to self-assess from memory will call a half-right artifact complete. There is
-often no deterministic check for CONTENT correctness — a validator catches *structure/format*,
+often no deterministic check for CONTENT correctness: a validator catches *structure/format*,
 but not "this request is missing a required header" or "this answer skipped a clause".
 
 The fix (the agentic-RAG *sufficient-context* pattern) is to GROUND the completeness judgment in
 the retrieved source instead of the model's recall:
 
 1. **Hold the ground-truth in REPL state.** Fetch the source once (a `fetch_url` tool, a skill)
-   and keep it as a REPL variable — rlm-harness's interpreter persists variables across turns, so the
+   and keep it as a REPL variable: rlm-harness's interpreter persists variables across turns, so the
    ground-truth stays addressable without re-fetching or re-pasting.
 2. **Diff the artifact against it, itemized.** Each turn, compare the generated artifact to the
    held ground-truth field-by-field and emit the SPECIFIC gaps ("missing header X, body field Y"),
@@ -917,12 +917,12 @@ the retrieved source instead of the model's recall:
    than a generic "make it complete".
 
 This lives in the consumer's task INSTRUCTIONS (it is an LM-decided REPL action, kept in the
-trajectory as honest RL data — same reasoning as keeping tools/skills LM-decided), and it needs no
+trajectory as honest RL data: same reasoning as keeping tools/skills LM-decided), and it needs no
 new model: the main LM critiques cheaply against its own REPL state, reserving a sub-LM escalation
 for a genuine knowledge gap. A consumer uses it so the planner stops finalizing a generated artifact
-whose content only *looks* right — diffing it against the retrieved source held in the REPL.
+whose content only *looks* right: diffing it against the retrieved source held in the REPL.
 
-### Line numbers and `verify_quote` — feed them different text
+### Line numbers and `verify_quote`: feed them different text
 
 `make_read_file_tool(line_numbers=True)` and `verify_quote` **must not see the same string**, and
 getting that wrong costs real accuracy in both directions:
@@ -930,12 +930,12 @@ getting that wrong costs real accuracy in both directions:
     line_numbers=True  ->  the MODEL, so it can cite a coordinate without counting lines
     the raw file text  ->  verify_quote, NOT the tool's rendered output
 
-The rendered output prefixes each line with `f"{n:>6}\t"` — and so does `edit_file`'s success
+The rendered output prefixes each line with `f"{n:>6}\t"`, and so does `edit_file`'s success
 snippet, which is a second source of guttered text and reaches the model on every edit. A model
 quoting from either naturally carries that gutter into its quote.
 
-**Until 1.9.0 that cost the citation.** The quote is not in the file — the gutter is not file
-content — so `verify_quote` refused a perfectly correct citation, and a consumer who turned line
+**Until 1.9.0 that cost the citation.** The quote is not in the file. The gutter is not file
+content, so `verify_quote` refused a perfectly correct citation, and a consumer who turned line
 numbers on to fix coordinates started failing verification while one who turned them off made the
 model count lines itself. Since 1.9.0 the gutter is READ rather than searched: 83.16% of those
 citations now resolve to the line they name, and the rest keep the old verdict rather than getting a
@@ -950,7 +950,7 @@ Every artifact in that population had at least two.
 The same consumer then turned line numbers back on and re-ran the task: coordinate corrections went
 **21.4% to 0.0%** (15 of 70 citations, then 0 of 39). Zero corrections at the prior rate is
 P = 8.2e-05, so it is not sample size. It is two independent generations rather than a paired
-re-run — the model planned a different outline the second time, 11 artifacts against 6, so the
+re-run: the model planned a different outline the second time, 11 artifacts against 6, so the
 citation counts are not comparable and only the proportion is.
 
 **A second consumer sized this failure on its own corpora, with a different denominator.**
@@ -961,26 +961,26 @@ not a rate: one deployment, one model family, re-verified after the fact rather 
 **Do not reconcile it with the 14.4% above, or average them.** They count different things over
 related corpora: 14.4% is stored CITATIONS observed to quote the right text at the wrong line, live;
 17.3% is COORDINATES a later verifier corrected, after the fact. That consumer holds at least one
-further cut on the same family of artifacts — coordinate errors as a share of the UNVERIFIED
-citations, which is a share of FAILURES and lands near 60% — and none of the three is the working
+further cut on the same family of artifacts: coordinate errors as a share of the UNVERIFIED
+citations, which is a share of FAILURES and lands near 60%, and none of the three is the working
 for another. The spread is what to carry: a factor of two across four corpora from one system, so a
 single measurement does not bound the next, and neither of these bounds the other.
 
-The fix is not a kit setting, it is which string goes where. Your verifier holds the source anyway —
-it has to, to verify — so pass it the raw text and let the tool's rendered form exist only for the
+The fix is not a kit setting, it is which string goes where. Your verifier holds the source anyway.
+it has to, to verify, so pass it the raw text and let the tool's rendered form exist only for the
 model.
 
 **A BLANK line renders as nothing but its gutter**, and that used to defeat the guard entirely.
-`"     7\t"` strips to `"7"` — non-empty, so it passed the empty-quote check and then matched any
+`"     7\t"` strips to `"7"`: non-empty, so it passed the empty-quote check and then matched any
 source containing that digit. A citation of nothing verified, reporting a line the citation never
 claimed. Since 1.8.2 a quote whose every non-blank line is a bare number is refused with its own
 message, which also covers the shapes a model actually emits: the trailing tab trimmed (`"     2"`),
 a space written for it (`"     2 "`), and the render's real trailing newline (`"     2\t\n"`).
 
 Two things to know about that guard. It refuses any all-digit quote, so a citation of a genuine
-number — `"8080"`, or a column from a numeric file — is refused as well; cite the line's text, not
+number (`"8080"`, or a column from a numeric file) is refused as well; cite the line's text, not
 its coordinate. And it closes the fully-blank case only. A guttered quote that carries content is
-not refused, and the gutter NUMBER is then searched as literal content — so it matches wherever that
+not refused, and the gutter NUMBER is then searched as literal content, so it matches wherever that
 number happens to precede the line's text, across a mandatory `\s+` and therefore across blank
 lines. A full line of code is reachable that way, not just a line of punctuation: a quote claiming
 line 42 of this repo's `tests/test_async.py` verifies at line 39, because line 39 ends `== 42`.
@@ -989,12 +989,12 @@ such false matches in 18,761 quotes. **1.9.0 resolves both**, by the mechanism b
 
 **`verify_quote` reads a gutter as a COORDINATE CLAIM, and never strips it.** Stripping the
 leading `spaces + digits + tab` and searching the remainder repairs most guttered quotes and
-accepts a citation naming the WRONG line whenever that remainder appears anywhere else — an
+accepts a citation naming the WRONG line whenever that remainder appears anywhere else: an
 invented claim passing verification, which is why it was refused for four releases.
 
 Using the gutter is stronger than discarding it: the content must sit at exactly the line it names,
 and that block must occur exactly once in the source. Both halves are load-bearing. Without
-uniqueness a bare position check is WORSE than searching — 16.84% of non-blank lines in this repo
+uniqueness a bare position check is WORSE than searching: 16.84% of non-blank lines in this repo
 recur in their own file, so a fabricated coordinate verifies at roughly 0.15% against 0.000% for a
 plain search. An unrelated Python tree measures 16.39% of 52,941, so budget for it as a property of
 the language rather than of this repo. Without exactness a fabricated INDENTATION level verifies, since 2.16% of lines here
@@ -1002,72 +1002,71 @@ are exact-unique but identical after stripping, and indentation is semantics in 
 
 With both, fabrication is closed by construction rather than by rate: exact content at line `n` plus
 a block occurring once means `n` is the only line that can hold it. What remains is honest citations
-that stay uncoordinated — 16.84% of non-blank lines, or 32.8% of everything `read_file` renders once
+that stay uncoordinated: 16.84% of non-blank lines, or 32.8% of everything `read_file` renders once
 blank-line citations are counted. Those keep exactly today's verdict, and that class contains no
 wrong-line matches to inherit.
 
 A coordinate-verified match says so in its text, because it means something different from an
-ordinary one: the source holds the CONTENT at that line, but the quoted bytes — gutter included —
+ordinary one: the source holds the CONTENT at that line, but the quoted bytes, gutter included.
 are not a substring of it. Branch on that if you re-derive grounding host-side with `quote in
 source`. `normalize_whitespace=False` skips the path entirely: byte-exact mode means no
 interpretation, and reading a gutter as a coordinate is an interpretation. That is also the lever
 if `source` is itself a numbered listing, where a correct literal match would otherwise be
-overridden — a shape found in none of the tens of thousands of text files scanned locally, though
+overridden: a shape found in none of the tens of thousands of text files scanned locally, though
 `cat -n` emits it.
 
-### `verify_quote` — the deterministic half of step 2's diff
+### `verify_quote`: the deterministic half of step 2's diff
 
-Step 2 above ("diff the artifact against it, itemized") is entirely model-judged — nothing backs
+Step 2 above ("diff the artifact against it, itemized") is entirely model-judged: nothing backs
 the claim that a specific quote/citation actually appears in the held source. `verify_quote(source,
 quote)` (`rlm_harness.tools`) is the deterministic primitive for exactly that one checkable piece:
-it returns a parseable `"MATCH: ..."` (with a line number, plus a character
-offset and context snippet on the literal path — a coordinate-verified match has no offset to give)
-or `"MISMATCH:
-..."` (with a bounded "closest line" hint when `quote` is single-line) — never a self-graded
-guess. A single plain function, no factory, no `name=`, no trace call (it binds to nothing at
+it returns a parseable `"MATCH: ..."` (with a line number, plus a character offset and context
+snippet on the literal path; a coordinate-verified match has no offset to give) or
+`"MISMATCH: ..."` (with a bounded "closest line" hint when `quote` is single-line), never a
+self-graded guess. A single plain function, no factory, no `name=`, no trace call (it binds to nothing at
 construction time and touches no filesystem/network, matching `make_schema_validator`'s own
 precedent). Matching is whitespace-flexible by default (`normalize_whitespace=True`) and needs no
-`regex` package — `quote` is literal text, every character either escaped or collapsed to a flat
+`regex` package: `quote` is literal text, every character either escaped or collapsed to a flat
 `\s+`/`\s*`, so the built pattern can never exhibit catastrophic backtracking the way an
 LM-controlled `grep_files` pattern could. Normalization is junction-aware: whitespace between two
 word characters must be present in the source (so `foo bar` never verifies against `foobar`),
-whitespace anywhere else — beside a bracket, a quote mark, punctuation — is optional (so a quote
+whitespace anywhere else (beside a bracket, a quote mark, punctuation) is optional (so a quote
 that reflowed a line break still verifies). Call it from within the task's own instructions before finalizing
 (closing this recipe's step-3 "regenerate on the gaps" loop with a real check instead of a
 re-read), or reuse the same function host-side, outside the REPL, to re-derive whether a SUBMITted
-citation was actually grounded — the same "derive facts from bytes, never trust the self-report"
+citation was actually grounded: the same "derive facts from bytes, never trust the self-report"
 posture the next section establishes for validity.
 
-## Judgement-only SUBMIT — assemble facts, don't let the policy report them
+## Judgement-only SUBMIT: assemble facts, don't let the policy report them
 
-A convention, not an API — the companion to grounded completeness, for the *other* side of a
+A convention, not an API: the companion to grounded completeness, for the *other* side of a
 model-backed tool. When a `make_model_tool` (or any tool) is the AUTHORITATIVE producer of an
 artifact, the root LM's final SUBMIT must not re-carry that artifact. Two failure modes if it does:
 
 - **Mangling.** A root LM that re-types the tool's output into its result can corrupt it (re-indent,
-  drop a nested block) — and nothing re-checks the re-typed copy, so a `valid=True` the LM *also*
+  drop a nested block), and nothing re-checks the re-typed copy, so a `valid=True` the LM *also*
   self-reports can label bytes that no longer pass the validator.
 - **Trajectory poison.** The SUBMIT turn IS a training sample (`export_sft_turns`). If it re-authors
-  the artifact, the policy learns to re-author it — exactly the job you gave the tool. And a
+  the artifact, the policy learns to re-author it: exactly the job you gave the tool. And a
   self-reported validity flag becomes a label that can LIE: a downstream keep-filter
   (`complete and valid`) then keeps runs whose artifact is actually invalid.
 
 The fix: keep DETERMINISTIC facts out of the policy's output type entirely.
 
 1. **The `output_model` carries JUDGEMENT + a reference KEY, not the artifact.** The root LM SUBMITs
-   its decisions (is this complete? what's missing? which variant?) and the producing tool-call's id —
+   its decisions (is this complete? what's missing? which variant?) and the producing tool-call's id:
    never the artifact bytes or a `valid` flag. With no field for it, the policy *cannot* re-type it,
    and the SFT turn stays clean.
 2. **Assemble the artifact + its validity on READ, from the trace.** A small `assemble(result, events)`
    step re-sources each artifact VERBATIM from the matching tool-call event (by the id; last accepted
-   wins) and DERIVES validity from the validator — never the policy's self-report. Run it everywhere
+   wins) and DERIVES validity from the validator: never the policy's self-report. Run it everywhere
    the result is consumed: the live path, re-render, and the dataset exporters (`export_sft_turns` /
    `export_rl`), so the training labels read facts too.
 
    *Caveat when the validator CANONICALIZES, not just verdicts.* If the validator only returns
    pass/fail, verbatim re-sourcing is exactly right. But a validator that also REWRITES its input to a
    canonical form (stamps a fixed provenance field, strips a fabricated token) makes the raw draft and
-   the canonical output DIVERGE — and re-sourcing the raw then ships the un-corrected bytes, so the
+   the canonical output DIVERGE, and re-sourcing the raw then ships the un-corrected bytes, so the
    deliverable silently misses a fix the run already applied (the root LM saw the corrected version, but
    the assembled artifact carries the raw one). Ship the validator's CANONICAL output as the artifact
    and derive validity from those same bytes; the tool-call still records the model's raw draft, so the
@@ -1077,15 +1076,15 @@ The fix: keep DETERMINISTIC facts out of the policy's output type entirely.
 So the trace records the policy's real ACTION (its judgement), deterministic truth is COMPUTED (never
 stored as if the policy produced it), and a self-reported flag can never drift from the bytes it
 labels. Old traces heal on read: a pydantic `output_model` ignores the legacy artifact/validity keys
-when coercing to the judgement-only type, and `assemble` re-sources them. A consumer does this — the
+when coercing to the judgement-only type, and `assemble` re-sources them. A consumer does this: the
 planner SUBMITs a per-artifact judgement keyed by the artifact's id; the system attaches the generator's
 verbatim output and the validator verdict, so a re-typed/mangled artifact and a lying `valid` are both
 structurally impossible.
 
-**Corollary — the `run_start` meta must self-describe the run's CONFIG.** An OFFLINE, config-free
+**Corollary: the `run_start` meta must self-describe the run's CONFIG.** An OFFLINE, config-free
 consumer (a dataset exporter, a re-renderer) can only read what the trace records. So any per-run
-config it needs to INTERPRET the run — the expected value a validator enforced, the budget a
-`hit_iteration_cap`-style metric compares against, the model roles — belongs in the `run_start` meta
+config it needs to INTERPRET the run: the expected value a validator enforced, the budget a
+`hit_iteration_cap`-style metric compares against, the model roles: belongs in the `run_start` meta
 the recorder writes, NOT a hardcoded default the reader guesses. Then an env override is honored
 end-to-end (live AND in the offline labels), and an old trace lacking a key falls back gracefully.
 This is the same principle as seeding `sft_turns` from the meta's initial state: the trace is the
@@ -1095,124 +1094,124 @@ and `max_iterations` there so an offline reader reads the real per-run values, n
 ## Building a consumer
 
 `rlm-harness` is the ROLLOUT floor; a consumer is a thin declaration on top of it. `examples/harness_run.py`
-is a minimal worked example — a task that wires the sub-LM hook, skills, tracing, and
+is a minimal worked example: a task that wires the sub-LM hook, skills, tracing, and
 RL export together. Six steps:
 
 1. **Declare the task.** Subclass `RLMTask`: a `signature`, `output_field`, an `output_model`
-   (judgement-only — see above), `instructions` (orchestration + a few hard safety rules), and
+   (judgement-only: see above), `instructions` (orchestration + a few hard safety rules), and
    `tools`. The retry/validation loop, sandbox, budget caps, and the trace are inherited. Put
-   authoring KNOWLEDGE in a Skills directory (`load_skills_as_tools`), not the prompt — the prompt
+   authoring KNOWLEDGE in a Skills directory (`load_skills_as_tools`), not the prompt: the prompt
    is for orchestration; skills are progressive-disclosure reference the LM pulls on demand.
 2. **Add tools the base/wrap way.** Need a new capability (a model-as-tool producer, a fetcher, a
    searcher)? rlm-harness owns the GENERIC base + the syntactic guard + the async-safe factory
    (`make_model_tool`, `make_fetch_tool`, `make_web_search_tool`); the consumer owns the PROVIDER
    (the endpoint/validator/messages, or the httpx/vendor call) and the project-side TRACING. Tools
-   passed to `RLMTask(tools=…)` MUST be sync — dspy's interpreter calls them with a plain `()`, so
+   passed to `RLMTask(tools=…)` MUST be sync: dspy's interpreter calls them with a plain `()`, so
    an `async def` tool returns an un-awaited coroutine and never runs.
 3. **Pick the recursion seat deliberately.** A DETERMINISTIC transform of the sub-LM's output →
    `intercept_sub_lm` (the escalation seat, recorded as a `sub_call`). An action the main LM CHOOSES
    to take → a tool (`tools=`, recorded as a `tool_call`). Don't smuggle a model-judgement (asking
-   another model to grade the output) into the sub-LM intercept — that is an agentic decision and
+   another model to grade the output) into the sub-LM intercept: that is an agentic decision and
    must be a tool, so it lands in the trajectory as honest RL data. (See "Sub-LM vs. tool".)
 4. **Record + read through the trace.** Run inside a `TraceRecorder` (`on_event` gives a live
-   observer for streaming). EVERYTHING downstream — your report renderer, your dataset, a re-render
-   of a past run — reads the JSONL trace, never the live objects. Carry any per-run config you'll
+   observer for streaming). EVERYTHING downstream: your report renderer, your dataset, a re-render
+   of a past run. Reads the JSONL trace, never the live objects. Carry any per-run config you'll
    need OFFLINE into the `run_start` meta (the corollary above), and assemble deterministic facts on
    READ (judgement-only SUBMIT), so a label can never drift from the bytes it describes.
 5. **Export trajectories; score elsewhere.** `export_sft_turns` / `export_rl` / `export_actions`
    turn traces into training datasets. They are REWARD-FREE: each carries a `reward=` HOOK the
-   trainer fills — rlm-harness never computes a reward.
-6. **Delegate to another harness — or be one.** When a sub-task is better handled by a more
+   trainer fills: rlm-harness never computes a reward.
+6. **Delegate to another harness, or be one.** When a sub-task is better handled by a more
    specialized rlm-harness harness, delegate to it as a TOOL rather than reimplementing it. Two symmetric
-   sides, both base/wrap, and NEITHER names the other harness in code — the identity lives only in the
+   sides, both base/wrap, and NEITHER names the other harness in code: the identity lives only in the
    operator's runtime endpoint config:
    - **Client (you call another harness):** `make_harness_tool(invoke_fn, validate)` +
      `harness_from_endpoint(call_endpoint, read_output=…)`. The kit owns retry/validate/circuit-break +
-     the child-rollout link; you own the transport (`call_endpoint` — a subprocess command / HTTP URL)
+     the child-rollout link; you own the transport (`call_endpoint`: a subprocess command / HTTP URL)
      and `read_output` (parse the child's reply). The single long-text arg becomes the child's RLM
      environment; the parent records ONE `tool_call` + a `child_run_id`/`child_trace` link while the
      child owns its own separate rollout (exported independently).
    - **Server (another harness calls YOU):** add a ~5-line `<pkg>/serve.py` that calls
      `serve_harness(run, to_pointer)`. The kit owns stdin→env, run_id, CWD isolation, the JSON-pointer
      wire, exit codes (0=ran / 1=infra→caller retries), and keeping your logs + tracebacks OFF stdout;
-     you own only `to_pointer` — the mapping from YOUR result object into a `HarnessPointer`. The
+     you own only `to_pointer`: the mapping from YOUR result object into a `HarnessPointer`. The
      operator points the client at `python -m <pkg>.serve`. A FLAT result (`.artifact`/`.run_id`) needs
-     NO file — `python -m rlm_harness.harness_serve <pkg.module>:run` uses the duck-typed default. Copy
+     NO file: `python -m rlm_harness.harness_serve <pkg.module>:run` uses the duck-typed default. Copy
      `examples/harness_serve.py`.
    - **Give the operator an ABSOLUTE `workdir_base`.** `serve_harness` isolates each run's CWD under
-     it, and the default is RELATIVE — a child inherits the PARENT's working directory, so its run
+     it, and the default is RELATIVE: a child inherits the PARENT's working directory, so its run
      folders materialise inside the caller's project. Document an absolute path in your serve module
      (`python -m <pkg>.serve /var/tmp/<pkg>-harness-runs`), and have callers ignore `harness-runs/`.
    - **Your `run` must match the contract's shape, or adapt to it in `serve.py`.** `serve_harness`
      calls `run(source: str, run_id=…)`. A harness whose entry takes a domain object (a resolved lead,
      a parsed spec) or derives its own id needs a small adapter there: resolve the caller's text into
      that object through whatever PUBLIC seam the harness already exposes, and absorb the kit's
-     `run_id` when the harness has a more meaningful one of its own — report the real id back through
+     `run_id` when the harness has a more meaningful one of its own: report the real id back through
      `to_pointer` so the parent's child-link still resolves. RAISE from the adapter when the text
      resolves to nothing: that is exit 1, which the caller retries then degrades. Returning an empty
      artifact instead is exit 0, and buys the caller a full run over nothing.
    - **A multi-file deliverable: use `bundle_artifact`, never a format of your own.** `artifact` is
      ONE string, but plenty of harnesses produce a FOLDER (a write-up + a PoC + a diff; a Dockerfile +
      a compose file + notes). `bundle_artifact({name: content})` packs it as `===== <name> =====`
-     sections — escalating the marker when a file's own content contains one, so a report that QUOTES
-     a bundle cannot truncate itself — and `parse_artifact_bundle` reads it back. Line endings are
+     sections: escalating the marker when a file's own content contains one, so a report that QUOTES
+     a bundle cannot truncate itself, and `parse_artifact_bundle` reads it back. Line endings are
      normalised to `\n` at pack time (both halves must agree on what a LINE is, or a header hides from
      escalation and still acts as a section break), and a filename that cannot round-trip raises
      rather than vanishing. Use them: a packing format invented per harness/client pair is a
      silent-failure generator, because the two sides agree until they don't and the mismatch then
      degrades into "the child returned junk" instead of surfacing as the wiring bug it is. A client
-     that just wants the whole deliverable as CONTEXT needs no parser at all — the text is meant to be
+     that just wants the whole deliverable as CONTEXT needs no parser at all. The text is meant to be
      read as-is, by a Root LM and by a human debugging the wire.
 
-   - **In-process transport (no subprocess).** The kit still ships no `call_endpoint` — subprocess
-     (`serve_harness`) and HTTP remain the usual choices — but a THIRD option, for a trusted child
+   - **In-process transport (no subprocess).** The kit still ships no `call_endpoint`: subprocess
+     (`serve_harness`) and HTTP remain the usual choices, but a THIRD option, for a trusted child
      harness in the same process/deployment where low latency matters more than OS-level isolation,
      is to await the child's `RLMTask.arun()` directly. Two small primitives make this easy to build
      correctly: `rlm_harness.tools.run_isolated(coro_factory)` bridges the sync tool-call contract
-     into the child's `async arun()` — always on a dedicated new thread, so it works regardless of
+     into the child's `async arun()`, always on a dedicated new thread, so it works regardless of
      whether the calling thread already has a running loop (it will, whenever the parent task is
-     itself mid-`arun()`) — and `rlm_harness.tools.pointer_to_invocation(pointer)` is the canonical
+     itself mid-`arun()`), and `rlm_harness.tools.pointer_to_invocation(pointer)` is the canonical
      `serving.HarnessPointer` → `tools.HarnessInvocation` mapping, reused unchanged from the
      subprocess/HTTP case. **Read `run_isolated`'s docstring before wrapping a traced delegation**: a
      fresh thread starts with an empty `contextvars.Context`, so the delegated child's OWN
      `TraceRecorder` must be entered INSIDE the coroutine `run_isolated` runs, never around the call
-     to `run_isolated` itself — a `TraceRecorder` entered outside is invisible to `current_recorder()`
+     to `run_isolated` itself: a `TraceRecorder` entered outside is invisible to `current_recorder()`
      inside, and the child's own tool_calls/sub_calls would go silently unrecorded. See
      `examples/harness_local_run.py` for the full worked pattern (protected offline by
      `tests/test_harness_tool.py::test_in_process_transport_wiring`, which exercises the identical
      composition with a stub child instead of a real `dspy.RLM`). Nothing here adds a NEW
-     code-execution surface — the child still enforces its own `RLMConfig`/sandbox guard on its own
+     code-execution surface: the child still enforces its own `RLMConfig`/sandbox guard on its own
      REPL code, exactly as it would over any other transport; an in-process call only changes HOW a
      Python object gets invoked, not WHAT gets executed where. Keep the subprocess/HTTP transport
      instead when the child needs real process/OS isolation, a different runtime/language, or truly
      runs on a remote machine.
 
 **Score your own rubric (optional).** To decompose "did this run succeed?" into observable per-run
-LABELS, `rlm_harness.rubric` gives you the reward-free substrate — the `Criterion`/`RubricCriteria`/
+LABELS, `rlm_harness.rubric` gives you the reward-free substrate: the `Criterion`/`RubricCriteria`/
 `CriterionFact` types, `rubric_to_meta`/`rubric_from_meta` (carry the rubric in the `run_start` meta),
 `validate_rubric`, and a pure `criteria_facts(criteria, facts, lens)`. `category` is an OPAQUE label YOU
-define — the kit imposes no taxonomy. The pattern (all consumer-side except the primitives):
+define: the kit imposes no taxonomy. The pattern (all consumer-side except the primitives):
 - define your own category set + a fixed (or per-task) criterion skeleton (`default_rubric`);
-- write a `trace -> facts` function — **start from `compute_run_facts(events)`, which gives you the
+- write a `trace -> facts` function: **start from `compute_run_facts(events)`, which gives you the
   generic half for free (see "Rubric facts" below), and merge your own domain labels/metrics into it**
-  so a criterion's facts can never drift from the export bundle — and a `category -> keys` lens
+  so a criterion's facts can never drift from the export bundle, and a `category -> keys` lens
   choosing which facts each category surfaces;
 - `criteria_facts(rubric_from_meta(events).criteria or default_rubric().criteria, trace_facts(events),
   LENS)` → per-criterion facts, reward-free. Emit them beside the trajectory via
   `run_label_bundle(runs, rubric=lambda ev: {...})`; a downstream trainer turns facts into a score.
 
-An OPTIONAL model-graded EVAL is the same base/wrap shape — rlm-harness ships NO eval, only the pieces to
+An OPTIONAL model-graded EVAL is the same base/wrap shape: rlm-harness ships NO eval, only the pieces to
 build one: wrap `make_model_tool` with YOUR judge prompt (100% your domain), a strict parser reading a
-per-category 0–10 score dict, and a per-category means aggregation. Keep the prompt, the taskset, and the
+per-category 0-10 score dict, and a per-category means aggregation. Keep the prompt, the taskset, and the
 category MEANINGS in your repo; the categories stay OPAQUE to the kit. This is a reference PATTERN, not a
-shipped module — the valuable part of an eval is the domain prompt, which cannot be made generic without
+shipped module: the valuable part of an eval is the domain prompt, which cannot be made generic without
 emptying it.
 
 **If you ship an in-repo `studio/` (or any workspace member that drives live runs), forward the
 subscription extra.** A consumer's visual console is a uv workspace MEMBER with its own
 `pyproject.toml`, kept behind a `live` optional extra so a replay-only deploy stays web-free. A
 studio-scoped `uv` command (`uv run --package <consumer>-studio …`) resolves `--extra` against the
-MEMBER, not the root — so the member must define BOTH `live = ["<consumer>"]` AND a forwarding
+MEMBER, not the root, so the member must define BOTH `live = ["<consumer>"]` AND a forwarding
 `subscription = ["<consumer>[subscription]"]`. Without the forward, `--extra subscription` is rejected on
 the member and any sync that omits it prunes the Claude Agent SDK back out, so a subscription studio run
 dies with `ImportError: ClaudeAgentLM requires the optional dependency`. The portable, cwd-independent
@@ -1222,13 +1221,13 @@ across them.
 
 **The promotion rule** keeps the boundary clean. When the consumer forces a workaround, ask "is this
 GENERIC?" A reusable mechanic (the model-tool + retry + validate core, a new sandbox seam, a trace
-hook) is PROMOTED into rlm-harness via the base/wrap split — the generic half here, the specific half in
+hook) is PROMOTED into rlm-harness via the base/wrap split: the generic half here, the specific half in
 the consumer. A consumer-specific VALUE (a model name, a schema, a validator, a path) stays in the
 consumer. Never special-case the consumer inside the kit; never fork the harness or re-implement
 tracing inside the consumer. If you need an internal seam the kit doesn't expose, ADD a public hook
 here (that is how `recorder_scope` / `bind_recorder_to_sub_lm` / `get_sub_lm` were born) rather than
 reaching into a `_private` name. The trace schema, the `EVENT_*` types, and the exporter record shapes
-are a FROZEN v1 wire format — `tests/test_contract.py` pins them; adding an optional field is fine,
+are a FROZEN v1 wire format: `tests/test_contract.py` pins them; adding an optional field is fine,
 removing or re-typing one is a `v2` break. The `EVENT_*` type constants are exported from `rlm_harness`,
 so a trace reader matches on `rlm_harness.EVENT_RESULT` instead of hardcoding the wire string `"result"`.
 
@@ -1239,10 +1238,10 @@ SEPARATE downstream project that installs the trainer. A prompt/policy rule that
 BETTER is in scope; a reward or penalty is not. Keep the trace clean training data and let the
 trainer score it.
 
-## Rubric facts — the kit computes the generic half (1.8.0)
+## Rubric facts: the kit computes the generic half (1.8.0)
 
 `rubric.py` gives you the SHAPE of a rubric and stays deliberately empty of meaning: the category
-label is opaque, and `criteria_facts(criteria, facts, lens)` is pure — it slices a facts dict
+label is opaque, and `criteria_facts(criteria, facts, lens)` is pure: it slices a facts dict
 through your lens and knows nothing about traces. What was missing was the facts.
 
 ```python
@@ -1252,64 +1251,64 @@ facts = {**compute_run_facts(load_events(path, run_id)), **my_domain_facts(event
 per_criterion = criteria_facts(my_criteria, facts, MY_LENS)
 ```
 
-`compute_run_facts` emits exactly `RUN_FACT_KEYS` — import it rather than hand-copying names:
+`compute_run_facts` emits exactly `RUN_FACT_KEYS`: import it rather than hand-copying names:
 
 | key | |
 |---|---|
 | `main_steps`, `tool_calls`, `sub_calls`, `tool_call_rate`, `sub_call_rate` | what the run did |
 | `tool_declines`, `tool_endpoint_errors`, `tool_circuit_breaks`, `tool_ok` | the four outcomes, summed |
 | `tool_wasted_seconds`, `tool_total_seconds`, `tool_measured_calls` | wall-clock OCCUPIED by tool calls, and how much of it was measurable |
-| `fence_refused_turns` | turns dspy refused over a fence tag — read the note below |
+| `fence_refused_turns` | turns dspy refused over a fence tag: read the note below |
 | `budget_exhausted` | `True`/`False`/`None`; the ITERATION cap only |
 
-`tool_calls_by_name` is deliberately absent — an open key space cannot be a closed set. Call
+`tool_calls_by_name` is deliberately absent: an open key space cannot be a closed set. Call
 `compute_run_utilization` / `compute_tool_waste` for per-tool detail. Use
 `compute_run_facts_by_run` for a file holding several runs.
 
 **Three readings that are easy to get wrong.** `tool_wasted_seconds` and `tool_total_seconds` are
-`None`, never `0.0`, when nothing carried a duration — unmeasured is not zero, and
+`None`, never `0.0`, when nothing carried a duration. Unmeasured is not zero, and
 `tool_measured_calls` is there so one measured call in fifty does not look like fifty in fifty.
 And since 1.9.1 both measure the **union** of the tool calls' intervals rather than their sum, so
 neither equals `sum(w.total_seconds for w in compute_tool_waste(...))` once one tool call nests
 inside another. A sum double-counts the nested call, which is two correct events describing one
 stretch of wall clock; on a real trace that reported **136.5% of the run's own span**. It takes both
-halves to happen — the kit times the outer tool for you, and the inner call is recorded by the tool
-itself — so a flat tool graph never sees the double-count.
+halves to happen: the kit times the outer tool for you, and the inner call is recorded by the tool
+itself, so a flat tool graph never sees the double-count.
 
 **Do not assert `new <= old` across the upgrade.** The relation is strictly smaller only when
 something nests; otherwise the two agree just to within reconstruction error, and that error has two
-terms. Float quantisation contributes ~1e-7 s (`ts - (ts - d)` at epoch scale), in EITHER direction —
+terms. Float quantisation contributes ~1e-7 s (`ts - (ts - d)` at epoch scale), in EITHER direction:
 a 24-call run with nothing nested came out 1.6e-7 s *larger*. Clock rate difference contributes
 `duration_s x drift`, which is bigger and grows with the call: on one run with nothing
-double-counted, a 0.9 s call and a 298 s call reconstructed as overlapping by 7.8 ms — they had run
-back to back — moving the total by −0.00208% of its own value.
+double-counted, a 0.9 s call and a 298 s call reconstructed as overlapping by 7.8 ms. They had run
+back to back: moving the total by −0.00208% of its own value.
 And `budget_exhausted` is `None` whenever the answer is unknown; it never guesses `False`.
-`fence_refused_turns` is `0` on a run with no turns at all — unmeasured, not measured-zero — so read
+`fence_refused_turns` is `0` on a run with no turns at all (unmeasured, not measured-zero) so read
 it beside `main_steps`, which rides in the same dict for exactly that reason. In that same zero-turn
 case **both rates are `None`** (there is no denominator), and a crashed run really can carry
 live-recorded tool calls with no `main_step`, so a lens doing arithmetic on a rate must handle it.
 
 **`fence_refused_turns` is named for a mechanism, and the obvious cause is wrong.** Across three
-real corpora, **60 of 60** refusals had the fence BURIED rather than leading — 55 of the 60 cells
-are valid Python assigning a documentation page whose text contains a fenced example — `markdown = """# Overview … ```bash … """`. dspy's fence stripper
+real corpora, **60 of 60** refusals had the fence BURIED rather than leading: 55 of the 60 cells
+are valid Python assigning a documentation page whose text contains a fenced example: `markdown = """# Overview … ```bash … """`. dspy's fence stripper
 scans the whole cell including string literals. So this counts environment friction, not a model
 failing to follow a format; a consumer read it the other way and spent two prompt generations
 suppressing the code blocks its own pages needed.
 
 **Writing the facts into the trace.** Off by default. `TraceRecorder(..., record_metrics=True)`, or
 `RLM_TRACE_METRICS=1`, folds them into `run_end.payload["metrics"]` at teardown, computed from the
-file just written. A killed run has no `run_end` and therefore no snapshot — `compute_run_facts` on
+file just written. A killed run has no `run_end` and therefore no snapshot: `compute_run_facts` on
 the events is the authority in every case; the snapshot is a convenience for a reader that will not
 run it.
 
 ### When a run fails, the trace says why
 
-`run_end` carries `ok: False` and `error` — the outer exception's `repr`. Since 1.8.4 it also
+`run_end` carries `ok: False` and `error`: the outer exception's `repr`. Since 1.8.4 it also
 carries **`error_chain`** when there is one: the causes BELOW that exception, innermost last, each
 rendered as `Type: message` by `short_error`.
 
 That matters because `RLMTaskError`'s message is deliberately generic. `run_with_retry` raises it
-`from` the last real failure, so the cause is on the exception object — and the `repr` that was all
+`from` the last real failure, so the cause is on the exception object, and the `repr` that was all
 `run_end` recorded drops it. Across a nine-consumer fleet, 15 of 15 recorded failures carried
 nothing but the generic sentence, on the one artifact that outlives an intermittent failure you
 cannot reproduce.
@@ -1318,7 +1317,7 @@ cannot reproduce.
     "error_chain": ["ValueError: adapter could not parse the completion",
                     "ConnectionError: proxy: read timeout on POST /v1/chat/completions"]
 
-**`run_end` also carries `budgets` and `usage` since 1.10.0 — because a TRUNCATED completion and a
+**`run_end` also carries `budgets` and `usage` since 1.10.0: because a TRUNCATED completion and a
 MALFORMED one raise the same exception.** dspy detects truncation (`finish_reason == "length"`) and
 only logs a warning, so the trace recorded nothing to tell them apart, and the misdiagnosis it
 enables is one this kit has already documented once, under `max_tokens`.
@@ -1334,24 +1333,24 @@ enables is one this kit has already documented once, under `max_tokens`.
 
 Read `completion_tokens == cap` as a truncation. **Whether the RATIO gives early warning depends on
 how generous your cap is, and 1.10.0 shipped claiming it always does.** On the first production
-corpus — one model, cap 32768, **385 runs reaching `run_end`: 379 that succeeded and 6 that
-failed** — the distribution has a HOLE. The bins are the **379 successes**: 363 below 0.6, ZERO
+corpus: one model, cap 32768, **385 runs reaching `run_end`: 379 that succeeded and 6 that
+failed**. The distribution has a HOLE. The bins are the **379 successes**: 363 below 0.6, ZERO
 between 0.6 and 1.0, 16 at the cap. Adding the 6 failures (1 below 0.6, 5 at the cap) gives
 **364 / 0 / 21 across all 385**. A turn stays under ~0.55 or blows straight through, and a
 proximity meter has nothing to point at.
 
 But the hole is an artifact of that cap, not of the model. Converting the bins back to absolute
-tokens and re-dividing by a 16384 cap moves **64 of the 379 into the empty band — 16.9%** — with
+tokens and re-dividing by a 16384 cap moves **64 of the 379 into the empty band, 16.9%**, with
 the median max-turn going 0.209 → 0.418 and p90 0.378 → 0.756. Quoted over the successes because
 that is the population the bins cover; the all-385 figure is not derivable without knowing whether
 the one sub-cap failure sits in [0.3, 0.5), which nothing here records. So a cap set at roughly twice
 what the model needs produces the hole; a tighter one produces a real gradient, and there the
 warning reading works. Measure your own before building either. (The transposition assumes token
-counts do not change with the cap — `max_tokens` is a hard stop rather than a hint, so that should
+counts do not change with the cap: `max_tokens` is a hard stop rather than a hint, so that should
 hold, but nothing here settles it.)
 
 That corpus also measured what truncation costs, which was invisible before this release: **21 runs
-of 385 (5.5%) hit the cap, and 16 of those 21 (76%) finished anyway.** Not luck — it is WHERE in the
+of 385 (5.5%) hit the cap, and 16 of those 21 (76%) finished anyway.** Not luck. It is WHERE in the
 turn the truncation landed. A truncated CODE cell is a `SyntaxError`, and dspy's own in-loop feedback
 hands it back to the model, which repairs it. A truncated FINAL answer is an adapter parse failure
 with no handler, and kills the run. So the visible failures are the ~24% that land in the wrong
@@ -1361,13 +1360,13 @@ Five things to know:
 
 - **`budgets` is the cap the LM CARRIES, read off the LM, not `RLMConfig`.** An injected
   `main_lm`/`sub_lm` is used verbatim, so the configured value can be one the call never used. It
-  is the cap APPLIED for every LM that honours its own kwargs — which is the assumption dspy's own
-  truncation check makes too — but an LM that accepts a kwarg and ignores it reports a cap nothing
+  is the cap APPLIED for every LM that honours its own kwargs, which is the assumption dspy's own
+  truncation check makes too, but an LM that accepts a kwarg and ignores it reports a cap nothing
   enforced, and `completion_tokens` can then exceed it. `ClaudeAgentLM` is the shipped case: the
   subscription SDK exposes no sampling controls. **The trace can FALSIFY that a cap was applied and
-  can never CONFIRM it** — but only against the largest of the per-role token caps (`main`/`sub`),
+  can never CONFIRM it**, but only against the largest of the per-role token caps (`main`/`sub`),
   never one role's. `budgets` records no model name and `usage` is keyed by MODEL, so nothing in
-  the trace maps a usage entry to a role at all — sharing a model string makes it vivid (the calls
+  the trace maps a usage entry to a role at all: sharing a model string makes it vivid (the calls
   land in one list nothing can key apart, see the `usage` bullet below) but differing model
   strings do not rescue it either. So a `completion_tokens` above `sub.cap` may simply be a main-LM
   call: in the example above, 16384 exceeds `sub`'s 4096 while being an ordinary main truncation at
@@ -1375,25 +1374,25 @@ Five things to know:
   broken. (An operator who knows their own config can attribute out of band, and a per-role
   comparison is valid for them; "never" is about what the trace ALONE licenses.) For this LM
   specifically the model key carries `SUBSCRIPTION_PREFIX`, so a reader can recognise it by name
-  alone, with no attribution needed. And note which direction the exposure runs: the auto-routed path builds this LM with no
-  kwargs at all, so a cap appears for it only when you constructed the LM yourself and passed
-  `max_tokens=`. `key` says which name
-  held it: dspy rewrites `max_tokens` to `max_completion_tokens` for OpenAI reasoning models, and a
+  alone, with no attribution needed. And note which direction the exposure runs: the auto-routed
+  path builds this LM with no kwargs at all, so a cap appears for it only when you constructed the
+  LM yourself and passed `max_tokens=`. `key` says which name held it: dspy rewrites `max_tokens`
+  to `max_completion_tokens` for OpenAI reasoning models, and a
   reader of the first name alone sees nothing for exactly that class of model. An absent
-  `main`/`sub` means no cap was set on that role — never `0`, and never `False` for the derived truncation. (`budgets` itself is
+  `main`/`sub` means no cap was set on that role: never `0`, and never `False` for the derived truncation. (`budgets` itself is
   present on any task-driven run, since `iterations` is unconditional; its absence means nothing was
   staged at all.)
 - **`usage` is per ATTEMPT, and `turns_recorded` marks the one whose turns are in the trace.**
   `run_with_retry` re-runs the whole trajectory, and the attempt that reached the trace is NOT
   always the last: a run whose final attempt RAISES keeps an earlier attempt's turns. Scoping usage
   to the attempt with the turns would have discarded the fatal call's tokens, which is the number
-  worth having. A run that never produced a prediction — `main_steps: 0`, the shape of the incident
-  behind this — records every attempt with none flagged.
+  worth having. A run that never produced a prediction: `main_steps: 0`, the shape of the incident
+  behind this. Records every attempt with none flagged.
 - **It is NOT per turn, and that is a limit, not an omission.** `sub_model` falls back to
   `main_model`, and dspy propagates the tracker into `llm_query_batched`'s workers, so planner
   turns, sub-LM escalations and same-model tool-LM calls land in one flat list under one key with
   no call id and no timestamp. Nothing in dspy's tracker can key them apart. For a distribution
-  over runs use `max(completion_tokens)` per run, never the run's SUM — summing fifteen turns'
+  over runs use `max(completion_tokens)` per run, never the run's SUM: summing fifteen turns'
   tokens against a per-completion cap answers a cost question, not this one.
 - **Usage may be absent**, and absent is not zero: not every provider returns a usage block, dspy
   drops an empty one entirely, and streaming needs `dspy.settings.track_usage` for the provider to
@@ -1401,46 +1400,46 @@ Five things to know:
   tracker rather than shadowing it, and records only the calls it made. One cost of installing a
   tracker at all, if you had none: dspy attaches per-prediction usage (`get_lm_usage()`) only when
   no tracker is installed, so a `dspy.Module` YOU call from inside a kit run returns `None` there
-  while the kit's scope is open. The numbers are not lost — they are in the tracker, and in the
-  trace — but that one accessor stops answering.
+  while the kit's scope is open. The numbers are not lost. They are in the tracker, and in the
+  trace, but that one accessor stops answering.
 - **A call entry may carry `api_rounds`, and it answers a question the token fields cannot.** One
   LM call can make more than one API request, and each request can run several *sampling
   iterations* server-side. `api_rounds: {"rounds": [ ... ]}` is the provider's own per-iteration
-  breakdown, carried verbatim when it reports one and absent when it does not — one fact with one
+  breakdown, carried verbatim when it reports one and absent when it does not: one fact with one
   meaning. Its purpose is the CONTEXT WINDOW SIZE: the provider's documentation says to calculate
-  it "from the last `message` entry". **The totals give you that too — but only conditionally.**
+  it "from the last `message` entry". **The totals give you that too, but only conditionally.**
   When a call made one API request running one SAMPLING ITERATION, the top-level fields and that
   single entry are the same numbers and `prompt_tokens` already IS the context size. ("One
   `message` entry" is a different and weaker condition: a server-side fallback puts a `message`
   entry for the declined hop and a `fallback_message` for the serving one in the same request, so
-  the totals cover both. That last step is an inference — only `compaction` is documented as
-  excluded from the top-level fields — and it errs safe: the tighter condition can only decline an
-  equality that happens to hold, never assert one that does not.) What the totals cannot say is WHICH call they were — so read a missing
+  the totals cover both. That last step is an inference: only `compaction` is documented as
+  excluded from the top-level fields, and it errs safe: the tighter condition can only decline an
+  equality that happens to hold, never assert one that does not.) What the totals cannot say is WHICH call they were, so read a missing
   `api_rounds` as "the provider reported no breakdown", never as "no context number here". Three
   things to know, each a way this will otherwise be misread:
   - **It is NOT a decomposition of the entry's `prompt_tokens`.** The two do not cover the same
     span. A call's token fields accumulate across every API request it made, while `api_rounds`
-    holds only the LAST request's iterations — so on a call that took more than one request, the
+    holds only the LAST request's iterations, so on a call that took more than one request, the
     totals span all of them and the rounds do not. Independently: a `compaction` entry's tokens
     are excluded from the top-level fields entirely. Summing the rounds does not reconstruct the
     call, and the difference is not an error in either number.
-  - **For context size, take the last `message` or `fallback_message` entry — never a
+  - **For context size, take the last `message` or `fallback_message` entry: never a
     `compaction` one, even when it is last.** There are four entry types, discriminated by `type`.
     A `compaction` entry reports what the summarisation itself cost, NOT the size of the context it
-    closed, and the provider warns those differ by orders of magnitude — a compaction closing a
+    closed, and the provider warns those differ by orders of magnitude: a compaction closing a
     ~200k context can report a few thousand tokens. Filtering by `type` is the whole difference
     between a context reading and a wrong one, and it matters exactly in the long-context regime
     where you would reach for this field.
   - **Read it from the per-call entries, never through `dspy.track_usage()`'s
     `get_total_tokens()`.** That aggregator MERGES a model's calls into one, so what comes back is
-    every call's rounds in one flat list with the per-CALL boundaries gone — the token totals stay
+    every call's rounds in one flat list with the per-CALL boundaries gone: the token totals stay
     correct, the rounds stop meaning anything. This matters more than it sounds: with `dspy.configure(track_usage=True)`, dspy calls
     that aggregator ITSELF from `dspy.Module.__call__`, so the merge happens whether or not you
     ask. A kit run is not affected (it installs its tracker before dspy would auto-total, and the
     trace is written from the per-call entries either way).
 
   A nested `*_details` / `cache_creation` object inside a round is a DECOMPOSITION of a field
-  already counted, never an addition — add up every integer in a round and you count the cached
+  already counted, never an addition: add up every integer in a round and you count the cached
   half twice. Written for the SHAPE rather than today's field names, because the provider says
   `output_tokens` "remains the inclusive, authoritative total" of its own breakdown too.
 
@@ -1450,7 +1449,7 @@ so a `main` holding only a thinking budget would change what an existing reader'
 `budgets["main"]["cap"]` may assume. `budgets.thinking.main` sits beside `budgets.main` instead,
 purely additive. It carries `{"value": int, "key": str}` where `key` is the dotted PATH the value
 was found at (`extra_body.thinking_token_budget`), because a top-level litellm parameter and a raw
-`extra_body` key are different mechanisms. **Absent means NOT RECOGNISED, never "no budget"** — the
+`extra_body` key are different mechanisms. **Absent means NOT RECOGNISED, never "no budget"**: the
 kit owns no vocabulary on the wire, so a name it does not know is still SENT and simply not
 annotated here. And a recognised key proves only what was sent: pair it with `usage`'s
 `reasoning_tokens` to find out whether the server honoured it.
@@ -1458,7 +1457,7 @@ annotated here. And a recognised key proves only what was sent: pair it with `us
 **`budgets` covers a DIFFERENT exhaustion from `budget_exhausted`.** The `metrics` snapshot's
 `budget_exhausted` reports the ITERATION cap: the run used up its turns. `budgets.iterations` shows
 what those caps were, `budgets.main`/`.sub` show the TOKEN cap, and `budgets.iterations.dropped`
-says whether dspy rejected the iteration kwargs and reverted them all to its own defaults — without
+says whether dspy rejected the iteration kwargs and reverted them all to its own defaults, without
 which the three numbers would read as applied when they were not. A run can exhaust either budget,
 and `max_output_chars` is a third, independent truncation: dspy head+tail-caps each REPL output, so
 a reader diagnosing "the output was cut off" has three mechanisms to rule out, not one.
@@ -1466,45 +1465,45 @@ a reader diagnosing "the output was cut off" has three mechanisms to rule out, n
 **Read it as absent-or-populated, never as empty.** The key is written only when a chain exists, so
 a reader can tell "there was no cause" from "we could not build one". `error` itself is unchanged.
 
-**Three things it is not.** It is not a traceback — a traceback names every frame's file and line,
+**Three things it is not.** It is not a traceback: a traceback names every frame's file and line,
 which multiplies the paths on offer; a message carries only what the raiser put in it. That is a
 difference of degree, not of kind: `ValueError("cannot open /data/private/x.txt")` is one message
 and one absolute path, so do not read "no traceback" as "no paths". It is capped at five frames,
 truncating the OUTER end so the root cause survives on a deep chain. And each frame goes through
-`short_error`, which bounds it just over 600 characters — its contract is "never longer than the limit
-plus an elision marker", so treat it as a bound, not an exact number — because dspy's
+`short_error`, which bounds it just over 600 characters. Its contract is "never longer than the limit
+plus an elision marker", so treat it as a bound, not an exact number: because dspy's
 `AdapterParseError` embeds the entire raw completion.
 
 **Two cautions if you forward it anywhere.** Unlike `error`'s `repr`, a frame is not guaranteed to
-be single-line — pydantic and dspy adapter errors are multi-line — so a bare SSE `data:` field or a
+be single-line, pydantic and dspy adapter errors are multi-line, so a bare SSE `data:` field or a
 markdown table cell will break on one where `error` never did. And an exception message can carry a
 URL with a query-string token; this kit has no scrubber, and `short_error`'s cap is the whole
 mitigation. That exposure already existed for `error`; the chain widens it to third-party frames,
 which is where such a token most often is.
 
-**If you already walk `__cause__` yourself**, the recorded chain is the authority — it is deeper
+**If you already walk `__cause__` yourself**, the recorded chain is the authority. It is deeper
 than a one-level walk and honours `__suppress_context__`, but each frame is shorter. Prefer it over
 a second derivation, or the two will disagree about the same failure.
 
 **If you are starting a rubric from scratch**, four categories that work for most agent runs. The
-kit ships none of this — the names are yours to copy and the sentences after the dash are yours to
+kit ships none of this. The names are yours to copy and the sentences after the dash are yours to
 write:
 
 ```python
 CATEGORY_MEANING = {
-    "TF": "Task Fulfillment      — <did the run produce what was asked, within its budget>",
-    "TA": "Tool Appropriateness  — <did it reach for the right capabilities, without waste>",
-    "TG": "Tool Grounding        — <do its claims rest on what it actually observed>",
-    "PA": "Parameter Accuracy    — <were its calls well-formed enough to succeed>",
+    "TF": "Task Fulfillment      - <did the run produce what was asked, within its budget>",
+    "TA": "Tool Appropriateness  - <did it reach for the right capabilities, without waste>",
+    "TG": "Tool Grounding        - <do its claims rest on what it actually observed>",
+    "PA": "Parameter Accuracy    - <were its calls well-formed enough to succeed>",
 }
 ```
 
 A lens is a VIEW, not a partition: one fact may legitimately appear under two categories.
 `budget_exhausted` answers the same question as a hand-rolled `hit_iteration_cap` and answers it
-better — the `steps >= cap` form is a false positive on a run that submits on its last allowed turn
-— so keep one, not both.
+better: the `steps >= cap` form is a false positive on a run that submits on its last allowed turn,
+so keep one, not both.
 
-## Reading a trace — the ordering rules
+## Reading a trace: the ordering rules
 
 Three facts a reader needs and cannot infer from the file, plus one about how they interact. A
 downstream consumer got the first two wrong, concluded "file order is unreliable, sort by `ts`",
@@ -1512,7 +1511,7 @@ and reordered its turns; a second one got the fourth wrong and was out by four o
 
 **ORDER is not the hard part, and `step_id` is a perfectly good key for it.** `record()` assigns
 `step_id` and stamps `ts` inside ONE critical section and writes the line in the same one, so for
-the live events — `tool_call`, `sub_call` — `ts` is SAMPLED in `step_id` order, which is also file
+the live events (`tool_call`, `sub_call`) `ts` is SAMPLED in `step_id` order, which is also file
 order. The two therefore agree on real hardware and are not guaranteed to: `ts` comes from
 `time.time`, and a wall clock that steps backwards breaks the agreement while `step_id` cannot.
 So `step_id` is the sturdier key for pure ordering. `main_step` is the exception
@@ -1521,17 +1520,17 @@ and has its own key, `payload["turn"]` (see the bullets below).
 **The hard part is ADJACENCY, and that is where the four orders of magnitude came from.**
 Contiguous `step_id`s among live events do NOT mean "these happened in the same turn". Because
 every `main_step` is written in one batch at the END of the run, the live events of a whole run
-carry an unbroken `step_id` range with nothing between the turns — so grouping by runs of
+carry an unbroken `step_id` range with nothing between the turns, so grouping by runs of
 consecutive `step_id` collapses an entire run into one burst. A consumer computing which tool calls
 shared a turn that way measured a burst-parallelism ceiling of **90.5%** where the answer was
 **0.0037%**, and the alarming number is the wrong one. To group live events into turns, use the
-GAPS between their timestamps, or place them against a turn with the `ts` bullet below — never
+GAPS between their timestamps, or place them against a turn with the `ts` bullet below: never
 `step_id` adjacency.
 
 **And never mix the two families in one sort.** Sorting `main_step` together with `tool_call` /
 `sub_call` by `step_id` puts EVERY turn after EVERY tool call of the same attempt, because the
-batch lands last. `dataset.export_actions` did exactly this until 1.11.2, and its `state` field —
-"the ordered list of prior actions" — was wrong in that specific way: a `tool_call` record's prior
+batch lands last. `dataset.export_actions` did exactly this until 1.11.2, and its `state` field:
+"the ordered list of prior actions". Was wrong in that specific way: a `tool_call` record's prior
 actions contained no turns at all, and a turn's contained every tool call. It now interleaves on
 `ts`; `dataset._sequenced_actions` is the worked version of this rule, including what it cannot do
 when a turn's stamp was never matched. `replay.py`'s single-family `step_id` sort is unaffected and
@@ -1542,7 +1541,7 @@ deliberately unchanged.
   recorded mid-run appears EARLIER in the file than the `main_step` of the turn that made it, while
   being chronologically later. Measured at 70 of 76 real traces. By design, not a defect.
 - **`payload["turn"]` is authoritative for ordering**, and file order among `main_step` events
-  already matches it (72 of 72 traces). **Never sort `main_step` events by `ts`** — a `ts` is
+  already matches it (72 of 72 traces). **Never sort `main_step` events by `ts`**: a `ts` is
   backfilled from a live stamp and, for a turn whose stamp could not be matched, falls back to the
   flush time, so sorting by it moves turns.
 - **`ts` is for placing a turn against the tool calls around it**, and nothing else. A per-turn
@@ -1550,25 +1549,25 @@ deliberately unchanged.
   time; `exec_duration_s` (1.6.0) is the measured `execute()` half, and `duration_s` on a
   `tool_call` is the measured tool half. **`exec_duration_s` is `execute()` wall-clock, not sandbox
   CPU:** dspy dispatches tool calls and `llm_query` synchronously from inside `execute()`, so a cell
-  that calls one blocks — and that whole round trip is inside the number. Read a large value as
+  that calls one blocks, and that whole round trip is inside the number. Read a large value as
   "the turn blocked", and try to cross-check it against the `tool_call` / `sub_call` events in the
-  same run — but that check is often unavailable, and its absence is not the field lying: a `sub_call` carries no
-  duration of its own, and a `tool_call`'s `duration_s` is filled since 1.8.3 for most — not all —
+  same run, but that check is often unavailable, and its absence is not the field lying: a `sub_call` carries no
+  duration of its own, and a `tool_call`'s `duration_s` is filled since 1.8.3 for most: not all:
   of what a task hands the model. Before 1.8.3 it was present only for the six tool sources that
   timed themselves (`fetch_url`, `web_search`, `run_command`, `git_clone`, `model:<id>`, MCP) and
   absent for everything else; before 1.6.0 it did not exist at all. It is still absent for a tool
   called outside a task and for the shapes listed under "Which shipped tools carry a duration"
   below. Treat it as optional and read `None` as "not measured", never as zero.
-  On a trace written before 1.7.0 there may be no `sub_call` at all — the
+  On a trace written before 1.7.0 there may be no `sub_call` at all: the
   event became automatic in that release, so check `run_start.rlm_harness` before reading a zero.
   For scale, measured on a real workload: execution is ~1% of a turn's wall-clock; ~99% is the model
-  generating. Prefer a measured field over a gap wherever one exists — and treat a
+  generating. Prefer a measured field over a gap wherever one exists, and treat a
   NEGATIVE gap as unknown rather than as data (traces written before 1.6.1 can contain them; see
   that entry in `CHANGELOG.md`).
 
 ## Trace utilization metrics
 
-`rlm_harness.metrics` answers "how was this run's activity distributed" — a sibling question to
+`rlm_harness.metrics` answers "how was this run's activity distributed": a sibling question to
 `rubric.py`'s "does this run satisfy criterion X," equally reward-free, but a fixed COMPUTATION
 over the raw events rather than a caller-supplied fact-slice:
 
@@ -1582,12 +1581,12 @@ print(u.tool_call_rate, u.sub_call_rate)   # per root-LM turn taken; None if mai
 ```
 
 `compute_utilization_by_run(events)` computes every run's `RunUtilization` in one call, for a
-batch/dataset-level view. Reads only already-frozen `trace/v1` fields — `event["type"]`,
+batch/dataset-level view. Reads only already-frozen `trace/v1` fields: `event["type"]`,
 `payload["tool"]`, the optional `payload["duration_s"]`, and (through `payload_cause`, never
 directly) `circuit_broken` / `endpoint_error` / `error` / `ok`. No new event type, nothing the
 trace contract needs to change for.
 
-### `compute_tool_waste` — which calls produced nothing usable, and what they cost
+### `compute_tool_waste`, which calls produced nothing usable, and what they cost
 
 The sibling question, and the one nobody could answer before 1.6.0: **how much of a run's time went
 into tool calls that produced nothing?**
@@ -1604,13 +1603,13 @@ for name, w in compute_tool_waste(runs["r1"]).items():   # ...or compute_tool_wa
 Two things it refuses to do, both deliberate:
 
 - **It never reads `ok` directly.** Outcomes come from `payload_cause`, because `ok` is frequently
-  ABSENT on an endpoint-failure payload — `payload.get("ok")` then returns `None`, which is falsy,
+  ABSENT on an endpoint-failure payload: `payload.get("ok")` then returns `None`, which is falsy,
   so a naive counter silently absorbs infrastructure failures as content declines. That mistake has
   shipped four times. `invalid_rate` is likewise denominated over the calls that actually reached a
   validator, not over every call: a circuit break ran no validator and an endpoint failure produced
   no output to judge.
-- **It never infers a duration from the gap between events.** `*_seconds` is `None` — meaning "not
-  recorded" — whenever the events carry no `duration_s`. Since 1.8.3 that is narrower than it was:
+- **It never infers a duration from the gap between events.** `*_seconds` is `None`: meaning "not
+  recorded": whenever the events carry no `duration_s`. Since 1.8.3 that is narrower than it was:
   a task fills the field for nearly all of what it hands the model, so `None` now means a pre-1.8.3
   trace, a tool called outside a task, or one of the shapes named below; before 1.6.0 the field did
   not exist at all. `0.0` would read as "measured and found to be free", and inferring from event gaps charges
@@ -1620,7 +1619,7 @@ Two things it refuses to do, both deliberate:
 **Which shipped tools carry a duration: since 1.8.3, nearly all of them.** `RLMTask` wraps every tool it
 hands the model, and `record_tool_call` fills `duration_s` from that wrapper whenever the tool did
 not measure itself. A tool that DOES measure itself keeps its own number, because it scopes the
-window more precisely — `fetch_url` starts its clock after the SSRF check, `run_command` keeps a
+window more precisely: `fetch_url` starts its clock after the SSRF check, `run_command` keeps a
 runner-reported figure alongside. Your own tools are covered too, with no second event: the wrapper
 publishes a start time and records nothing.
 
@@ -1628,17 +1627,17 @@ publishes a start time and records nothing.
 wrong one. A `dspy.Tool` OBJECT is passed through untouched (`mcp_tools` returns these, and they
 record their own duration; a `dspy.Tool` you build yourself does not, so pass `duration_s`
 yourself). So are a callable class instance and a `functools.partial`. `functools.wraps` does not refuse
-either — it skips the attributes they lack — which is the problem: the wrapper keeps its own
+either, it skips the attributes they lack, which is the problem: the wrapper keeps its own
 `__name__` and dspy then registers `timed` with the arg types dropped. A coroutine function is
-skipped for a different reason — `wraps` handles it fine, but dspy branches on
+skipped for a different reason: `wraps` handles it fine, but dspy branches on
 `inspect.iscoroutinefunction`, which does not follow `__wrapped__`, so wrapping one turns a run
 that completes into an error. A GENERATOR FUNCTION is wrapped like any other, but records
 nothing: the wrapper hands back the generator object and releases the start time before the body
 has run, so the `record_tool_call` inside that body finds none. (A plain function that merely
-returns a generator expression is timed normally — its body does run inside the window.)
+returns a generator expression is timed normally. Its body does run inside the window.)
 
 And the fill is matched on the tool's NAME, so a call recorded under a name other than the wrapped
-function's `__name__` is left unmeasured rather than charged your window — including the tools your
+function's `__name__` is left unmeasured rather than charged your window, including the tools your
 own composite tool calls inside itself.
 
 **The one shape that gets a wrong number rather than none**, disclosed because this function's own
@@ -1646,24 +1645,24 @@ bar is that a confident wrong answer is worse than an honest unknown: a composit
 `__name__` MATCHES the tool it calls inside itself. A consumer wrapper named `read_file` that
 delegates to `make_read_file_tool`'s `read_file` collides on the name, and every inner call is
 charged the outer window. Measured with 3 inner reads inside a 0.15 s wrapper: four events of
-~0.151 s each — the outer tool's own record lands in the same bucket, by construction, since the
-collision IS the shape — so `compute_tool_waste["read_file"].total_seconds` reads 0.605 s against
+~0.151 s each: the outer tool's own record lands in the same bucket, by construction, since the
+collision IS the shape, so `compute_tool_waste["read_file"].total_seconds` reads 0.605 s against
 0.15 s real, **4.0x**. Before 1.8.3 that shape produced `None`. Give your wrapper a distinct
-name, or pass `duration_s` yourself. (Returning a kit factory's tool AS-IS is not this shape —
+name, or pass `duration_s` yourself. (Returning a kit factory's tool AS-IS is not this shape.
 there is only one function, and it is timed correctly.)
 
 This reverses two rules the kit used to state, and both reversals have the same cause.
 
 *A refusal now carries a duration.* It used to record none, on the argument that a blocked URL
 never touched the network so a ~0 would be noise. But `None` in `ToolWaste` means "nobody
-measured", so using it for "measured, and it was instant" makes those two indistinguishable —
+measured", so using it for "measured, and it was instant" makes those two indistinguishable,
 which is the structural-zero mistake 1.7.0 shipped a release to fix for `sub_call`.
 
 *`grep_files` is no longer exempt*, and it was its own exemption that said so: the text here used
 to justify leaving it untimed with n=146, median 0.029s, max 0.746s, and to name "a pathological
 regex over a large tree" as the shape that would reopen it. Re-measured on a consumer deployment
 across nine real repositories, 7 patterns x 3 runs each: **median 744 ms and max 6.3 s on a
-2,110-file repository**, and it does not scale with file count — a 102-file repo measured slower
+2,110-file repository**, and it does not scale with file count: a 102-file repo measured slower
 than a 1,210-file one, so the driver is bytes and match count, not files. Against the same corpus
 that tool alone is about 40% of all sandbox execution time. The old number was not wrong; it was
 taken on a corpus without a big repository in it.
@@ -1671,19 +1670,17 @@ taken on a corpus without a big repository in it.
 The tool that dominates a real run is usually the consumer's own model-backed one, and for the two
 BASE factories the kit cannot record it: `make_model_tool` and `make_harness_tool` are deliberately
 side-effect-free (no tracing, no messages), so the consumer's wrapper owns the `record_tool_call`.
-(`model_as_tool` is the exception — a model-backed tool the kit *does* record — and it carries its
-own duration.) **Pass
-`duration_s=time.perf_counter() - t0` from it** (any monotonic clock) — that one line is what
-makes the 80% of a run's
-wall-clock visible.
+(`model_as_tool` is the exception, a model-backed tool the kit *does* record, and it carries its
+own duration.) **Pass `duration_s=time.perf_counter() - t0` from it** (any monotonic clock):
+that one line is what makes the 80% of a run's wall-clock visible.
 
 ### Denominators
 
-Both `RunUtilization` rates are denominated over `main_steps` (root-LM turns) — "how many tool calls / sub-LM
+Both `RunUtilization` rates are denominated over `main_steps` (root-LM turns): "how many tool calls / sub-LM
 escalations happened per root-LM turn taken." This is a judgment call, not a uniquely correct
 answer: the raw counts are exposed alongside the rates, so a consumer wanting a different
 denominator can recompute one from the same fields. A rate is `None` (not `0.0`) when
-`main_steps == 0` — `0.0` would misleadingly read as "measured and found to be zero usage" rather
+`main_steps == 0`: `0.0` would misleadingly read as "measured and found to be zero usage" rather
 than "undefined," and a crashed/cancelled run that failed before its first `Prediction` ever
 returned is a real, reachable example of this: it can carry live-recorded `tool_call`/`sub_call`
 events with zero `main_step` events (`RLMTask.arun()` only records the main trajectory `if
@@ -1699,32 +1696,32 @@ All via env (`RLMConfig.from_env()`): `RLM_MAIN_MODEL` (or `AI_MODEL_NAME`),
 `RLM_REQUEST_TIMEOUT`, `RLM_MAIN_LM_KWARGS`, `RLM_SUB_LM_KWARGS`, `RLM_OBSERVE`.
 
 (`RLM_REQUEST_TIMEOUT` is this kit's own name. litellm separately reads a bare `REQUEST_TIMEOUT`
-for its global default — setting that one moves litellm, not this.)
+for its global default: setting that one moves litellm, not this.)
 
 The `AI_*` fallbacks let the kit drop into projects already keyed on those vars
 without re-keying env; the `RLM_*` form wins when both are set.
 
 **Injecting a pre-built LM.** `configure(cfg, main_lm=…, sub_lm=…)` uses a supplied LM
-verbatim instead of constructing one from `cfg` — a `dspy.utils.DummyLM` in tests, or a
+verbatim instead of constructing one from `cfg`: a `dspy.utils.DummyLM` in tests, or a
 cached / custom client in production. It's the public seam for a test double, so nothing
 has to reach into private runtime state; read the active config back with `get_config()`.
 
 **Claude-subscription auto-routing.** Set `RLM_MAIN_MODEL`/`RLM_SUB_MODEL` (or pass `main_model=`/
-`sub_model=` on `RLMConfig`) to `claude_agent_lm.SUBSCRIPTION_PREFIX` + a model id — e.g.
-`claude-agent-sdk/claude-sonnet-5` — and `configure()` builds a `ClaudeAgentLM` for that role
+`sub_model=` on `RLMConfig`) to `claude_agent_lm.SUBSCRIPTION_PREFIX` + a model id: e.g.
+`claude-agent-sdk/claude-sonnet-5`, and `configure()` builds a `ClaudeAgentLM` for that role
 automatically; no explicit `main_lm=`/`sub_lm=` wiring needed. An explicit `main_lm=`/`sub_lm=`
-kwarg still wins outright regardless of the model string — the prefix is only consulted for a role
+kwarg still wins outright regardless of the model string. The prefix is only consulted for a role
 left unset. This can raise, in addition to `configure()`'s own errors: `ValueError` for a bare
 prefix with no model id; `RuntimeError` if `ANTHROPIC_API_KEY` is set (`ClaudeAgentLM` refuses to
-start while it's set — the Claude Code CLI silently prefers it over subscription OAuth); or
+start while it's set: the Claude Code CLI silently prefers it over subscription OAuth); or
 `ImportError` with an install hint if the optional `rlm-harness[subscription]` extra isn't
-installed. Needs the same setup as `ClaudeAgentLM` itself (see the module's own docstring) —
+installed. Needs the same setup as `ClaudeAgentLM` itself (see the module's own docstring):
 building one by hand via `main_lm=ClaudeAgentLM(...)` still works exactly as before, for anyone who
 wants to pass its other constructor kwargs (`timeout_s`, `cwd`, …) explicitly.
 
 **Model names with a custom endpoint.** When `RLM_BASE_URL` is set, `configure` pins
 litellm's `custom_llm_provider="openai"`, so the model names are the **plain id your
-endpoint serves** — e.g. `qwen/qwen3-next`, not `openai/qwen/qwen3-next`. (dspy.LM runs on
+endpoint serves**: e.g. `qwen/qwen3-next`, not `openai/qwen/qwen3-next`. (dspy.LM runs on
 litellm, which otherwise reads the first path segment as a provider and fails on a bare id;
 the pin routes everything via the OpenAI wire protocol to your `base_url`.) A prefixed
 `openai/...` name still works. With no base_url, write litellm's own prefix (`openai/gpt-4o`,
@@ -1733,19 +1730,19 @@ the pin routes everything via the OpenAI wire protocol to your `base_url`.) A pr
 `RLM_ADAPTER` (default `json`) picks how structured fields are coaxed out of the
 model:
 
-- **`json`** (default) — schema-guided structured output, end-to-end. A lenient `JSONAdapter` always
-  sends the `json_schema` response format directly — bypassing dspy's `supports_response_schema`
-  gate, so no `litellm.register_model` poke is needed — and a brace-tolerant parse absorbs guided
-  output that drops the outer `{ }`. Works on **any** structured-output endpoint — OpenAI-proper
+- **`json`** (default): schema-guided structured output, end-to-end. A lenient `JSONAdapter` always
+  sends the `json_schema` response format directly: bypassing dspy's `supports_response_schema`
+  gate, so no `litellm.register_model` poke is needed, and a brace-tolerant parse absorbs guided
+  output that drops the outer `{ }`. Works on **any** structured-output endpoint: OpenAI-proper
   AND vLLM / NVIDIA NIM (which reject schema-less `json_object` but accept `json_schema`). The
   decoder enforces the schema, so it **yields valid output even from a weak / imperfectly-
   formatting model**.
-- **`chat`** — `dspy.ChatAdapter` with the JSONAdapter fallback **off**: never sends
+- **`chat`**: `dspy.ChatAdapter` with the JSONAdapter fallback **off**: never sends
   `response_format`. For an endpoint with **no** structured-output support. Needs the model to
-  follow dspy's text field-marker format reliably — the fallback is off (dspy's stock ChatAdapter
+  follow dspy's text field-marker format reliably. The fallback is off (dspy's stock ChatAdapter
   recovers via bare `json_object`, which vLLM rejects), so a model that drops a field has no
   recovery. Not as portable as it looks.
-- **`default`** — leave dspy's stock adapter (ChatAdapter *with* the json_object fallback):
+- **`default`**: leave dspy's stock adapter (ChatAdapter *with* the json_object fallback):
   recovers on OpenAI-proper endpoints, but the fallback is rejected by vLLM/NIM.
 
 `RLM_MAX_TOKENS` (default `8192`) is the per-call generation cap. It defaults generous rather
@@ -1755,16 +1752,16 @@ Set `RLMConfig(max_tokens=None)` to defer to the server.
 
 **The default is a floor, not a ceiling, and running into it looks like a different bug.** 8192 has
 to hold the chain-of-thought AND the structured answer of the same turn. When a long turn overruns
-it, the reply is cut off *mid-JSON* — so the adapter cannot parse what came back and the run dies as
+it, the reply is cut off *mid-JSON*, so the adapter cannot parse what came back and the run dies as
 
 ```
 RLMTaskError: Failed to produce a valid '<field>' after N attempts
-  — caused by AdapterParseError: ... failed to parse the LM response
+    caused by AdapterParseError: ... failed to parse the LM response
 ```
 
 That is a **truncation**, not a model that cannot follow the schema, and it is easy to misdiagnose
 as one: the text in the error often looks like well-formed output right up to where it stops.
-Tell the two apart by reading the END of the quoted `LM Response` — a truncated one simply stops,
+Tell the two apart by reading the END of the quoted `LM Response`: a truncated one simply stops,
 mid-string or mid-object, with no closing brace.
 
 Two things make it more likely, and they compound: a **reasoning** model (the thinking is spent
@@ -1775,7 +1772,7 @@ when the symptom above appears.
 
 It is not free, though, so raise it deliberately rather than reflexively: an OpenAI-compatible
 server commonly validates `prompt_tokens + max_tokens` against the context window, so a bigger cap
-removes usable PROMPT budget — and an RLM planner's prompt grows every turn, which is exactly the
+removes usable PROMPT budget, and an RLM planner's prompt grows every turn, which is exactly the
 workload where that bites. You are trading one failure (a truncated answer) against another (a
 context-window refusal), not buying headroom for nothing.
 
@@ -1791,7 +1788,7 @@ reports `finish_reason == "length"`.
 
 A **reasoning model can be the RLM root**, not just an instruct one: some reasoning servers emit the
 *whole* structured turn into the `reasoning_content` channel and return `content` null. `_LenientJSONAdapter`
-promotes `reasoning_content` to the answer when `content` is empty (guarded — a well-behaved model's
+promotes `reasoning_content` to the answer when `content` is empty (guarded: a well-behaved model's
 `content` always wins, so its native thinking stays discarded), which keeps the root's first turn from
 dying on dspy's "empty or null response" check. The native chain-of-thought is still dropped from the
 trajectory either way, so a reasoning root spends extra tokens the trace won't keep.
@@ -1799,7 +1796,7 @@ trajectory either way, so a reasoning root spends extra tokens the trace won't k
 ### Per-role LM request parameters (`RLM_MAIN_LM_KWARGS` / `RLM_SUB_LM_KWARGS`)
 
 A JSON object of extra `dspy.LM` kwargs, merged over what `configure()` builds **for that role
-only** (`RLMConfig.main_lm_kwargs` / `sub_lm_kwargs`). Unset sends nothing — the default is
+only** (`RLMConfig.main_lm_kwargs` / `sub_lm_kwargs`). Unset sends nothing. The default is
 byte-identical to not having the field, down to putting no new key on the wire.
 
 ```bash
@@ -1807,7 +1804,7 @@ byte-identical to not having the field, down to putting no new key on the wire.
 export RLM_MAIN_LM_KWARGS='{"extra_body":{"thinking_token_budget":16384}}'
 ```
 
-**What it is for.** A reasoning model whose thinking runs away does not look like a long answer —
+**What it is for.** A reasoning model whose thinking runs away does not look like a long answer:
 it looks like a parse failure. Measured on a consumer's vLLM deployment after a model swap: 53% of
 attempts (33 of 62, as of one snapshot) had at least one call at the 32768 `max_tokens` cap, and
 inside those calls the median `reasoning_tokens` was the ENTIRE budget with no content at all. One
@@ -1816,24 +1813,24 @@ schema. Raising `max_tokens` does not help; it buys a longer runaway. A thinking
 same pages rerun with `thinking_token_budget: 16384` produced 0 of 155 calls at the cap, and the 15
 calls that WERE cut at the budget each still produced a usable turn.
 
-**The kit ships the mechanism and no vocabulary, on purpose.** The key is server-specific —
+**The kit ships the mechanism and no vocabulary, on purpose.** The key is server-specific:
 vLLM reads `thinking_token_budget`, Anthropic `thinking.budget_tokens`, llama.cpp has only a server
 flag, OpenAI only `reasoning_effort`. A named kit knob would be a promise that one word means the
 same thing everywhere, and the measurement that prompted this falsifies that inside a single model
-family: on that model `reasoning_effort` moved reasoning the WRONG way (`low` 2443-2562 tokens and
-`medium` 2778-2837 against 2237 at the default) while breaking the output-format instruction — the
-last thing you want in front of a JSON adapter. So what you write is what reaches the server, and
-the kit owns no name on the wire.
+family. On that model `reasoning_effort` moved reasoning the WRONG way (`low` 2443-2562 tokens and
+`medium` 2778-2837 against 2237 at the default) while breaking the output-format instruction,
+which is the last thing you want in front of a JSON adapter. So what you write is what reaches
+the server, and the kit owns no name on the wire.
 
 **Two levels, and the difference is where silent no-ops come from.** A TOP-LEVEL key is a litellm
-parameter and goes through litellm's own per-provider mapping — `reasoning_effort` is one of these,
-so the passthrough gives you it, with litellm's semantics rather than the kit's. A key inside
+parameter and goes through litellm's own per-provider mapping. `reasoning_effort` is one of these,
+so the passthrough reaches it with litellm's semantics rather than the kit's. A key inside
 `extra_body` is passed RAW into the request body with no mapping, which is what a server-specific
 name needs. On that same deployment `max_thinking_tokens`, `thinking_budget`, `reasoning_budget`
 and `chat_template_kwargs.thinking_budget` were all accepted and silently ignored.
 
-**Which is the limit worth stating: a passthrough cannot tell you the server dropped your key.**
-Nothing here can — an ignored key and an honoured one are identical on the wire. The check is after
+**The limit worth stating: a passthrough cannot tell you the server dropped your key.** Nothing
+here can, since an ignored key and an honoured one are identical on the wire. The check is after
 the fact, in the trace: `run_end.payload.budgets.thinking` records what the LM carried, and
 `run_end.payload.usage` carries the provider's own `reasoning_tokens`. A run supposedly capped at
 16384 that reports 32768 of reasoning is the key doing nothing, and that comparison is available on
@@ -1845,10 +1842,10 @@ winning:
 | Refused | Because | Instead |
 |---|---|---|
 | `model` | `dspy.LM` takes it positionally | `RLM_MAIN_MODEL` / `RLM_SUB_MODEL` |
-| `api_key`, `base_url`, `custom_llm_provider` | nothing records an override, so a silent one leaves a trace that reads like a run that went somewhere else | `RLM_API_KEY` / `RLM_BASE_URL`; a per-role ENDPOINT is a connection-identity change — build that role's LM and inject it with `configure(sub_lm=…)` |
+| `api_key`, `base_url`, `custom_llm_provider` | nothing records an override, so a silent one leaves a trace that reads like a run that went somewhere else | `RLM_API_KEY` / `RLM_BASE_URL`; a per-role ENDPOINT is a connection-identity change: build that role's LM and inject it with `configure(sub_lm=…)` |
 | `timeout` | same, and it is `request_timeout_s`'s own spelling | `RLM_REQUEST_TIMEOUT` |
 
-`max_tokens` is deliberately NOT refused, and the line is not "everything the kit sets" — it is
+`max_tokens` is deliberately NOT refused, and the line is not "everything the kit sets". It is
 whether the TRACE can see the override. `max_tokens` is read back off the LM into `budgets`
 (`_dspy_compat.applied_lm_budget`), so a per-role cap is self-documenting, and that is how you get
 one without a second config field:
@@ -1858,29 +1855,29 @@ export RLM_MAX_TOKENS=32768                    # the main model needs the room
 export RLM_SUB_LM_KWARGS='{"max_tokens":4096}' # the sub model does not
 ```
 
-**Quoting: there is no single form that survives every layer**, measured rather than reasoned —
+**Quoting: there is no single form that survives every layer**, measured rather than reasoned:
 one JSON value, four ways of getting it into the process:
 
 | value as written in the file | `set -a; . ./file` (bash + zsh) | `docker run --env-file` | compose `env_file` | python-dotenv |
 |---|---|---|---|---|
-| `X={"extra_body": {"thinking_token_budget": 16384}}` | NOT SET — the space and `{` break the assignment | OK | OK | OK |
-| `X={"extra_body":{"thinking_token_budget":16384}}` | UNPARSEABLE — the shell strips the `"` | OK | OK | OK |
-| `X='{"extra_body":{"thinking_token_budget":16384}}'` | OK | UNPARSEABLE — quotes kept literally | OK | OK |
+| `X={"extra_body": {"thinking_token_budget": 16384}}` | NOT SET: the space and `{` break the assignment | OK | OK | OK |
+| `X={"extra_body":{"thinking_token_budget":16384}}` | UNPARSEABLE: the shell strips the `"` | OK | OK | OK |
+| `X='{"extra_body":{"thinking_token_budget":16384}}'` | OK | UNPARSEABLE: quotes kept literally | OK | OK |
 
 The two that disagree do so in OPPOSITE directions: a shell-sourced file needs the quotes and
 `docker run --env-file` never strips them, so it receives them as part of the value. Compose's
 `env_file` and python-dotenv both strip matching quotes and accept all three. **Single-quoted is the
-right default** — it is correct everywhere except `docker run --env-file`, and compose is what
+right default**. It is correct everywhere except `docker run --env-file`, and compose is what
 almost everyone actually uses. A double-quoted-and-escaped value is the trap to avoid: under
 `docker run --env-file` it parses as a JSON *string* rather than an object, which is why a non-object
 raises `TypeError` naming the variable instead of being quietly treated as empty.
 
 ## Testing the forward path offline (`rlm_harness.testing`)
 
-Construction tests (`task._build_rlm()`) catch signature/kwarg drift but never run the loop — where
+Construction tests (`task._build_rlm()`) catch signature/kwarg drift but never run the loop: where
 wiring bugs actually hide (a prompt naming a tool `foo` while it registered as `foo_tool` is a
 `NameError` no construction test sees). `rlm_harness.testing` drives the **real `dspy.RLM.aforward` loop
-offline** — no model, no Deno, no network:
+offline**: no model, no Deno, no network:
 
 ```python
 from rlm_harness import RLMConfig, RLMTask, configure
@@ -1894,15 +1891,15 @@ configure(RLMConfig(main_model="x", sub_model="x", interpreter="mock"),
 
 task = MyTask(interpreter=ScriptedInterpreter([          # one step per planner turn
     call("my_tool", x=1),                                # dispatch the REAL injected tool (traces a tool_call)
-    submit({"answer": {"x": 5}})]))                      # SUBMIT — terminates the loop, coerces the result
+    submit({"answer": {"x": 5}})]))                      # SUBMIT: terminates the loop, coerces the result
 result = await task.arun(q="…")                          # the whole planner→tools→result chain, offline
 ```
 
 `dspy.RLM` injects the run's real tools onto the scripted interpreter's `.tools`, so a `call(...)` step
 runs the actual tool (its tracing records a genuine `tool_call`); a `dict`/`submit(...)` step SUBMITs.
 The `interpreter=` kwarg is an injection seam (like `sub_lm=`): an explicit interpreter OBJECT overrides
-`config.interpreter` and — like an injected `DummyLM` — bypasses `build_interpreter` and its guard, so it
+`config.interpreter` and, like an injected `DummyLM`, bypasses `build_interpreter` and its guard, so it
 is a test/advanced seam; the default string path keeps the guard. `rlm_harness.testing` imports dspy lazily,
 so it doesn't affect `import rlm_harness`. `cancel_event=` (above) has NO effect when `interpreter=` is also
-given — a caller supplying their own interpreter object owns its cancellation behavior too, exactly like
+given: a caller supplying their own interpreter object owns its cancellation behavior too, exactly like
 `ScriptedInterpreter` owns its own.

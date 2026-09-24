@@ -111,7 +111,7 @@ async def test_no_model_returns_raw_field():
 
 
 class _Cancelled(RuntimeError):
-    """Stand-in for `sandbox.SandboxCancelled` — `_retry.py` stays dspy/sandbox-free."""
+    """Stand-in for `sandbox.SandboxCancelled`: `_retry.py` stays dspy/sandbox-free."""
 
 
 async def test_non_retryable_exception_is_never_retried_and_never_wrapped():
@@ -163,7 +163,7 @@ async def test_default_non_retryable_matches_nothing():
         await run_with_retry(
             runner, output_field="finding", output_model=Finding, max_retries=2
         )
-    assert calls["n"] == 2  # the default () matches nothing — retried like any other exception
+    assert calls["n"] == 2  # the default () matches nothing: retried like any other exception
 
 
 # ---- is_fast_fail: a dynamic predicate gets the same treatment as non_retryable -----------
@@ -204,7 +204,7 @@ async def test_is_fast_fail_non_match_is_retried_as_before():
             max_retries=3,
             is_fast_fail=lambda exc: False,
         )
-    assert calls["n"] == 3  # the predicate said no every time — unchanged retry behavior
+    assert calls["n"] == 3  # the predicate said no every time: unchanged retry behavior
 
 
 async def test_default_is_fast_fail_is_none_and_never_fires():
@@ -218,13 +218,13 @@ async def test_default_is_fast_fail_is_none_and_never_fires():
         await run_with_retry(
             runner, output_field="finding", output_model=Finding, max_retries=2
         )
-    assert calls["n"] == 2  # the default None never fires — retried like any other exception
+    assert calls["n"] == 2  # the default None never fires: retried like any other exception
 
 
 async def test_non_retryable_type_match_wins_over_is_fast_fail():
     """`non_retryable` is checked first (a cheaper, static type match); a predicate that would
     also match must not change that this still propagates via the type-based `except` clause,
-    not the predicate branch — asserted by NEVER calling the predicate at all."""
+    not the predicate branch: asserted by NEVER calling the predicate at all."""
     calls = {"n": 0}
     predicate_calls = {"n": 0}
     original = _Cancelled("stop now")
@@ -278,7 +278,7 @@ def test_short_error_honours_an_explicit_limit():
 def test_short_error_stays_bounded_at_every_limit():
     """The frozen contract promises a length bound, and it is the ONE property the function
     exists for. At limit<=1 the head/tail split left tail==0, and `text[-0:]` slices the WHOLE
-    string — so the smallest budgets produced the LONGEST output."""
+    string, so the smallest budgets produced the LONGEST output."""
     huge = "x" * 5000
     for limit in (0, 1, 2, 5, 30, 600):
         out = short_error(RuntimeError(huge), limit=limit)
@@ -302,14 +302,14 @@ def test_short_error_never_raises_on_a_hostile_exception():
 def test_short_error_is_public_and_the_old_private_name_still_resolves():
     """Promoted in 1.5.0 because two independent consumers had reached into `_retry` for it.
     The private spelling must keep working or the promotion breaks the callers that motivated
-    it — it is an alias, not a copy."""
+    it. It is an alias, not a copy."""
     assert rlm_harness.short_error is short_error
     assert "short_error" in rlm_harness.__all__
     assert _short_error is short_error
 
 
 async def test_retry_log_does_not_flood_on_huge_exception(caplog):
-    # Regression: a failed attempt must not dump the full (possibly enormous) exception message —
+    # Regression: a failed attempt must not dump the full (possibly enormous) exception message:
     # that is what floods the terminal when the root model degenerates into a repetition loop.
     flood = "loop " * 5000
     async def runner():

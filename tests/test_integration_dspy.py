@@ -29,7 +29,7 @@ def _configure_with_dummy(interpreter="mock"):
 
     dummy = DummyLM([{"reasoning": "r", "finding": "{}"}])
     cfg = RLMConfig(main_model="x", sub_model="x", interpreter=interpreter, observe=False)
-    rt.configure(cfg, main_lm=dummy, sub_lm=dummy)   # public injection seam — no _STATE poking
+    rt.configure(cfg, main_lm=dummy, sub_lm=dummy)   # public injection seam: no _STATE poking
     return dummy
 
 
@@ -42,7 +42,7 @@ def _budget_attr(rlm, *names):
         if hasattr(rlm, name):
             return getattr(rlm, name)
     raise AssertionError(
-        f"dspy.RLM exposes none of {names!r} — it renamed a budget kwarg again; "
+        f"dspy.RLM exposes none of {names!r}: it renamed a budget kwarg again; "
         f"add the new name to rlm_harness._dspy_compat._BUDGET_ALIASES."
     )
 
@@ -62,7 +62,7 @@ def test_rlmtask_builds_real_dspy_rlm():
     assert rlm.sub_lm is dummy
     assert "finding" in rlm.signature.output_fields
     # Budget kwargs were accepted by the real constructor (no TypeError fallback).
-    # Read them by VALUE under whichever name the installed dspy uses — 3.3.0 renamed
+    # Read them by VALUE under whichever name the installed dspy uses: 3.3.0 renamed
     # `max_iterations` to `max_iters`. Asserting one hardcoded name would either fail on
     # a dspy that renamed it (a false alarm) or, worse, pass while the cap was silently
     # dropped. `_budget_attr` fails loudly if dspy exposes NEITHER name.
@@ -113,7 +113,7 @@ def test_build_rlm_describes_a_custom_interpreters_runtime_to_the_model(monkeypa
 
 def test_build_rlm_passes_no_factory_for_an_interpreter_that_describes_nothing(monkeypatch):
     """The mirror image, and the compatibility half: an interpreter that says nothing about
-    itself — a consumer's own, predating this feature — must leave the constructor call exactly
+    itself (a consumer's own, predating this feature) must leave the constructor call exactly
     as it was before 1.5.0. Passing a factory at all is the risky side of this change."""
     _configure_with_dummy()
     captured = {}
@@ -144,7 +144,7 @@ def test_custom_output_type_resolves_without_frame_help():
     """_build_rlm must resolve the signature's custom output type via custom_types,
     not by dspy walking the call stack. We use a dynamically-built model whose NAME
     ('DynReportXYZ') is a bareword in no frame's globals or locals, so call-stack
-    resolution cannot find it — only the explicit output_model binding can."""
+    resolution cannot find it: only the explicit output_model binding can."""
     from pydantic import create_model
 
     _configure_with_dummy()
@@ -203,7 +203,7 @@ def test_intercepted_sub_lm_is_accepted_as_sub_lm():
 
 
 def test_build_adapter_chat_disables_json_fallback():
-    """The portable "chat" adapter must NOT fall back to JSONAdapter — that fallback
+    """The portable "chat" adapter must NOT fall back to JSONAdapter: that fallback
     silently re-emits response_format=json_object, which strict endpoints (vLLM) reject."""
     a = rt._build_adapter("chat")
     assert isinstance(a, dspy.ChatAdapter) and not isinstance(a, dspy.JSONAdapter)
@@ -253,7 +253,7 @@ def _task_with_fake_rlm(pred):
 
 def test_arun_records_trajectory_on_failure(tmp_path):
     # A run that never produces a coercible result must STILL record the last attempt's trajectory,
-    # so a FAILED run is navigable/debuggable — but no result event, so it stays correctly "failed".
+    # so a FAILED run is navigable/debuggable, but no result event, so it stays correctly "failed".
     import asyncio
     import types
 
@@ -297,7 +297,7 @@ def test_arun_records_result_on_success(tmp_path):
 
 
 def test_cancel_event_reaches_the_built_interpreter_end_to_end():
-    """Not just unit-tested in isolation on sandbox.py — confirms RLMTask(cancel_event=...)
+    """Not just unit-tested in isolation on sandbox.py: confirms RLMTask(cancel_event=...)
     actually threads through `_build_rlm()` -> `build_interpreter(...)` and lands on the
     real, constructed interpreter instance's `_cancel_event` attribute."""
     _configure_with_dummy(interpreter="pyodide")
@@ -328,8 +328,8 @@ async def test_sandbox_cancelled_survives_the_real_retry_engine_end_to_end():
     test: drives the REAL `run_with_retry` + the REAL outer `except Exception:` block in
     `RLMTask.arun()`, with `max_retries=3` and an injected fake RLM that raises
     `SandboxCancelled` on its first call. Confirms the run ends after exactly ONE attempt
-    with the ORIGINAL `SandboxCancelled` object escaping `arun()` — never retried, never
-    wrapped in `RLMTaskError` — closing the gap between "the fix works in isolation" and
+    with the ORIGINAL `SandboxCancelled` object escaping `arun()`: never retried, never
+    wrapped in `RLMTaskError`: closing the gap between "the fix works in isolation" and
     "the fix works through the real call chain a consumer actually uses."""
     _configure_with_dummy()
     calls = {"n": 0}
@@ -359,7 +359,7 @@ async def test_fast_fail_lm_error_survives_the_real_retry_engine_end_to_end():
     """The `is_fast_fail` counterpart to `test_sandbox_cancelled_survives_the_real_retry_engine_
     end_to_end`: an LM error dspy itself calls non-retryable (`LMAuthError`) must end the run
     after exactly ONE attempt through the REAL call chain, with the ORIGINAL exception object
-    escaping `arun()` unwrapped — not `max_retries` attempts, not `RLMTaskError`."""
+    escaping `arun()` unwrapped: not `max_retries` attempts, not `RLMTaskError`."""
     _configure_with_dummy()
     calls = {"n": 0}
     original = dspy.LMAuthError("bad key")
@@ -419,7 +419,7 @@ def test_build_adapter_json_and_default():
 
 
 def test_configure_chat_mode_disables_json_fallback():
-    """`chat` mode must NOT fall back to JSONAdapter — that fallback silently re-emits
+    """`chat` mode must NOT fall back to JSONAdapter: that fallback silently re-emits
     response_format=json_object, which strict endpoints (vLLM) reject."""
     rt.configure(RLMConfig(main_model="openai/x", sub_model="openai/x",
                            interpreter="mock", adapter="chat"))
@@ -440,7 +440,7 @@ def test_lenient_json_adapter_recovers_braceless_object():
 def test_lenient_adapter_promotes_reasoning_content_when_content_empty():
     """A REASONING root (qwen3 / deepseek / gpt-oss) sometimes emits the whole structured turn into
     `reasoning_content` and returns `content` (text) null. The adapter promotes it so the turn
-    parses instead of dying on dspy's "empty or null response" check — this is what lets a reasoning
+    parses instead of dying on dspy's "empty or null response" check. This is what lets a reasoning
     model be the RLM root. Guarded: a normal output (text present) is NOT overridden, so a
     well-behaved model's native thinking stays discarded."""
     sig = dspy.Signature("q: str -> reasoning: str, code: str")
@@ -449,7 +449,7 @@ def test_lenient_adapter_promotes_reasoning_content_when_content_empty():
     out = [{"text": None, "reasoning_content": '{"reasoning": "r", "code": "c"}'}]
     vals = a._call_postprocess(sig, sig, out, lm=None, lm_kwargs={})
     assert vals[0]["reasoning"] == "r" and vals[0]["code"] == "c"
-    # a normal output (text present) wins — reasoning_content is ignored, native thinking discarded
+    # a normal output (text present) wins. Reasoning_content is ignored, native thinking discarded
     out2 = [{"text": '{"reasoning": "real", "code": "x"}',
              "reasoning_content": '{"reasoning": "IGNORED", "code": "y"}'}]
     vals2 = a._call_postprocess(sig, sig, out2, lm=None, lm_kwargs={})
@@ -459,7 +459,7 @@ def test_lenient_adapter_promotes_reasoning_content_when_content_empty():
 def test_lenient_json_adapter_skips_wrap_for_braced_completion(monkeypatch):
     """The brace-wrap is only for a brace-LESS body. A completion that already starts with
     "{" but fails to parse (incomplete / missing a required field) must NOT be re-wrapped
-    into "{{...}" — the original error stands. Otherwise we double the brace and obscure the
+    into "{{...}": the original error stands. Otherwise we double the brace and obscure the
     real failure (a model emitting `{ "code": ... }` without the required reasoning field)."""
     from dspy.adapters.json_adapter import JSONAdapter
     from dspy.utils.exceptions import AdapterParseError
@@ -475,7 +475,7 @@ def test_lenient_json_adapter_skips_wrap_for_braced_completion(monkeypatch):
     sig = dspy.Signature("q: str -> reasoning: str, code: str")
     with pytest.raises(AdapterParseError):
         rt._LenientJSONAdapter().parse(sig, '{ "code": "x"')   # already starts with "{"
-    assert seen == ['{ "code": "x"']   # only the original — no "{{"-wrapped retry
+    assert seen == ['{ "code": "x"']   # only the original, no "{{"-wrapped retry
     # contrast: a brace-LESS body IS retried wrapped
     seen.clear()
     with pytest.raises(AdapterParseError):
@@ -485,10 +485,10 @@ def test_lenient_json_adapter_skips_wrap_for_braced_completion(monkeypatch):
 
 def test_lenient_json_adapter_never_falls_back_to_bare_json_object():
     """Regression: when the json_schema call fails (e.g. a transient upstream 502), json mode
-    must NOT degrade to bare ``json_object`` — vLLM/NIM reject it (400 "'json_object' requires a
+    must NOT degrade to bare ``json_object``: vLLM/NIM reject it (400 "'json_object' requires a
     JSON schema"), which masks the real error and wastes the retry on a dead-on-arrival format.
-    Stock JSONAdapter falls back; ``_LenientJSONAdapter`` must only ever send ``json_schema``
-    — and it forces that form for ANY lm (here a plain dspy.LM whose
+    Stock JSONAdapter falls back; ``_LenientJSONAdapter`` must only ever send ``json_schema``,
+    and it forces that form for ANY lm (here a plain dspy.LM whose
     ``supports_response_schema`` is False), so no special LM subclass is needed.
     Fails on the old code, which only overrode ``parse`` and inherited the fallback."""
     import asyncio
@@ -538,11 +538,11 @@ def test_configure_default_sends_generous_max_tokens():
 
 def test_configure_passes_request_timeout_through_to_both_lms():
     """The knob is only worth anything if it reaches litellm. dspy.LM keeps kwargs it does not
-    recognise and merges them into the call, and `litellm.completion` takes `timeout` — so the
+    recognise and merges them into the call, and `litellm.completion` takes `timeout`, so the
     assertion is that the value lands in `lm.kwargs` under that exact name.
 
     BOTH roles, not just the main one. The sub-LM is the recursion seat and `dspy.RLM` fans it
-    across a thread pool, where a wedged request is LESS visible — a batched worker's failure is
+    across a thread pool, where a wedged request is LESS visible: a batched worker's failure is
     swallowed into an `"[ERROR] ..."` string for the model rather than surfacing. A mutation that
     popped the key between the two `dspy.LM(...)` constructions left the main-LM-only version of
     this test green."""
@@ -554,15 +554,15 @@ def test_configure_passes_request_timeout_through_to_both_lms():
 
 def test_configure_sends_no_timeout_when_unset():
     """The default must behave EXACTLY as before this field existed. Sending `timeout=None`
-    explicitly is not the same as sending nothing — clients differ on what an explicit null means
-    — so the key must be absent, not present-and-None."""
+    explicitly is not the same as sending nothing: clients differ on what an explicit null means,
+    so the key must be absent, not present-and-None."""
     rt.configure(RLMConfig(main_model="openai/x", sub_model="openai/x", interpreter="mock"))
     assert "timeout" not in dspy.settings.lm.kwargs
 
 
 def test_configure_pins_openai_provider_when_base_url_set():
     """With a base_url (a custom OpenAI-compatible endpoint), the LM pins
-    custom_llm_provider="openai" so a BARE model id ("qwen/qwen3-next") routes to base_url —
+    custom_llm_provider="openai" so a BARE model id ("qwen/qwen3-next") routes to base_url:
     litellm would otherwise read "qwen" as the provider and fail. No "openai/" prefix needed."""
     rt.configure(RLMConfig(main_model="qwen/qwen3-next", sub_model="qwen/qwen3-next",
                            interpreter="mock", base_url="https://endpoint.example/v1"))
@@ -571,7 +571,7 @@ def test_configure_pins_openai_provider_when_base_url_set():
 
 def test_configure_no_provider_pin_without_base_url():
     """Without a base_url (a direct provider, e.g. anthropic/claude), do NOT force the openai
-    provider — let litellm parse the model's own provider prefix."""
+    provider: let litellm parse the model's own provider prefix."""
     rt.configure(RLMConfig(main_model="openai/gpt-4o", sub_model="openai/gpt-4o", interpreter="mock"))
     assert "custom_llm_provider" not in dspy.settings.lm.kwargs
 
@@ -599,7 +599,7 @@ def _timer_and_captured():
 
 def test_main_step_timer_stages_once_for_a_NESTED_parse():
     """The regression. A nested parse pair (the kit adapter delegating to super()) must stage the
-    OUTERMOST frame only — one stamp, not two."""
+    OUTERMOST frame only: one stamp, not two."""
     timer, captured = _timer_and_captured()
     outputs = {"reasoning": "plan A", "code": "x = 1"}
     timer.on_adapter_parse_start("outer", instance=None, inputs={})
@@ -611,7 +611,7 @@ def test_main_step_timer_stages_once_for_a_NESTED_parse():
 
 def test_main_step_timer_degrades_to_the_old_behaviour_without_parse_start():
     """Deliberate degrade path: if a future dspy stops firing `on_adapter_parse_start`, the depth
-    never rises and every end is treated as outermost — i.e. exactly the pre-fix behaviour. It must
+    never rises and every end is treated as outermost: i.e. exactly the pre-fix behaviour. It must
     NOT degrade to staging nothing, which would silently send every main_step ts back to the
     flush-time fallback with no test going red."""
     timer, captured = _timer_and_captured()
@@ -623,7 +623,7 @@ def test_main_step_timer_degrades_to_the_old_behaviour_without_parse_start():
 
 def test_main_step_timer_depth_does_not_leak_between_turns():
     """An orphan END (no matching start) must not drive the counter NEGATIVE and desynchronise
-    every later turn — that is the direction `max(0, ...)` guards.
+    every later turn: that is the direction `max(0, ...)` guards.
 
     The opposite direction, an orphan START, is deliberately NOT guarded and would silence every
     later turn. It is unreachable through dspy: `dspy.utils.callback.with_callbacks` runs its end
@@ -632,7 +632,7 @@ def test_main_step_timer_depth_does_not_leak_between_turns():
     why" is the sort of claim this release exists to stop taking on trust."""
     timer, captured = _timer_and_captured()
     outputs = {"reasoning": "r", "code": "c"}
-    # dspy's own call shape — BaseCallback declares (call_id, instance, inputs) with no defaults.
+    # dspy's own call shape: BaseCallback declares (call_id, instance, inputs) with no defaults.
     timer.on_adapter_parse_end("orphan-end", outputs)          # end with no start
     timer.on_adapter_parse_start("t1", instance=None, inputs={})
     timer.on_adapter_parse_end("t1", outputs)
@@ -642,7 +642,7 @@ def test_main_step_timer_depth_does_not_leak_between_turns():
 
 
 def test_main_step_timer_stages_once_through_the_REAL_kit_adapter():
-    """End to end against the installed dspy and the kit's own default adapter — the path that
+    """End to end against the installed dspy and the kit's own default adapter: the path that
     actually double-fired. Pinned for the stock adapter too, so a future dspy that stops nesting
     does not silently halve the stamps."""
     import json as _json
@@ -667,7 +667,7 @@ def test_main_step_timer_stages_once_through_the_REAL_kit_adapter():
 
 def test_main_step_timer_depth_is_per_thread():
     """dspy may parse on a worker thread. A shared integer counter would let one thread's nested
-    parse suppress another thread's outermost one — losing a turn's stamp entirely, which sends its
+    parse suppress another thread's outermost one: losing a turn's stamp entirely, which sends its
     main_step ts back to the flush-time fallback. Only visible with real concurrency."""
     from rlm_harness.task import _MainStepTimer
 
@@ -704,7 +704,7 @@ def test_adjacent_duplicate_turns_get_distinct_ts_end_to_end(tmp_path):
     A retry loop emits the SAME reasoning on consecutive turns. Driven through the real callback
     dispatch into a real recorder, both turns must keep their own stamp. Deduplicating in the
     callback achieves that; the trace-side forward-only cursor CANNOT (turn 1 would take turn 0's
-    spare stamp — no longer negative, so the symptom hides while the value stays ~0.1s wrong).
+    spare stamp: no longer negative, so the symptom hides while the value stays ~0.1s wrong).
     """
     import types as _types
 
@@ -712,7 +712,7 @@ def test_adjacent_duplicate_turns_get_distinct_ts_end_to_end(tmp_path):
     from rlm_harness.trace import EVENT_MAIN_STEP, TraceRecorder, load_events
 
     path = str(tmp_path / "trace.jsonl")
-    # A clock that ticks 0.1s per READ, so a turn parsed twice produces two DIFFERENT stamps —
+    # A clock that ticks 0.1s per READ, so a turn parsed twice produces two DIFFERENT stamps:
     # which is what made the surplus one claimable by a later turn.
     now = [0.0]
 
@@ -743,7 +743,7 @@ def test_adjacent_duplicate_turns_get_distinct_ts_end_to_end(tmp_path):
 
 def test_main_step_timer_stages_once_at_ANY_adapter_nesting_depth():
     """`Adapter.__init_subclass__` re-wraps `parse` with `with_callbacks` for every subclass,
-    unconditionally — so the fire count is a property of the caller's adapter hierarchy, not a
+    unconditionally, so the fire count is a property of the caller's adapter hierarchy, not a
     fixed double. A consumer subclassing the kit's adapter and overriding NOTHING already gets
     three fires. Pinned because a fix that divided by two, or that special-cased the kit's own
     adapter, would pass every other test in this file and still lose that consumer's stamps."""
@@ -752,7 +752,7 @@ def test_main_step_timer_stages_once_at_ANY_adapter_nesting_depth():
     from rlm_harness.task import _MainStepTimer
 
     class _ConsumerSubclass(rt._LenientJSONAdapter):
-        """Overrides nothing — the subclassing alone adds a wrapper."""
+        """Overrides nothing: the subclassing alone adds a wrapper."""
 
     class _ConsumerSubclassCallingSuper(_ConsumerSubclass):
         def parse(self, signature, completion):
@@ -793,7 +793,7 @@ def test_main_step_timer_stages_once_at_ANY_adapter_nesting_depth():
 #
 # Before 1.7.0 a `sub_call` existed only if the consumer remembered `intercept_sub_lm`. Four of nine
 # surveyed consumers never did; two of those had corpora, 141 traces, where `sub_call` was
-# identically zero — indistinguishable from "the model never escalated". That ambiguity reached a
+# identically zero: indistinguishable from "the model never escalated". That ambiguity reached a
 # design decision in this repo before it was caught.
 
 
@@ -918,7 +918,7 @@ def test_task_composes_bind_OUTSIDE_intercept(tmp_path):
     Bind must be outermost: it establishes `recorder_scope`, and the interceptor reads
     `current_recorder()` at call time. Reversed, the interceptor sees `None` on any thread that did
     not inherit the contextvar and SILENTLY skips the record. A RAW thread is required to observe
-    it — dspy 3.3.1's `llm_query_batched` copies the context itself, so its own dispatch records
+    it: dspy 3.3.1's `llm_query_batched` copies the context itself, so its own dispatch records
     correctly in BOTH orders."""
     from dspy.utils.dummies import DummyLM
 
@@ -941,7 +941,7 @@ def test_task_composes_bind_OUTSIDE_intercept(tmp_path):
 def test_recording_survives_a_call_from_a_RAW_thread():
     """Bind must stay OUTERMOST: it establishes `recorder_scope`, and the interceptor reads
     `current_recorder()` at call time. Reversed, the interceptor sees None and SILENTLY skips the
-    record — no error, no event.
+    record: no error, no event.
 
     A raw thread is required to see this. dspy 3.3.1's `llm_query_batched` now dispatches via
     `contextvars.copy_context().run(...)`, so a test written against dspy's own path would pass in

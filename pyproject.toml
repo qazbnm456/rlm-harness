@@ -30,12 +30,12 @@ classifiers = [
 ]
 dependencies = [
     # FLOOR 3.3.1 since rlm-harness 1.5.0 (3.3.0 since 1.2.0). 3.2.x is strictly worse for
-    # users — it accepts DUPLICATE tool names and silently keeps only one, does not reject a
+    # users: it accepts DUPLICATE tool names and silently keeps only one, does not reject a
     # keyword tool name at construction, and has no CodeExecutionError, so the kit's own
     # guarantees differed by whichever dspy a consumer happened to resolve.
     #
     # 3.3.1 is required, not merely preferred: `_dspy_compat.interpreter_instructions_kwargs`
-    # needs `interpreter_factory.execution_instructions`, which 3.3.1 introduced — without it a
+    # needs `interpreter_factory.execution_instructions`, which 3.3.1 introduced, without it a
     # `container` run is told it cannot spawn subprocesses, which is the one thing that
     # interpreter exists to allow. 3.3.1 also re-parents `CodeInterpreterError` under
     # `DSPyError`, the hierarchy the cancel-is-never-recoverable invariant reads.
@@ -53,7 +53,7 @@ observe = [
     "openinference-instrumentation-dspy>=0.1.36",
 ]
 # MCP client (mcp_tools / McpCatalog). FLOOR 1.8.1 since rlm-harness 1.5.0: `>=1.0` was wrong
-# from the start — `mcp.client.streamable_http` does not exist at 1.0.0, so the HTTP transport
+# from the start: `mcp.client.streamable_http` does not exist at 1.0.0, so the HTTP transport
 # could not work at the declared floor. 1.8.1 rather than 1.8.0 because the floor is only
 # meaningful if the suite PASSES on it, and it does not on 1.8.0: a refused connect takes ~16s
 # there, against the <10s this kit asserts for fail-fast. Measured, not assumed. No upper bound, for the same reason dspy has none; the
@@ -64,19 +64,19 @@ mcp = [
     "mcp>=1.8.1",
 ]
 # JSON-Schema validation (make_json_schema_validator): validate a parsed object against a
-# vendored, version-pinned upstream JSON schema. Opt-in — the core scaffold runs without it.
+# vendored, version-pinned upstream JSON schema. Opt-in: the core scaffold runs without it.
 jsonschema = [
     "jsonschema>=4.0",
 ]
 # Claude Pro/Max SUBSCRIPTION LM (ClaudeAgentLM): run the planner and/or sub-LM on your own
 # Claude login via the official Claude Agent SDK, injected through configure(main_lm=/sub_lm=).
-# Opt-in — a plain API-key install never pulls the (heavy) SDK wheel.
+# Opt-in: a plain API-key install never pulls the (heavy) SDK wheel.
 subscription = [
     "claude-agent-sdk>=0.1.60",
 ]
 # Wall-clock-bounded regex matching (make_grep_files_tool): an LM-controlled pattern is bounded by
-# a real timeout instead of a catastrophic-backtracking pattern hanging the host indefinitely —
-# stdlib `re` has no way to bound this cost by any pure-Python mechanism. Opt-in — required
+# a real timeout instead of a catastrophic-backtracking pattern hanging the host indefinitely:
+# stdlib `re` has no way to bound this cost by any pure-Python mechanism. Opt-in: required
 # outright by make_grep_files_tool (a friendly ImportError otherwise), no silent unsafe fallback,
 # the same posture make_json_schema_validator already takes for its own `jsonschema` extra.
 grep = [
@@ -121,13 +121,13 @@ line-length = 110
 target-version = "py311"
 
 # Ruff's DEFAULT rule set is NOT a stable contract. 0.16 expanded it far past the pycodestyle/
-# pyflakes baseline this project was written against, so `uvx ruff check .` — unpinned, in CI —
+# pyflakes baseline this project was written against, so `uvx ruff check .`: unpinned, in CI:
 # went from green to 256 errors with nobody touching the code. The fix is in two halves: CI pins
 # the ruff VERSION (so the rule set only moves when someone bumps it deliberately), and the
 # handful of default rules that fight this project's design are ignored BY NAME below.
 #
 # Deliberately NOT adding a `select` list. Curating one is a real policy decision, and a first
-# attempt at it immediately fired 107 PLC0415 "import not at top-level" — against the ~107 LAZY
+# attempt at it immediately fired 107 PLC0415 "import not at top-level": against the ~107 LAZY
 # imports that are load-bearing here (keeping modules dspy-free, deferring optional extras). A
 # lint policy that argues with an invariant is worse than no policy.
 [tool.ruff.lint]
@@ -136,7 +136,7 @@ ignore = [
     # A blind `except Exception` around a sandbox boundary, a trace write, or a fetch is the
     # design, not an oversight: the caller must get a result object, never a propagated crash.
     "BLE001",
-    # Same stance, one level down — a best-effort cleanup (killing a container, closing a trace)
+    # Same stance, one level down: a best-effort cleanup (killing a container, closing a trace)
     # must not raise out of a teardown path and mask the real error.
     "S110",
     # `__all__` here is grouped by comment-delimited SECTION (core / tools / rubric / serving /

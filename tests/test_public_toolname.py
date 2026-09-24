@@ -1,14 +1,14 @@
-"""The public REPL-safety surface (1.1.0) — and the end-to-end path it exists for.
+"""The public REPL-safety surface (1.1.0), and the end-to-end path it exists for.
 
 `McpCatalog` hands a consumer the server's RAW tool names and RAW schemas; the consumer
-builds its own `dspy.Tool`s. Inside `mcp.py` the kit fixes both halves — the NAME (a
+builds its own `dspy.Tool`s. Inside `mcp.py` the kit fixes both halves: the NAME (a
 hyphen is the MCP norm and dspy refuses it) and the SIGNATURE (a `**kwargs` wrapper
 registers one proxy param literally called `kwargs`). Both were private, so that consumer
 had no sanctioned remedy: CLAUDE.md's "consumers EXTEND, they don't fork" invariant bars
 reaching into a `_`-private name, and 1.0.2's `assert_repl_safe` detects both problems
 while offering no fix.
 
-These tests pin that the promoted functions actually close the path — one half alone
+These tests pin that the promoted functions actually close the path: one half alone
 leaves a well-named tool that `assert_repl_safe` still rejects.
 """
 
@@ -87,7 +87,7 @@ def test_required_params_come_first():
 
 @pytest.mark.parametrize("schema", [None, {}, {"type": "object"}, {"properties": {}}, "nonsense"])
 def test_schemaless_yields_a_zero_arg_signature(schema):
-    """Zero params, never `**kwargs` — a no-argument tool must not be left with the shape
+    """Zero params, never `**kwargs`. A no-argument tool must not be left with the shape
     `assert_repl_safe` rejects."""
     assert list(signature_from_json_schema(schema).parameters) == []
 
@@ -118,7 +118,7 @@ def test_unusable_property_name_raises_for_the_caller_to_handle(bad):
 def test_taken_supports_progressive_loading():
     """The McpCatalog case: servers load one at a time, so server B's names must avoid the
     ones server A already registered. Without `taken=` a caller would have to fall back to
-    `sanitize_tool_name` and thread the set by hand — what `unique_tool_names` exists to
+    `sanitize_tool_name` and thread the set by hand: what `unique_tool_names` exists to
     make impossible to forget."""
     first = unique_tool_names(["get-weather"])
     assert first["get-weather"] == "get_weather"

@@ -1,38 +1,38 @@
-"""MCP client — expose an EXTERNAL MCP server's tools to an ``RLMTask`` as SYNC tools.
+"""MCP client: expose an EXTERNAL MCP server's tools to an ``RLMTask`` as SYNC tools.
 
 rlm-harness is an MCP **client only**: it never runs a server and bundles none. You point
-``mcp_tools(...)`` at someone else's server — a local stdio command, or a remote
-streamable-HTTP URL — and get that server's tools back as sync ``dspy.Tool``s ready for
+``mcp_tools(...)`` at someone else's server: a local stdio command, or a remote
+streamable-HTTP URL, and get that server's tools back as sync ``dspy.Tool``s ready for
 ``RLMTask(tools=…)``.
 
 Why a bridge: the MCP Python SDK is **async** (``ClientSession.call_tool`` is a coroutine), but
 ``dspy.RLM`` invokes tools **synchronously** from its sandbox bridge
-(``PythonInterpreter._handle_tool_call``: ``self.tools[name](**kwargs)`` — no ``await``). So this
+(``PythonInterpreter._handle_tool_call``: ``self.tools[name](**kwargs)``, no ``await``). So this
 module runs the ``ClientSession`` in a dedicated background thread + event loop, kept alive for the
 whole ``with`` block, and each tool is a sync wrapper that bridges one call across the thread
 boundary via ``run_coroutine_threadsafe(...).result(timeout)``. (dspy's own
-``dspy.Tool.from_mcp_tool`` produces an *async* tool for ``dspy.ReAct.acall`` — unusable on the
+``dspy.Tool.from_mcp_tool`` produces an *async* tool for ``dspy.ReAct.acall``: unusable on the
 RLM's sync path, which is why this bridge exists.)
 
-SECURITY: MCP tools execute HOST-SIDE — *outside* the sandbox. A stdio server is a subprocess this
+SECURITY: MCP tools execute HOST-SIDE, *outside* the sandbox. A stdio server is a subprocess this
 process spawns; an HTTP server is a remote you trust. Treat an MCP server as a trusted dependency,
 and its tool OUTPUT as untrusted LM context (a prompt-injection surface, like fetched web content).
 
 SDK VERSION TOLERANCE: the ``mcp`` extra declares a floor and no cap, so a consumer's fresh
-install picks up whatever major is current — and the SDK renames across majors. Two classes so
+install picks up whatever major is current, and the SDK renames across majors. Two classes so
 far, both handled HERE rather than at the call sites: MODEL FIELDS (camelCase -> snake_case at
 2.0) go through :func:`_sdk_field`, and MODULE-LEVEL SYMBOLS (``streamablehttp_client`` ->
 ``streamable_http_client``) are resolved by name probe in :meth:`McpConnection._transport`.
-Neither degrades silently — see ``_sdk_field``'s docstring for why a sentinel, not a default.
+Neither degrades silently: see ``_sdk_field``'s docstring for why a sentinel, not a default.
 
 Two public surfaces:
 
-- ``mcp_tools(server)`` — the SINGLE-server convenience: one server's tools as ``dspy.Tool``s for
+- ``mcp_tools(server)``: the SINGLE-server convenience: one server's tools as ``dspy.Tool``s for
   ``RLMTask(tools=…)``, materialized up front, each call self-recording a ``tool_call``.
-- ``McpCatalog(specs)`` + ``McpConnection`` — a MULTI-server, queryable transport for a consumer
+- ``McpCatalog(specs)`` + ``McpConnection``: a MULTI-server, queryable transport for a consumer
   building a PROGRESSIVE tool surface (list servers → load one on demand → read its tools → call).
-  It returns RAW MCP objects (not ``dspy.Tool``s) and records NOTHING — the consumer's own tool
-  wrapper owns any ``tool_call`` — so it stays dspy-free and the consumer maps tools to its shape.
+  It returns RAW MCP objects (not ``dspy.Tool``s) and records NOTHING: the consumer's own tool
+  wrapper owns any ``tool_call``, so it stays dspy-free and the consumer maps tools to its shape.
   ``result_text`` flattens a ``CallToolResult`` to text.
 
 Optional: needs ``pip install "rlm-harness[mcp]"``.
@@ -55,7 +55,7 @@ from .trace import record_tool_call
 
 logger = logging.getLogger(__name__)
 
-# Head of a tool result recorded for inspection (a replay UI shows it) — like read_skill / fetch,
+# Head of a tool result recorded for inspection (a replay UI shows it): like read_skill / fetch,
 # the trace keeps only a preview, not the full (possibly bulk) output that goes to the RLM's REPL.
 _PREVIEW = 700
 
@@ -87,13 +87,13 @@ def _sdk_field(obj: Any, snake: str, camel: str) -> Any:
     The SDK renamed its model fields camelCase -> snake_case at 2.0 (``Tool.inputSchema`` ->
     ``input_schema``, ``CallToolResult.isError`` -> ``is_error``, ``.structuredContent`` ->
     ``.structured_content``). The old names survive only as pydantic serialization aliases, so
-    ATTRIBUTE access under the old spelling raises on 2.x — and this package declares no upper
+    ATTRIBUTE access under the old spelling raises on 2.x, and this package declares no upper
     bound on ``mcp``, so one process may hold either major. Read both, newest first.
 
     Returns the sentinel rather than a default because a caller must be able to tell "the field
     is absent under every spelling this kit knows" (a rename we have not learned yet) from "the
     field is present and falsy". ``structured_content`` is typed ``Any`` on 2.x, so ``{}``,
-    ``0`` and ``False`` are all legitimate VALUES — an ``or``-chain would silently discard them,
+    ``0`` and ``False`` are all legitimate VALUES: an ``or``-chain would silently discard them,
     and a plain ``getattr(obj, name, default)`` would silently turn the next rename into a
     wrong answer. That is exactly how the 2.x break reached a released version unnoticed.
     """
@@ -108,7 +108,7 @@ def _is_tool_result(result: Any) -> bool:
 
     mcp 2.x widened ``ClientSession.call_tool`` to
     ``CallToolResult | InputRequiredResult | Result``. Only the first carries ``content``, and
-    only the first carries an error flag — so the other arms must be recognised BEFORE
+    only the first carries an error flag, so the other arms must be recognised BEFORE
     :func:`_tool_reported_error` is asked about them. Otherwise they take its "no error flag
     under either spelling" branch, which both reports the call as a SUCCESS (the exact failure
     this module was just fixed for) and burns the one-shot rename warning on a false alarm, so a
@@ -122,8 +122,8 @@ def _tool_reported_error(result: Any) -> bool:
 
     Absent under BOTH spellings is NOT treated as silent success: that is the failure this
     function exists to prevent (a renamed flag made every failed tool call read as ``ok`` to
-    the model and to the trace). It degrades to ``False`` — refusing the call outright on a
-    field we merely failed to find would be worse — but says so once, loudly, so the next
+    the model and to the trace). It degrades to ``False``: refusing the call outright on a
+    field we merely failed to find would be worse, but says so once, loudly, so the next
     rename shows up in a log instead of in the model's context.
     """
     global _warned_no_error_flag
@@ -133,7 +133,7 @@ def _tool_reported_error(result: Any) -> bool:
             _warned_no_error_flag = True
             logger.warning(
                 "MCP result %s carries neither `is_error` nor `isError`; treating every call as "
-                "successful. The installed mcp SDK has probably renamed the field again — a "
+                "successful. The installed mcp SDK has probably renamed the field again: a "
                 "failed tool call is now indistinguishable from a successful one.",
                 type(result).__name__,
             )
@@ -167,7 +167,7 @@ def result_text(result: Any) -> str:
 
 def _args_from_schema(input_schema: Any) -> dict:
     """Map an MCP tool's input schema (a JSON Schema object) to ``dspy.Tool``'s ``args``
-    (a dict of {arg: schema-fragment}) — i.e. its ``properties``, or ``{}`` if absent."""
+    (a dict of {arg: schema-fragment}), i.e. its ``properties``, or ``{}`` if absent."""
     if isinstance(input_schema, dict):
         props = input_schema.get("properties")
         if isinstance(props, dict):
@@ -179,7 +179,7 @@ class McpConnection:
     """A live connection to ONE external MCP server: a ``ClientSession`` driven from a dedicated
     background thread + event loop, kept alive until :meth:`close`. The SDK's session API is async;
     callers here are sync, so each sync call bridges one coroutine across the thread boundary via
-    ``run_coroutine_threadsafe(...).result(timeout)``. PUBLIC — a consumer building its own tool
+    ``run_coroutine_threadsafe(...).result(timeout)``. PUBLIC: a consumer building its own tool
     surface can drive a connection directly; :class:`McpCatalog` manages many of these.
 
     ``server`` is a bare URL string, ``{"url": ...}`` (streamable-HTTP), or
@@ -206,7 +206,7 @@ class McpConnection:
             self._serve_task = self._loop.create_task(self._serve())  # legal before run_until_complete
             self._loop.run_until_complete(self._serve_task)
         except asyncio.CancelledError:
-            pass  # close() cancelled the serve task — a clean shutdown, not an _error
+            pass  # close() cancelled the serve task: a clean shutdown, not an _error
         except BaseException as exc:
             self._error = exc
             self._ready.set()
@@ -271,25 +271,25 @@ class McpConnection:
         try:
             return fut.result(self._timeout)
         except concurrent.futures.TimeoutError:
-            # Don't leave a hung call_tool coroutine running in the loop — the session is serial,
+            # Don't leave a hung call_tool coroutine running in the loop. The session is serial,
             # so it would wedge every later call. Request its cancellation and surface the timeout.
             fut.cancel()
             raise TimeoutError(f"MCP tool {name!r} timed out after {self._timeout}s") from None
 
     def close(self) -> None:
-        # Phase 1 — graceful: ask _serve to return (it unwinds the session + transport cleanly). A
+        # Phase 1: graceful: ask _serve to return (it unwinds the session + transport cleanly). A
         # HEALTHY connection is awaiting `self._stop.wait()`, so this exits the thread in milliseconds.
         if self._stop is not None and self._loop.is_running():
             with contextlib.suppress(RuntimeError):  # loop may close between the check and the call
                 self._loop.call_soon_threadsafe(self._stop.set)
         if self._thread.ident is None:
-            return  # never started — join would raise (a public close() may precede start())
+            return  # never started. Join would raise (a public close() may precede start())
         grace = min(_CLOSE_GRACE, self._timeout)
         self._thread.join(grace)
-        # Phase 2 — cancel: a WEDGED connect (e.g. a tarpit server) never reached `await
+        # Phase 2: cancel: a WEDGED connect (e.g. a tarpit server) never reached `await
         # self._stop.wait()`, so setting _stop was a no-op and the thread is still alive. Cancel the
         # serve task to unwind through the session/transport __aexit__ (close the httpx stream /
-        # terminate the stdio child) and reap the thread — instead of leaking it plus the child/socket.
+        # terminate the stdio child) and reap the thread: instead of leaking it plus the child/socket.
         if self._thread.is_alive() and self._serve_task is not None and self._loop.is_running():
             with contextlib.suppress(RuntimeError):
                 self._loop.call_soon_threadsafe(self._serve_task.cancel)
@@ -299,23 +299,23 @@ class McpConnection:
 def _defers(spec: dict) -> bool:
     """Whether ``connect="lazy"`` defers this server's connect to its first ``load()``. Mirrors
     :meth:`McpConnection._transport`'s precedence (a ``url`` wins over a ``command``): only URL
-    (streamable-HTTP) servers defer — a stdio server's local subprocess spawn stays eager (pre-run)."""
+    (streamable-HTTP) servers defer: a stdio server's local subprocess spawn stays eager (pre-run)."""
     return "url" in spec
 
 
 class McpCatalog:
-    """A queryable, long-lived transport over SEVERAL external MCP servers — for a consumer building a
+    """A queryable, long-lived transport over SEVERAL external MCP servers: for a consumer building a
     PROGRESSIVE tool surface (list servers → load one on demand → read its tools → call one). Each
     server runs behind its own :class:`McpConnection` (a background-thread session). The catalog
     records NOTHING (the consumer's own tool wrapper owns any ``tool_call``) and returns RAW MCP
-    ``Tool`` objects (name / description / input schema), not ``dspy.Tool``s — so it stays
+    ``Tool`` objects (name / description / input schema), not ``dspy.Tool``s, so it stays
     dspy-free and the consumer maps tools to its own shape.
 
     ``specs`` is a list of dicts, each ``{"name", "description", ...connection...}`` where the
-    connection is ``"url"`` (streamable-HTTP) or ``"command"``/``"args"``/``"env"`` (stdio) — the
+    connection is ``"url"`` (streamable-HTTP) or ``"command"``/``"args"``/``"env"`` (stdio): the
     same fields :class:`McpConnection` accepts. ``connect="eager"`` (default) connects every server
     host-side up front and tears down a partial connect on failure. ``connect="lazy"`` defers each
-    **URL (streamable-HTTP)** server's connect to its first :meth:`load` — safe mid-run: the handshake
+    **URL (streamable-HTTP)** server's connect to its first :meth:`load`: safe mid-run: the handshake
     runs on the connection's OWN background thread + loop (the caller's wait is ``timeout``-bounded,
     and a wedged connect is cancelled and reaped by :meth:`close`); **stdio** servers still connect
     eagerly in ``__init__`` (deferring a local subprocess spawn buys nothing, and keeps the spawn out
@@ -333,7 +333,7 @@ class McpCatalog:
         self._timeout = timeout
         self._conns: dict[str, McpConnection] = {}
         # eager: connect every server up front. lazy: connect only the servers that DON'T defer
-        # (stdio — a local spawn stays pre-run) up front, and leave the URL servers for their first
+        # (stdio. A local spawn stays pre-run) up front, and leave the URL servers for their first
         # load(). A spec with neither url nor command classifies as non-deferring and fails fast in
         # _transport, same as under eager.
         try:
@@ -341,7 +341,7 @@ class McpCatalog:
                 if connect == "eager" or not _defers(spec):
                     self._connect(name)
         except Exception:
-            # A server's connect failed — the servers already connected are live threads +
+            # A server's connect failed: the servers already connected are live threads +
             # subprocesses with no object left for the caller to close(). Tear them down before
             # propagating, so a partial connect never leaks.
             self.close()
@@ -357,7 +357,7 @@ class McpCatalog:
             conn.start()
         except Exception:
             with contextlib.suppress(Exception):
-                conn.close()  # a failed start still spawned a thread/subprocess — don't leak it
+                conn.close()  # a failed start still spawned a thread/subprocess: don't leak it
             raise
         self._conns[server] = conn
         return conn
@@ -396,11 +396,11 @@ class McpCatalog:
 
 
 def _repl_alias(name: str, repl: str) -> dict:
-    """The optional ``repl_name`` payload field — emitted ONLY when sanitising changed the name.
+    """The optional ``repl_name`` payload field: emitted ONLY when sanitising changed the name.
 
     Additive within ``rlm-harness/trace/v1`` (a new OPTIONAL payload field is allowed; the
     envelope, the event types and the established fields are untouched). Conditional so the
-    common case stays byte-identical to pre-1.0.2 payloads — nine consumers hold golden
+    common case stays byte-identical to pre-1.0.2 payloads: nine consumers hold golden
     fixtures, and a field that appears on every MCP event would churn all of them for nothing.
 
     It has to exist at all because the mapping is UNRECOVERABLE offline: the sanitised name
@@ -416,13 +416,13 @@ def _repl_alias(name: str, repl: str) -> dict:
 def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str,
                repl_name: str | None = None):
     # THREE identities, and conflating any two of them is a bug:
-    #   `mcp_tool.name` — the WIRE name. What `bridge.call(...)` sends back to the server.
+    #   `mcp_tool.name`: the WIRE name. What `bridge.call(...)` sends back to the server.
     #                     Never derived, never sanitised.
-    #   `name`          — prefix + wire name. The TRACE identity (`record_tool_call`), so a
+    #   `name`: prefix + wire name. The TRACE identity (`record_tool_call`), so a
     #                     reader sees what the operator configured. Also never sanitised.
-    #   `repl_name`     — what the MODEL types in the sandbox. MUST be a Python identifier.
+    #   `repl_name`: what the MODEL types in the sandbox. MUST be a Python identifier.
     # Hyphens and dots are the MCP naming norm (`get-weather`, `db.query`) and dspy refuses
-    # both, aborting the WHOLE registration — one bad name takes every other tool with it.
+    # both, aborting the WHOLE registration: one bad name takes every other tool with it.
     # `repl_name` is computed by the CALLER across the server's full tool list, because
     # uniqueness cannot be decided one tool at a time (`get-weather` and `get.weather` both
     # clean to `get_weather`).
@@ -434,13 +434,13 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str,
     props = _args_from_schema(schema)
 
     def call(**kwargs: Any) -> str:
-        # The REPL sandbox proxy forwards EVERY declared param — incl. a defaulted optional the model
+        # The REPL sandbox proxy forwards EVERY declared param: incl. a defaulted optional the model
         # omitted, sent as None. Drop None so an unset optional isn't posted as JSON null into a strict
         # (additionalProperties:false / typed) server schema.
         args = {k: v for k, v in kwargs.items() if v is not None}
         t0 = time.perf_counter()   # an MCP call leaves this process; that wait is the whole cost
         try:
-            result = bridge.call(mcp_tool.name, args)     # WIRE name — unprefixed, unsanitised
+            result = bridge.call(mcp_tool.name, args)     # WIRE name: unprefixed, unsanitised
         except Exception as exc:
             record_tool_call(name, args=args, ok=False, duration_s=time.perf_counter() - t0,
                              note=f"error: {type(exc).__name__}",
@@ -449,8 +449,8 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str,
             return f"MCP tool {repl!r} error: {type(exc).__name__}: {str(exc)[:200]}"
         text = result_text(result)
         # A non-`CallToolResult` arm is not a successful call. Checked here rather than left to
-        # `_tool_reported_error`, which would find no flag on it, report `ok` — recording a
-        # non-result in the trace as a success — and spend the one-shot rename warning saying so.
+        # `_tool_reported_error`, which would find no flag on it, report `ok`: recording a
+        # non-result in the trace as a success, and spend the one-shot rename warning saying so.
         ok = _is_tool_result(result) and not _tool_reported_error(result)
         record_tool_call(
             name, args=args, ok=ok, duration_s=time.perf_counter() - t0,
@@ -463,13 +463,13 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str,
     call.__name__ = repl   # cosmetic; dspy reads the explicit `name=` at the return below
     call.__doc__ = desc
     # dspy.RLM injects `tool.func` (this `call`) into its PythonInterpreter, which builds the sandbox
-    # tool proxy from ``inspect.signature(func)`` — NOT from ``dspy.Tool.args``. A bare ``**kwargs``
+    # tool proxy from ``inspect.signature(func)``: NOT from ``dspy.Tool.args``. A bare ``**kwargs``
     # wrapper therefore registers a single param literally named "kwargs", so the model calls e.g.
     # ``get_vulnerability(kwargs=...)`` and the server rejects the unexpected property. The rule
     # itself lives in `signature_from_json_schema` (public since 1.1.0) so a consumer building its
     # own tools from `McpCatalog` names uses the SAME derivation rather than re-deriving it.
     #
-    # UNCONDITIONAL — no `if schema is not None` guard. A schema-less tool used to keep the broken
+    # UNCONDITIONAL: no `if schema is not None` guard. A schema-less tool used to keep the broken
     # ``**kwargs`` proxy while the comment here claimed otherwise; the SDK makes the input schema a
     # required dict so that branch is not reachable through `mcp_tools`, but a caller constructing
     # `_make_tool` directly could hit it, and a zero-parameter signature is right for a genuinely
@@ -478,19 +478,19 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str,
         call.__signature__ = signature_from_json_schema(schema)
     except (ValueError, TypeError):
         # KNOWINGLY DEGRADED, and the only honest outcome: a property named `from` or `db.query`
-        # cannot be an `inspect.Parameter`. Sanitising it is NOT an option — the proxy forwards the
+        # cannot be an `inspect.Parameter`. Sanitising it is NOT an option: the proxy forwards the
         # parameter name to the server as a JSON key, so a renamed property sends wrong wire
         # arguments. Keeping `**kwargs` leaves a tool the model can still call (dspy accepts it;
         # only the arg NAMES are lost), whereas stamping a bad name would emit `def tool(from):`
         # into the Deno stub and abort registration for EVERY tool on the task.
-        # `assert_repl_safe` rejects this shape by design — it is a real degradation, recorded
+        # `assert_repl_safe` rejects this shape by design. It is a real degradation, recorded
         # here rather than hidden.
         call.__repl_degraded__ = (  # type: ignore[attr-defined]
             f"tool {name!r}: a property name in this server's schema cannot be a Python "
             f"parameter, so the wrapper keeps its **kwargs shape and the model cannot pass "
             f"arguments by name"
         )
-    # `name=` is what dspy VALIDATES and what it registers in the sandbox — NOT
+    # `name=` is what dspy VALIDATES and what it registers in the sandbox: NOT
     # `call.__name__` (`dspy.Tool` only falls back to the function's name when `name=` is
     # omitted). Sanitising `__name__` alone is a placebo: the raw name still reaches dspy
     # and still raises. This line is the fix.
@@ -500,7 +500,7 @@ def _make_tool(dspy_mod: Any, bridge: McpConnection, mcp_tool: Any, prefix: str,
 @contextlib.contextmanager
 def mcp_tools(server: ServerSpec, *, timeout: float = 30.0, prefix: str = "") -> Iterator[list]:
     """Connect to an EXTERNAL MCP server and yield its tools as sync ``dspy.Tool``s for
-    ``RLMTask(tools=…)``. rlm-harness is a CLIENT only — point this at someone else's server.
+    ``RLMTask(tools=…)``. rlm-harness is a CLIENT only: point this at someone else's server.
 
     ``server``: a stdio spec ``{"command": "npx", "args": ["-y", "some-mcp"], "env": {...}}``, or a
     streamable-HTTP spec ``{"url": "https://host/mcp"}`` (or a bare URL string). ``prefix`` is an
@@ -521,7 +521,7 @@ def mcp_tools(server: ServerSpec, *, timeout: float = 30.0, prefix: str = "") ->
     bridge = McpConnection(server, timeout=timeout)
     try:
         # start() inside the try so a start failure (timeout / a server that errors on init) still
-        # runs close() — otherwise the background thread + any spawned stdio subprocess would leak.
+        # runs close(): otherwise the background thread + any spawned stdio subprocess would leak.
         bridge.start()
         # Resolve every REPL name in ONE pass over the server's full tool list: uniqueness
         # is a property of the SET, so per-tool sanitising could map two server tools onto

@@ -1,15 +1,15 @@
-"""``resolve_within_root`` / ``make_read_file_tool`` / ``make_grep_files_tool`` — the filesystem-side
+"""``resolve_within_root`` / ``make_read_file_tool`` / ``make_grep_files_tool``: the filesystem-side
 analogue of ``fetch.py``'s SSRF-guarded ``is_safe_url``/``make_fetch_tool``: a safe, scoped, no-shell
 way to let a model read or search a bounded local directory tree.
 
-**``root`` is not "a repo" — it is any bounded local directory tree** a consumer scopes it to: a
+**``root`` is not "a repo". It is any bounded local directory tree** a consumer scopes it to: a
 source repository, a docs corpus, an extracted archive, a dataset directory, a log directory,
 whatever the consumer's task needs. Today the only postures ``tools/`` offers for anything
 filesystem/execution-shaped are "no access at all" or ``make_command_tool`` (full shell, consumer
-supplies the isolation). This fills the gap in between — the single most common thing a
+supplies the isolation). This fills the gap in between: the single most common thing a
 coding-adjacent consumer needs, and one that does NOT require a shell escape hatch: a pure-Python
 regex scan over a root-confined, consumer-supplied file list. ``candidate_paths`` stays REQUIRED
-(no default directory walk, no built-in ignore-file handling) — the base/wrap split: the kit owns
+(no default directory walk, no built-in ignore-file handling): the base/wrap split: the kit owns
 the safety guard, the consumer decides which files are even candidates, same as ``make_command_tool``
 demands an injected ``Runner``.
 
@@ -31,7 +31,7 @@ from ..trace import record_tool_call
 
 _DEFAULT_MAX_RESULTS = 50
 
-# How much of a read/search result is echoed into the trace — bounded because a trace is shipped
+# How much of a read/search result is echoed into the trace: bounded because a trace is shipped
 # for replay/observability and a whole-file read or a wide grep can return a lot.
 _PREVIEW_CHARS = 1200
 _PREVIEW_HITS = 8
@@ -46,11 +46,11 @@ def _validate_tool_name(name: str) -> None:
     Deliberately a DEVIATION from `sub_lm.py:model_as_tool` / `tools/validation.py:
     make_schema_validator`'s ``sanitize_tool_name`` (silent rewrite): those sanitize UNCONTROLLED
     derived data (a model id, a dynamic pydantic class name) where a best-effort rewrite is the
-    right default. ``name=`` here is explicit, consumer-typed input — silently mangling a name the
+    right default. ``name=`` here is explicit, consumer-typed input: silently mangling a name the
     caller chose on purpose would be more surprising than refusing it outright.
 
     Checks BOTH halves dspy validates at ``RLM(...)`` construction: a valid Python identifier
-    (not a keyword), and not one of dspy's reserved sandbox names. Both imports are lazy — this
+    (not a keyword), and not one of dspy's reserved sandbox names. Both imports are lazy: this
     file, like the rest of ``tools/``, stays dspy-free at module top.
     """
     from .._toolname import is_valid_tool_name
@@ -72,10 +72,10 @@ def resolve_within_root(root: str, path: str) -> str | None:
     ``root`` via ``..``, an absolute path elsewhere, or a symlink pointing outside.
 
     **Must use ``os.path.realpath`` (which follows symlinks), never ``os.path.normpath`` (purely
-    lexical) — this is the one thing that makes the check actually defeat a symlink escape.** A
+    lexical). This is the one thing that makes the check actually defeat a symlink escape.** A
     symlink INSIDE ``root`` pointing OUTSIDE it resolves, via ``realpath``, to its real target
     before the containment check runs; a ``normpath``-only check would never see past the symlink
-    and would wrongly allow it. Do not "simplify" this to ``normpath`` — that would silently reopen
+    and would wrongly allow it. Do not "simplify" this to ``normpath``: that would silently reopen
     exactly the escape this guard exists to close.
     """
     root_real = os.path.realpath(root)
@@ -93,13 +93,13 @@ def make_read_file_tool(
     max_output_chars: int | None = None,
     line_numbers: bool = False,
 ) -> Callable[..., str]:
-    """Build a ``read_file``-shaped tool scoped to ``root`` — wired in a task's ``__init__``
+    """Build a ``read_file``-shaped tool scoped to ``root``: wired in a task's ``__init__``
     (per-run state, never a classvar).
 
     ``name`` (default ``"read_file"``): the REPL-facing tool identity and the trace's ``tool``
-    field — override it to give a second bounded root (a docs corpus alongside a source repo, say)
+    field: override it to give a second bounded root (a docs corpus alongside a source repo, say)
     a distinct name in the same task's ``tools=[...]`` list; see the module docstring. Validated at
-    factory-build time (identifier + not reserved) — ``rlm_harness.testing.assert_repl_safe``
+    factory-build time (identifier + not reserved): ``rlm_harness.testing.assert_repl_safe``
     remains the recommended proactive per-tool check, but is no longer the only line of defense.
 
     ``encoding`` (default ``"utf-8"``): point this at a non-UTF-8 corpus if needed.
@@ -110,32 +110,32 @@ def make_read_file_tool(
     verifies it against the line the gutter names, so a guttered citation resolves rather than
     failing. The two stay complementary, not alternatives: numbers for the model's coordinates,
     raw text for the verifier. Turning numbers off to keep verification happy is the expensive
-    half of that mistake — measured at 14.4% of citations landing on the wrong line, and at
+    half of that mistake: measured at 14.4% of citations landing on the wrong line, and at
     21.4% -> 0.0% of coordinate corrections when a consumer turned them back on. See the guide,
     "Line numbers and
     ``verify_quote``".
 
-    **A BLANK line renders as just its gutter** (``"     7\\t"``), which strips to ``"7"`` — so
+    **A BLANK line renders as just its gutter** (``"     7\\t"``), which strips to ``"7"``, so
     until 1.8.2 a quote of one passed ``verify_quote``'s empty-quote guard and matched any source
     containing that digit: a citation of nothing verifying, at a line it never claimed. Such a
     quote is refused with its own message. A guttered quote that carries CONTENT is resolved by
-    coordinate since 1.9.0 — it must match the named line exactly and that block must occur once,
+    coordinate since 1.9.0. It must match the named line exactly and that block must occur once,
     or it falls back to the ordinary search.
 
     ``max_output_chars`` (default ``None`` = unlimited): truncates the returned text at that
-    length with a VISIBLE marker appended — never a silent shortening. Scoped to the
+    length with a VISIBLE marker appended: never a silent shortening. Scoped to the
     successful-read branch only: the ``Refused``/``Read error`` strings below are never truncated.
 
     ``line_numbers`` (default ``False``): prefix each returned line with its REAL 1-indexed file
     line number (``f"{n:>6}\\t"``), so a model reading a slice starting mid-file doesn't have to
-    compute one itself from ``start_line`` — removing exactly the kind of off-by-one a model gets
+    compute one itself from ``start_line``: removing exactly the kind of off-by-one a model gets
     wrong when later
     asked to cite or edit that line. Also scoped to the successful-read branch only.
 
     **If you verify citations, this flag changes what `verify_quote` must be given.** The rendered
     line carries a gutter that is NOT file content, so a model quoting what it SAW carries the
     gutter into its quote. Feed the tool's output to the MODEL and the RAW file text to
-    `verify_quote` — never the same string to both. Since 1.9.0 `verify_quote` reads a gutter as a
+    `verify_quote`: never the same string to both. Since 1.9.0 `verify_quote` reads a gutter as a
     COORDINATE CLAIM and resolves most of them -- 83.16% of the guttered NON-BLANK quotes in this
     repo's own corpus, or 67.2% of everything this tool renders once blank-line citations are
     counted (they are refused outright, see above) -- but only under ``normalize_whitespace=True``,
@@ -163,17 +163,17 @@ def make_read_file_tool(
             with open(resolved, encoding=encoding) as fh:
                 lines = fh.readlines()
         except (OSError, UnicodeDecodeError) as exc:
-            # IsADirectoryError is an OSError subclass — a directory-shaped `path` degrades the
+            # IsADirectoryError is an OSError subclass: a directory-shaped `path` degrades the
             # same way a missing/unreadable file does, never a raised, unhandled exception.
             record_tool_call(
                 name, args={"path": path}, ok=False, note=f"error: {type(exc).__name__}"
             )
             return f"Read error for {path!r}: {type(exc).__name__}"
 
-        # `lo` is the CLAMPED start index — read_file already tolerates start_line <= 0 (that is
+        # `lo` is the CLAMPED start index: read_file already tolerates start_line <= 0 (that is
         # what max(0, ...) is FOR). Any line-number prefix must derive from `lo`, never from the
         # raw `start_line` parameter directly: for start_line <= 0, lo == 0 always, so the real
-        # first line number is 1 — `start_line + offset` would be off by one (or more, for a
+        # first line number is 1: `start_line + offset` would be off by one (or more, for a
         # negative start_line) in exactly the inputs this clamp exists to tolerate.
         lo = max(0, start_line - 1)
         hi = len(lines) if end_line is None else min(len(lines), end_line)
@@ -186,14 +186,14 @@ def make_read_file_tool(
         else:
             result = "".join(selected)
 
-        # Truncation runs AFTER line-numbering, on the string the model actually receives — the
+        # Truncation runs AFTER line-numbering, on the string the model actually receives: the
         # only order under which the char budget reflects real output (numbering prefixes count
         # against the cap) and avoids numbering an already-truncated fragment inconsistently.
         truncated = max_output_chars is not None and len(result) > max_output_chars
         if truncated:
             result = (
                 result[:max_output_chars]
-                + f"\n... [truncated at {max_output_chars} chars — narrow "
+                + f"\n... [truncated at {max_output_chars} chars: narrow "
                 "start_line/end_line to read more]"
             )
 
@@ -221,23 +221,23 @@ def make_grep_files_tool(
     max_total_time_s: float = 30.0,
 ) -> Callable[..., str]:
     """Build a ``grep_files``-shaped tool scoped to ``root``, searching only ``candidate_paths``
-    (typically a consumer-computed file list) — per-run state, wired in a task's ``__init__``.
+    (typically a consumer-computed file list): per-run state, wired in a task's ``__init__``.
 
     ``name`` (default ``"grep_files"``): same rationale and mechanism as
-    :func:`make_read_file_tool`'s ``name`` — lets a second bounded root coexist in one task's
+    :func:`make_read_file_tool`'s ``name``: lets a second bounded root coexist in one task's
     ``tools=[...]`` list without a duplicate-name collision.
 
-    **Requires the optional ``regex`` package** (``pip install "rlm-harness[grep]"``) — raises a
+    **Requires the optional ``regex`` package** (``pip install "rlm-harness[grep]"``). Raises a
     friendly ``ImportError`` at factory-BUILD time if it's missing, with NO silent fallback to
     stdlib ``re``. This is deliberate, not a convenience gap: ``pattern`` is LM-controlled,
     unbounded regex, matched against real file lines with no wall-clock budget anywhere else in
-    this kit's tool-call path — and stdlib ``re`` cannot be bounded by ANY pure-Python mechanism,
+    this kit's tool-call path, and stdlib ``re`` cannot be bounded by ANY pure-Python mechanism,
     including ``signal.alarm`` (CPython's ``re`` engine does not yield to the signal dispatcher
     mid-match; one ``re.search()`` call is a single, uninterruptible C-level operation from the
     interpreter's point of view). A catastrophic-backtracking pattern (e.g. ``(a+)+$`` against a
     non-matching line) can hang the host process indefinitely on stdlib ``re``. ``regex`` is
     different: its own matching loop periodically checks elapsed wall-clock time internally and
-    raises ``TimeoutError`` when exceeded — a real, working, pattern-structure-agnostic mechanism.
+    raises ``TimeoutError`` when exceeded: a real, working, pattern-structure-agnostic mechanism.
     This mirrors ``make_json_schema_validator``'s existing posture for its own optional
     ``jsonschema`` extra: no silently-weaker substitute mode, because a pattern-matching tool whose
     LM-controlled pattern isn't actually wall-clock-bounded is worse than a tool that flatly
@@ -245,7 +245,7 @@ def make_grep_files_tool(
 
     ``per_match_timeout_s`` (default ``1.0``) bounds ONE line's match; a ``TimeoutError`` skips
     just that line (counted, surfaced in the result, never silent) and the scan continues.
-    ``max_total_time_s`` (default ``30.0``) bounds the WHOLE call — checked before EVERY line's
+    ``max_total_time_s`` (default ``30.0``) bounds the WHOLE call: checked before EVERY line's
     match (not merely once per file: a per-file-only check would let a single large file with many
     timeout-tripping lines blow past this budget by an arbitrary multiple before the check ever
     fires again). Both are factory (operator/deployment) parameters, never model-controlled,
@@ -258,7 +258,7 @@ def make_grep_files_tool(
     except ImportError as exc:
         raise ImportError(
             "make_grep_files_tool needs the optional 'regex' package for a wall-clock-bounded "
-            "match (stdlib `re` has no way to bound catastrophic-backtracking cost — not even "
+            "match (stdlib `re` has no way to bound catastrophic-backtracking cost: not even "
             "via signal.alarm). Install it with:  pip install \"rlm-harness[grep]\""
         ) from exc
 
@@ -275,7 +275,7 @@ def make_grep_files_tool(
         glob against each file's path, default ``"*"`` = every file).
 
         ``output_mode`` (default ``"content"``): ``"content"`` returns up to ``max_results``
-        matching lines as ``path:line: text``, one per line — the original, only behavior.
+        matching lines as ``path:line: text``, one per line: the original, only behavior.
         ``"files_with_matches"`` returns up to ``max_results`` DISTINCT file paths that had ≥1
         match, one per line, no line text. ``"count"`` returns up to ``max_results`` ``path: N``
         lines (N = matching-line count in that file); a file with zero matches is omitted. An
@@ -283,45 +283,45 @@ def make_grep_files_tool(
         raises.
 
         **Per-file early-break, `"files_with_matches"` only.** That mode only needs to know "did
-        this file have >=1 match" — scanning stops the instant one is found, moving on to the next
-        candidate file. `"count"` mode CANNOT do this — it needs the file's exact total match
+        this file have >=1 match": scanning stops the instant one is found, moving on to the next
+        candidate file. `"count"` mode CANNOT do this. It needs the file's exact total match
         count, so every line is still scanned there. Both `"files_with_matches"`/`"count"`
         additionally stop opening NEW candidate files once `max_results` qualifying files are
-        already found (an outer-loop break — it never skips a line of a file already being
+        already found (an outer-loop break: it never skips a line of a file already being
         scanned, only avoids starting further ones). One disclosed side effect of the
         `"files_with_matches"` early-break: `timed_out_lines` (below) then reflects only the lines
-        scanned before that file's first match, not the whole file — an informational trace metric
+        scanned before that file's first match, not the whole file: an informational trace metric
         only, never a `max_total_time_s` correctness issue.
 
-        ``max_results`` caps the number of MATCHES found (not total output lines — see
+        ``max_results`` caps the number of MATCHES found (not total output lines: see
         ``context_before``/``context_after`` below). In ``"content"`` mode a match is complete the
         instant it's found, so the cap is checked per line. In ``"files_with_matches"``/``"count"``
         mode a row (one file's aggregated result) is only complete once that file's entire line
-        loop finishes (or, for `"files_with_matches"`, its early-break fires) — checked once per
+        loop finishes (or, for `"files_with_matches"`, its early-break fires): checked once per
         completed file, same "cap on output rows" contract, at the granularity where a row
         actually becomes final.
 
         ``ignore_case`` (default ``False``): case-insensitive matching as a first-class flag,
         rather than something the caller has to bake into the pattern itself.
 
-        ``context_before``/``context_after`` (default ``0``, `"content"` mode only — silently
+        ``context_before``/``context_after`` (default ``0``, `"content"` mode only: silently
         ignored, not an error, in the other two modes, which have no per-line text to attach
         context to): show that many unchanged lines immediately before/after each match, using
-        grep's own convention — a MATCH keeps the ``path:line: text`` (colon) format; a CONTEXT
+        grep's own convention. A MATCH keeps the ``path:line: text`` (colon) format; a CONTEXT
         line uses ``path-line- text`` (hyphen) instead. A ``"--"`` line separates two blocks that
-        don't touch (a numbering gap) within the same file — never at a file boundary, since the
+        don't touch (a numbering gap) within the same file: never at a file boundary, since the
         path prefix itself already marks that. A line that itself matches is ALWAYS emitted as a
         match, never as leftover context from an earlier match's ``context_after`` window (a fresh
         match resets the after-context countdown outright, it never stacks with a still-running
-        one). ``max_results`` counts MATCHES only — context/separator lines are supplementary and
+        one). ``max_results`` counts MATCHES only: context/separator lines are supplementary and
         uncapped by it, mirroring real `grep -m`. When a match hits the `max_results` cap, its own
-        trailing context may be truncated if the file/budget ends first — an accepted, deliberate
+        trailing context may be truncated if the file/budget ends first: an accepted, deliberate
         simplicity choice, the same one `max_total_time_s` already makes for whatever's in-flight.
-        When both are `0` (the default), behavior — including the traced ``result_count`` — is
+        When both are `0` (the default), behavior, including the traced ``result_count``, is
         byte-identical to a build of this tool with no context support at all.
 
         A per-line match that exceeds the configured timeout is skipped (never raises, in any
-        mode, and still eligible as someone else's context line — a timeout means "couldn't
+        mode, and still eligible as someone else's context line. A timeout means "couldn't
         confirm a match," not "unfit as context text"); the whole call is additionally bounded by
         a wall-clock budget, after which it returns whatever partial results it found so far, in
         whichever mode was requested."""
@@ -341,7 +341,7 @@ def make_grep_files_tool(
             record_tool_call(name, args={"pattern": pattern}, ok=False, note=str(exc))
             return f"Invalid regex {pattern!r}: {exc}"
 
-        # Context lines are a "content"-mode-only, opt-in feature — this flag gates ALL of the
+        # Context lines are a "content"-mode-only, opt-in feature: this flag gates ALL of the
         # extra bookkeeping below so that context_before == context_after == 0 (the default)
         # takes the exact same code path, with the exact same output, as before this feature
         # existed. Never let context machinery run when both are 0.
@@ -349,7 +349,7 @@ def make_grep_files_tool(
 
         started = time.monotonic()
         hits: list[str] = []
-        # `match_count` — NOT `len(hits)` — is what max_results checks in "content" mode. Once
+        # `match_count`, NOT `len(hits)`, is what max_results checks in "content" mode. Once
         # context/"--"-separator rows share `hits` with match rows, len(hits) is emitted-ROW
         # count, not match count; conflating the two would truncate the scan before max_results
         # real matches are found, silently contradicting the "max_results counts matches" contract
@@ -366,7 +366,7 @@ def make_grep_files_tool(
                 break
             # Outer-loop early-break for the other two modes: stop OPENING further candidate
             # files once enough qualifying ones are already found. Never skips a line of a file
-            # already being scanned — only avoids starting new ones.
+            # already being scanned: only avoids starting new ones.
             if output_mode != "content" and len(file_matches) >= max_results:
                 break
             if not fnmatch.fnmatch(rel_path, glob):
@@ -381,7 +381,7 @@ def make_grep_files_tool(
             try:
                 with open(resolved, encoding="utf-8") as fh:
                     for lineno, line in enumerate(fh, start=1):
-                        # Checked before EVERY line's match, in every output_mode identically —
+                        # Checked before EVERY line's match, in every output_mode identically:
                         # not just once per file: a per-file-only check would let a single large
                         # file with many timeout-tripping lines blow past max_total_time_s by an
                         # arbitrary multiple before the check ever fired again.

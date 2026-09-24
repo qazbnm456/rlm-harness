@@ -25,4 +25,4 @@ What you expected instead.
 
 **Notes**
 
-Trace excerpts, stack traces, or logs — redact anything sensitive.
+Trace excerpts, stack traces, or logs: redact anything sensitive.

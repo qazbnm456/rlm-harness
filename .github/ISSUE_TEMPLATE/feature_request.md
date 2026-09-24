@@ -7,7 +7,7 @@ labels: enhancement
 **The gap or need**
 
 What's missing or awkward. If a downstream consumer surfaced it, describe the friction
-generically — no consumer-specific names or values, per the vendor-neutral rule.
+generically: no consumer-specific names or values, per the vendor-neutral rule.
 
 **Is it generic?**
 

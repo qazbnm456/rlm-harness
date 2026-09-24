@@ -1,4 +1,4 @@
-"""REPL-safety rules for a tool — its NAME and its SIGNATURE, one derivation each.
+"""REPL-safety rules for a tool: its NAME and its SIGNATURE, one derivation each.
 
 The module is ``_``-prefixed, but **three of its functions are PUBLIC and SemVer-frozen**
 since 1.1.0, re-exported from ``rlm_harness.__all__``: :func:`is_valid_tool_name`,
@@ -6,7 +6,7 @@ since 1.1.0, re-exported from ``rlm_harness.__all__``: :func:`is_valid_tool_name
 :func:`signature_from_json_schema`. Everything else here is private and may change.
 
 They were promoted because a consumer driving :class:`rlm_harness.McpCatalog` gets the
-server's RAW tool names and builds its own ``dspy.Tool``s from them — hitting exactly the
+server's RAW tool names and builds its own ``dspy.Tool``s from them: hitting exactly the
 defects 1.0.2 fixed inside ``mcp.py``, with no sanctioned remedy, since CLAUDE.md's
 "consumers EXTEND, they don't fork" invariant bars reaching into a ``_private`` name.
 Both halves are needed: the NAME rule alone leaves that consumer with a valid name on a
@@ -14,7 +14,7 @@ Both halves are needed: the NAME rule alone leaves that consumer with a valid na
 
 **What is frozen is the PROPERTIES, not the literal output strings.** Callers may rely on:
 the fixpoint (below), that the result is always a valid non-reserved identifier, and that
-:func:`unique_tool_names` never collides. They may NOT rely on a specific rewrite —
+:func:`unique_tool_names` never collides. They may NOT rely on a specific rewrite:
 ``t_``, the ``_2`` suffix and the trailing ``_`` are implementation. Note also that the
 reserved set is read from the INSTALLED dspy, so ``sanitize_tool_name("print")`` can differ
 across dspy versions under an unchanged rlm-harness. Do not persist these names as
@@ -27,13 +27,13 @@ name takes every other tool down with it.
 Four places in this kit derive a tool name from data it does not control, and every one
 of them shipped broken (CHANGELOG 1.0.2):
 
-- ``mcp.py`` — the external MCP server's tool name. Hyphens and dots are the MCP naming
+- ``mcp.py``: the external MCP server's tool name. Hyphens and dots are the MCP naming
   norm (``get-weather``, ``db.query``), and both are hard failures.
-- ``sub_lm.py:model_as_tool`` — ``f"query_{model_id}"``; a real model id
+- ``sub_lm.py:model_as_tool``: ``f"query_{model_id}"``; a real model id
   (``openai/gpt-4o-mini``) contains ``/`` and ``.``.
-- ``tools/validation.py:make_schema_validator`` — ``f"validate_{model.__name__}"``; a
+- ``tools/validation.py:make_schema_validator``: ``f"validate_{model.__name__}"``; a
   ``pydantic.create_model("bad-name")`` carries the hyphen straight through.
-- ``tools/model.py`` / ``tools/harness.py`` — both returned a closure literally named
+- ``tools/model.py`` / ``tools/harness.py``: both returned a closure literally named
   ``call``, so using the two together made dspy raise ``Duplicate tool name``. Fixed by
   naming them distinctly rather than by sanitising.
 
@@ -63,7 +63,7 @@ def is_valid_tool_name(name: object) -> bool:
     """True if dspy will accept ``name`` as a tool name.
 
     Mirrors dspy's own rule: ``isidentifier()`` and not a keyword. The keyword half matters
-    for a reason worth keeping written down — dspy's Deno runner interpolates the name into
+    for a reason worth keeping written down: dspy's Deno runner interpolates the name into
     ``def <name>(…):``, so ``def class(…)`` is a sandbox ``SyntaxError`` that aborts
     registration for EVERY tool on the task, not just the offending one.
     """
@@ -80,7 +80,7 @@ def _reserved() -> frozenset[str]:
 def sanitize_tool_name(raw: str, *, taken: Iterable[str] = ()) -> str:
     """Map ``raw`` to a valid, non-reserved, unique Python identifier.
 
-    **Fixpoint:** an already-valid, non-reserved, un-taken name is returned UNCHANGED —
+    **Fixpoint:** an already-valid, non-reserved, un-taken name is returned UNCHANGED,
     including a non-ASCII one (see the module docstring; this is the property a character
     class silently violates).
 
@@ -102,7 +102,7 @@ def sanitize_tool_name(raw: str, *, taken: Iterable[str] = ()) -> str:
         cleaned = _STEM + cleaned
     # Only reachable for input that needed sanitising at all (the fixpoint returned above):
     # give `"---"` / `""` a real stem rather than a bare `_`, which is the throwaway
-    # convention in a REPL. A name that was ALREADY `_` stays `_` — the fixpoint wins, since
+    # convention in a REPL. A name that was ALREADY `_` stays `_`: the fixpoint wins, since
     # rewriting a valid name is the one thing this function must never do.
     if not cleaned.strip("_"):
         cleaned = _STEM + cleaned.lstrip("_")
@@ -123,12 +123,12 @@ def unique_tool_names(
     """Map every name in ``raws`` to a valid, mutually-unique REPL name.
 
     Owns the collision bookkeeping, so a caller cannot forget to thread a ``taken`` set
-    and silently reintroduce a duplicate — which is the exact defect this release fixes.
+    and silently reintroduce a duplicate, which is the exact defect this release fixes.
 
     ``taken`` are names already registered on the task from an EARLIER call. This exists for
     the progressive :class:`rlm_harness.McpCatalog` case, where servers load one at a time:
     server B's names must avoid server A's, and without this parameter the caller would have
-    to drop back to :func:`sanitize_tool_name` and thread the set by hand — the very thing
+    to drop back to :func:`sanitize_tool_name` and thread the set by hand: the very thing
     this function exists to make impossible to forget.
 
     **Two passes, and the order is load-bearing.** Every already-valid name is reserved
@@ -162,24 +162,24 @@ def signature_from_json_schema(schema: Any) -> inspect.Signature:
     Schema object (an MCP tool's input schema, or any equivalent).
 
     **Why a wrapper needs this at all.** ``dspy.RLM`` builds its in-sandbox tool proxy from
-    ``inspect.signature(tool.func)`` — NOT from ``dspy.Tool.args`` — on both the Deno and the
+    ``inspect.signature(tool.func)``, NOT from ``dspy.Tool.args``, on both the Deno and the
     container backend. So a wrapper written as ``def call(**kwargs)`` registers a single proxy
     param literally named ``kwargs``: the model calls ``get_thing(kwargs=…)`` and a strict
     server rejects the unexpected property. Stamping a real signature is the fix, and it is
-    the SHAPE half of REPL safety — the NAME half is :func:`sanitize_tool_name`. A consumer
+    the SHAPE half of REPL safety. The NAME half is :func:`sanitize_tool_name`. A consumer
     building tools from :class:`rlm_harness.McpCatalog` needs both; having only the name gives
     a well-named tool that :func:`rlm_harness.testing.assert_repl_safe` still rejects.
 
     **REQUIRED-FIRST, and it is not cosmetic.** The Deno stub emits ``def f(<params>)`` in
     this order, and a no-default param after a defaulted one is a ``SyntaxError`` that aborts
-    the ENTIRE tool registration — every other tool with it. ``KEYWORD_ONLY`` hides that
+    the ENTIRE tool registration: every other tool with it. ``KEYWORD_ONLY`` hides that
     host-side, which is exactly why the ordering has to be enforced here rather than trusted.
 
     Raises ``ValueError``/``TypeError`` when a property name cannot be a Python parameter (a
     keyword like ``from``, or a non-identifier like ``db.query``). **Do not "fix" that by
     sanitising the property name:** the proxy forwards the parameter name to the server as a
     JSON key, so a renamed property sends wrong wire arguments. The honest handling is to let
-    the tool keep its ``**kwargs`` shape and know it is degraded — see ``mcp.py``.
+    the tool keep its ``**kwargs`` shape and know it is degraded: see ``mcp.py``.
 
     A schema with no properties yields a zero-parameter signature, which is correct and
     strictly better than ``**kwargs`` for a genuinely no-argument tool.

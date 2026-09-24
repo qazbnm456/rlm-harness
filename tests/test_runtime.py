@@ -28,7 +28,7 @@ def test_configure_with_observe_calls_instrument(monkeypatch):
 
 def test_configure_accepts_injected_lms():
     # The public seam for supplying a test double (or a pre-built client): pass main_lm/sub_lm and
-    # configure uses them verbatim instead of building from config — so nothing reaches into _STATE.
+    # configure uses them verbatim instead of building from config, so nothing reaches into _STATE.
     from dspy.utils.dummies import DummyLM
 
     d_main, d_sub = DummyLM([{"a": "1"}]), DummyLM([{"b": "2"}])
@@ -117,7 +117,7 @@ def test_configure_routes_only_the_prefixed_role_when_mixed(monkeypatch):
 
 
 def test_configure_explicit_main_lm_override_wins_over_a_prefixed_model_string(monkeypatch):
-    # An explicit main_lm/sub_lm kwarg wins outright regardless of the model string — the prefix is
+    # An explicit main_lm/sub_lm kwarg wins outright regardless of the model string. The prefix is
     # only consulted for a role the caller left None.
     from dspy.utils.dummies import DummyLM
 
@@ -134,7 +134,7 @@ def test_configure_explicit_main_lm_override_wins_over_a_prefixed_model_string(m
 
 def test_configure_lm_kwargs_never_forwarded_into_the_subscription_lm(monkeypatch):
     # ClaudeAgentLM.__init__ accepts **kwargs and forwards them into dspy.BaseLM without
-    # validating they make sense for this adapter — api_key/base_url/custom_llm_provider must
+    # validating they make sense for this adapter: api_key/base_url/custom_llm_provider must
     # never reach it (meaningless, or for base_url actively misleading).
     monkeypatch.setattr(rt, "_try_instrument", lambda: None)
     stub = _stub_claude_agent_lm(monkeypatch)
@@ -154,7 +154,7 @@ def test_request_timeout_is_not_forwarded_into_the_subscription_lm(monkeypatch):
     """`request_timeout_s` bounds ONE HTTP request (dspy and litellm each retry around it);
     `ClaudeAgentLM.timeout_s` is an END-TO-END per-call deadline that includes time queued
     behind the SDK's semaphore. Mapping one onto the other would make queued sub-LM calls under
-    `llm_query_batched` time out from waiting alone — so the knob stays litellm-only."""
+    `llm_query_batched` time out from waiting alone, so the knob stays litellm-only."""
     monkeypatch.setattr(rt, "_try_instrument", lambda: None)
     stub = _stub_claude_agent_lm(monkeypatch)
     rt.configure(
@@ -181,7 +181,7 @@ def test_configure_warns_when_a_timeout_cannot_reach_an_auto_routed_role(monkeyp
 
 
 def test_no_warning_when_no_role_was_auto_routed(monkeypatch, caplog):
-    """A plain litellm setup consumes the knob fully — warning there would be noise, and noise
+    """A plain litellm setup consumes the knob fully: warning there would be noise, and noise
     is how a real warning gets ignored."""
     monkeypatch.setattr(rt, "_try_instrument", lambda: None)
     with caplog.at_level("WARNING", logger="rlm_harness.runtime"):
@@ -214,7 +214,7 @@ def test_configure_bare_subscription_prefix_raises_value_error_not_system_exit(m
 
 def test_configure_plain_model_never_routes(monkeypatch):
     # Regression guard: a plain (non-prefixed) model string is byte-for-byte unaffected by this
-    # change — the routing branch is a pure addition to the `is None` path.
+    # change. The routing branch is a pure addition to the `is None` path.
     monkeypatch.setattr(rt, "_try_instrument", lambda: None)
     stub = _stub_claude_agent_lm(monkeypatch)
     rt.configure(RLMConfig(main_model="x", sub_model="y", observe=False))
@@ -225,7 +225,7 @@ def test_configure_plain_model_never_routes(monkeypatch):
 def test_configure_stale_anthropic_api_key_raises_runtime_error_uncollided(monkeypatch):
     # The REAL ClaudeAgentLM.__init__ logic (not the stub) runs here, to verify the actual
     # RuntimeError it raises for a stale ANTHROPIC_API_KEY propagates all the way out of
-    # configure() — structurally, not merely because the message text happens to differ from
+    # configure(): structurally, not merely because the message text happens to differ from
     # configure()'s own unrelated ownership-error swallow: the LM-construction step (where this
     # RuntimeError originates) runs entirely BEFORE the try/except that wraps dspy.configure(...),
     # so it cannot reach that handler regardless of message content.

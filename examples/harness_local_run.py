@@ -1,7 +1,7 @@
-"""Example: IN-PROCESS harness delegation — no subprocess, no HTTP.
+"""Example: IN-PROCESS harness delegation, no subprocess, no HTTP.
 
 ``make_harness_tool`` + ``harness_from_endpoint`` (``tools/harness.py``) are transport-agnostic by
-design: the kit ships no ``call_endpoint`` and never will (see their docstrings — "the kit ships
+design: the kit ships no ``call_endpoint`` and never will (see their docstrings, "the kit ships
 NONE and names NONE"). The two usual transports are a subprocess speaking ``serve_harness``'s wire
 (``examples/harness_serve.py``) or an HTTP call to a hosted harness. This example shows a THIRD,
 lighter-weight option a consumer can build themselves with two small kit primitives:
@@ -10,15 +10,15 @@ and ``rlm_harness.tools.pointer_to_invocation`` (the canonical ``HarnessPointer`
 ``HarnessInvocation`` mapping, reused unchanged from the subprocess/HTTP case).
 
 **When to prefer this over subprocess/HTTP:** the child harness is TRUSTED, lives in the same
-process/deployment, and low latency matters more than OS-level isolation — a build-vs-test-style
+process/deployment, and low latency matters more than OS-level isolation: a build-vs-test-style
 child delegated dozens of times per parent run, say. **When to keep subprocess/HTTP instead:** you
 need real process/OS isolation (an untrusted or crash-prone child), a different runtime/language on
 the child side, or the child genuinely runs on a remote machine. An in-process call shares the
-parent's Python process, memory, and model credentials with the child — nothing here adds a NEW
+parent's Python process, memory, and model credentials with the child: nothing here adds a NEW
 code-execution surface (the child still enforces its own ``RLMConfig``/sandbox guard on its own REPL
 code, same as always), but it does mean a wedged or resource-hungry child shares the parent's process.
 
-Illustrative — needs real model creds and a sandbox, so it is NOT imported by the test suite.
+Illustrative. Needs real model creds and a sandbox, so it is NOT imported by the test suite.
 (``tests/test_harness_tool.py::test_in_process_transport_wiring`` exercises the SAME composition
 offline, with a stub child instead of a real ``dspy.RLM``, so the wiring itself stays covered by CI.)
 """
@@ -45,7 +45,7 @@ class SubFinding(BaseModel):
 
 
 class SubTask(RLMTask):
-    """The downstream harness being delegated to — an ordinary ``RLMTask``, nothing special about
+    """The downstream harness being delegated to: an ordinary ``RLMTask``, nothing special about
     it. Any ``RLMTask`` subclass works here; there is nothing "in-process-transport-aware" about
     the child side at all."""
 
@@ -58,7 +58,7 @@ class SubTask(RLMTask):
 def make_in_process_call_endpoint(run_id_prefix: str = "child"):
     """Build a ``call_endpoint`` for ``harness_from_endpoint`` that runs ``SubTask`` IN-PROCESS.
 
-    Returns a plain ``HarnessPointer``, built directly from ``SubTask``'s own known output shape —
+    Returns a plain ``HarnessPointer``, built directly from ``SubTask``'s own known output shape:
     NOT via ``serving._default_to_pointer`` (that helper is a private internal reserved for
     ``serve_harness``'s zero-config CLI path; reaching into it here would violate the kit's own
     "never reach into a `_private` name" rule, and it buys nothing once the child's shape is
@@ -72,8 +72,8 @@ def make_in_process_call_endpoint(run_id_prefix: str = "child"):
         trace_path = f"traces/{child_run_id}.jsonl"
 
         async def _run() -> HarnessPointer:
-            # The child's OWN TraceRecorder is entered HERE — inside the coroutine `run_isolated`
-            # runs on its dedicated thread — never around the `run_isolated()` call below. A fresh
+            # The child's OWN TraceRecorder is entered HERE: inside the coroutine `run_isolated`
+            # runs on its dedicated thread: never around the `run_isolated()` call below. A fresh
             # `threading.Thread` starts with an empty `contextvars.Context` (see `run_isolated`'s
             # own docstring), so a recorder entered outside would be invisible to
             # `current_recorder()` in here and the child's own tool_calls/sub_calls would go
@@ -87,7 +87,7 @@ def make_in_process_call_endpoint(run_id_prefix: str = "child"):
 
         # `call_endpoint` is a plain sync function (the RLM tool contract); `run_isolated` bridges
         # into the child's async `arun()` regardless of whether THIS thread already has a running
-        # loop — which it will, whenever the parent task itself is mid-`arun()`.
+        # loop, which it will, whenever the parent task itself is mid-`arun()`.
         return run_isolated(_run)
 
     return call_endpoint
@@ -110,7 +110,7 @@ async def main() -> None:
     delegate_to_sub_task = build_delegation_tool()
 
     # A parent task would normally pass `tools=[delegate_to_sub_task]` and let the ROOT LM decide,
-    # mid-REPL, whether to delegate — landing the decision in the trajectory as a `tool_call`,
+    # mid-REPL, whether to delegate: landing the decision in the trajectory as a `tool_call`,
     # exactly like the subprocess/HTTP transports. Called directly here for a minimal, runnable demo.
     result = delegate_to_sub_task("... a long pre-assembled context for the child to read ...")
     print(result)

@@ -1,8 +1,8 @@
-"""ClaudeAgentLM tests — the optional Claude-subscription adapter (`rlm-harness[subscription]`).
+"""ClaudeAgentLM tests: the optional Claude-subscription adapter (`rlm-harness[subscription]`).
 
 The heavy `claude-agent-sdk` is NOT a test dependency: the pure helpers run without it, the
 lazy export is asserted without it, and construction is exercised against a FAKE
-`claude_agent_sdk` injected into `sys.modules` — so the kit's CI never pulls the ~80MB SDK
+`claude_agent_sdk` injected into `sys.modules`, so the kit's CI never pulls the ~80MB SDK
 wheel. dspy IS a hard dep, so the module imports; guard anyway for a dspy-less environment.
 """
 
@@ -108,7 +108,7 @@ def test_the_call_deadline_is_a_constructor_choice_with_a_default(fake_sdk, monk
     """This LM's bound on a model call, and it had NO test at all. It is deliberately not driven
     by `RLMConfig.request_timeout_s`: that knob is a per-HTTP-request bound which dspy and
     litellm each retry around, whereas this is END-TO-END for one call and includes time queued
-    behind the module-level semaphore. `configure(main_lm=...)` is the seam for choosing it —
+    behind the module-level semaphore. `configure(main_lm=...)` is the seam for choosing it:
     see `runtime.configure`, which warns when the knob cannot reach an auto-routed role."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     assert rlm_harness.ClaudeAgentLM("opus")._timeout_s == 600.0
@@ -145,7 +145,7 @@ def _usage_of(raw):
 def test_a_cached_prompt_counts_the_cache_fields_not_just_the_remainder():
     """MEASURED on a live subscription call with a ~2k-token prompt. The Agent SDK caches the
     system prompt and tool definitions, so `input_tokens` is only what was neither written to
-    nor read from the cache. Reading it alone recorded 2 where the prompt was 2049 — 0.1% — so
+    nor read from the cache. Reading it alone recorded 2 where the prompt was 2049-0.1%, so
     every consumer reading this adapter's prompt size, out of the trace or out of `lm.history`,
     was three orders of magnitude low. (It is NOT 1.10.0's truncation ratio's denominator: that
     ratio is `completion_tokens / cap`.)"""
@@ -176,8 +176,8 @@ def test_a_bool_is_not_a_token_count():
 # The three tests above pin the arithmetic of a pure helper. They do NOT pin that `_acomplete`
 # calls it: restoring the original `prompt_tokens = usage.get("input_tokens", 0)` at the call
 # site, with the helper left intact but unused, leaves every one of them green. These drive the
-# real coroutine end to end through `forward()` — the bridge loop, the semaphore, `_query_once`
-# and the litellm mapping — against a fake SDK, so the defect's own location is covered.
+# real coroutine end to end through `forward()`: the bridge loop, the semaphore, `_query_once`
+# and the litellm mapping: against a fake SDK, so the defect's own location is covered.
 
 
 @pytest.fixture
@@ -190,7 +190,7 @@ def sdk_returning(monkeypatch):
     What it CANNOT catch is SDK drift: `ClaudeAgentOptions(**kwargs)` swallows anything, so a
     renamed kwarg stays green here. The eight the adapter passes were checked by hand against the
     real `claude-agent-sdk` 0.2.152, where `ResultMessage.usage` is a `dict[str, Any] | None`
-    passed through verbatim from the CLI — which is why the shapes below are dicts, and why a
+    passed through verbatim from the CLI, which is why the shapes below are dicts, and why a
     `None` in one of their values is a case worth testing at all.
     """
 
@@ -246,7 +246,7 @@ def test_an_unreported_usage_stays_absent_instead_of_becoming_three_zeroes(sdk_r
     assert not hasattr(lm.forward(prompt="hi"), "usage"), "an unreported usage became zeroes"
     # And drive DSPY, not a re-implementation of its read: the promise is that nothing lands in
     # the tracker, which is what a consumer's `run_end.payload.usage` is built from. Asserting
-    # `dict(getattr(response, "usage", {}) or {}) == {}` here instead would be vacuous — it
+    # `dict(getattr(response, "usage", {}) or {}) == {}` here instead would be vacuous: it
     # follows from the line above and cannot fail if dspy changes what it does with an empty
     # entry. This can.
     with dspy.track_usage() as tracker:
@@ -261,7 +261,7 @@ def test_an_unreported_usage_stays_absent_instead_of_becoming_three_zeroes(sdk_r
 
 
 def test_a_null_output_count_does_not_kill_the_call(sdk_returning):
-    """NEITHER token field was read with an int guard — both were a bare `.get(..., 0)`, so a
+    """NEITHER token field was read with an int guard. Both were a bare `.get(..., 0)`, so a
     `None` from the SDK in either one reached `prompt_tokens + completion_tokens` and raised
     `TypeError`, failing the whole LM call over a missing count. `output_tokens` is the field
     exercised here because `input_tokens`'s replacement is already covered by the sum above."""
@@ -273,7 +273,7 @@ def test_a_null_output_count_does_not_kill_the_call(sdk_returning):
 
 
 def test_the_sdk_reported_cost_rides_along_untouched(sdk_returning):
-    """`response_cost` is the SDK's OWN figure for the call, not derived from the tokens — the
+    """`response_cost` is the SDK's OWN figure for the call, not derived from the tokens: the
     comment block guarding that distinction is the longest in the module and had no test. It is
     also the only numeric field the adapter reads outside `_token_count`, so pin that it survives
     and that an absent cost adds no key."""
@@ -301,7 +301,7 @@ def test_the_returned_text_is_the_sdk_result(sdk_returning):
 # MEASURED entry shape (consumer's machine, claude-agent-sdk 0.2.119 / CLI 2.1.261): the four
 # token fields, `type`, and a nested `cache_creation` breakdown. `model` and further members
 # appear in the SDK's schema, which is why the guard checks the CONTAINER and never an entry's
-# keys — enumerating would freeze a set that demonstrably moves.
+# keys: enumerating would freeze a set that demonstrably moves.
 
 _ROUND = {
     "type": "message",
@@ -310,7 +310,7 @@ _ROUND = {
     "cache_creation_input_tokens": 1080,
     "cache_read_input_tokens": 0,
     "output_tokens": 125,
-    # A DECOMPOSITION of cache_creation_input_tokens, not an addition to it — Anthropic documents
+    # A DECOMPOSITION of cache_creation_input_tokens, not an addition to it: Anthropic documents
     # it as "Breakdown of cached tokens by TTL". Summing every int in this dict gives 2287.
     "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 1080},
 }
@@ -324,7 +324,7 @@ def _usage_with_rounds(rounds):
 def test_the_rounds_ride_through_verbatim_beside_the_aggregate(sdk_returning):
     """The whole point of carrying them: `prompt_tokens` is a per-CALL total, and a reader
     watching context growth cannot tell a growing prompt from a retried call without the
-    breakdown. Entries stay in the SDK's own vocabulary — normalising them to
+    breakdown. Entries stay in the SDK's own vocabulary: normalising them to
     prompt_tokens/completion_tokens would collapse the cache split, which is exactly what made
     1.10.2's bug invisible for as long as it was."""
     sdk_returning(_usage_with_rounds([_ROUND]))
@@ -336,7 +336,7 @@ def test_the_rounds_ride_through_verbatim_beside_the_aggregate(sdk_returning):
 
 
 def test_the_aggregate_is_the_three_TOP_LEVEL_input_fields_not_every_int_in_a_round():
-    """A pin on THIS adapter's arithmetic over a fixture — NOT a claim that the SDK's top-level
+    """A pin on THIS adapter's arithmetic over a fixture: NOT a claim that the SDK's top-level
     usage equals its rounds' sum. That is not merely unobserved, it is structurally false in
     general: the totals accumulate across every API request a call made while the rounds cover
     only the last, and a `compaction` entry's tokens are excluded from the totals outright. What
@@ -362,7 +362,7 @@ def test_the_aggregate_is_the_three_TOP_LEVEL_input_fields_not_every_int_in_a_ro
     pytest.param({"iterations": {"rounds": [_ROUND]}}, id="bare-dict"),
 ])
 def test_only_a_non_empty_list_of_dicts_becomes_api_rounds(sdk_returning, reported):
-    """Five inputs, ONE outcome: no key. The empty list is the one that needs saying — `all(...)`
+    """Five inputs, ONE outcome: no key. The empty list is the one that needs saying, `all(...)`
     over an empty list is True, so a guard that only checked "list of dicts" would CARRY `[]`,
     and the CLI does construct empty ones. Collapsing all five keeps "no api_rounds" a single
     fact with a single meaning instead of four."""
@@ -373,7 +373,7 @@ def test_only_a_non_empty_list_of_dicts_becomes_api_rounds(sdk_returning, report
 
 
 def test_a_round_with_junk_values_is_carried_and_does_not_touch_the_aggregate(sdk_returning):
-    """Rounds get NONE of `_token_count`'s int/bool guards — that is what verbatim means. The
+    """Rounds get NONE of `_token_count`'s int/bool guards: that is what verbatim means. The
     three-field rule is an instruction to the READER, not something the kit applies per round."""
     junk = {"type": "message", "input_tokens": None, "output_tokens": True}
     sdk_returning(_usage_with_rounds([junk]))
@@ -390,7 +390,7 @@ def test_an_unreported_usage_cannot_be_resurrected_by_the_rounds(sdk_returning):
 
 
 def test_both_dspy_reads_carry_the_rounds_to_the_tracker(sdk_returning):
-    """The typed path works only because dspy's `LMUsage` declares `extra="allow"` — a one-line
+    """The typed path works only because dspy's `LMUsage` declares `extra="allow"`: a one-line
     upstream decision that could change and would silently drop the field for experimental-mode
     consumers. 1.10.2 learned to drive both reads; this drives both too."""
     import dspy
@@ -406,7 +406,7 @@ def test_both_dspy_reads_carry_the_rounds_to_the_tracker(sdk_returning):
 
 def test_mixed_presence_reaches_the_kits_own_reader_intact(sdk_returning):
     """A run mixing calls that report rounds with calls that do not, asserted through
-    `usage_since` — the shim the trace is actually built from, not the raw tracker one hop
+    `usage_since`: the shim the trace is actually built from, not the raw tracker one hop
     earlier. WITH-then-WITHOUT is the order used because it is the one a FLAT list would raise on
     through `get_total_tokens()`; nested it does not raise in any order, which is the point."""
     import dspy
@@ -428,14 +428,14 @@ def test_mixed_presence_reaches_the_kits_own_reader_intact(sdk_returning):
 
 def test_a_rejected_breakdown_is_logged_and_an_absent_one_is_not(sdk_returning, caplog):
     """Without this line, "no run has `api_rounds`" is indistinguishable between the SDK never
-    reporting it, reporting it unusably, and the key having been RENAMED upstream — the last being
+    reporting it, reporting it unusably, and the key having been RENAMED upstream: the last being
     the failure this project has paid for repeatedly. A JSON `null` stays silent on purpose: that
     IS absence, not a rejection."""
     import logging
 
     cases = [({"iterations": "nope"}, 1), ({"iterations": [1, 2]}, 1),
-             # `[]` is the shape most likely to be rejected in practice — it is what the CLI's
-             # usage accumulator seeds itself with — so it must be one of the LOGGED ones.
+             # `[]` is the shape most likely to be rejected in practice. It is what the CLI's
+             # usage accumulator seeds itself with, so it must be one of the LOGGED ones.
              ({"iterations": []}, 1), ({"iterations": None}, 0), ({}, 0)]
     for reported, expected in cases:
         caplog.clear()
@@ -447,7 +447,7 @@ def test_a_rejected_breakdown_is_logged_and_an_absent_one_is_not(sdk_returning, 
 
 def test_a_multi_entry_breakdown_rides_through_in_order_and_unfiltered(sdk_returning):
     """Every other fixture here carries ONE round, so a guard that reordered or filtered entries
-    would be invisible. This is the shape the field exists for — a server-side fallback puts the
+    would be invisible. This is the shape the field exists for: a server-side fallback puts the
     declined hop's `message` entry and the serving hop's `fallback_message` in the SAME request,
     which is exactly the case where "one `message` entry" is true and the totals still cover two
     hops. Order is load-bearing: the context reading is the LAST qualifying entry."""

@@ -5,7 +5,7 @@ on:
     branches: [main]
   pull_request:
 
-# Least privilege: this workflow only checks out code and runs tests/lint — it never writes. Specifying
+# Least privilege: this workflow only checks out code and runs tests/lint, it never writes. Specifying
 # `permissions:` also drops every unlisted scope to `none`, so a compromised dep/action on an untrusted
 # fork PR can't use the token to push, tag, or open issues. The third-party setup-uv action is SHA-pinned
 # (a repointed tag could inject code that runs with the token); GitHub-owned checkout stays on a major tag.
@@ -44,19 +44,19 @@ jobs:
       - name: Run tests
         # --extra mcp so the MCP-client tests run (they spawn a stdio MCP subprocess) rather than skip.
         # --extra grep so make_grep_files_tool's timeout tests exercise the real `regex` package
-        # rather than skip — the whole point of that test suite is verifying a REAL timeout fires.
+        # rather than skip: the whole point of that test suite is verifying a REAL timeout fires.
         # --extra gitignore so list_candidate_paths's .gitignore-parsing tests exercise the real
         # `pathspec` package rather than skip.
         run: uv run --group dev --extra mcp --extra grep --extra gitignore python -m pytest -q
 
   mcp-major:
-    # The `mcp` extra is UNCAPPED, and `uv.lock` can only hold one version — so the suite above
+    # The `mcp` extra is UNCAPPED, and `uv.lock` can only hold one version, so the suite above
     # proves nothing about the OTHER published major. It went unnoticed once: SDK 2.0 renamed the
     # result fields camelCase -> snake_case and every FAILED MCP tool call started reading as a
     # SUCCESS to the model, with CI fully green (CHANGELOG 1.5.0).
     #
     # PINNED, and hand-bumped like `uvx ruff@...` below: this runs on `pull_request`, so a
-    # floating version would let an upstream release redden a contributor's unrelated PR — the
+    # floating version would let an upstream release redden a contributor's unrelated PR: the
     # exact reason `dspy-latest.yml` is kept off that trigger. The moving target is covered there;
     # this job covers "the other major still works", which is a property of OUR code.
     name: test (mcp 2.x)
@@ -78,18 +78,18 @@ jobs:
     name: packaging (fresh install)
     runs-on: ubuntu-latest
     # The PACKAGING axis, and only that: does a wheel built from this tree install into a clean
-    # environment with no lockfile and actually run? Genuinely untested until now — every other
+    # environment with no lockfile and actually run? Genuinely untested until now: every other
     # job runs from the source tree via `uv run`, so a module missing from the wheel, or a
     # dependency the lock happened to provide, would ship silently.
     #
     # It is NOT a substitute for the dspy axis (`dspy-latest.yml`). Measured, not assumed: an
     # offline end-to-end run still returns the CORRECT answer while a renamed dspy kwarg silently
-    # drops the caller's budget cap — so this catches a LOUD break and is blind to exactly the
+    # drops the caller's budget cap, so this catches a LOUD break and is blind to exactly the
     # silent ones `_dspy_compat` exists for. Do not let a green run here stand in for that.
     #
     # dspy is PINNED to `uv.lock`'s version here, even though the point of the job is a
     # lockfile-free install. This job runs on `pull_request`, and letting it float dspy would let
-    # an upstream release redden a contributor's unrelated PR — the exact thing
+    # an upstream release redden a contributor's unrelated PR: the exact thing
     # `dspy-latest.yml` is kept out of the PR trigger to avoid. Floating dspy is THAT job's
     # responsibility; this one varies only the packaging. Everything else still resolves fresh,
     # which is what makes it a real fresh-install test.
@@ -150,7 +150,7 @@ jobs:
           enable-cache: true
       - name: Lint
         # PINNED on purpose. `uvx ruff` resolves the latest release at run time, and ruff's DEFAULT
-        # rule set is not a stable contract — 0.16 expanded it far past the pycodestyle/pyflakes
+        # rule set is not a stable contract: 0.16 expanded it far past the pycodestyle/pyflakes
         # baseline and turned this job red overnight with no code change. Bump it deliberately, with
         # the resulting fixes in the same commit, rather than letting a release do it for you.
         run: uvx ruff@0.16.0 check .

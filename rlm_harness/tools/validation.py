@@ -2,10 +2,10 @@
 
 Two shapes, both consumer-facing base primitives:
 
-- ``make_schema_validator(model)`` — a plain callable the RLM invokes inside the REPL to
+- ``make_schema_validator(model)``: a plain callable the RLM invokes inside the REPL to
   check its draft JSON against a pydantic schema before emitting a final answer (returns a
   human message). The generalised form of the original app's ``validate_vulnerability_report``.
-- ``make_json_schema_validator(schema)`` — validate a PARSED object against a JSON Schema
+- ``make_json_schema_validator(schema)``: validate a PARSED object against a JSON Schema
   (draft 2020-12) and return the violation messages, the generic base for the "validate
   against a vendored, version-pinned upstream JSON schema" pattern (a consumer vendors the
   schema + a refresh script; the kit owns the validator wiring).
@@ -32,7 +32,7 @@ def make_json_schema_validator(
 
     ``schema`` is the JSON Schema as a dict, or a path to a ``.json`` schema file (read once,
     at factory time). The returned validator takes an already-parsed object (a dict from
-    ``yaml.safe_load`` / ``json.loads``) — parsing is the consumer's job, so this composes with
+    ``yaml.safe_load`` / ``json.loads``): parsing is the consumer's job, so this composes with
     whatever extract/parse step precedes it. Each message is ``"<json/pointer/path>: <reason>"``
     (root violations use ``"(root)"``); the list is truncated to ``max_errors`` (a huge invalid
     doc must not flood the trace). Deterministic ordering (by error path) so traces are stable.
@@ -40,7 +40,7 @@ def make_json_schema_validator(
     This is the GENERIC base for the "validate against an official, vendored, version-pinned
     upstream JSON schema" pattern: a consumer vendors the schema file + a refresh script (the
     provider-specific half), and layers its own bespoke checks on top; the kit owns only this
-    wiring. ``jsonschema`` is an OPTIONAL dependency (``rlm-harness[jsonschema]``) — imported lazily
+    wiring. ``jsonschema`` is an OPTIONAL dependency (``rlm-harness[jsonschema]``): imported lazily
     so ``import rlm_harness`` and the dspy-free ``tools`` package stay lean.
     """
     try:
@@ -87,7 +87,7 @@ def make_schema_validator(model: type[BaseModel]) -> Callable[[str], str]:
             return f"Validation failed: {exc}"
 
     # SANITISED: `model.__name__` is caller data. A statically-declared class is always an
-    # identifier, but `pydantic.create_model("bad-name")` is not — and a dynamic output
+    # identifier, but `pydantic.create_model("bad-name")` is not, and a dynamic output
     # model is the exact case `RLMTask.output_model` exists for, so this is reachable.
     validate.__name__ = sanitize_tool_name(f"validate_{model.__name__.lower()}")
     validate.__qualname__ = validate.__name__

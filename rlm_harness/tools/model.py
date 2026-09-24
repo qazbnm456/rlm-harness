@@ -1,14 +1,14 @@
-"""Provider-agnostic ``make_model_tool`` — the generic "model-backed tool + validate"
+"""Provider-agnostic ``make_model_tool``: the generic "model-backed tool + validate"
 core (mirrors ``fetch.py`` / ``search.py``).
 
-A model-as-tool — a SECONDARY model the RLM root calls as a tool to PRODUCE something
-(YAML, code, SQL, …) which is then deterministically validated — is a recurring shape.
+A model-as-tool: a SECONDARY model the RLM root calls as a tool to PRODUCE something
+(YAML, code, SQL, …) which is then deterministically validated. Is a recurring shape.
 The reusable mechanics are: call the model, retry only *transient* endpoint errors,
 capture the answer + any thinking-mode reasoning, then run a validator on the output.
 
 rlm-harness owns ONLY that generic core. The consuming project supplies the ``chat_fn`` (its
-endpoint/model/prompt), a ``validate`` callable (its domain validator), and — around the
-returned ``ModelToolResult`` — its own tool name, result-message wording, and tracing
+endpoint/model/prompt), a ``validate`` callable (its domain validator), and: around the
+returned ``ModelToolResult``: its own tool name, result-message wording, and tracing
 (exactly as the fetch / web_search consumers wrap their bases). The factory returns a
 ``call(spec) -> ModelToolResult``; it does NOT format strings or record traces.
 """
@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # What produced this result: `ok=False` has THREE distinct causes and they are not
-# interchangeable — see `ModelToolResult.cause`. RE-EXPORTED from `rlm_harness.trace`, which owns them,
+# interchangeable: see `ModelToolResult.cause`. RE-EXPORTED from `rlm_harness.trace`, which owns them,
 # because a live result and a RECORDED payload must answer this question with the same four words;
 # two vocabularies for one distinction is how it gets collapsed again at the trace boundary
 # (`trace.payload_cause` is the read side).
@@ -40,14 +40,14 @@ Validate = Callable[[str], Any]
 
 @dataclass
 class ModelToolResult:
-    """Structured outcome of one model-tool call — the caller formats the user-facing reply.
+    """Structured outcome of one model-tool call: the caller formats the user-facing reply.
 
     **`ok=False` has three causes, and collapsing them is a real bug, not a nuance.** The
     validator rejected the output; the endpoint failed after retries; or the breaker
     short-circuited without calling the model at all. In the last two the validator NEVER RAN.
 
     That distinction has been got wrong downstream more than once, in more than one consumer, in
-    ways that reach both training data and user-facing text — a label named `*_rejects` whose
+    ways that reach both training data and user-facing text: a label named `*_rejects` whose
     docstring says "the host-side validator rejected" incremented on a 502; a reviewer-facing
     string reading "failed its format check" shown for an endpoint timeout; a per-run metric that
     counted every `ok is False` beside a separate circuit-break count, so the two overlapped.
@@ -113,20 +113,20 @@ def make_model_tool(
     re-spec and call again). On exhausted retries the result has ``endpoint_error`` set and
     ``ok=False``.
 
-    Three of the four outcomes carry ``ok=False`` and they are NOT interchangeable — read
+    Three of the four outcomes carry ``ok=False`` and they are NOT interchangeable: read
     ``result.cause`` (or ``result.validator_ran``) before attributing a failure to the model's
     output. See ``ModelToolResult``.
 
     ``max_consecutive_invalid`` (default ``None`` = off) is a run-scoped CIRCUIT BREAKER: once the
-    validator has returned ``ok=False`` that many times in a ROW, the next call SHORT-CIRCUITS —
+    validator has returned ``ok=False`` that many times in a ROW, the next call SHORT-CIRCUITS.
     it does NOT invoke the model and returns ``circuit_broken=True`` (``ok=False``, empty ``raw``).
     A productive repair loop recovers within a couple of declines, so a long unbroken decline run
     means the model cannot satisfy specs of this shape; short-circuiting caps wasted model calls and
     lets the caller redirect the root LM (escalate / finalize) instead of letting it thrash. The
     counter RESETS on any validator-``ok``; an endpoint error does NOT count (it is infra, not a
-    content decline). This factory only FLAGS the break — the caller owns the user-facing message,
+    content decline). This factory only FLAGS the break: the caller owns the user-facing message,
     same split as the rest. The factory is sync and side-effect-free (no tracing, no message
-    templating) — wrap the result in your project's tool with its own name/messages/tracing.
+    templating): wrap the result in your project's tool with its own name/messages/tracing.
 
     The breaker state lives in this closure, so build ONE tool per run (as the consumers do) and it
     resets naturally for the next run.
@@ -153,7 +153,7 @@ def make_model_tool(
                     #
                     # `str(exc) or type(exc).__name__`, because `str(exc)` is the EMPTY STRING for
                     # `httpx.ConnectTimeout` / `ReadTimeout` / `ConnectError`, `TimeoutError`,
-                    # `OSError` and `http.client.RemoteDisconnected` — six of the most ordinary
+                    # `OSError` and `http.client.RemoteDisconnected`: six of the most ordinary
                     # transport failures there are, and precisely the ones where a reader most needs
                     # to be told WHAT happened. Recording `''` gave every consumer an empty message
                     # to render ("endpoint failed: ") and made the field's own truthiness a lie

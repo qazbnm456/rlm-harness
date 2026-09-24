@@ -12,8 +12,8 @@ from rlm_harness.sandbox import (
 )
 
 # The pyodide/deno path now constructs dspy's PythonInterpreter (to inject the
-# JSON-literal aliases), so it needs dspy at call time. Construction stays lazy —
-# Deno is not spawned — so these run without a sandbox, just not without dspy.
+# JSON-literal aliases), so it needs dspy at call time. Construction stays lazy:
+# Deno is not spawned, so these run without a sandbox, just not without dspy.
 _HAS_DSPY = importlib.util.find_spec("dspy") is not None
 _needs_dspy = pytest.mark.skipif(not _HAS_DSPY, reason="dspy not installed")
 
@@ -94,7 +94,7 @@ def test_mock_interpreter_has_execute():
 @_needs_dspy
 def test_both_knobs_none_never_starts_a_watcher_thread(monkeypatch):
     """The disabled-by-default guarantee: `execute()`'s first check must call
-    `super().execute(...)` directly with NO watcher thread — verified by asserting
+    `super().execute(...)` directly with NO watcher thread: verified by asserting
     `threading.Thread`'s constructor is never called, not just by timing."""
     from dspy.primitives.python_interpreter import PythonInterpreter
 
@@ -115,7 +115,7 @@ def test_both_knobs_none_never_starts_a_watcher_thread(monkeypatch):
 @_needs_dspy
 def test_a_knob_set_but_never_firing_returns_the_real_result_untouched(monkeypatch):
     """The guarded-but-never-fires path: a knob is set, but the underlying call finishes
-    normally well before the deadline/cancel — the watchdog must be a pure no-op here, not
+    normally well before the deadline/cancel. The watchdog must be a pure no-op here, not
     just when disabled entirely (that's the OTHER test)."""
     from dspy.primitives.python_interpreter import PythonInterpreter
 
@@ -169,11 +169,11 @@ def test_cancel_event_kills_and_raises_sandbox_cancelled_not_code_interpreter_er
 
 @_needs_dspy
 def test_mid_call_respawn_that_ultimately_succeeds_still_raises_when_cancelled(monkeypatch):
-    """REQUIRED test (variant a) — catches the round-2 "absorbed cancel" regression: the
+    """REQUIRED test (variant a): catches the round-2 "absorbed cancel" regression: the
     ENTIRE super().execute() call completes to a normal, final result with NO exception
     raised anywhere inside it, simulating dspy's own BrokenPipeError -> respawn -> retry
     recovery finishing cleanly. The GUARDED call must still raise SandboxCancelled despite
-    that clean success — a test that only asserts `.kill()` was called would pass against
+    that clean success: a test that only asserts `.kill()` was called would pass against
     the broken (round-1) code just as readily as the fixed code; only checking the outcome
     of the GUARDED call actually distinguishes them."""
     from dspy.primitives.python_interpreter import PythonInterpreter
@@ -198,7 +198,7 @@ def test_mid_call_respawn_that_ultimately_succeeds_still_raises_when_cancelled(m
 @_needs_dspy
 def test_mid_call_respawn_that_fails_again_raises_cleanly_not_a_raw_pipe_error(monkeypatch):
     """REQUIRED test (variant b): the retry-after-respawn ALSO fails, with a raw
-    BrokenPipeError (dspy's own retry path has no try/except around its second write) —
+    BrokenPipeError (dspy's own retry path has no try/except around its second write).
     must still surface as SandboxCancelled, never a raw BrokenPipeError escaping
     ungracefully."""
     from dspy.primitives.python_interpreter import PythonInterpreter
@@ -219,7 +219,7 @@ def test_mid_call_respawn_that_fails_again_raises_cleanly_not_a_raw_pipe_error(m
 @_needs_dspy
 def test_a_plain_syntax_error_racing_a_fired_watchdog_is_still_mapped_cleanly(monkeypatch):
     """REQUIRED test (variant c, added per round 3): dspy's real execute() raises a plain
-    SyntaxError (not CodeInterpreterError) on JSON-RPC error code -32000 (invalid Python) —
+    SyntaxError (not CodeInterpreterError) on JSON-RPC error code -32000 (invalid Python).
     must not escape the guarded call untouched when a watchdog reason is already set."""
     from dspy.primitives.python_interpreter import PythonInterpreter
 
@@ -239,7 +239,7 @@ def test_a_plain_syntax_error_racing_a_fired_watchdog_is_still_mapped_cleanly(mo
 @_needs_dspy
 def test_an_unrelated_failure_with_no_watchdog_set_propagates_unchanged(monkeypatch):
     """The 'not fired' path: a genuine, unrelated interpreter failure with NEITHER knob
-    set must propagate completely untouched — no watchdog wrapping at all is even entered
+    set must propagate completely untouched: no watchdog wrapping at all is even entered
     (both knobs None), matching today's behavior exactly."""
     from dspy.primitives.code_interpreter import CodeInterpreterError
     from dspy.primitives.python_interpreter import PythonInterpreter
@@ -273,7 +273,7 @@ def test_build_interpreter_refuses_cancel_event_for_mock():
 
 
 def test_build_interpreter_silently_accepts_turn_timeout_for_mock():
-    # turn_timeout_s is silently irrelevant to a kind with no blocking call at all —
+    # turn_timeout_s is silently irrelevant to a kind with no blocking call at all:
     # mirrors how `allow_insecure` is already silently irrelevant outside `local`.
     interp = build_interpreter("mock", turn_timeout_s=5.0)
     assert interp.execute("1+1") == ""
@@ -283,7 +283,7 @@ def test_mock_interpreter_satisfies_dspys_protocol():
     """`interpreter="mock"` is a documented public config value, and from dspy 3.3.0 the
     `CodeInterpreter` protocol is `@runtime_checkable` and `RLM._interpreter_context`
     isinstance-checks a caller-supplied interpreter on EVERY forward pass. Missing `tools`
-    or `start` is therefore a run-time TypeError — invisible to a construction test, which
+    or `start` is therefore a run-time TypeError: invisible to a construction test, which
     is exactly how it shipped broken in 1.2.0."""
     pytest.importorskip("dspy")
     from dspy.primitives.code_interpreter import CodeInterpreter
@@ -309,7 +309,7 @@ def test_mock_interpreter_runs_a_task_end_to_end():
                         max_iterations=1),
               main_lm=scripted_lm([{"reasoning": "r", "code": "pass"}]))
     # A mock interpreter never SUBMITs, so the run exhausts its budget and fails on the
-    # missing output — the point is that it fails THERE, not at interpreter validation.
+    # missing output. The point is that it fails THERE, not at interpreter validation.
     with pytest.raises(Exception) as excinfo:
         T().run(q="hi")
     assert "must implement CodeInterpreter" not in str(excinfo.value)
@@ -352,7 +352,7 @@ def test_the_fast_path_still_stages_a_duration(monkeypatch):
 
 @_needs_dspy
 def test_the_guarded_path_also_stages_a_duration(monkeypatch):
-    """A knob set means `_execute_guarded` runs instead — it must not be the untimed branch."""
+    """A knob set means `_execute_guarded` runs instead. It must not be the untimed branch."""
     from dspy.primitives.python_interpreter import PythonInterpreter
 
     from rlm_harness.trace import recorder_scope

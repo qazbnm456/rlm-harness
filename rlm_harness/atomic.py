@@ -1,7 +1,7 @@
-"""``atomic_write_text`` / ``atomic_write_stream`` — write a file such that a concurrent reader
+"""``atomic_write_text`` / ``atomic_write_stream``: write a file such that a concurrent reader
 never sees a partial write.
 
-A same-directory temp file + ``fsync`` + ``os.replace`` — the standard "never a half-written file
+A same-directory temp file + ``fsync`` + ``os.replace``: the standard "never a half-written file
 visible mid-write" idiom, useful for any consumer building a resumable/checkpointed job on top of
 ``RLMTask`` (a manifest, a cache, any "never let a reader see a torn write" need). dspy-free, stdlib
 only.
@@ -24,10 +24,10 @@ from collections.abc import Iterable
 
 def atomic_write_text(path: str, text: str, *, encoding: str = "utf-8") -> None:
     """Write ``text`` to ``path`` atomically: a same-directory temp file, ``fsync``, then
-    ``os.replace`` — never a window where a concurrent reader sees a partial file.
+    ``os.replace``: never a window where a concurrent reader sees a partial file.
 
     ``os.makedirs(dirname, exist_ok=True)`` creates the destination directory first if needed.
-    ``dirname = os.path.dirname(path) or "."`` — load-bearing, not cosmetic:
+    ``dirname = os.path.dirname(path) or "."``: load-bearing, not cosmetic:
     ``os.path.dirname("checkpoint.json")`` is ``""`` for a bare relative filename (an entirely
     ordinary way to call this, e.g. from a script whose cwd already is the target directory), and
     ``os.makedirs("", exist_ok=True)`` raises ``FileNotFoundError``. ``os.makedirs(".",
@@ -35,19 +35,19 @@ def atomic_write_text(path: str, text: str, *, encoding: str = "utf-8") -> None:
 
     **Preserves the destination's existing permission bits across an overwrite.**
     ``tempfile.mkstemp`` always creates its temp file at mode ``0600`` regardless of umask, and
-    ``os.replace`` does NOT carry the destination's mode across — so without this, overwriting an
+    ``os.replace`` does NOT carry the destination's mode across, so without this, overwriting an
     existing file through this function would silently reset it to ``0600`` (confirmed
     empirically: a ``0o755`` script loses its executable bit). If ``path`` already exists, its
     mode is read via ``os.stat`` and applied to the temp file (``os.chmod``) BEFORE the final
-    ``os.replace`` — so there is never a window where the file at the final path is visible with
+    ``os.replace``, so there is never a window where the file at the final path is visible with
     the wrong mode. A narrow stat-to-replace race (the destination's permissions changing in that
     exact window) is not solved and not worth solving for this: fail in the safe, common-case
     direction rather than over-engineer a race no caller of this function is exposed to in
-    practice. If ``path`` doesn't exist yet, there's nothing to preserve — the temp file's own
+    practice. If ``path`` doesn't exist yet, there's nothing to preserve: the temp file's own
     mode is used as-is.
 
     On any exception during the write, the temp file is best-effort removed and the exception is
-    re-raised — ``path`` itself is never touched until the final, atomic ``os.replace``.
+    re-raised: ``path`` itself is never touched until the final, atomic ``os.replace``.
     """
     dirname = os.path.dirname(path) or "."
     os.makedirs(dirname, exist_ok=True)
@@ -60,7 +60,7 @@ def atomic_write_text(path: str, text: str, *, encoding: str = "utf-8") -> None:
         try:
             existing_mode = os.stat(path).st_mode
         except FileNotFoundError:
-            pass  # nothing to preserve — the temp file's own mode is fine
+            pass  # nothing to preserve: the temp file's own mode is fine
         else:
             os.chmod(tmp_path, stat.S_IMODE(existing_mode))
         os.replace(tmp_path, path)
@@ -74,13 +74,13 @@ def atomic_write_text(path: str, text: str, *, encoding: str = "utf-8") -> None:
 
 class _ExtractionBudgetExceeded(OSError):
     """Raised by :func:`atomic_write_stream` when the running total of written bytes exceeds
-    ``max_bytes``. A DEDICATED subclass, not a bare ``OSError`` — a caller that needs to tell
+    ``max_bytes``. A DEDICATED subclass, not a bare ``OSError``. A caller that needs to tell
     "budget exceeded" apart from an ordinary ``OSError`` raised by whatever produced the chunks
     (e.g. a corrupted compressed stream) can catch this specifically, ahead of a broader catch
     that also matches plain ``OSError``. Still an ``OSError`` itself, so any caller that only
     catches the base type is unaffected.
 
-    Module-level, not exported in ``__all__`` — a consumer of ``atomic_write_stream`` catches
+    Module-level, not exported in ``__all__``: a consumer of ``atomic_write_stream`` catches
     plain ``OSError`` like any other write failure; this specific subclass exists for
     ``rlm_harness.tools.archive``'s own Pass 2 to import and catch by name, ahead of its own
     broader archive-error catch, matching this kit's existing precedent for an internal-but-
@@ -91,15 +91,15 @@ class _ExtractionBudgetExceeded(OSError):
 def atomic_write_stream(
     path: str, chunks: Iterable[bytes], *, max_bytes: int | None = None
 ) -> int:
-    """Write the concatenation of ``chunks`` to ``path`` atomically — same same-directory temp
+    """Write the concatenation of ``chunks`` to ``path`` atomically: same same-directory temp
     file + ``fsync`` + ``os.replace`` idiom as :func:`atomic_write_text`, same
-    permission-preservation-on-overwrite behavior, same directory-creation behavior —
+    permission-preservation-on-overwrite behavior, same directory-creation behavior:
     implemented as its own, separate function (not a refactor of ``atomic_write_text``) to avoid
     any regression risk to that already-shipped primitive.
 
     Aborts (raises :class:`_ExtractionBudgetExceeded`, an ``OSError`` subclass; the temp file is
     removed, ``path`` itself is never touched) the moment the running total of bytes written
-    exceeds ``max_bytes`` (default ``None`` = unbounded) — checked after EVERY chunk, not merely
+    exceeds ``max_bytes`` (default ``None`` = unbounded): checked after EVERY chunk, not merely
     once at the end, so the caller controls the memory/overshoot bound entirely via how large
     each chunk is. Returns the total number of bytes written on success.
     """
@@ -121,7 +121,7 @@ def atomic_write_stream(
         try:
             existing_mode = os.stat(path).st_mode
         except FileNotFoundError:
-            pass  # nothing to preserve — the temp file's own mode is fine
+            pass  # nothing to preserve: the temp file's own mode is fine
         else:
             os.chmod(tmp_path, stat.S_IMODE(existing_mode))
         os.replace(tmp_path, path)

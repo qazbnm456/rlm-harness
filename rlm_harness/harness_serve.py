@@ -1,11 +1,11 @@
-"""``python -m rlm_harness.harness_serve <pkg.module:run> [workdir_base]`` — the zero-file way to serve a
+"""``python -m rlm_harness.harness_serve <pkg.module:run> [workdir_base]``: the zero-file way to serve a
 harness over the delegation contract (the runnable front-end of :func:`rlm_harness.serve_harness`).
 
 Resolves the harness's ``run`` callable from ``<module:attr>`` and, if the same module exposes a
 ``to_pointer`` (or ``TO_POINTER``), uses it; otherwise falls back to the duck-typed extractor (for a
 harness whose ``run()`` already returns a flat ``.artifact``/``.run_id``/``.trace_path`` object). A
 harness with a NESTED result writes a ~5-line ``serve`` module in its OWN repo that calls
-``serve_harness(run, to_pointer, …)`` directly — that module, not this one, is what its operator points
+``serve_harness(run, to_pointer, …)`` directly: that module, not this one, is what its operator points
 at; this ``-m`` entry is the convenience path when no mapping is needed. The kit names no harness: the
 target is a runtime argument, exactly like the client's endpoint config.
 """
@@ -21,7 +21,7 @@ from .serving import ToPointer, serve_harness
 def _resolve(spec: str):
     """``pkg.module:attr`` → the attribute. Errors are actionable (bad spec / missing module/attr)."""
     if ":" not in spec:
-        raise SystemExit(f"bad target {spec!r} — expected 'package.module:run'")
+        raise SystemExit(f"bad target {spec!r}: expected 'package.module:run'")
     mod_name, _, attr = spec.partition(":")
     try:
         mod = importlib.import_module(mod_name)

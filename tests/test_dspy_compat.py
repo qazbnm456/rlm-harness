@@ -1,4 +1,4 @@
-"""``_dspy_compat`` — the cross-dspy-version shims.
+"""``_dspy_compat``: the cross-dspy-version shims.
 
 WHY THIS FILE EXISTS. dspy 3.3.0 renamed three things at once and every one of them
 failed in a way the previous suite could not see:
@@ -13,7 +13,7 @@ failed in a way the previous suite could not see:
    turn" to "kill the run". Silent, and only visible under load.
 
 The kit declares only a FLOOR on dspy while consumers pin the KIT, so a consumer's fresh
-install picks whatever dspy is current — none of them can be expected to notice any of the
+install picks whatever dspy is current. None of them can be expected to notice any of the
 above. These tests assert the shim's CONTRACT against the installed dspy, so the next rename
 lands here as a red test instead of in someone's rollout. That is why they survived the 1.2.0
 floor bump: the shims now resolve a single answer each, but these are what make the NEXT
@@ -83,7 +83,7 @@ def test_budget_kwargs_are_all_accepted_by_the_installed_dspy():
 
 
 def test_all_three_budget_caps_are_mapped():
-    """No cap may be silently dropped — the values must survive the renaming."""
+    """No cap may be silently dropped. The values must survive the renaming."""
     resolved = _dspy_compat.rlm_budget_kwargs(
         max_iterations=7, max_llm_calls=11, max_output_chars=13
     )
@@ -100,7 +100,7 @@ def test_iteration_cap_uses_whichever_name_this_dspy_has():
 
 
 def test_budget_prefers_the_newest_alias(monkeypatch):
-    """When a dspy accepts BOTH spellings, send the newer one — the older is on its way out
+    """When a dspy accepts BOTH spellings, send the newer one. The older is on its way out
     and a deprecation shim can vanish in a patch release.
 
     `_BUDGET_ALIASES` is monkeypatched to hold two names. Without that this test would be a
@@ -135,7 +135,7 @@ def test_budget_prefers_the_newest_alias(monkeypatch):
 
 def test_the_interpreter_seam_still_exists_on_this_dspy():
     """THE tripwire for the seam. `forward_interpreter_args` has no dspy contact left after the
-    3.3.0 floor — it is a one-liner — so this assertion is the only thing that would notice dspy
+    3.3.0 floor, it is a one-liner, so this assertion is the only thing that would notice dspy
     moving the interpreter again. It must stay UNCONDITIONAL: making it mirror the shim would
     make it a tautology, and the seam would then be untestable by construction."""
     for method in (dspy.RLM.forward, dspy.RLM.aforward):
@@ -149,7 +149,7 @@ def test_the_interpreter_seam_still_exists_on_this_dspy():
         assert positional, f"{method.__name__} takes no positional interpreter"
         assert positional[0].name == "interpreter", (
             f"{method.__name__}'s first positional arg is {positional[0].name!r}, not "
-            f"'interpreter' — dspy moved the seam; update `forward_interpreter_args`."
+            f"'interpreter': dspy moved the seam; update `forward_interpreter_args`."
         )
 
 
@@ -191,7 +191,7 @@ def test_sandbox_cancelled_is_never_caught_as_an_interpreter_error():
     assert not issubclass(SandboxCancelled, _dspy_compat.terminal_interpreter_error())
     # dspy 3.3.1 re-parented CodeInterpreterError under DSPyError. `SandboxCancelled` stands
     # OUTSIDE dspy's hierarchy entirely, and that is what makes it non-recoverable on every
-    # version — so pin the new root too, not just the leaf that moved.
+    # version, so pin the new root too, not just the leaf that moved.
     assert not issubclass(SandboxCancelled, dspy.DSPyError)
 
 
@@ -219,7 +219,7 @@ class _Descriptive:
 
 def test_the_carrier_puts_our_text_in_the_prompt_not_dspys_pyodide_default():
     """THE regression. Without this the action prompt tells a container run that subprocesses
-    are unavailable — dspy reads the text off `_interpreter_factory`, which defaults to
+    are unavailable: dspy reads the text off `_interpreter_factory`, which defaults to
     PythonInterpreter no matter what is actually executing the code."""
     kwargs = _dspy_compat.interpreter_instructions_kwargs(_Descriptive())
     assert set(kwargs) == {"interpreter_factory"}
@@ -290,7 +290,7 @@ def test_no_carrier_when_dspy_does_not_accept_the_kwarg(monkeypatch):
 
 
 def test_every_interpreter_the_kit_ships_describes_itself():
-    """A sweep, so a NEW kit interpreter cannot silently inherit dspy's Pyodide description —
+    """A sweep, so a NEW kit interpreter cannot silently inherit dspy's Pyodide description,
     and so deleting one of these attributes goes red. `_JsonLiteralInterpreter` is deliberately
     absent: it subclasses PythonInterpreter, whose own text is already correct."""
     from rlm_harness.sandbox import build_interpreter
@@ -306,7 +306,7 @@ def test_every_interpreter_the_kit_ships_describes_itself():
 
 
 def test_no_carrier_when_dspy_does_not_render_the_text(monkeypatch):
-    """A dspy that never renders it gets nothing — the shim resolves the answer by
+    """A dspy that never renders it gets nothing: the shim resolves the answer by
     introspection, so an older dspy degrades to exactly today's behaviour."""
     monkeypatch.setattr(_dspy_compat, "_dspy_reads_execution_instructions", lambda: False)
     assert _dspy_compat.interpreter_instructions_kwargs(_Descriptive()) == {}
@@ -341,7 +341,7 @@ def test_lm_errors_dspy_calls_non_retryable_fail_fast(exc):
     ],
 )
 def test_lm_errors_dspy_calls_retryable_keep_retrying(exc):
-    """The mirror: anything dspy's own helper calls retryable must not fast-fail here — this
+    """The mirror: anything dspy's own helper calls retryable must not fast-fail here, this
     predicate must never be STRICTER than dspy's own classification."""
     assert _dspy_compat.is_fast_fail_lm_error(exc) is False
 
@@ -350,7 +350,7 @@ def test_context_window_exceeded_is_the_one_carve_out():
     """THE regression for the contested part of the design (CHANGELOG 1.2.0).
     `ContextWindowExceededError` is a non-retryable `LMInvalidRequestError` by dspy's own
     classification, but `run_with_retry` re-runs the WHOLE trajectory rather than resending the
-    identical request — a later attempt can genuinely produce a shorter prompt that fits. It must
+    identical request. A later attempt can genuinely produce a shorter prompt that fits. It must
     keep retrying here even though dspy calls it non-retryable."""
     exc = dspy.ContextWindowExceededError()
     assert dspy.is_retryable_lm_error(exc) is False  # confirms the premise: dspy says no
@@ -364,20 +364,20 @@ def test_non_lm_exception_never_fast_fails():
 def test_unclassifiable_lm_error_still_gets_a_verdict():
     """`LMUnexpectedError` is dspy's own catch-all bucket for a failure it could not classify
     more precisely. It is still an `LMError` that `is_retryable_lm_error` calls non-retryable, so
-    it fast-fails too — trusting dspy's classification rather than second-guessing it here."""
+    it fast-fails too: trusting dspy's classification rather than second-guessing it here."""
     assert _dspy_compat.is_fast_fail_lm_error(dspy.LMUnexpectedError("???")) is True
 
 
 def test_missing_is_retryable_helper_degrades_to_never_fast_fail(monkeypatch):
     """A future/older dspy without `is_retryable_lm_error` must not be treated as
-    'everything fast-fails' — that would be MORE aggressive than today's behavior with no
+    'everything fast-fails': that would be MORE aggressive than today's behavior with no
     classification to back it. Degrade to the pre-existing behavior: always retry."""
     monkeypatch.delattr(dspy, "is_retryable_lm_error", raising=True)
     assert _dspy_compat.is_fast_fail_lm_error(dspy.LMAuthError("bad key")) is False
 
 
 def test_missing_lm_error_class_degrades_to_never_fast_fail(monkeypatch):
-    """A dspy without `LMError` at all can't be classified — never fast-fail rather than guess."""
+    """A dspy without `LMError` at all can't be classified: never fast-fail rather than guess."""
     monkeypatch.delattr(dspy, "LMError", raising=True)
     assert _dspy_compat.is_fast_fail_lm_error(dspy.LMAuthError("bad key")) is False
 
@@ -408,7 +408,7 @@ def test_module_top_is_dspy_free():
 def test_importing_the_package_still_does_not_import_dspy():
     """The companion invariant: `import rlm_harness` stays cheap. `task.py` imports
     `_dspy_compat` at ITS module top, which is fine only because `task.py` itself is a
-    lazy `__getattr__` re-export — this pins that it stayed that way."""
+    lazy `__getattr__` re-export: this pins that it stayed that way."""
     import subprocess
     import sys
 
@@ -427,12 +427,12 @@ def test_importing_the_package_still_does_not_import_dspy():
 
 
 def test_var_keyword_signature_falls_back_to_the_current_names(monkeypatch):
-    """A dspy whose ``RLM.__init__`` is ``(*args, **kwargs)`` tells us nothing — probing names
+    """A dspy whose ``RLM.__init__`` is ``(*args, **kwargs)`` tells us nothing: probing names
     proves nothing, so send the names this kit currently targets and let the constructor judge.
 
     This branch is STILL LIVE after the 3.3.0 floor (`_rlm_init_takes_var_keyword` has a real
     caller), and it reads `candidates[-1]`. Shrinking `_BUDGET_ALIASES` therefore CHANGED what
-    it sends — this test is the only coverage of that, which is why it was updated rather than
+    it sends. This test is the only coverage of that, which is why it was updated rather than
     deleted with the other two-version cases."""
 
     def _opaque(self, *args, **kwargs):
@@ -459,7 +459,7 @@ def test_sub_lm_response_shims_round_trip_both_shapes_dspy_accepts():
     Pinned HERE because `sub_lm.py` used to encode this convention at the call site: it collapsed
     anything non-list into `[outputs]`, so an `LMResponse` became `[LMResponse]` and dspy raised.
     That break was invisible on the default path, fired only under `experimental=True`, and dspy's
-    own docs date the legacy shape — "In DSPy 3.3 and 3.4, ordinary calls preserve the legacy
+    own docs date the legacy shape: "In DSPy 3.3 and 3.4, ordinary calls preserve the legacy
     public return value". A version that changes the contract goes red here rather than silently
     in every consumer."""
     from dspy.clients.base_lm import LMResponse
@@ -477,7 +477,7 @@ def test_sub_lm_response_shims_round_trip_both_shapes_dspy_accepts():
 def test_lm_output_text_JOINS_its_text_parts():
     """The fact the substitution shim is built on. If a dspy release makes `LMOutput.text` return
     only the first part instead of joining, dropping the later ones becomes wrong and this is where
-    that surfaces — the alternative is a silently truncated sub-LM answer."""
+    that surfaces. The alternative is a silently truncated sub-LM answer."""
     from dspy.core.types import LMOutput, LMTextPart
 
     assert LMOutput(parts=[LMTextPart(text="A"), LMTextPart(text="B")]).text == "AB"
@@ -494,13 +494,13 @@ def test_an_unrecognised_sub_lm_shape_reads_as_None_rather_than_a_guess():
 
 
 def test_python_fence_langs_resolves_through_INTROSPECTION_not_the_fallback(monkeypatch):
-    """The shim keeps a hardcoded fallback so a dspy-free report renderer never `ImportError`s —
+    """The shim keeps a hardcoded fallback so a dspy-free report renderer never `ImportError`s,
     which is exactly why a value-equality assertion proves nothing: the fallback satisfies it by
     construction. Replacing the lookup body with `raise ImportError` passed the entire suite in the
     first version of this test.
 
     So: perturb dspy's constant and require the shim to FOLLOW it. If it does not, the shim is
-    serving its fallback and a dspy rename is silent — and not in a safe direction, since a stale
+    serving its fallback and a dspy rename is silent, and not in a safe direction, since a stale
     set counts EXECUTED turns as refused ones the day dspy adds a lang."""
     import dspy.predict.rlm as rlm_mod
 
@@ -516,7 +516,7 @@ def _dspy_would_refuse(code: str) -> bool:
     """The oracle: dspy's OWN private stripper, imported unguarded on purpose.
 
     A `try/except ImportError: skip` here would make a rename leave the mirror unverified and
-    silent — the 1.0.1 failure this module exists to prevent. The module-level `importorskip`
+    silent: the 1.0.1 failure this module exists to prevent. The module-level `importorskip`
     already covers a dspy-free environment."""
     from dspy.predict.rlm import _strip_code_fences
 
@@ -540,7 +540,7 @@ _FENCE_TABLE = [
     "```JSON\n{}\n```",                            # uppercase tag
     '```json title="x"\n{}\n```',                  # tag with an attribute
     "```   json   \nbody\n```",                    # whitespace-padded tag
-    "```\nx=1\n```",                               # BARE fence — crashes every shortcut
+    "```\nx=1\n```",                               # BARE fence: crashes every shortcut
     "````python\nx=1\n````",                       # four backticks
     "`````python\nx\n`````",                       # five backticks
     "~~~json\nx\n~~~",                             # not a fence at all
@@ -553,10 +553,10 @@ _FENCE_TABLE = [
     "x = 1",                                       # no fence
     "",
     "   ",
-    # Three rows added after a check found the corresponding mirror lines uncovered — each is the
+    # Three rows added after a check found the corresponding mirror lines uncovered. Each is the
     # ONLY entry that distinguishes a correct port from dropping one specific step.
-    "```PYTHON\nx=1\n```",                          # `.lower()` — dspy ACCEPTS this; a mutant refuses
-    "x = 1\n```\ny = 2",                            # the empty-tag guard — dropping it IndexErrors
+    "```PYTHON\nx=1\n```",                          # `.lower()`: dspy ACCEPTS this; a mutant refuses
+    "x = 1\n```\ny = 2",                            # the empty-tag guard: dropping it IndexErrors
     "\n```\n```json\n{}\n```\n```",                 # the leading `.strip()`, with a decorative pair
     # The SECOND `"```" not in code` return, at the only input that reaches it: after the
     # decorative pop this cell has no fence left, so without that return `code[find+3:]` slices
@@ -564,14 +564,14 @@ _FENCE_TABLE = [
     # cells found 81 such disagreements, all of this shape.
     "```\nfoo\nbar\n```",
     # Seven more, one per mirror line successive checks found unpinned. Each is the ONLY row that separates the
-    # shipped port from dropping that one step — verified individually, and each mutation was
+    # shipped port from dropping that one step: verified individually, and each mutation was
     # measured against dspy over 70k cells first, so none of these is an equivalent mutant.
     "```\rfoo\nbar\r```",                           # `splitlines()`, not `split("\n")`  (5,355 diffs)
     '```\nmd = """\n```bash\nz\n```\n"""',           # the decorative loop's LAST-line condition (15)
     "``` \n```json\nx\n```\n```",                    # `lines[0].strip()`, not `lines[0]`      (49)
     " ```\n```json\nx\n```\n ```",                   # `lines[-1].strip()`                     (24)
-    "```",                                         # `len(lines) >= 2` — `>= 1` IndexErrors  (1,290)
-    "``` \nx=1",                                    # `lang_line.strip()` — dropping it IndexErrors (281)
+    "```",                                         # `len(lines) >= 2`, since `>= 1` IndexErrors  (1,290)
+    "``` \nx=1",                                    # `lang_line.strip()`: dropping it IndexErrors (281)
     # A seventh, for the `.strip()` AFTER the join: the decorative pop can leave a trailing "",
     # so the join ends in "\n" and `partition` then finds a separator where dspy finds none.
     # dspy RUNS this cell; without that strip the mirror refuses it. (25 diffs over 200k cells.)
@@ -580,7 +580,7 @@ _FENCE_TABLE = [
 
 # The FIRST `"```" not in code` return (before the decorative pop) is a PROVABLY EQUIVALENT MUTANT:
 # `splitlines()`/`"\n".join()` cannot introduce a backtick, so the second return catches everything
-# it would. Recorded rather than chased — no test can redden it, and it is a fast path, not a guard.
+# it would. Recorded rather than chased: no test can redden it, and it is a fast path, not a guard.
 
 
 def test_dspy_refuses_fence_mirrors_dspys_own_stripper():
@@ -589,7 +589,7 @@ def test_dspy_refuses_fence_mirrors_dspys_own_stripper():
 
     Every line of the port is load-bearing. Measured against tens of thousands of real and fuzzed
     cells, a `re.search(r"```([^\\n`]*)")` + `split()[0]` shortcut produced 1,764 disagreements and
-    3,855 IndexError CRASHES — it dies on a BARE ``` fence, the commonest shape — and a prose
+    3,855 IndexError CRASHES (it dies on a BARE ``` fence, the commonest shape) and a prose
     paraphrase that drops the `.strip()` or either early return still crashed 673 times. Both are
     the mutations this test exists to redden."""
     for code in _FENCE_TABLE:
@@ -656,14 +656,14 @@ def test_forced_final_marker_matches_a_REAL_forced_final_run(tmp_path):
         asyncio.run(T(interpreter=ScriptedInterpreter([submit({"answer": {"x": 1}})])).arun(q="hi"))
     control = [e for e in load_events(submitted) if e["type"] == EVENT_FINAL][0]
     assert control["payload"]["final_reasoning"] != _dspy_compat.forced_final_marker(), (
-        "a run that SUBMITted also carries the forced-final marker — the field discriminates nothing"
+        "a run that SUBMITted also carries the forced-final marker: the field discriminates nothing"
     )
 
 
 def test_the_fence_lang_FALLBACK_matches_what_dspy_actually_says(monkeypatch):
     """The fallback's own contents, pinned against the introspected value as the oracle.
 
-    They must be equal, and only forcing the fallback path can check that — with dspy installed the
+    They must be equal, and only forcing the fallback path can check that, with dspy installed the
     shim returns the introspection, so a bogus entry in the fallback set is invisible. Those two
     lines were the only new production lines in this release with no coverage at all, and the
     hazard is named in the shim's own docstring: a stale set counts EXECUTED turns as refused ones
@@ -733,7 +733,7 @@ def test_usage_data_is_keyed_by_the_model_name_string():
 
 def test_usage_since_returns_raw_per_call_entries_with_unknown_keys_intact():
     """An LM may report facts dspy has no field for. `usage_since` must hand them back UNCHANGED,
-    one entry per call and in call order — because it reads `usage_data` rather than dspy's
+    one entry per call and in call order: because it reads `usage_data` rather than dspy's
     aggregator, and the kit's whole per-call usage record rests on that.
 
     Deliberately vendor-neutral: an arbitrary extra key, not any adapter's. The shim's contract is
@@ -757,7 +757,7 @@ def test_the_aggregator_survives_a_nested_value_and_not_a_bare_list():
     """WHY a caller putting structured data in a usage entry must nest it one level.
 
     `get_total_tokens()` merges a model's entries by ADDING same-named values, and dspy calls it
-    itself from `Module.__call__` whenever `dspy.configure(track_usage=True)` is set — so a value
+    itself from `Module.__call__` whenever `dspy.configure(track_usage=True)` is set, so a value
     it cannot add is a crash in a caller who never wrote `get_total_tokens`. A dict value is
     merged by RECURSION instead and is therefore safe; a bare list is not.
 
