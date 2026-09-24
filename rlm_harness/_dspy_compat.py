@@ -577,6 +577,71 @@ def applied_lm_budget(lm: Any) -> dict[str, Any] | None:
     return None
 
 
+# Names a server may use for a THINKING/REASONING token ceiling, searched in this order at the
+# top level of ``lm.kwargs`` and again inside ``extra_body``. ``("thinking", "budget_tokens")``
+# is the nested Anthropic shape.
+#
+# **This table is on the READ path ONLY, and that asymmetry is the whole design.** The kit sends
+# whatever the caller wrote (``RLMConfig.main_lm_kwargs``) and owns no vocabulary on the wire, so a
+# name missing from this list still REACHES the server unchanged -- it just is not annotated in the
+# trace. A stale write-path table would cost a broken request; a stale read-path table costs one
+# optional trace field. Absent therefore means NOT RECOGNISED HERE, never "no budget was set".
+_THINKING_BUDGET_KEYS = (
+    "thinking_token_budget",      # vLLM -- the one measured to work on qwen3-class models
+    "max_thinking_tokens",
+    "thinking_budget",
+    "reasoning_budget",
+)
+_THINKING_NESTED = (("thinking", "budget_tokens"),)   # Anthropic: {"thinking": {"budget_tokens": N}}
+
+
+def _int_or_none(value: Any) -> int | None:
+    """``value`` as an int, excluding ``bool`` (an int in Python that would read as 1)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def applied_thinking_budget(lm: Any) -> dict[str, Any] | None:
+    """The THINKING-token ceiling ``lm`` carries, as ``{"value": int, "key": str}`` or ``None``.
+
+    ``key`` is the dotted path the value was found at (``"extra_body.thinking_token_budget"``), so
+    a trace reader can tell a top-level litellm parameter from a raw ``extra_body`` key without
+    guessing -- those are different mechanisms, and only the second reaches a server-specific name.
+
+    Read off the LM for the same reason as :func:`applied_lm_budget`: an injected
+    ``main_lm``/``sub_lm`` is used verbatim, so ``RLMConfig`` can hold a value the call never used.
+
+    **This is best-effort recognition, not a contract with any server.** The kit does not own this
+    vocabulary (see ``_THINKING_BUDGET_KEYS``): a name it does not know still goes out on the wire,
+    it simply is not recorded. So ``None`` means "no key I recognise", never "no budget" -- and
+    even a recognised key proves only what was SENT. Whether the server honoured it is answerable
+    only against ``run_end.payload.usage``'s ``reasoning_tokens`` after the fact, which is what
+    makes recording this worth doing at all.
+
+    NAMED KEYS ONLY, like :func:`applied_lm_budget` -- ``lm.kwargs`` carries ``api_key`` for every
+    LM the kit builds, and a passthrough dict is caller-supplied and may carry anything else. One
+    dict-dump here would put both in every trace file.
+    """
+    kwargs = getattr(lm, "kwargs", None)
+    if not isinstance(kwargs, dict):
+        return None
+    extra = kwargs.get("extra_body")
+    scopes: tuple[tuple[str, Any], ...] = (("", kwargs),)
+    if isinstance(extra, dict):
+        scopes += (("extra_body.", extra),)
+    for prefix, scope in scopes:
+        for key in _THINKING_BUDGET_KEYS:
+            found = _int_or_none(scope.get(key))
+            if found is not None:
+                return {"value": found, "key": f"{prefix}{key}"}
+        for outer, inner in _THINKING_NESTED:
+            nested = scope.get(outer)
+            if isinstance(nested, dict):
+                found = _int_or_none(nested.get(inner))
+                if found is not None:
+                    return {"value": found, "key": f"{prefix}{outer}.{inner}"}
+    return None
+
+
 def current_usage_tracker() -> Any:
     """dspy's active ``UsageTracker``, or ``None`` -- through the PUBLIC ``dspy.settings``.
 

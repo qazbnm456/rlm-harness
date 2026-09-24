@@ -7,10 +7,13 @@ sub-LM via :func:`get_config` / :func:`get_sub_lm`.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+from typing import Any
 
 import dspy
 
+from . import _dspy_compat
 from .config import RLMConfig
 
 logger = logging.getLogger(__name__)
@@ -135,6 +138,33 @@ def _maybe_subscription_lm(model: str) -> dspy.LM | None:
     return claude_agent_lm.ClaudeAgentLM(name)
 
 
+def _warn_if_thinking_budget_cannot_act(role: str, lm: Any) -> None:
+    """Warn when a THINKING ceiling is >= the generation cap, so it can never bind first.
+
+    Read off the BUILT LM rather than off `RLMConfig`, so this also covers an injected LM that
+    carries both itself, and so it sees dspy's own `max_tokens` -> `max_completion_tokens`
+    rewrite for OpenAI reasoning models.
+
+    A warning, never an error: the combination is INERT rather than harmful — output generation
+    stops at the smaller number either way — and the kit has no way to know a server's semantics
+    well enough to refuse. Best-effort on both halves: an unrecognised budget key reads as absent
+    (see `_dspy_compat.applied_thinking_budget`) and simply produces no warning.
+    """
+    with contextlib.suppress(Exception):
+        thinking = _dspy_compat.applied_thinking_budget(lm)
+        if thinking is None:
+            return
+        cap = _dspy_compat.applied_lm_budget(lm)
+        if cap is None or thinking["value"] < cap["cap"]:
+            return
+        logger.warning(
+            "%s LM: thinking budget %s (%s) is >= its generation cap %s (%s), so the output cap "
+            "binds first and the thinking budget can never act. Lower the thinking budget, or "
+            "raise the generation cap above it.",
+            role, thinking["value"], thinking["key"], cap["cap"], cap["key"],
+        )
+
+
 def configure(
     config: RLMConfig | None = None,
     *,
@@ -183,6 +213,9 @@ def configure(
     exactly this, because a silently-ignored timeout reads as a bounded route that is not.
     """
     cfg = config or RLMConfig.from_env()
+    # Captured BEFORE auto-routing, because a per-role passthrough is a no-op on any LM this
+    # function does not build -- explicitly injected and subscription-auto-routed alike.
+    injected = {"main": main_lm is not None, "sub": sub_lm is not None}
     auto_routed: list[str] = []
     if main_lm is None:
         main_lm = _maybe_subscription_lm(cfg.main_model)
@@ -246,10 +279,36 @@ def configure(
     # forces the json_schema response_format, so the LM needs no special capability flag.
     # An injected main_lm/sub_lm (explicit, or resolved above via subscription auto-routing) is
     # used verbatim — we build a plain dspy.LM from config ONLY for a role that is still None here.
+    #
+    # Per-ROLE passthrough, merged OVER the shared kwargs for that role only. The merge is
+    # SHALLOW, and that is correct only because the kit sets no nested kwarg of its own here
+    # today: `extra_body` is never in `lm_kwargs`, so `{**lm_kwargs, **role}` cannot drop
+    # anything the kit needed. **IF A FUTURE CHANGE MAKES THE KIT SET `extra_body` (or any other
+    # nested kwarg) ITSELF, this silently clobbers the caller's value** — at that moment this has
+    # to become a deliberate deep merge with a stated conflict rule, not something discovered
+    # from a request that quietly lost a key. `config._LM_KWARGS_REFUSED` keeps the FLAT keys the
+    # kit owns out of here, so `max_tokens` is the only key a role can legitimately override —
+    # and that one is read back off the LM into the trace, which is why it is allowed.
+    main_kwargs = {**lm_kwargs, **(cfg.main_lm_kwargs or {})}
+    sub_kwargs = {**lm_kwargs, **(cfg.sub_lm_kwargs or {})}
+    for role, role_kwargs in (("main", cfg.main_lm_kwargs), ("sub", cfg.sub_lm_kwargs)):
+        if role_kwargs and injected[role]:
+            # Same class of silence as the request_timeout_s warning above: the kwargs reach
+            # `dspy.LM` and nothing else, so on a role whose LM this function did not build they
+            # do NOTHING — and a consumer reading its own config would believe otherwise.
+            logger.warning(
+                "%s_lm_kwargs=%s is ignored: the %s LM was %s, so configure() did not build it. "
+                "Pass these kwargs to the LM you inject, e.g. dspy.LM(model, **kwargs).",
+                role, sorted(role_kwargs), role,
+                "auto-routed to ClaudeAgentLM (which takes no sampling controls)"
+                if f"{role}_lm" in auto_routed else "supplied explicitly",
+            )
     if main_lm is None:
-        main_lm = dspy.LM(cfg.main_model, **lm_kwargs)
+        main_lm = dspy.LM(cfg.main_model, **main_kwargs)
     if sub_lm is None:
-        sub_lm = dspy.LM(cfg.sub_model, **lm_kwargs)
+        sub_lm = dspy.LM(cfg.sub_model, **sub_kwargs)
+    for role, lm in (("main", main_lm), ("sub", sub_lm)):
+        _warn_if_thinking_budget_cannot_act(role, lm)
     # Pass the adapter explicitly (None == dspy's stock default) so a re-configure
     # is clean. The "chat" default never emits response_format — see _build_adapter.
     #

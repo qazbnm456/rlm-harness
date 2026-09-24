@@ -4,7 +4,86 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
-## [Unreleased]
+## [1.12.0] - 2026-09-24
+
+A reasoning model whose THINKING runs away does not present as a long answer — it presents as a
+parse failure. Nothing in the kit could bound it, and the key that does is server-specific, so this
+ships the mechanism and deliberately no vocabulary.
+
+### Added
+
+- **`RLMConfig.main_lm_kwargs` / `sub_lm_kwargs` (`RLM_MAIN_LM_KWARGS` / `RLM_SUB_LM_KWARGS`) — a
+  per-ROLE passthrough of extra `dspy.LM` kwargs**, merged over what `configure()` builds for that
+  role only. Unset sends nothing, down to putting no new key on the wire.
+
+  The driver, from a consumer's vLLM deployment after a model swap: 53% of attempts (33 of 62 at
+  one snapshot) carried at least one call at the 32768 `max_tokens` cap, and inside those calls the
+  median `reasoning_tokens` was the ENTIRE budget with no content. One such call kills the attempt
+  with `AdapterParseError` — which reads as a model that cannot follow the schema, the same
+  misdiagnosis 1.10.0 documented under `max_tokens`. Raising the cap buys a longer runaway. The
+  same pages rerun with `thinking_token_budget: 16384` gave 0 of 155 calls at the cap, and the 15
+  calls that were cut AT the budget each still produced a usable turn.
+
+  **No named knob, and the consumer's own data is the argument.** The obvious design is
+  `RLM_THINKING_BUDGET` with the kit mapping it per provider. That table would drift, and worse, a
+  kit-owned name promises one word means the same thing everywhere — which the measurement
+  falsifies inside ONE model family: on that model `reasoning_effort`, the one name litellm maps
+  across providers, moved reasoning the WRONG way (`low` 2443-2562 tokens, `medium` 2778-2837,
+  against 2237 at the default) while breaking the output-format instruction in front of a JSON
+  adapter. `reasoning_effort` remains reachable as a top-level passthrough key with litellm's own
+  semantics; the kit simply does not put its name on it.
+
+  **Two levels, which is where silent no-ops come from.** A top-level key is a litellm parameter
+  and gets litellm's per-provider mapping; a key under `extra_body` goes RAW into the request body.
+  On that deployment `max_thinking_tokens`, `thinking_budget`, `reasoning_budget` and
+  `chat_template_kwargs.thinking_budget` were all accepted and silently ignored.
+
+  **Keys `configure()` owns are refused at parse time** (`model`, `api_key`, `base_url`,
+  `custom_llm_provider`, `timeout`) rather than silently dropped or silently winning. The line is
+  not "everything the kit sets" — it is whether the TRACE can see the override. `max_tokens` is
+  read back off the LM into `budgets`, so a per-role override is self-documenting, and is therefore
+  ALLOWED: `RLM_SUB_LM_KWARGS='{"max_tokens":4096}'` is how a consumer gets a per-role generation
+  cap with no second config field. The refused set is recorded nowhere, so a silent override there
+  would leave a trace that reads exactly like a run that went somewhere else.
+
+- **`run_end.payload.budgets.thinking`** — `{"main"/"sub": {"value": int, "key": str}}`, where
+  `key` is the dotted PATH the value was found at (`extra_body.thinking_token_budget`), since a
+  top-level litellm parameter and a raw `extra_body` key are different mechanisms. Additive within
+  trace/v1.
+
+  **Its own key, not a field on `budgets.main`.** `budgets.main`'s PRESENCE means "this role
+  carried a token cap" and its absence means none was set — the guide says so in as many words — so
+  a `main` holding only a thinking budget would change what an existing reader's
+  `budgets["main"]["cap"]` may assume. A new optional key is additive; a re-typed one is not.
+
+  **The recognition table is on the READ path only, and that asymmetry is the design.** The kit
+  sends whatever the caller wrote, so a name missing from `_dspy_compat._THINKING_BUDGET_KEYS`
+  still REACHES the server — it is only not annotated. A stale write-path table costs a broken
+  request; a stale read-path one costs an optional trace field. **Absent therefore means NOT
+  RECOGNISED, never "no budget".**
+
+  This is also the only way to answer the feature's built-in blind spot: **a passthrough cannot
+  report that the server ignored a key** — an ignored key and an honoured one are identical on the
+  wire. Pairing `budgets.thinking` with `usage`'s `reasoning_tokens` makes that checkable on every
+  run instead of in a one-off script.
+
+- **A warning when a thinking budget is `>=` the role's generation cap**, read off the BUILT LM so
+  it also covers an injected one and sees dspy's `max_tokens` → `max_completion_tokens` rewrite. A
+  warning, never an error: the combination is INERT (generation stops at the smaller number either
+  way), and the kit cannot know a server's semantics well enough to refuse. A passthrough on a role
+  `configure()` did not build (injected, or subscription-auto-routed) warns too — the same silence
+  the `request_timeout_s` warning exists for.
+
+### Documented
+
+- **The guide's new "Per-role LM request parameters" section carries a MEASURED quoting matrix**,
+  because JSON in an env var is where this goes wrong in practice and the layers disagree. One
+  value, four readers: a shell-sourced file needs the single quotes, `docker run --env-file` never
+  strips them and so receives them as part of the value, and compose's `env_file` and python-dotenv
+  both strip them and accept every form. **There is no single spelling that survives all four.**
+  Single-quoted is the right default. A double-quoted-escaped value is the trap: under `docker run
+  --env-file` it parses as a JSON *string* rather than an object, which is why a non-object raises
+  `TypeError` naming the variable rather than being quietly treated as empty.
 
 ### CI
 
@@ -18,10 +97,6 @@ All notable changes to `rlm-harness`. Format loosely follows
   exactly what the checker exists to keep private, so a missing list SKIPS rather than blocks, CI
   cannot run the check, and `--no-verify` bypasses it. It guards the moment the mistake is made,
   which is local. Enable in a clone with `git config core.hooksPath .githooks`.
-
-## [Unreleased]
-
-### CI
 
 - **`release.yml` now records three things that only bite at publish time**, all from a downstream
   consumer's live release plus one observed here. A `release: published` event runs the workflow at

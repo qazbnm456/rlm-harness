@@ -1444,6 +1444,17 @@ Five things to know:
   half twice. Written for the SHAPE rather than today's field names, because the provider says
   `output_tokens` "remains the inclusive, authoritative total" of its own breakdown too.
 
+**`budgets.thinking` is the THINKING ceiling, and it is its own key for a compatibility reason.**
+`budgets.main` / `.sub` mean "this role carried a token cap" and their ABSENCE means no cap was set,
+so a `main` holding only a thinking budget would change what an existing reader's
+`budgets["main"]["cap"]` may assume. `budgets.thinking.main` sits beside `budgets.main` instead,
+purely additive. It carries `{"value": int, "key": str}` where `key` is the dotted PATH the value
+was found at (`extra_body.thinking_token_budget`), because a top-level litellm parameter and a raw
+`extra_body` key are different mechanisms. **Absent means NOT RECOGNISED, never "no budget"** — the
+kit owns no vocabulary on the wire, so a name it does not know is still SENT and simply not
+annotated here. And a recognised key proves only what was sent: pair it with `usage`'s
+`reasoning_tokens` to find out whether the server honoured it.
+
 **`budgets` covers a DIFFERENT exhaustion from `budget_exhausted`.** The `metrics` snapshot's
 `budget_exhausted` reports the ITERATION cap: the run used up its turns. `budgets.iterations` shows
 what those caps were, `budgets.main`/`.sub` show the TOKEN cap, and `budgets.iterations.dropped`
@@ -1685,7 +1696,7 @@ All via env (`RLMConfig.from_env()`): `RLM_MAIN_MODEL` (or `AI_MODEL_NAME`),
 `RLM_BASE_URL` (or `AI_BASE_URL`), `RLM_INTERPRETER`, `RLM_ADAPTER`,
 `RLM_MAX_TOKENS`, `RLM_MAX_OUTPUT_CHARS`, `RLM_ALLOW_INSECURE_SANDBOX`,
 `RLM_MAX_ITERATIONS`, `RLM_MAX_LLM_CALLS`, `RLM_MAX_RETRIES`, `RLM_SANDBOX_TURN_TIMEOUT`,
-`RLM_REQUEST_TIMEOUT`, `RLM_OBSERVE`.
+`RLM_REQUEST_TIMEOUT`, `RLM_MAIN_LM_KWARGS`, `RLM_SUB_LM_KWARGS`, `RLM_OBSERVE`.
 
 (`RLM_REQUEST_TIMEOUT` is this kit's own name. litellm separately reads a bare `REQUEST_TIMEOUT`
 for its global default — setting that one moves litellm, not this.)
@@ -1784,6 +1795,85 @@ promotes `reasoning_content` to the answer when `content` is empty (guarded — 
 `content` always wins, so its native thinking stays discarded), which keeps the root's first turn from
 dying on dspy's "empty or null response" check. The native chain-of-thought is still dropped from the
 trajectory either way, so a reasoning root spends extra tokens the trace won't keep.
+
+### Per-role LM request parameters (`RLM_MAIN_LM_KWARGS` / `RLM_SUB_LM_KWARGS`)
+
+A JSON object of extra `dspy.LM` kwargs, merged over what `configure()` builds **for that role
+only** (`RLMConfig.main_lm_kwargs` / `sub_lm_kwargs`). Unset sends nothing — the default is
+byte-identical to not having the field, down to putting no new key on the wire.
+
+```bash
+# bound a reasoning model's THINKING without touching the sub-LM's model
+export RLM_MAIN_LM_KWARGS='{"extra_body":{"thinking_token_budget":16384}}'
+```
+
+**What it is for.** A reasoning model whose thinking runs away does not look like a long answer —
+it looks like a parse failure. Measured on a consumer's vLLM deployment after a model swap: 53% of
+attempts (33 of 62, as of one snapshot) had at least one call at the 32768 `max_tokens` cap, and
+inside those calls the median `reasoning_tokens` was the ENTIRE budget with no content at all. One
+such call kills the attempt with `AdapterParseError`, which reads as a model that cannot follow the
+schema. Raising `max_tokens` does not help; it buys a longer runaway. A thinking ceiling does: the
+same pages rerun with `thinking_token_budget: 16384` produced 0 of 155 calls at the cap, and the 15
+calls that WERE cut at the budget each still produced a usable turn.
+
+**The kit ships the mechanism and no vocabulary, on purpose.** The key is server-specific —
+vLLM reads `thinking_token_budget`, Anthropic `thinking.budget_tokens`, llama.cpp has only a server
+flag, OpenAI only `reasoning_effort`. A named kit knob would be a promise that one word means the
+same thing everywhere, and the measurement that prompted this falsifies that inside a single model
+family: on that model `reasoning_effort` moved reasoning the WRONG way (`low` 2443-2562 tokens and
+`medium` 2778-2837 against 2237 at the default) while breaking the output-format instruction — the
+last thing you want in front of a JSON adapter. So what you write is what reaches the server, and
+the kit owns no name on the wire.
+
+**Two levels, and the difference is where silent no-ops come from.** A TOP-LEVEL key is a litellm
+parameter and goes through litellm's own per-provider mapping — `reasoning_effort` is one of these,
+so the passthrough gives you it, with litellm's semantics rather than the kit's. A key inside
+`extra_body` is passed RAW into the request body with no mapping, which is what a server-specific
+name needs. On that same deployment `max_thinking_tokens`, `thinking_budget`, `reasoning_budget`
+and `chat_template_kwargs.thinking_budget` were all accepted and silently ignored.
+
+**Which is the limit worth stating: a passthrough cannot tell you the server dropped your key.**
+Nothing here can — an ignored key and an honoured one are identical on the wire. The check is after
+the fact, in the trace: `run_end.payload.budgets.thinking` records what the LM carried, and
+`run_end.payload.usage` carries the provider's own `reasoning_tokens`. A run supposedly capped at
+16384 that reports 32768 of reasoning is the key doing nothing, and that comparison is available on
+every run rather than in a one-off script.
+
+**Keys `configure()` owns are refused at parse time**, not silently dropped and not silently
+winning:
+
+| Refused | Because | Instead |
+|---|---|---|
+| `model` | `dspy.LM` takes it positionally | `RLM_MAIN_MODEL` / `RLM_SUB_MODEL` |
+| `api_key`, `base_url`, `custom_llm_provider` | nothing records an override, so a silent one leaves a trace that reads like a run that went somewhere else | `RLM_API_KEY` / `RLM_BASE_URL`; a per-role ENDPOINT is a connection-identity change — build that role's LM and inject it with `configure(sub_lm=…)` |
+| `timeout` | same, and it is `request_timeout_s`'s own spelling | `RLM_REQUEST_TIMEOUT` |
+
+`max_tokens` is deliberately NOT refused, and the line is not "everything the kit sets" — it is
+whether the TRACE can see the override. `max_tokens` is read back off the LM into `budgets`
+(`_dspy_compat.applied_lm_budget`), so a per-role cap is self-documenting, and that is how you get
+one without a second config field:
+
+```bash
+export RLM_MAX_TOKENS=32768                    # the main model needs the room
+export RLM_SUB_LM_KWARGS='{"max_tokens":4096}' # the sub model does not
+```
+
+**Quoting: there is no single form that survives every layer**, measured rather than reasoned —
+one JSON value, four ways of getting it into the process:
+
+| value as written in the file | `set -a; . ./file` (bash + zsh) | `docker run --env-file` | compose `env_file` | python-dotenv |
+|---|---|---|---|---|
+| `X={"extra_body": {"thinking_token_budget": 16384}}` | NOT SET — the space and `{` break the assignment | OK | OK | OK |
+| `X={"extra_body":{"thinking_token_budget":16384}}` | UNPARSEABLE — the shell strips the `"` | OK | OK | OK |
+| `X='{"extra_body":{"thinking_token_budget":16384}}'` | OK | UNPARSEABLE — quotes kept literally | OK | OK |
+
+The two that disagree do so in OPPOSITE directions: a shell-sourced file needs the quotes and
+`docker run --env-file` never strips them, so it receives them as part of the value. Compose's
+`env_file` and python-dotenv both strip matching quotes and accept all three. **Single-quoted is the
+right default** — it is correct everywhere except `docker run --env-file`, and compose is what
+almost everyone actually uses. A double-quoted-and-escaped value is the trap to avoid: under
+`docker run --env-file` it parses as a JSON *string* rather than an object, which is why a non-object
+raises `TypeError` naming the variable instead of being quietly treated as empty.
 
 ## Testing the forward path offline (`rlm_harness.testing`)
 

@@ -143,7 +143,10 @@ def _applied_budgets(sub_lm: Any, config: Any, caps_dropped: bool) -> dict[str, 
     is `dspy.settings.lm` (the task holds no reference to it); the sub-LM is the task's own.
 
     Named keys only -- `_dspy_compat.applied_lm_budget` never serialises `lm.kwargs`, which carries
-    `api_key` for every LM the kit builds, and a trace is a shipped artifact.
+    `api_key` for every LM the kit builds, and a trace is a shipped artifact. That rule binds the
+    THINKING half doubly: a per-role passthrough (`RLMConfig.main_lm_kwargs`) is caller-supplied
+    and may carry anything at all, so `applied_thinking_budget` reads named keys out of it rather
+    than recording the dict.
     """
     out: dict[str, Any] = {}
     with contextlib.suppress(Exception):
@@ -154,6 +157,27 @@ def _applied_budgets(sub_lm: Any, config: Any, caps_dropped: bool) -> dict[str, 
         sub = _dspy_compat.applied_lm_budget(sub_lm)
         if sub is not None:
             out["sub"] = sub
+    # THINKING ceilings, under their OWN key rather than inside `budgets.main`/`.sub`. Those two
+    # are established trace/v1 shapes whose PRESENCE means "this role carried a token cap" -- the
+    # guide states that in as many words ("an absent main/sub means no cap was set on that role"),
+    # so emitting a `main` that held only a thinking budget would change what an existing reader's
+    # `budgets["main"]["cap"]` is allowed to assume. A new optional key is additive; a re-typed one
+    # is not. `budgets.thinking.main` still sits beside `budgets.main`, which is what a reader
+    # wanted from it.
+    #
+    # Best-effort by construction: the kit owns no vocabulary on the wire, so an unrecognised key
+    # is SENT and simply not annotated here -- absent means "not recognised", never "no budget".
+    thinking: dict[str, Any] = {}
+    with contextlib.suppress(Exception):
+        found = _dspy_compat.applied_thinking_budget(dspy.settings.lm)
+        if found is not None:
+            thinking["main"] = found
+    with contextlib.suppress(Exception):
+        found = _dspy_compat.applied_thinking_budget(sub_lm)
+        if found is not None:
+            thinking["sub"] = found
+    if thinking:
+        out["thinking"] = thinking
     # The ITERATION caps, which are a DIFFERENT exhaustion from the token cap above -- and
     # `max_output_chars` is a THIRD, independent truncation mechanism (dspy head+tail-caps each
     # REPL output), which a reader diagnosing "truncation" has to be able to rule out.
