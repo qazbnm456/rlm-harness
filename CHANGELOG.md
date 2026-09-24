@@ -39,6 +39,37 @@ All notable changes to `rlm-harness`. Format loosely follows
   of the key names a server may use for a thinking ceiling, which is the drift the read-path design
   exists to avoid.
 
+### Fixed
+
+- **An escalation the PROVIDER refused recorded nothing, so a run that escalated repeatedly read as
+  one that never escalated.** `_InterceptedSubLM.__call__` wrote its `sub_call` AFTER the base LM
+  returned, so a raise skipped the write entirely. This is the ambiguity 1.7.0 removed one level
+  up, where the cause was a consumer who never wrapped the LM, and it survived there because the
+  wrapper was only ever exercised against an LM that answered.
+
+  Found in production, not by inspection. A consumer's sub model was pulled from its proxy
+  mid-deployment: 8 of 10 runs escalated 2-3 times each, every call failed with `no healthy
+  deployments`, all 10 runs finished anyway, and the traces recorded zero escalations. Nothing in
+  the trace could show it; the consumer only knew because the error turns were visible in the
+  planner's own output.
+
+  The failed call now records with `raw: null`, `processed: null`, the provider's error through
+  `short_error`, and `cause: "endpoint"`. The exception propagates unchanged, so `llm_query` still
+  surfaces it to the model and `llm_query_batched` still isolates it per prompt. The write is
+  suppressed on failure, for the reason `TraceRecorder.__exit__` suppresses: a bookkeeping fault
+  must not replace the provider's exception with its own.
+
+- **`sub_call` carries `cause`**, in the same `ok` / `invalid` / `endpoint` vocabulary a
+  `tool_call` uses. `error` alone could not separate an output a validator rejected from a provider
+  that never answered, and only the first of those is the model's doing. Additive within trace/v1.
+
+  **What was checked and is NOT broken**, so it does not get re-investigated: a SUCCESSFUL sub-LM
+  call's usage does reach `run_end.payload.usage`, keyed by the sub model, including through
+  `llm_query_batched`'s thread fan-out. dspy submits those workers with
+  `contextvars.copy_context().run`, so the tracker travels with them. A corpus with no sub-model
+  key in `usage` means the planner did not escalate, once this release makes a FAILED escalation
+  visible as well.
+
 ### Documented
 
 - **A thinking budget set for one task binds on every task in the process**, with numbers from the

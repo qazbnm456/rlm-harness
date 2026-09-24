@@ -336,3 +336,73 @@ def test_a_typed_response_survives_dspys_REAL_return_handling(tmp_path):
         assert isinstance(out, dspy.LMResponse)
         payload = [e["payload"] for e in load_events(path) if e["type"] == EVENT_SUB_CALL][0]
         assert isinstance(payload["raw"], str) and payload["raw"], "raw was not the completion text"
+
+
+# --- a FAILED escalation is still an escalation (1.13.0) ------------------------------------
+
+class _DeadLM:
+    """A sub-LM whose provider is down, the shape that left no trace at all before 1.13.0."""
+
+    model = "openai/sub-model"
+    kwargs: dict = {}
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        raise RuntimeError("litellm.BadRequestError: no healthy deployments")
+
+
+def _events(path):
+    import json
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def test_a_provider_failure_records_the_escalation_and_still_raises(tmp_path):
+    """The record used to sit AFTER the call, so a raise skipped it and the run read as one where
+    the planner never escalated. Observed on a real deployment whose sub model was pulled from the
+    proxy: runs escalated repeatedly, every call failed, and the traces showed zero escalations."""
+    dead = _DeadLM()
+    path = tmp_path / "t.jsonl"
+    with TraceRecorder(str(path), run_id="r"), pytest.raises(RuntimeError, match="no healthy"):
+        intercept_sub_lm(dead)(prompt="summarise this")
+
+    subs = [e for e in _events(path) if e["type"] == "sub_call"]
+    assert len(subs) == 1, "a refused escalation must still be one recorded escalation"
+    payload = subs[0]["payload"]
+    assert payload["cause"] == "endpoint"
+    assert "no healthy deployments" in payload["error"]
+    assert payload["raw"] is None and payload["processed"] is None
+    assert payload["input"] == "summarise this", "the escalation prompt is the RL-relevant half"
+
+
+def test_the_provider_exception_is_never_replaced_by_a_recording_fault(tmp_path):
+    """A bookkeeping bug must not become the error the caller sees, the same rule
+    `TraceRecorder.__exit__` follows."""
+    class _BrokenRecorder(TraceRecorder):
+        def record(self, event_type, *a, **k):
+            if event_type == EVENT_SUB_CALL:      # only the write this test is about
+                raise ValueError("recorder is broken")
+            return super().record(event_type, *a, **k)
+
+    with _BrokenRecorder(str(tmp_path / "t.jsonl"), run_id="r"), \
+            pytest.raises(RuntimeError, match="no healthy"):
+        intercept_sub_lm(_DeadLM())(prompt="x")
+
+
+def test_cause_separates_a_dead_provider_from_a_rejected_output(tmp_path):
+    """`error` alone cannot tell them apart, and only one of the two is the model's doing."""
+    path = tmp_path / "t.jsonl"
+    lm = FakeLM(["fine"])
+    with TraceRecorder(str(path), run_id="r"):
+        intercept_sub_lm(lm)(prompt="q")
+    assert [e["payload"]["cause"] for e in _events(path) if e["type"] == "sub_call"] == ["ok"]
+
+    path2 = tmp_path / "t2.jsonl"
+    rejecting = FakeLM(["bad", "bad"])
+    with TraceRecorder(str(path2), run_id="r"), pytest.raises(SubLMValidationError):
+        intercept_sub_lm(rejecting, validators=[lambda t: "nope" if t == "bad" else None],
+                         max_retries=2)(prompt="q")
+    causes = [e["payload"]["cause"] for e in _events(path2) if e["type"] == "sub_call"]
+    assert causes == ["invalid", "invalid"]

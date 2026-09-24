@@ -64,6 +64,17 @@ sub-LM call, and every tool call into one JSONL stream: replayable (`replay.py`)
 exportable as an RL/SFT dataset (`dataset.py`). Langfuse is an optional mirror; the
 JSONL is the dataset's source of truth.
 
+> **A refused escalation is still an escalation (1.13.0).** When the provider raises, for instance
+> a sub model pulled from a proxy, the `sub_call` is recorded with `raw: null`, `processed: null`,
+> the error, and `cause: "endpoint"`, and the exception then propagates as before. Until 1.13.0 the
+> event was written only after the call returned, so a run that escalated repeatedly against a dead
+> provider recorded ZERO escalations and read as one where the planner never called `llm_query`.
+> Read `cause` rather than `error` to separate that from an output a validator rejected
+> (`"invalid"`), since only the second is the model's doing. A SUCCESSFUL escalation's usage does
+> reach `run_end.payload.usage` under the sub model's key, `llm_query_batched`'s thread fan-out
+> included, so after this release a corpus with neither a `sub_call` nor a sub-model usage key is a
+> planner that genuinely did not escalate.
+
 > **Reading a `sub_call`:** every `sub_call` event is exactly one sub-LM escalation,
 > reached through `dspy.RLM`'s built-in `llm_query` / `llm_query_batched` (the only
 > callers of `sub_lm`). The payload carries `kind:"sub_lm"` + the wrapper `name`. It

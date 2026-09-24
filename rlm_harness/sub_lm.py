@@ -29,14 +29,23 @@ logic stays unit-testable) without a full dspy install.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
 from . import _dspy_compat
+from ._retry import short_error
 from ._toolname import sanitize_tool_name
-from .trace import current_recorder, record_tool_call, recorder_scope
+from .trace import (
+    CAUSE_ENDPOINT,
+    CAUSE_INVALID,
+    CAUSE_OK,
+    current_recorder,
+    record_tool_call,
+    recorder_scope,
+)
 
 
 def bind_recorder_to_sub_lm(sub_lm: Any, recorder: Any) -> Any:
@@ -162,7 +171,28 @@ def intercept_sub_lm(
             input_repr = None if prompt is None else str(prompt)[:4000]
 
             for attempt in range(1, self._max_retries + 1):
-                outputs = self._base(*args, **kwargs)
+                try:
+                    outputs = self._base(*args, **kwargs)
+                except Exception as exc:
+                    # An escalation the PROVIDER refused still happened, and before this it left
+                    # no trace at all: the record below sits after the call, so a raise skipped it
+                    # and the run read as one where the planner never escalated. That is the exact
+                    # ambiguity 1.7.0 removed one level up, where the cause was a consumer who
+                    # never wrapped. Observed on a real deployment whose sub model was pulled from
+                    # the proxy: 8 of 10 runs escalated 2-3 times each, every call failed, and the
+                    # traces recorded zero escalations.
+                    #
+                    # SUPPRESSED so a recorder fault cannot replace the provider's exception with a
+                    # bookkeeping one, the same reason `TraceRecorder.__exit__` suppresses.
+                    if recorder is not None:
+                        with contextlib.suppress(Exception):
+                            recorder.record("sub_call", {
+                                "kind": "sub_lm", "name": self._name, "model": self.model,
+                                "attempt": attempt, "input": input_repr,
+                                "raw": None, "processed": None,
+                                "error": short_error(exc), "cause": CAUSE_ENDPOINT,
+                            })
+                    raise
                 # SHAPE-PRESERVING. This used to be `[outputs]` for anything non-list, which turned
                 # a typed `LMResponse` into `[LMResponse]` and made dspy raise "Sub-LM response must
                 # contain text, got LMResponse": invisible on the default path, fatal under
@@ -189,6 +219,12 @@ def intercept_sub_lm(
                             "raw": raw,          # None = the shape was not recognised
                             "processed": processed,
                             "error": error,
+                            # Which of the three outcomes this was, in the SAME vocabulary a
+                            # `tool_call` uses, so one reader answers "why did this fail" for both.
+                            # Without it an `error` set by a validator and one set by a dead
+                            # provider are indistinguishable, and only one of them is the model's
+                            # doing.
+                            "cause": CAUSE_OK if error is None else CAUSE_INVALID,
                         },
                     )
 
