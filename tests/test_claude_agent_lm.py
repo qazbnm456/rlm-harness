@@ -97,6 +97,23 @@ def fake_sdk(monkeypatch):
     return mod
 
 
+def test_the_instance_carries_NO_engine_spec(fake_sdk, monkeypatch):
+    """dspy 3.4.0 reads `hasattr(lm, "_engine_spec")` in `dspy.clients.execution.prepare` to decide
+    whether an LM is engine-managed or a legacy `forward`/`aforward` one. Its ABSENCE is what keeps
+    a subscription call going through this class's own `forward` instead of litellm, so anything
+    that starts setting it here would silently reroute every subscription run with nothing going
+    red. `_dspy_compat.copy_lm` exists so that satisfying dspy's `LM.copy` never requires stamping
+    it on; this is the pin that keeps it off.
+
+    Asserted on an INSTANCE, not via `dir()`: `"_engine_spec" in dir(dspy.LM)` is False while an
+    instance of `dspy.LM` has one, because `LM.__init__` sets it per instance.
+    """
+    import rlm_harness
+
+    lm = rlm_harness.ClaudeAgentLM("claude-sonnet-5")
+    assert not hasattr(lm, "_engine_spec")
+
+
 def test_construction_sets_the_trace_label(fake_sdk, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     lm = rlm_harness.ClaudeAgentLM("opus")

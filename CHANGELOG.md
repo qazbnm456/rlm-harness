@@ -4,6 +4,32 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [Unreleased]
+
+### Known, not fixed here
+
+- **Two pre-existing test flakes, both outside 1.14.0's diff, both worth one issue.** Recorded
+  because an independent review reproduced them while checking that release and because the second
+  characterisation corrects the first guess, which is the part that changes the fix.
+
+  `tests/test_isolation.py::test_sigterm_ignoring_factory_escalates_to_sigkill` is **not** a
+  slow-host timing flake. It reproduced 8 times in 10 on a loaded machine, and the assertion is a
+  LOWER bound (`assert 1.5 < elapsed`), observed failing at 1.10s. A fast failure there means the
+  child died on `terminate()`, i.e. **the SIGTERM-to-SIGKILL escalation the test is named for did
+  not fire**, because the child had not yet installed its handler when the signal arrived. That is
+  a child-startup race and the hollow-green direction, not a slow host. It is not macOS-specific
+  either: `isolation.py` pins the `spawn` context on every platform, so a shared CI runner is the
+  reproducing condition. A concrete lead for whoever takes it: `_patch_process_capture` assigns
+  `ctx.Process` on the object from `get_context("spawn")`, which is a SINGLETON, and `monkeypatch`
+  restores only `get_context`, so that override leaks into the rest of the session. The fix is to
+  observe the escalation directly rather than through wall-clock, and to restore `ctx.Process`.
+
+  `tests/test_tool_durations.py::test_the_fill_keeps_sub_millisecond_resolution` is the mirror
+  shape: a 1 ms wall-clock UPPER bound over `sum(range(20000))` plus the recording plumbing,
+  failing 1 in 5 on 3.12 and 1 in 8 on 3.11, always on the cold or loaded first run of a batch. Its
+  own comment anticipates the fast-host direction; these are the slow-host side of the same
+  fragility.
+
 ## [1.14.0] - 2026-09-26
 
 dspy 3.4.0 deleted the seam the kit supplies its sandbox through, and 1.13.0 installs it by default.

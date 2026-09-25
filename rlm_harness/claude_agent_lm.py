@@ -127,10 +127,17 @@ def _api_rounds(usage: dict | None) -> dict[str, list] | None:
     values blind (``(current or 0) + (v or 0)``), so a bare LIST concatenated, ``[] or 0`` was
     ``0`` because an empty list is falsy, and the mixed cases raised ``TypeError: int + list``. On
     3.4.0 addition is gated behind ``_is_summable`` and a non-summable value silently KEEPS THE
-    FIRST and drops every later one: no crash, and no second round either. A dict value is merged
-    by RECURSION on both, so one wrapper turns a crash-or-silent-truncation into a value that
-    survives. ``tests/test_dspy_compat.py`` pins the narrow property the kit depends on, a nested
-    value reaching the merged result without raising, rather than either version's arithmetic.
+    FIRST and drops every later one: no crash, and no second round either.
+
+    **What the nesting BUYS is version-scoped, and on the only dspy this kit now supports it is
+    forward-compat rather than survival.** On 3.3.1 it bought a lot: no crash on the mixed shape,
+    and call ORDER preserved where a bare list reversed it. On 3.4.0, measured across all four
+    combinations, a nested value and a bare one lose the later rounds identically, because the
+    recursion descends into the dict and then meets the inner LIST, which is not summable either.
+    So the live reasons to keep it are that trace/v1 freezes the payload shape, and that a dict is
+    the form the merge can descend into at all if dspy's arithmetic changes again.
+    ``tests/test_dspy_compat.py`` pins the narrow property the kit depends on, a nested value
+    reaching the merged result without raising, rather than either version's arithmetic.
 
     **Why non-empty.** ``all(...)`` over an empty list is ``True``, so a guard that only checked
     "list of dicts" would CARRY ``[]``. That is not a corner case: the CLI seeds its usage

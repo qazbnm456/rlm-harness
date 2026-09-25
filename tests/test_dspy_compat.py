@@ -12,9 +12,10 @@ failed in a way the previous suite could not see:
    any exception the model's own code raised in the container, went from "retry next
    turn" to "kill the run". Silent, and only visible under load.
 
-The kit declares only a FLOOR on dspy while consumers pin the KIT, so a consumer's fresh
-install picks whatever dspy is current. None of them can be expected to notice any of the
-above. These tests assert the shim's CONTRACT against the installed dspy, so the next rename
+The kit declares a floor AND (since 1.14.0) a cap on dspy while consumers pin the KIT. The cap
+stops a fresh install silently resolving the NEXT breaking dspy, which had happened twice; within
+the allowed range these shims are still the only thing standing between a rename and a consumer's
+rollout, and none of them can be expected to notice any of the above. These tests assert the shim's CONTRACT against the installed dspy, so the next rename
 lands here as a red test instead of in someone's rollout. That is why they survived the 1.2.0
 floor bump: the shims now resolve a single answer each, but these are what make the NEXT
 rename loud.
@@ -511,7 +512,12 @@ def test_claude_agent_lm_keeps_NO_engine_spec_so_dspy_still_calls_its_own_forwar
     import rlm_harness
 
     cls = rlm_harness.ClaudeAgentLM          # gettable without the subscription extra installed
-    assert "_engine_spec" not in dir(cls)
+    # The INHERITANCE mechanism is what is pinnable here: `ClaudeAgentLM` is a `BaseLM`, not an
+    # `LM`, so it takes `BaseLM.copy`, which reads no private state. A `dir()` check for
+    # `_engine_spec` would be decorative: `"_engine_spec" in dir(dspy.LM)` is FALSE while an
+    # INSTANCE of `dspy.LM` has one, because `LM.__init__` sets it per instance, so the assertion
+    # would pass for the very class that carries the attribute. The instance-level pin lives in
+    # `tests/test_claude_agent_lm.py`, where the SDK stub needed to build one already exists.
     assert cls.copy is dspy.BaseLM.copy and cls.copy is not dspy.LM.copy
 
 
@@ -917,17 +923,21 @@ def test_the_aggregator_survives_a_nested_value_on_this_dspy():
         rounds = merged["m"]["x"]["rounds"]
         assert isinstance(rounds, list) and {"a": 1} in rounds, "the nested value was dropped"
 
-    # THE NEGATIVE HALF, which is the entire reason `_api_rounds` nests rather than a nicety. The
-    # un-nested form has no safe outcome on any version: 3.3.1 raised `TypeError: int + list` and
-    # 3.4.0 silently keeps the first and drops the second. Asserting either by name would pin
-    # dspy's arithmetic-of-the-day, so this asserts only that a BARE list does not survive intact,
-    # which is what makes the wrapper load-bearing and holds on both.
+    # THE NEGATIVE HALF, which is the entire reason `_api_rounds` nests rather than a nicety. A
+    # BARE list survives intact on NEITHER version, and the two fail differently, which is why the
+    # assertion is written as "does not survive" rather than naming an outcome. Measured, both:
+    #   3.3.1, both entries carry a list -> concatenates in REVERSED order, `[{a:2},{a:1}]`
+    #   3.3.1, only one carries one      -> `TypeError: int + list`
+    #   3.4.0, either                    -> keeps the FIRST and silently drops the rest
+    # So for the both-carry input below it is the REVERSAL that fails the equality on 3.3.1, not a
+    # raise; the `except` covers the mixed shape rather than this one. That reversal fact was in a
+    # comment 1.14.0 deleted, which is why it is written down again here.
     bare_survived = False
     try:
         flat = totals({"x": [{"a": 1}]}, {"x": [{"a": 2}]})
         bare_survived = flat["m"]["x"] == [{"a": 1}, {"a": 2}]
     except TypeError:
-        pass                                              # 3.3.1's outcome: it raised
+        pass                                              # only reachable for the MIXED shape
     assert not bare_survived, (
         "a bare list now merges cleanly, so the nesting in `_api_rounds` may no longer be needed; "
         "re-read that docstring before simplifying it"

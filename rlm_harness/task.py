@@ -567,7 +567,7 @@ class RLMTask:
         So on the STRING path dspy is the shutdown point and this method re-shuts the eagerly built
         one, which is harmless because both kinds' ``shutdown()`` are idempotent (``PythonInterpreter``
         nulls ``deno_process``; ``ContainerInterpreter`` nulls ``_sandbox`` and returns early) and
-        because the ``suppress`` below would absorb it anyway. On the INJECTED path this stays the
+        because the ``except Exception`` below would absorb it anyway. On the INJECTED path this stays the
         SINGLE shutdown: dspy is handed ``sandbox.caller_owned(…)``, whose ``shutdown()`` is a
         no-op, so the caller's own object reaches here intact.
 
