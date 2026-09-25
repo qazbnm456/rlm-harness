@@ -119,15 +119,18 @@ def _api_rounds(usage: dict | None) -> dict[str, list] | None:
     summarisation, NOT the size of the context it closed, so Anthropic says not to derive a
     context size from one "even when it is the last entry".
 
-    **Why it is nested.** ``{"rounds": [...]}`` rather than the bare list, and that is load-bearing
-    rather than tidy. dspy's ``UsageTracker`` merges a model's usage entries with ``(current or 0)
-    + (v or 0)``; for a bare LIST that is concatenation, an empty list is FALSY so ``[] or 0`` is
-    ``0``, and the mixed cases then raise ``TypeError: int + list`` -- out of
-    ``dspy.Module.__call__`` itself whenever ``dspy.configure(track_usage=True)`` is set, with no
-    ``get_total_tokens()`` anywhere in the caller's code. The merge RECURSES into a dict value
-    before it reaches that arithmetic, so one wrapper makes the crash structurally impossible and
-    additionally restores call ORDER, which the flat form scrambles. ``tests/test_dspy_compat.py``
-    pins that dspy behaviour so a change there goes red here rather than in a consumer.
+    **Why it is nested.** ``{"rounds": [...]}`` rather than the bare list, and load-bearing rather
+    than tidy, though WHAT it protects against changed in dspy 3.4.0 and the wrapper is right
+    either way. dspy's ``UsageTracker`` merges a model's usage entries, and dspy calls that merge
+    ITSELF out of ``dspy.Module.__call__`` whenever ``dspy.configure(track_usage=True)`` is set,
+    with no ``get_total_tokens()`` anywhere in the caller's code. On 3.3.1 it added same-named
+    values blind (``(current or 0) + (v or 0)``), so a bare LIST concatenated, ``[] or 0`` was
+    ``0`` because an empty list is falsy, and the mixed cases raised ``TypeError: int + list``. On
+    3.4.0 addition is gated behind ``_is_summable`` and a non-summable value silently KEEPS THE
+    FIRST and drops every later one: no crash, and no second round either. A dict value is merged
+    by RECURSION on both, so one wrapper turns a crash-or-silent-truncation into a value that
+    survives. ``tests/test_dspy_compat.py`` pins the narrow property the kit depends on, a nested
+    value reaching the merged result without raising, rather than either version's arithmetic.
 
     **Why non-empty.** ``all(...)`` over an empty list is ``True``, so a guard that only checked
     "list of dicts" would CARRY ``[]``. That is not a corner case: the CLI seeds its usage

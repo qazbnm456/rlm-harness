@@ -4,6 +4,110 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.14.0] - 2026-09-26
+
+dspy 3.4.0 deleted the seam the kit supplies its sandbox through, and 1.13.0 installs it by default.
+
+### Changed
+
+- **dspy floor is now `>=3.4.0`, WITH an upper bound of `<3.5.0`, and pydantic `>=2.11.0`.** The
+  cap reverses a policy this file and `pyproject.toml` used to state. "No upper bound, the
+  `dspy-latest` workflow is the defence instead" was tested twice and broke a consumer both times:
+  3.3.0 renamed three things (CHANGELOG 1.0.1) and 3.4.0 removed the interpreter seam. In each case
+  a fresh install of the CURRENT release silently resolved the breaking dspy, which is what
+  happened here: `pip install rlm-harness==1.13.0` resolved dspy 3.4.0 and did not work. The
+  detector did its job, going red on the first push after 3.4.0 shipped; it cannot protect an
+  install that happens before anyone reads it.
+
+  `<3.5.0` rather than `==3.4.0` because dspy has announced the next break AND its number, several
+  3.4.0 deprecations saying "removal in 3.5", so the cap is upstream's own boundary rather than a
+  guess, and 3.4.x patches still reach consumers. Measured, because the obvious objection is that a
+  cap makes the early-warning workflow decorative: `uv run --with "dspy==<newer>"` OVERRIDES the
+  bound, so `dspy-latest.yml` still installs and tests the newest dspy and still goes red the day
+  3.5.0 ships. pydantic 2.11 is dspy 3.4.0's own floor; declaring less would be a floor the kit
+  cannot run on.
+
+  Supporting 3.3.1 as well was measured, not assumed, and costs one branch in one shim. It is
+  declined for a different reason: the tripwire that CAUGHT this break can then no longer make a
+  single unconditional assertion, and trading the detector away to keep a dspy whose APIs are gone
+  is the wrong side of that bargain.
+
+- **The interpreter is supplied through `interpreter_factory=`, and the ownership sentence is
+  rewritten.** It used to read "OWNERSHIP stays the kit's on every version" and name that kwarg as
+  the WRONG seam, because dspy shuts down whatever the factory returns. 3.4.0 deleted the
+  positional argument of `forward`/`aforward` and left only the factory, so the guarantee is now
+  derived from a mechanism rather than restated: **CREATION stays the kit's, which is what keeps
+  `build_interpreter`'s guard on every pass, and dspy is the SHUTDOWN point for what it was
+  handed, except a caller-supplied double.** That double goes out through new
+  `sandbox.caller_owned`, a view whose `shutdown()` is a no-op, so `_teardown_interpreter` stays
+  its single shutdown and `RLMTask(interpreter=…)` keeps meaning what it says.
+
+  **A second break was hiding behind the first.** Since 1.5.0 the kit passed an
+  `interpreter_factory` purely as a metadata carrier for `execution_instructions`, which raised if
+  invoked, on the premise that dspy never would. 3.4.0 invokes it unconditionally, so fixing only
+  the `TypeError` would have swapped it for that `RuntimeError` on every `container`, `mock` and
+  `ScriptedInterpreter` run. Nothing asserted the premise, which is why it failed in production
+  rather than in CI: **a premise about upstream's CONTROL FLOW needs a test that exercises the
+  control flow, not a raise that documents the assumption.** There is one now.
+
+  `caller_owned` declares the `CodeInterpreter` protocol members STATICALLY. From CPython 3.12
+  (gh-102433) `isinstance` against a `@runtime_checkable` Protocol resolves through
+  `inspect.getattr_static`, which never consults `__getattr__`, so a purely dynamic proxy passes on
+  the 3.11 floor and fails on 3.12 and 3.13. Its test sweeps `getattr_static` rather than asserting
+  `isinstance`, because an `isinstance` assertion would be green on the floor and could not stop
+  the regression returning.
+
+  Two side effects worth keeping. **A retry now gets a FRESH sandbox** on the string path: one
+  interpreter per forward pass means each `run_with_retry` attempt starts clean, where before every
+  attempt re-entered the same dirty REPL namespace while dspy rebuilt an empty history.
+  And `dspy.settings.interpreter_factory`, new in 3.4.0, cannot substitute the runtime that
+  executes model code, because `resolve_interpreter_factory` prefers the module's own factory and
+  the kit always supplies one.
+
+- **The typed sub-LM response moved class AND layout, so the shim assumes neither.** 3.4.0 deleted
+  `dspy.LMResponse` (a LIST of `.outputs`, pydantic) for `dspy.lm15.Response` (one `.message`, a
+  frozen dataclass). `_lm_response_cls` resolves whichever class dspy's own `isinstance` names, the
+  rebuild probes the container off the object, and `_copy_with` probes the copy-with-changes
+  protocol instead of calling `model_copy`. A text part is discriminated on its `type` tag and
+  never on `hasattr(part, "text")`, because on 3.4.0 a thinking part carries a `.text` field of its
+  own. The response's `.text` still JOINS its parts, with `"\n"` now instead of `""`, so the test
+  reads the separator off dspy rather than asserting one.
+
+  Two facts recorded so they are not re-derived: dspy's `_query_lm` still ACCEPTS the typed shape,
+  so the branch is live, but an ordinary `lm(prompt=…)` call no longer PRODUCES one, and
+  `dspy.context(experimental=True)` no longer changes that. The test that used to drive dspy into
+  producing one now pins the acceptance contract against dspy's own source instead.
+
+### Fixed
+
+- **`_InterceptedSubLM.copy()`**, because 3.4.0's new `dspy.LM.copy` reads `self._engine_spec`,
+  which falls through the wrapper's `__getattr__` and raises for any base that is not itself a
+  `dspy.LM`. Resolved in `_dspy_compat.copy_lm`, which asks the object that HAS the state to copy
+  itself. **Never stamp `_engine_spec` on to satisfy it:** in 3.4.0 its ABSENCE is how
+  `dspy.clients.execution.prepare` recognises a legacy `forward`/`aforward` LM, so adding one to
+  `ClaudeAgentLM` would route its calls through litellm instead of its own `forward`. The probe is
+  on the TYPE and called unbound, because an instance `getattr` is what a `unittest.mock` double
+  manufactures for any name, and a mock sub-LM is a base the kit supports wrapping.
+
+  It also repairs something wrong on EVERY version: `copy(rollout_id=1)` updated the WRAPPER's
+  decorative `kwargs` while `_base`, the object that actually makes the request, was shared by
+  reference and never saw it.
+
+### Documented
+
+- **dspy's usage merge changed and the KIT did not have to.** 3.3.1 added same-named values blind,
+  so a bare list concatenated and the mixed case raised `TypeError: int + list`; 3.4.0 gates
+  addition and silently keeps the FIRST non-summable value. The kit reads per-call entries, so
+  nothing in `run_end.payload.usage` is lost either way, and the test now pins the narrow property
+  the kit depends on, a dict-nested value reaching the merged result without raising, rather than
+  either version's arithmetic. One correction to the old rationale: "the kit never reads a merge"
+  would be too strong on 3.4.0, where `call_result.combine()` folds usage when a single LM call
+  yields several results and `finalize` records the merged dict.
+
+- **`optimize.compile_task`'s documented blocker is void.** It said an optimizer calls the program
+  without a positional interpreter, so dspy would invoke the metadata carrier that deliberately
+  raised. With a real factory that path just works and each pass gets its own sandbox.
+
 ## [1.13.0] - 2026-09-24
 
 1.12.0 records the budget a run carried in `run_end`. A run killed by a signal never writes one.

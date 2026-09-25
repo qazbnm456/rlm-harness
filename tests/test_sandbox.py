@@ -420,3 +420,57 @@ def test_timing_did_not_disturb_the_no_watcher_guarantee(monkeypatch):
     with recorder_scope(_StagingRecorder()):
         interp.execute("1+1")
     assert created["n"] == 0
+
+# ---- the caller-owned interpreter view (1.14.0) ----------------------------------------------
+
+
+def test_the_caller_owned_view_declares_the_protocol_STATICALLY():
+    """dspy validates with `isinstance(x, CodeInterpreter)` on a `@runtime_checkable` Protocol, and
+    from CPython 3.12 (gh-102433) that resolves members through `inspect.getattr_static`, which
+    never consults `__getattr__`.
+
+    So this sweeps `getattr_static` rather than asserting `isinstance`. An `isinstance` assertion
+    would be GREEN on the 3.11 floor and red only on 3.12/3.13, i.e. it could not stop the
+    regression coming back on the version most local runs use. CLAUDE.md's rule for exactly this:
+    pin the lesson in a test that fails on EVERY version.
+    """
+    import inspect
+
+    dspy = pytest.importorskip("dspy")
+    from dspy.primitives.code_interpreter import CodeInterpreter
+
+    from rlm_harness.sandbox import caller_owned
+    from rlm_harness.testing import ScriptedInterpreter
+
+    real = ScriptedInterpreter([])
+    view = caller_owned(real)
+    members = sorted(getattr(CodeInterpreter, "__protocol_attrs__", None)
+                     or [n for n in dir(CodeInterpreter) if not n.startswith("_")])
+    assert members, "could not resolve the protocol's members"
+    for name in members:
+        inspect.getattr_static(view, name)      # AttributeError if only `__getattr__` forwards it
+    assert isinstance(view, CodeInterpreter)
+    assert dspy is not None
+
+
+def test_the_caller_owned_view_protects_the_double_and_forwards_writes():
+    """The two jobs the view exists for: dspy shuts down the VIEW while the caller's object
+    survives every pass, and dspy's `_inject_execution_context` writes land on the REAL object
+    rather than being absorbed by the wrapper, which would leave it with a stale tool table."""
+    from rlm_harness.sandbox import caller_owned
+    from rlm_harness.testing import ScriptedInterpreter
+
+    real = ScriptedInterpreter([])
+    calls = []
+    real.shutdown = lambda: calls.append("shutdown")
+    view = caller_owned(real)
+
+    view.shutdown()
+    assert calls == [], "dspy shutting down the view destroyed the caller's interpreter"
+
+    view.output_fields = ["answer"]
+    view._tools_registered = False
+    assert real.output_fields == ["answer"]
+    assert real._tools_registered is False
+    view.tools.update({"t": lambda: None})
+    assert "t" in real.tools, "the tool table was written to the wrapper, not the interpreter"

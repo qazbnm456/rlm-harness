@@ -31,6 +31,8 @@ imports dspy lazily and is cached, since the installed dspy cannot change mid-pr
 from __future__ import annotations
 
 import contextlib
+import copy
+import dataclasses
 import inspect
 from functools import lru_cache
 from typing import Any
@@ -70,33 +72,6 @@ def _rlm_init_takes_var_keyword() -> bool:
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
 
 
-def forward_interpreter_args(interpreter: Any) -> tuple:
-    """The positional args to prepend to ``rlm.aforward(...)`` for ``interpreter``.
-
-    From dspy 3.3.0 a caller-owned interpreter is the FIRST POSITIONAL argument of
-    ``forward``/``aforward``, not a constructor kwarg. Ownership is what makes this the right
-    seam: dspy shuts down only an interpreter it created itself, never one the caller supplied
-    ("Pass an existing interpreter as the first positional argument when calling the module"),
-    so ``RLMTask._teardown_interpreter`` stays correct. Do NOT switch to ``interpreter_factory=``
-    as the way to SUPPLY an interpreter: dspy DOES shut down whatever that factory returns,
-    which would double-shutdown the kit's sandbox. (``interpreter_instructions_kwargs`` below
-    does pass an ``interpreter_factory``, but only as a metadata CARRIER that dspy never calls;
-    see its docstring for why that is not the same thing.)
-
-    Empty when there is no caller-owned interpreter at all.
-    """
-    return () if interpreter is None else (interpreter,)
-
-
-def _raise_carrier_invoked() -> None:
-    raise RuntimeError(
-        "rlm-harness passed dspy an interpreter_factory as a metadata carrier only. It must "
-        "never be INVOKED, because dspy would then own and shut down what it returns while "
-        "RLMTask._teardown_interpreter also shuts down its own sandbox. Reaching here means the "
-        "caller-owned interpreter stopped being passed positionally to forward()/aforward()."
-    )
-
-
 @lru_cache(maxsize=1)
 def _dspy_reads_execution_instructions() -> bool:
     """True if the installed dspy renders ``interpreter_factory.execution_instructions``.
@@ -113,58 +88,62 @@ def _dspy_reads_execution_instructions() -> bool:
         return False
 
 
-def interpreter_instructions_kwargs(interpreter: Any) -> dict[str, Any]:
-    """``RLM(...)`` kwargs that describe ``interpreter``'s runtime to the model, or ``{}``.
+#: The ``RLM(...)`` kwarg that SUPPLIES the interpreter, NEWEST FIRST. Same probing shape as
+#: ``_BUDGET_ALIASES``: the next rename is one entry here plus a red test.
+_INTERPRETER_FACTORY_ALIASES: tuple[str, ...] = ("interpreter_factory",)
 
-    THE PROBLEM. From dspy 3.3.1 the action prompt carries an "Execution environment:" section,
-    and dspy sources it from ``self._interpreter_factory.execution_instructions``. The kit does
-    not set ``interpreter_factory``: it supplies the interpreter POSITIONALLY, which is what
-    keeps ownership (see ``forward_interpreter_args``), so the attribute is read off dspy's
-    DEFAULT factory, ``PythonInterpreter``. Every run is therefore told "Python runs in
-    Pyodide/WebAssembly … subprocesses and native extensions are unavailable" no matter what is
-    actually executing the code. For the ``container`` interpreter that is false in the one way
-    that matters: spawning subprocesses is the entire reason it exists. Nothing goes red; the
-    model simply stops trying.
 
-    THE FIX, and why it does not reopen the ownership hole. The returned factory is a metadata
-    CARRIER: dspy reads an attribute off it and never calls it. That is not an assumption:
-    ``_validate_interpreter_factory`` validates without invoking, ``_interpreter_context``
-    returns the caller-owned interpreter and returns early, and ``RLMTask._build_rlm`` always
-    resolves a non-``None`` interpreter, so the factory is unreachable by construction. It still
-    raises if invoked, so a future dspy that changes the positional seam fails loudly here
-    instead of silently double-shutting-down the sandbox.
+@lru_cache(maxsize=1)
+def _interpreter_factory_param() -> str | None:
+    params = _rlm_init_params()
+    for name in _INTERPRETER_FACTORY_ALIASES:
+        if name in params:
+            return name
+    if _rlm_init_takes_var_keyword() or not params:
+        return _INTERPRETER_FACTORY_ALIASES[0]
+    return None
 
-    Returns ``{}``, changing nothing, unless ALL of:
 
-    * the installed dspy actually renders the text (``_dspy_reads_execution_instructions``);
-    * ``RLM.__init__`` really accepts ``interpreter_factory``. Load-bearing, and NOT redundant
-      with the check above: ``_build_rlm``'s ``except TypeError`` fallback re-passes the same
-      kwargs, so an unknown kwarg raises on BOTH constructions and takes the run down rather
-      than degrading. It is also what "never hardcode a dspy kwarg name" requires;
-    * ``interpreter`` exposes a non-empty ``execution_instructions`` string;
-    * ``interpreter`` is not a dspy ``PythonInterpreter``: dspy's own default already describes
-      those correctly, so carrying its text back to it would be pure noise.
+def interpreter_kwargs(factory: Any, *, execution_instructions: str = "") -> dict[str, Any]:
+    """``RLM(...)`` kwargs that SUPPLY the kit's interpreter and describe it to the model.
+
+    **Since dspy 3.4.0 this is the ONLY seam.** 3.3.x took a caller-owned interpreter as the first
+    POSITIONAL argument of ``forward``/``aforward``; 3.4.0 made both keyword-only and deleted that
+    parameter, so ``rlm.aforward(interpreter, **inputs)`` raises ``TypeError: RLM.aforward() takes
+    1 positional argument but 2 were given``.
+
+    **The ownership SENTENCE changed; the ownership GUARANTEES did not.** dspy now calls this
+    factory once per forward pass and shuts down whatever it returns
+    (``RLM._interpreter_context``: ``factory()``, then ``interpreter.shutdown()`` in a
+    ``finally``). So CREATION stays the kit's, which is what keeps ``sandbox.build_interpreter``'s
+    guard on every pass, and dspy becomes the SHUTDOWN point for an interpreter it was handed. A
+    CALLER-SUPPLIED double is the exception: it goes out through ``sandbox.caller_owned``, whose
+    ``shutdown()`` is a no-op, so ``RLMTask._teardown_interpreter`` stays its single shutdown.
+
+    **This replaces a metadata CARRIER whose premise dspy 3.4.0 falsified.** Until 1.14.0 the kit
+    passed an ``interpreter_factory`` that existed only so dspy could read
+    ``execution_instructions`` off it, and it raised if invoked, on the documented premise that
+    dspy never would. 3.4.0's ``_interpreter_context`` invokes it unconditionally, so that guard
+    fired for real on every ``container``, ``mock`` and ``ScriptedInterpreter`` run. Nothing
+    asserted the control-flow premise the carrier rested on, which is why the break was silent
+    until the ``TypeError`` above exposed it. One object now does both jobs and the premise is
+    gone rather than re-asserted.
+
+    **Raises rather than returning ``{}``.** With no positional seam left, a silently dropped
+    factory means dspy builds its own bare ``PythonInterpreter`` and the run continues with no
+    watchdog, no JSON-literal aliases, no container boundary and no insecure-interpreter guard.
+    That is exactly the silent degradation this module exists to prevent.
     """
-    if not _dspy_reads_execution_instructions():
-        return {}
-    if "interpreter_factory" not in _rlm_init_params() and not _rlm_init_takes_var_keyword():
-        return {}
-    text = getattr(interpreter, "execution_instructions", None)
-    if not isinstance(text, str) or not text.strip():
-        return {}
-    try:
-        from dspy.primitives.python_interpreter import PythonInterpreter
-
-        if isinstance(interpreter, PythonInterpreter):
-            return {}
-    except Exception:  # pragma: no cover - defensive
-        pass
-
-    def carrier():
-        _raise_carrier_invoked()
-
-    carrier.execution_instructions = text
-    return {"interpreter_factory": carrier}
+    name = _interpreter_factory_param()
+    if name is None:
+        raise RuntimeError(
+            "the installed dspy accepts no interpreter_factory on RLM(...), so rlm-harness "
+            "cannot supply its own sandbox and would silently run without its guard. Update "
+            "rlm_harness._dspy_compat._INTERPRETER_FACTORY_ALIASES."
+        )
+    if _dspy_reads_execution_instructions() and execution_instructions.strip():
+        factory.execution_instructions = execution_instructions
+    return {name: factory}
 
 
 def rlm_budget_kwargs(
@@ -345,10 +324,34 @@ def is_fast_fail_lm_error(exc: BaseException) -> bool:
 
 @lru_cache(maxsize=1)
 def _lm_response_cls() -> Any:
-    """dspy's typed sub-LM response class, or ``None`` on a dspy that has none."""
+    """dspy's typed sub-LM response class, or ``None`` on a dspy that has none.
+
+    3.4.0 DELETED ``dspy.LMResponse`` (and made ``import dspy.core.types`` raise a migration
+    error) and moved the typed shape to ``dspy.lm15.Response``. Not a rename: the LAYOUT changed
+    too, from ``.outputs`` (a LIST of outputs, each with parts) to a single ``.message`` holding
+    the parts. ``sub_lm_response_with_text`` handles both.
+
+    Resolved here so the kit's gate is the SAME class object ``RLM._query_lm`` branches on, never
+    a duck-typed guess.
+    """
     import dspy
 
-    return getattr(dspy, "LMResponse", None)
+    return getattr(getattr(dspy, "lm15", None), "Response", None) or getattr(dspy, "LMResponse", None)
+
+
+def _copy_with(obj: Any, **changes: Any) -> Any:
+    """``obj`` with ``changes`` applied, by whichever copy-with-changes protocol its type has.
+
+    dspy 3.4's ``lm15`` types are FROZEN DATACLASSES (``dataclasses.replace``); 3.3's were
+    pydantic models (``model_copy(update=…)``). Probed rather than written down, so the next
+    migration of that detail is a no-op here instead of a ``TypeError`` at a call site. Either way
+    the ORIGINAL is not mutated, which is what lets a no-op pipeline return dspy's own object by
+    identity.
+    """
+    model_copy = getattr(obj, "model_copy", None)
+    if callable(model_copy):
+        return model_copy(update=changes)
+    return dataclasses.replace(obj, **changes)
 
 
 def sub_lm_response_text(response: Any) -> str | None:
@@ -399,28 +402,76 @@ def sub_lm_response_with_text(response: Any, text: str) -> Any:
     """
     lm_response = _lm_response_cls()
     if lm_response is not None and isinstance(response, lm_response):
-        outputs = list(getattr(response, "outputs", None) or ())
-        if not outputs:
-            return [text]
-        parts = list(getattr(outputs[0], "parts", None) or ())
+        # TWO LAYOUTS, one branch each. dspy 3.4's `lm15.Response` holds exactly ONE `.message`;
+        # 3.3's `LMResponse` held a LIST of `.outputs`. Probed off the object, not off a version.
+        container = getattr(response, "message", None)
+        field = "message"
+        siblings: list[Any] = []
+        if container is None:
+            outputs = list(getattr(response, "outputs", None) or ())
+            if not outputs:
+                return [text]
+            container, field, siblings = outputs[0], "outputs", outputs[1:]
+        parts = list(getattr(container, "parts", None) or ())
         replaced = False
         new_parts = []
         for part in parts:
+            # NOT `hasattr(part, "text")`: a citation part carries a `.text` field too and
+            # `Response.text` does not include it. The `type` tag is the discriminator.
             if getattr(part, "type", None) != "text":
                 new_parts.append(part)          # thinking / tool_call / citation / refusal
             elif not replaced:
-                new_parts.append(part.model_copy(update={"text": text}))
+                new_parts.append(_copy_with(part, text=text))
                 replaced = True
-            # ...and every LATER text part is DROPPED: `LMOutput.text` joins them, so keeping one
-            # would append the old tail to the substituted text.
+            # ...and every LATER text part is DROPPED: the response's `.text` JOINS them, so
+            # keeping one would append the old tail to the substituted text.
         if not replaced:
             return [text]
-        new_first = outputs[0].model_copy(update={"parts": new_parts})
-        return response.model_copy(update={"outputs": [new_first, *outputs[1:]]})
+        # `replaced` guarantees at least one part, which 3.4's `Message.__post_init__` requires.
+        new_container = _copy_with(container, parts=tuple(new_parts))
+        if field == "message":
+            return _copy_with(response, message=new_container)
+        return _copy_with(response, outputs=[new_container, *siblings])
     if isinstance(response, (list, tuple)) and response:
         rest = list(response[1:])
         return [text, *rest]
     return [text]
+
+
+def copy_lm(lm: Any, **updates: Any) -> Any:
+    """A VARIANT of an LM (dspy's documented ``lm.copy(rollout_id=…)``), for a base the kit only
+    duck-types.
+
+    Resolved here because WHICH instance state an LM's ``copy()`` needs is dspy-VERSION-dependent.
+    3.3.1's ``dspy.LM`` had no ``copy`` of its own and inherited ``BaseLM.copy``, a shallow copy
+    reading nothing private; 3.4.0 added ``LM.copy``, whose first act is to read
+    ``self._engine_spec``.
+
+    **Never stamp ``_engine_spec`` on to satisfy it.** In 3.4.0 its ABSENCE is how
+    ``dspy.clients.execution.prepare`` recognises a legacy ``forward``/``aforward`` LM
+    (``managed = hasattr(lm, "_engine_spec")``), so adding one to ``ClaudeAgentLM`` would route its
+    calls through litellm instead of its own ``forward``. Ask the object that HAS the state to copy
+    itself instead.
+
+    **The probe is on the TYPE, called unbound.** An instance ``getattr`` is exactly what a
+    ``unittest.mock`` double manufactures for any name, and a mock sub-LM is a base the kit
+    supports wrapping, so ``getattr(lm, "copy")`` would return a fresh unconfigured child mock and
+    call it a copy. This is the same trap ``sub_lm._ensure_sub_call_recording`` documents for its
+    ``records_sub_call`` probe.
+
+    A base with no ``copy`` at all gets a shallow copy with the updates merged into ``kwargs``,
+    mirroring ``BaseLM.copy``'s own rule.
+    """
+    copier = getattr(type(lm), "copy", None)
+    if callable(copier):
+        return copier(lm, **updates)
+    duplicate = copy.copy(lm)
+    if updates:
+        merged = dict(getattr(duplicate, "kwargs", {}) or {})
+        merged.update(updates)
+        with contextlib.suppress(Exception):
+            duplicate.kwargs = merged
+    return duplicate
 
 
 @lru_cache(maxsize=1)

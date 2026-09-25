@@ -15,7 +15,7 @@ dspy = pytest.importorskip("dspy")
 from pydantic import BaseModel
 
 import rlm_harness.runtime as rt
-from rlm_harness import RLMConfig, RLMTask, SandboxCancelled
+from rlm_harness import RLMConfig, RLMTask, SandboxCancelled, _dspy_compat
 from rlm_harness.tools import make_schema_validator
 
 
@@ -111,10 +111,15 @@ def test_build_rlm_describes_a_custom_interpreters_runtime_to_the_model(monkeypa
     assert factory.execution_instructions == _Interp.execution_instructions
 
 
-def test_build_rlm_passes_no_factory_for_an_interpreter_that_describes_nothing(monkeypatch):
-    """The mirror image, and the compatibility half: an interpreter that says nothing about
-    itself (a consumer's own, predating this feature) must leave the constructor call exactly
-    as it was before 1.5.0. Passing a factory at all is the risky side of this change."""
+def test_build_rlm_ALWAYS_passes_a_factory_even_for_a_silent_interpreter(monkeypatch):
+    """Since 1.14.0 the factory is the ONLY way to supply the interpreter, so it is
+    unconditional. This test asserted the opposite until then, because the factory used to be a
+    metadata carrier that an interpreter with nothing to say did not need.
+
+    An interpreter that describes nothing still has to arrive: omitting the factory would leave
+    dspy building its own bare `PythonInterpreter`, which means no watchdog, no JSON-literal
+    aliases, no container boundary and no insecure-interpreter guard. What a silent interpreter
+    changes is only whether `execution_instructions` gets stamped on the factory."""
     _configure_with_dummy()
     captured = {}
     real_init = dspy.RLM.__init__
@@ -136,8 +141,19 @@ def test_build_rlm_passes_no_factory_for_an_interpreter_that_describes_nothing(m
         signature = "doc: str -> answer: str"
         output_field = "answer"
 
-    T(interpreter=_Silent())._build_rlm()
-    assert "interpreter_factory" not in captured
+    silent = _Silent()
+    T(interpreter=silent)._build_rlm()
+    name = _dspy_compat._interpreter_factory_param()
+    assert name in captured, "the interpreter has no other way to reach dspy"
+    factory = captured[name]
+    assert not getattr(factory, "execution_instructions", ""), (
+        "an interpreter that describes nothing must not stamp empty text over dspy's own default"
+    )
+    # And the factory really hands dspy the caller's object, through the shutdown-suppressing view.
+    handed = factory()
+    assert handed is not silent, "a caller-supplied double must not be handed over unprotected"
+    handed.shutdown()
+    assert not getattr(silent, "shut_down", False)
 
 
 def test_custom_output_type_resolves_without_frame_help():
@@ -309,18 +325,23 @@ def test_cancel_event_reaches_the_built_interpreter_end_to_end():
 
     ev = threading.Event()
     task = T(cancel_event=ev)
-    task._build_rlm()   # builds the interpreter and queues it for the forward() seam
+    rlm = task._build_rlm()
 
-    # Assert on the KIT's own handle, not dspy's private `_interpreter` slot: dspy 3.3.0
-    # stopped holding the interpreter on the module (it takes one per forward() call).
+    # Assert on the KIT's own handle, not dspy's private slot: dspy holds no interpreter of its
+    # own, it builds one per forward pass from the factory.
     built = task._built_interpreter
     assert built is not None and built._cancel_event is ev
 
-    # ...and that the same instance is queued for delivery on whichever seam this dspy
-    # queues for delivery on the forward() positional seam. Without this half, the test would
-    # still pass if `_build_rlm` built the interpreter and then dropped it.
-    delivered = task._forward_interpreter
-    assert delivered is built
+    # ...and that what dspy will ACTUALLY execute carries it too. Without this half the test would
+    # still pass if `_build_rlm` built a correct interpreter and then handed dspy a different one.
+    # Since 1.14.0 that means calling the factory the way dspy does, rather than reading a stashed
+    # instance: dspy takes a NEW interpreter per pass, so every pass has to carry the event, not
+    # just the first.
+    name = _dspy_compat._interpreter_factory_param()
+    factory = getattr(rlm, f"_{name}", None) or rlm.__dict__[name]
+    first, second = factory(), factory()
+    assert first._cancel_event is ev
+    assert second._cancel_event is ev, "a later forward pass would run without the cancel event"
 
 
 async def test_sandbox_cancelled_survives_the_real_retry_engine_end_to_end():

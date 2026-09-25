@@ -61,6 +61,62 @@ class SandboxCancelled(RuntimeError):
     """A caller explicitly cancelled a sandbox execution in progress."""
 
 
+class _CallerOwnedInterpreter:
+    """A view of ``interp`` whose ``shutdown()`` is a no-op; every other attribute forwards.
+
+    dspy >= 3.4.0 CREATES and SHUTS DOWN one interpreter per forward pass and deleted the
+    caller-owned positional seam that used to keep a supplied interpreter the caller's. This view
+    is what keeps ``RLMTask(interpreter=...)`` working the way its contract says: dspy shuts down
+    the view, the real object survives every pass, and ``RLMTask._teardown_interpreter`` stays its
+    single shutdown. Without it a caller's ``ScriptedInterpreter`` is destroyed after the first
+    pass and a retry runs against a dead double.
+
+    **The protocol members are declared STATICALLY, and that is not style.** dspy validates with
+    ``isinstance(x, CodeInterpreter)`` on a ``@runtime_checkable`` Protocol, and from CPython 3.12
+    (gh-102433) that resolves members through ``inspect.getattr_static``, which never consults
+    ``__getattr__``. A purely dynamic proxy therefore passes on the 3.11 floor and FAILS on 3.12
+    and 3.13, which is the matrix cell most local runs use. ``tests/test_sandbox.py`` pins this
+    with a ``getattr_static`` sweep rather than a bare ``isinstance``, because an ``isinstance``
+    assertion would itself be green on 3.11 and could not stop the regression returning.
+
+    ``__setattr__`` forwarding is load-bearing too: ``RLM._inject_execution_context`` writes
+    ``output_fields`` and ``_tools_registered`` onto whatever the factory returned, and a
+    ``__getattr__``-only proxy would absorb both onto the wrapper, leaving the real interpreter
+    with a previous pass's tools.
+    """
+
+    __slots__ = ("_interp",)
+
+    def __init__(self, interp: Any) -> None:
+        object.__setattr__(self, "_interp", interp)
+
+    # --- the CodeInterpreter protocol, declared so `getattr_static` can see it ---------------
+    @property
+    def tools(self) -> Any:
+        return object.__getattribute__(self, "_interp").tools
+
+    def start(self) -> Any:
+        return object.__getattribute__(self, "_interp").start()
+
+    def execute(self, code: str, variables: dict | None = None) -> Any:
+        return object.__getattribute__(self, "_interp").execute(code, variables)
+
+    def shutdown(self) -> None:
+        """Deliberately nothing: the CALLER owns this interpreter's lifetime."""
+
+    # --- everything else forwards -----------------------------------------------------------
+    def __getattr__(self, name: str) -> Any:
+        return getattr(object.__getattribute__(self, "_interp"), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(object.__getattribute__(self, "_interp"), name, value)
+
+
+def caller_owned(interp: Any) -> Any:
+    """Wrap a CALLER-SUPPLIED interpreter so dspy cannot shut it down. See the class above."""
+    return _CallerOwnedInterpreter(interp)
+
+
 def build_interpreter(
     kind: str,
     *,

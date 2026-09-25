@@ -39,6 +39,7 @@ def _clear_caches():
         _dspy_compat._rlm_init_signature,
         _dspy_compat._rlm_init_params,
         _dspy_compat._rlm_init_takes_var_keyword,
+        _dspy_compat._interpreter_factory_param,
         _dspy_compat.reserved_tool_names,
         _dspy_compat.reserved_result_names,
         _dspy_compat.recoverable_interpreter_error,
@@ -55,6 +56,7 @@ def _clear_caches():
         _dspy_compat._rlm_init_signature,
         _dspy_compat._rlm_init_params,
         _dspy_compat._rlm_init_takes_var_keyword,
+        _dspy_compat._interpreter_factory_param,
         _dspy_compat.reserved_tool_names,
         _dspy_compat.reserved_result_names,
         _dspy_compat.recoverable_interpreter_error,
@@ -130,31 +132,71 @@ def test_budget_prefers_the_newest_alias(monkeypatch):
     assert "max_iters" in resolved and "max_iterations" not in resolved
 
 
-# ---- the caller-owned interpreter ------------------------------------------------
+# ---- the interpreter seam ---------------------------------------------------------
 
 
 def test_the_interpreter_seam_still_exists_on_this_dspy():
-    """THE tripwire for the seam. `forward_interpreter_args` has no dspy contact left after the
-    3.3.0 floor, it is a one-liner, so this assertion is the only thing that would notice dspy
-    moving the interpreter again. It must stay UNCONDITIONAL: making it mirror the shim would
-    make it a tautology, and the seam would then be untestable by construction."""
+    """THE tripwire for the seam, and it has moved twice now.
+
+    3.3.0 made a caller-owned interpreter the first POSITIONAL argument of `forward`/`aforward`;
+    3.4.0 deleted that parameter, made both keyword-only, and left `interpreter_factory=` as the
+    only way in. This asserts the CURRENT seam unconditionally: making it mirror the shim would
+    make it a tautology and the seam would be untestable by construction.
+    """
+    name = _dspy_compat._interpreter_factory_param()
+    assert name is not None, "this dspy accepts no interpreter factory at all"
+    assert name in inspect.signature(dspy.RLM.__init__).parameters, (
+        f"RLM.__init__ has no {name!r}: dspy moved the seam; update "
+        f"`_dspy_compat._INTERPRETER_FACTORY_ALIASES`."
+    )
     for method in (dspy.RLM.forward, dspy.RLM.aforward):
-        params = list(inspect.signature(method).parameters.values())
-        positional = [
-            p for p in params
-            if p.name != "self"
-            and p.kind in (inspect.Parameter.POSITIONAL_ONLY,
-                           inspect.Parameter.POSITIONAL_OR_KEYWORD)
-        ]
-        assert positional, f"{method.__name__} takes no positional interpreter"
-        assert positional[0].name == "interpreter", (
-            f"{method.__name__}'s first positional arg is {positional[0].name!r}, not "
-            f"'interpreter': dspy moved the seam; update `forward_interpreter_args`."
-        )
+        params = inspect.signature(method).parameters
+        assert name in params, f"{method.__name__} cannot override the interpreter any more"
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
 
 
-def test_no_interpreter_still_means_no_forward_args():
-    assert _dspy_compat.forward_interpreter_args(None) == ()
+def test_dspy_ACTUALLY_INVOKES_the_factory_it_is_given():
+    """The assertion the previous design lacked, which is why its break was silent.
+
+    Until 1.14.0 the kit passed an `interpreter_factory` purely as a metadata carrier that raised
+    if called, on the premise that dspy never would. dspy 3.4.0 calls it unconditionally, and
+    nothing here asserted the premise, so the guard fired in production instead of in CI. Now the
+    factory really supplies the interpreter, so "dspy calls it" is the contract, not a hazard.
+    """
+    calls = []
+
+    class _Fake:
+        tools: dict = {}
+        execution_instructions = "Test runtime."
+
+        def start(self): ...
+        def execute(self, code, variables=None): return ""
+        def shutdown(self): calls.append("shutdown")
+
+    def factory():
+        calls.append("factory")
+        return _Fake()
+
+    rlm = dspy.RLM(dspy.Signature("doc: str -> answer: str"),
+                   **_dspy_compat.interpreter_kwargs(factory, execution_instructions="Test runtime."))
+    with rlm._interpreter_context({}, factory):
+        pass
+    assert calls[0] == "factory", "dspy did not invoke the factory; the seam moved again"
+
+
+def test_the_shim_RAISES_rather_than_silently_dropping_the_interpreter(monkeypatch):
+    """A silently dropped factory means dspy builds its own bare `PythonInterpreter`: no watchdog,
+    no JSON-literal aliases, no container boundary, no insecure-interpreter guard. That is the
+    silent degradation `_dspy_compat` exists to prevent, so it must be loud."""
+    def _init(self, signature, sub_lm=None, tools=None):   # no factory kwarg, no **kwargs
+        ...
+
+    monkeypatch.setattr(dspy.RLM, "__init__", _init)
+    for fn in (_dspy_compat._rlm_init_signature, _dspy_compat._rlm_init_params,
+               _dspy_compat._rlm_init_takes_var_keyword, _dspy_compat._interpreter_factory_param):
+        fn.cache_clear()
+    with pytest.raises(RuntimeError, match="cannot supply its own sandbox"):
+        _dspy_compat.interpreter_kwargs(lambda: None)
 
 
 # ---- recoverable vs terminal interpreter errors ----------------------------------
@@ -217,81 +259,55 @@ class _Descriptive:
     def shutdown(self): ...
 
 
-def test_the_carrier_puts_our_text_in_the_prompt_not_dspys_pyodide_default():
-    """THE regression. Without this the action prompt tells a container run that subprocesses
-    are unavailable: dspy reads the text off `_interpreter_factory`, which defaults to
-    PythonInterpreter no matter what is actually executing the code."""
-    kwargs = _dspy_compat.interpreter_instructions_kwargs(_Descriptive())
-    assert set(kwargs) == {"interpreter_factory"}
+def _kwargs_for(interp):
+    return _dspy_compat.interpreter_kwargs(
+        lambda: interp,
+        execution_instructions=str(getattr(interp, "execution_instructions", "") or ""),
+    )
 
+
+def test_our_text_reaches_the_prompt_not_dspys_pyodide_default():
+    """THE regression. Without this the action prompt tells a container run that subprocesses are
+    unavailable, because dspy reads the text off the factory and its default is PythonInterpreter
+    no matter what actually executes the code."""
+    kwargs = _kwargs_for(_Descriptive())
     rlm = dspy.RLM(dspy.Signature("doc: str -> answer: str"), **kwargs)
     instructions = rlm.generate_action.signature.instructions
     assert "Subprocesses ARE available" in instructions
     assert "Pyodide" not in instructions
 
 
-def test_the_carrier_raises_if_dspy_ever_invokes_it():
-    """It is a metadata carrier, never a constructor: dspy shuts down whatever a factory
-    RETURNS, which would double-shutdown the kit's sandbox. Fail loudly instead."""
-    factory = _dspy_compat.interpreter_instructions_kwargs(_Descriptive())["interpreter_factory"]
-    with pytest.raises(RuntimeError, match="never be INVOKED"):
-        factory()
-
-
 def test_a_module_carrying_the_factory_still_copies_and_serialises():
     """dspy copies and dumps modules (optimizers do it constantly). A factory object that broke
-    `deepcopy` or `dump_state` would turn this shim into a landmine far from its call site.
-
-    (That the factory is never INVOKED rests on the positional seam, which
-    `test_the_interpreter_seam_still_exists_on_this_dspy` above pins unconditionally.)"""
+    `deepcopy` or `dump_state` would turn this shim into a landmine far from its call site."""
     import copy
 
-    rlm = dspy.RLM(
-        dspy.Signature("doc: str -> answer: str"),
-        **_dspy_compat.interpreter_instructions_kwargs(_Descriptive()),
-    )
+    rlm = dspy.RLM(dspy.Signature("doc: str -> answer: str"), **_kwargs_for(_Descriptive()))
     assert copy.deepcopy(rlm) is not rlm
     assert isinstance(rlm.dump_state(), dict)
 
 
-def test_a_pyodide_interpreter_gets_no_carrier():
-    """dspy's own default already describes those correctly; carrying its text back would be
-    noise, and would mean passing a factory for no reason."""
-    from dspy.primitives.python_interpreter import PythonInterpreter
-
-    interp = PythonInterpreter.__new__(PythonInterpreter)   # no Deno subprocess spawned
-    assert _dspy_compat.interpreter_instructions_kwargs(interp) == {}
-
-
-@pytest.mark.parametrize("interp", [object(), None], ids=["no-attribute", "none"])
-def test_an_interpreter_that_describes_nothing_changes_nothing(interp):
-    assert _dspy_compat.interpreter_instructions_kwargs(interp) == {}
+def test_an_interpreter_that_describes_nothing_stamps_nothing():
+    """The factory is still passed, because it is the only way in; what a silent interpreter
+    changes is only whether the text is stamped over dspy's own correct default."""
+    for interp in (object(), None):
+        kwargs = _kwargs_for(interp)
+        assert len(kwargs) == 1
+        factory = next(iter(kwargs.values()))
+        assert not getattr(factory, "execution_instructions", "")
 
 
 def test_blank_instructions_are_treated_as_absent():
     class _Blank:
         execution_instructions = "   "
 
-    assert _dspy_compat.interpreter_instructions_kwargs(_Blank()) == {}
-
-
-def test_no_carrier_when_dspy_does_not_accept_the_kwarg(monkeypatch):
-    """Load-bearing, and NOT redundant with the render probe: `_build_rlm`'s `except TypeError`
-    fallback re-passes the same kwargs, so an unknown kwarg raises on BOTH constructions and
-    takes the whole run down instead of degrading to dspy's defaults."""
-    def _init(self, signature, sub_lm=None, tools=None):   # no interpreter_factory, no **kwargs
-        ...
-
-    monkeypatch.setattr(dspy.RLM, "__init__", _init)
-    _dspy_compat._rlm_init_signature.cache_clear()
-    _dspy_compat._rlm_init_params.cache_clear()
-    _dspy_compat._rlm_init_takes_var_keyword.cache_clear()
-    assert _dspy_compat.interpreter_instructions_kwargs(_Descriptive()) == {}
+    factory = next(iter(_kwargs_for(_Blank()).values()))
+    assert not getattr(factory, "execution_instructions", "")
 
 
 def test_every_interpreter_the_kit_ships_describes_itself():
-    """A sweep, so a NEW kit interpreter cannot silently inherit dspy's Pyodide description,
-    and so deleting one of these attributes goes red. `_JsonLiteralInterpreter` is deliberately
+    """A sweep, so a NEW kit interpreter cannot silently inherit dspy's Pyodide description, and
+    so deleting one of these attributes goes red. `_JsonLiteralInterpreter` is deliberately
     absent: it subclasses PythonInterpreter, whose own text is already correct."""
     from rlm_harness.sandbox import build_interpreter
     from rlm_harness.testing import ScriptedInterpreter
@@ -301,15 +317,16 @@ def test_every_interpreter_the_kit_ships_describes_itself():
         assert isinstance(text, str) and text.strip(), f"{type(interp).__name__} describes nothing"
         assert "Pyodide" not in text
         # ...and the shim actually carries it, rather than the attribute being decorative.
-        kwargs = _dspy_compat.interpreter_instructions_kwargs(interp)
-        assert kwargs["interpreter_factory"].execution_instructions == text
+        factory = next(iter(_kwargs_for(interp).values()))
+        assert factory.execution_instructions == text
 
 
-def test_no_carrier_when_dspy_does_not_render_the_text(monkeypatch):
-    """A dspy that never renders it gets nothing: the shim resolves the answer by
-    introspection, so an older dspy degrades to exactly today's behaviour."""
+def test_no_text_is_stamped_when_dspy_does_not_render_it(monkeypatch):
+    """A dspy that never renders it gets no stamp: the shim resolves the answer by introspection,
+    so an older dspy degrades to exactly today's behaviour. The factory itself still goes."""
     monkeypatch.setattr(_dspy_compat, "_dspy_reads_execution_instructions", lambda: False)
-    assert _dspy_compat.interpreter_instructions_kwargs(_Descriptive()) == {}
+    factory = next(iter(_kwargs_for(_Descriptive()).values()))
+    assert not getattr(factory, "execution_instructions", "")
 
 
 # ---- fast-failing non-retryable LM errors -----------------------------------------
@@ -449,6 +466,25 @@ def test_var_keyword_signature_falls_back_to_the_current_names(monkeypatch):
     assert resolved == {"max_iters": 7, "max_llm_calls": 11, "max_output_chars": 13}
 
 
+def _typed_response(*texts):
+    """dspy's typed sub-LM response carrying `texts` as separate text parts, on either layout.
+
+    3.4.0 replaced `dspy.LMResponse` (a LIST of `.outputs`) with `dspy.lm15.Response` (one
+    `.message`), so this builds whichever the installed dspy has. Built from dspy's own types
+    rather than a stub, because the point is to pin the shim against the real shape.
+    """
+    if getattr(dspy, "lm15", None) is not None:
+        from dspy.lm15 import Message, Response, TextPart, Usage
+
+        return Response(id=None, model="m", finish_reason="stop", usage=Usage(),
+                        message=Message(role="assistant",
+                                        parts=tuple(TextPart(text=t) for t in texts)))
+    from dspy.clients.base_lm import LMResponse
+    from dspy.core.types import LMOutput, LMTextPart
+
+    return LMResponse(model="m", outputs=[LMOutput(parts=[LMTextPart(text=t) for t in texts])])
+
+
 # ---- the sub-LM response contract --------------------------------------------------------------
 
 
@@ -462,25 +498,28 @@ def test_sub_lm_response_shims_round_trip_both_shapes_dspy_accepts():
     own docs date the legacy shape: "In DSPy 3.3 and 3.4, ordinary calls preserve the legacy
     public return value". A version that changes the contract goes red here rather than silently
     in every consumer."""
-    from dspy.clients.base_lm import LMResponse
-    from dspy.core.types import LMOutput, LMTextPart
-
-    typed = LMResponse(model="m", outputs=[LMOutput(parts=[LMTextPart(text="hello")])])
+    typed_cls = _dspy_compat._lm_response_cls()
+    assert typed_cls is not None, "this dspy exposes no typed response; the branch is unreachable"
+    typed = _typed_response("hello")
     for original, expected in ((typed, "hello"), (["hello"], "hello"), ([{"text": "hello"}], "hello")):
         assert _dspy_compat.sub_lm_response_text(original) == expected
         rebuilt = _dspy_compat.sub_lm_response_with_text(original, "REPLACED")
         assert _dspy_compat.sub_lm_response_text(rebuilt) == "REPLACED"
         assert _dspy_compat.sub_lm_response_text(original) == expected, "the original was mutated"
-    assert type(_dspy_compat.sub_lm_response_with_text(typed, "R")) is LMResponse
+    assert type(_dspy_compat.sub_lm_response_with_text(typed, "R")) is typed_cls
 
 
-def test_lm_output_text_JOINS_its_text_parts():
-    """The fact the substitution shim is built on. If a dspy release makes `LMOutput.text` return
-    only the first part instead of joining, dropping the later ones becomes wrong and this is where
-    that surfaces. The alternative is a silently truncated sub-LM answer."""
-    from dspy.core.types import LMOutput, LMTextPart
+def test_a_typed_responses_text_JOINS_its_text_parts():
+    """The fact the substitution shim is built on: because `.text` joins every text part, replacing
+    only the first would leave the rest appended to the substituted text. If a dspy release made
+    it return only the FIRST part, dropping the later ones would become wrong and this is where
+    that surfaces. The alternative is a silently truncated sub-LM answer.
 
-    assert LMOutput(parts=[LMTextPart(text="A"), LMTextPart(text="B")]).text == "AB"
+    The SEPARATOR is not asserted, only the joining: 3.3 used "" and 3.4 uses "\n", and the shim
+    is correct either way. What must stay true is that more than one part contributes."""
+    joined = _typed_response("A", "B").text
+    assert "A" in joined and "B" in joined
+    assert joined != "A", "only the first text part reached `.text`; the shim now truncates"
 
 
 def test_an_unrecognised_sub_lm_shape_reads_as_None_rather_than_a_guess():
@@ -753,16 +792,30 @@ def test_usage_since_returns_raw_per_call_entries_with_unknown_keys_intact():
     assert "anything" not in fresh["m"][1], "a key leaked between calls"
 
 
-def test_the_aggregator_survives_a_nested_value_and_not_a_bare_list():
-    """WHY a caller putting structured data in a usage entry must nest it one level.
+def test_the_aggregator_survives_a_nested_value_on_this_dspy():
+    """WHY a caller putting structured data in a usage entry nests it one level.
 
-    `get_total_tokens()` merges a model's entries by ADDING same-named values, and dspy calls it
-    itself from `Module.__call__` whenever `dspy.configure(track_usage=True)` is set, so a value
-    it cannot add is a crash in a caller who never wrote `get_total_tokens`. A dict value is
-    merged by RECURSION instead and is therefore safe; a bare list is not.
+    `get_total_tokens()` merges a model's entries, and dspy calls it ITSELF from `Module.__call__`
+    whenever `dspy.configure(track_usage=True)` is set, so whatever it does with a value that is
+    not a count happens inside a caller who never wrote `get_total_tokens`. WHAT it does is
+    dspy-VERSION-DEPENDENT and is deliberately NOT asserted here: 3.3.1 added same-named values
+    blind (`(current or 0) + (v or 0)`, which concatenated two lists and raised
+    `TypeError: int + list` on the mixed case), while 3.4.0 gates addition behind `_is_summable`
+    and otherwise keeps the FIRST value, dropping later ones silently. Pinning either arithmetic
+    asserts something the kit does not depend on, and reddens on the next upstream tidy-up, which
+    is exactly what 3.4.0 did with no defect behind it.
 
-    The WITH-then-WITHOUT order is named on purpose: the reverse order does not raise, so a test
-    that picked it would pass while proving nothing."""
+    **A merged entry CAN reach the trace, so "the kit never reads a merge" would be too strong.**
+    The kit reads `tracker.usage_data` per call, but since 3.4.0 dspy merges for it in one place:
+    `call_result.combine()` folds usage when a single LM call yields several results, and
+    `finalize` records the MERGED dict. Nesting is what keeps such an entry readable rather than
+    arithmetic, and trace/v1 freezes the shape regardless: see `claude_agent_lm._api_rounds`.
+
+    The kit's contract is therefore narrow and holds on both versions: a dict-nested value REACHES
+    the merged result, in either call order, and the merge does not raise. A BARE list is what has
+    no defined outcome across versions (a crash on 3.3.1, silent truncation on 3.4.0), which is
+    the whole reason the payload nests.
+    """
     from dspy.utils.usage_tracker import track_usage
 
     def totals(first, second):
@@ -772,14 +825,13 @@ def test_the_aggregator_survives_a_nested_value_and_not_a_bare_list():
             return tracker.get_total_tokens()
 
     nested = {"x": {"rounds": [{"a": 1}]}}
-    assert totals(nested, {})["m"]["x"] == {"rounds": [{"a": 1}]}
-    assert totals({}, nested)["m"]["x"] == {"rounds": [{"a": 1}]}
+    for merged in (
+        totals(nested, {}),                              # WITH then WITHOUT: the 3.3.1 raiser
+        totals({}, nested),
+        totals(nested, {"x": {"rounds": [{"a": 2}]}}),    # both carry one
+    ):
+        assert merged["m"]["prompt_tokens"] == 2, "the counts stopped adding"
+        rounds = merged["m"]["x"]["rounds"]
+        assert isinstance(rounds, list) and {"a": 1} in rounds, "the nested value was dropped"
 
-    # And when BOTH carry one, the nested form concatenates in CALL order where a flat list
-    # reverses it. Not a reason to read the merged value -- the per-call boundary is gone either
-    # way -- but the difference is what shows the recursion is doing the work.
-    both = totals({"x": {"rounds": [{"a": 1}]}}, {"x": {"rounds": [{"a": 2}]}})
-    assert both["m"]["x"] == {"rounds": [{"a": 1}, {"a": 2}]}
 
-    with pytest.raises(TypeError):
-        totals({"x": [{"a": 1}]}, {})

@@ -1,6 +1,6 @@
 [project]
 name = "rlm-harness"
-version = "1.13.0"
+version = "1.14.0"
 description = "A clean, reusable harness for building tasks on DSPy Recursive Language Models (RLMs)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,21 +29,33 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # FLOOR 3.3.1 since rlm-harness 1.5.0 (3.3.0 since 1.2.0). 3.2.x is strictly worse for
-    # users: it accepts DUPLICATE tool names and silently keeps only one, does not reject a
-    # keyword tool name at construction, and has no CodeExecutionError, so the kit's own
-    # guarantees differed by whichever dspy a consumer happened to resolve.
+    # FLOOR 3.4.0 since rlm-harness 1.14.0 (3.3.1 since 1.5.0, 3.3.0 since 1.2.0). Required, not
+    # preferred: 3.4.0 DELETED the positional interpreter argument of `RLM.forward`/`aforward`, so
+    # on it `interpreter_factory=` is the only way the kit can supply its own sandbox, and it
+    # deleted `dspy.LMResponse` in favour of the differently-shaped `dspy.lm15.Response`. The kit
+    # could have carried both, and it is one branch in one shim, but the tripwire that CAUGHT this
+    # break (`test_the_interpreter_seam_still_exists_on_this_dspy`) can then no longer make a
+    # single unconditional assertion, and trading the detector away to keep a dspy whose APIs are
+    # gone is the wrong side of that bargain.
     #
-    # 3.3.1 is required, not merely preferred: `_dspy_compat.interpreter_instructions_kwargs`
-    # needs `interpreter_factory.execution_instructions`, which 3.3.1 introduced, without it a
-    # `container` run is told it cannot spawn subprocesses, which is the one thing that
-    # interpreter exists to allow. 3.3.1 also re-parents `CodeInterpreterError` under
-    # `DSPyError`, the hierarchy the cancel-is-never-recoverable invariant reads.
+    # AND AN UPPER BOUND, reversing the policy this comment used to state. "No cap, the
+    # dspy-latest workflow is the defence instead" was tested twice and broke a consumer both
+    # times: 3.3.0 renamed three things (CHANGELOG 1.0.1) and 3.4.0 removed the interpreter seam,
+    # and in each case a fresh install of the CURRENT release silently resolved the breaking dspy.
+    # The detector worked; it cannot protect an install that happens before anyone reads it.
     #
-    # No upper bound: a cap propagates through pinned consumers and blocks them from dspy
-    # fixes; `.github/workflows/dspy-latest.yml` is the defence instead.
-    "dspy>=3.3.1",
-    "pydantic>=2.9",
+    # `<3.5.0` rather than `==3.4.0`: dspy has announced the next break AND its number, since
+    # several 3.4.0 deprecations say "removal in 3.5", so the cap is upstream's own boundary
+    # rather than a guess, and 3.4.x patches still reach consumers. An exact pin would also block
+    # any consumer whose other dependencies resolve dspy differently.
+    #
+    # Measured, because the obvious objection is that a cap makes `dspy-latest.yml` decorative:
+    # it does not. `uv run --with "dspy==<newer>"` OVERRIDES this bound, so that workflow still
+    # installs and tests the newest dspy and still goes red the day 3.5.0 ships, which is exactly
+    # when the next floor bump is due.
+    "dspy>=3.4.0,<3.5.0",
+    # 2.11 is dspy 3.4.0's own floor. Declaring less would be a floor the kit cannot run on.
+    "pydantic>=2.11.0",
 ]
 
 [project.optional-dependencies]

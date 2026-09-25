@@ -184,18 +184,31 @@ One companion rule ships under `.claude/rules/`:
   asserts the shim's contract against the installed dspy so the next rename goes red HERE. The module
   is `_`-private and dspy-free at module top (every lookup imports dspy lazily, `lru_cache`d because
   the installed dspy cannot change mid-process). Two rules the shims encode and that must not drift:
-  interpreter OWNERSHIP stays the kit's on every version (dspy shuts down only an interpreter it
-  built itself, so `RLMTask._teardown_interpreter` stays correct), which is exactly why
-  `interpreter_factory=` is the WRONG seam **for SUPPLYING an interpreter**, dspy *does* shut down
-  whatever that factory returns and would double-shutdown our sandbox. Since 1.5.0 `_build_rlm` does
-  pass an `interpreter_factory`, and that is not a contradiction: it is a metadata CARRIER dspy only
-  READS (`execution_instructions`, the prompt's "Execution environment:" text) and never invokes:
-  never invoked because `_validate_interpreter_factory` validates without calling,
-  `_interpreter_context` returns early for a caller-owned interpreter, and `_build_rlm` always
-  resolves one. It raises if invoked, so a future dspy that moves the positional seam fails loudly
-  rather than double-shutting-down. Without it EVERY run is described to the model as Pyodide,
-  including a `container` run that can genuinely spawn subprocesses: see
-  `_dspy_compat.interpreter_instructions_kwargs`. And a lossy fallback must be LOUD: `_build_rlm`'s `except
+  **interpreter CREATION stays the kit's on every version, which is what keeps
+  `sandbox.build_interpreter`'s guard on every pass; SHUTDOWN is dspy's for an interpreter it was
+  handed, EXCEPT a caller-supplied double.** That sentence was rewritten in 1.14.0 and the rewrite
+  is the lesson. It used to read "OWNERSHIP stays the kit's" and name `interpreter_factory=` as the
+  WRONG seam for supplying an interpreter, because dspy shuts down whatever the factory returns.
+  dspy 3.4.0 then DELETED the positional seam the kit relied on and left only the factory, so the
+  guarantee had to be re-derived from a mechanism instead of restated: `_build_rlm` hands dspy a
+  real factory (`_dspy_compat.interpreter_kwargs`), dspy calls it once per forward pass and shuts
+  down its return value, and a CALLER-supplied interpreter goes out through `sandbox.caller_owned`,
+  a view whose `shutdown()` is a no-op, so `RLMTask._teardown_interpreter` stays its single
+  shutdown and `RLMTask(interpreter=…)` keeps meaning what it says. Two consequences worth keeping:
+  a retry now gets a FRESH sandbox on the string path (it used to re-enter the same dirty REPL
+  namespace while dspy rebuilt an empty history), and `caller_owned` must declare the
+  `CodeInterpreter` protocol members STATICALLY, because from CPython 3.12 `isinstance` against a
+  `@runtime_checkable` Protocol resolves through `inspect.getattr_static` and never consults
+  `__getattr__`: a purely dynamic proxy passes on the 3.11 floor and fails on 3.12/3.13, so the
+  test for it sweeps `getattr_static` rather than asserting `isinstance`.
+  **And the carrier that preceded it is the cautionary half:** 1.5.0 passed an
+  `interpreter_factory` as a metadata CARRIER for `execution_instructions` (without it EVERY run,
+  including a `container` run that can genuinely spawn subprocesses, is described to the model as
+  Pyodide) on the premise that dspy never invokes it. Nothing asserted that premise. 3.4.0 invokes
+  it unconditionally, so the guard fired in production rather than in CI. A premise about
+  upstream's CONTROL FLOW needs a test that exercises the control flow, not a raise that documents
+  the assumption: `tests/test_dspy_compat.py::test_dspy_ACTUALLY_INVOKES_the_factory_it_is_given`
+  is that test. And a lossy fallback must be LOUD: `_build_rlm`'s `except
   TypeError` drops all three budget caps to dspy's defaults, so it `logger.warning`s rather than
   `logger.debug`s.
 - **An LM error dspy itself calls non-retryable fails the task fast, with one carve-out.**
@@ -375,17 +388,22 @@ One companion rule ships under `.claude/rules/`:
   field was suggested from outside. **The fact was never missing; the retrieval was.** So when a rate
   varies by some dimension, enumerate what else differs between the groups before treating the
   dimension as the cause.
-- **A sub-LM wrapper hands dspy back the SHAPE dspy handed it.** `RLM._query_lm` accepts a typed
-  `dspy.LMResponse` or the legacy `list[str | dict]`, and both reads and both rebuilds live in
+- **A sub-LM wrapper hands dspy back the SHAPE dspy handed it.** `RLM._query_lm` accepts dspy's
+  TYPED response or the legacy `list[str | dict]`, and both reads and both rebuilds live in
   `_dspy_compat.sub_lm_response_text` / `sub_lm_response_with_text`: never at a call site. The
-  wrapper used to collapse anything non-list into `[outputs]`, which turned an `LMResponse` into
-  `[LMResponse]` and made dspy raise; invisible on the default path, fatal under
-  `dspy.context(experimental=True)`, and dspy's own source dates the legacy shape ("In DSPy 3.3 and
-  3.4, ordinary calls preserve the legacy public return value"). Two rules the shim encodes: a
-  shape it does NOT recognise is returned UNTOUCHED so dspy raises its own error (rebuilding it as
-  `[""]` converts a loud failure into a silent empty completion that reaches the planner and the RL
-  data), and substituting text into an `LMResponse` drops the output's LATER text parts because
-  `LMOutput.text` JOINS them.
+  wrapper used to collapse anything non-list into `[outputs]`, which turned a typed response into
+  `[response]` and made dspy raise; invisible on the default path, fatal under
+  `dspy.context(experimental=True)`. **The typed CLASS and its LAYOUT have both moved**, which is
+  why neither is written down: 3.4.0 deleted `dspy.LMResponse` (a LIST of `.outputs`, pydantic) for
+  `dspy.lm15.Response` (one `.message`, a frozen dataclass), so `_lm_response_cls` resolves the
+  class dspy's own `isinstance` names, the rebuild probes the container off the OBJECT rather than
+  assuming either layout, and `_copy_with` probes the copy-with-changes protocol instead of calling
+  `model_copy`. Three rules the shim encodes: a shape it does NOT recognise is returned UNTOUCHED
+  so dspy raises its own error (rebuilding it as `[""]` converts a loud failure into a silent empty
+  completion that reaches the planner and the RL data); substituting text drops the response's
+  LATER text parts because its `.text` JOINS them (with `""` on 3.3, `"\n"` on 3.4, so a test must
+  not assert the separator); and a text part is discriminated on its `type` tag, NEVER on
+  `hasattr(part, "text")`, because a thinking part carries a `.text` field of its own on 3.4.0.
 - **The JSONL trace is the source of truth** for replay and RL datasets. Langfuse
   is an optional mirror only; never make `dataset.py` depend on Langfuse export.
   `TraceRecorder.record` is **lock-guarded**: dspy.RLM's `llm_query_batched` fans the

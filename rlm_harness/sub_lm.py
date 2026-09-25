@@ -30,6 +30,7 @@ logic stays unit-testable) without a full dspy install.
 from __future__ import annotations
 
 import contextlib
+import copy as copy_module
 import logging
 import time
 from collections.abc import Callable, Sequence
@@ -157,7 +158,32 @@ def intercept_sub_lm(
                 raise AttributeError(attr)
             return getattr(base, attr)
 
-        # dspy's `RLM._query_lm` accepts a typed `LMResponse` OR the legacy `list[str | dict]`.
+        def copy(self, **updates: Any):
+            """A variant of this sub-LM: copy the WRAPPED LM, keep the wrapper around it.
+
+            NOT `dspy.LM.copy`. This class skips `super().__init__()` on purpose, so `history`,
+            `cache` and `callbacks` keep DELEGATING to the base rather than being shadowed by
+            empty copies of their own. That makes every inherited `dspy.LM` method which reads
+            state `LM.__init__` sets a landmine, and dspy 3.4.0 armed one: its new `LM.copy` reads
+            `self._engine_spec`, which falls through to `__getattr__` and raises for any base that
+            is not itself a `dspy.LM` -- `ClaudeAgentLM` (a `dspy.BaseLM`) and every duck-typed
+            double. Do not answer that by giving the wrapper an `_engine_spec`; see
+            `_dspy_compat.copy_lm` for why that would silently reroute a subscription LM.
+
+            It also repairs what the inherited version got wrong on EVERY version:
+            `copy(rollout_id=1)` updated the WRAPPER's decorative `kwargs` while `_base`, the
+            object that actually makes the request, was shared by reference and never saw it.
+            """
+            duplicate = copy_module.copy(self)
+            base = _dspy_compat.copy_lm(self.__dict__["_base"], **updates)
+            duplicate.__dict__["_base"] = base
+            # Re-mirror exactly what __init__ mirrors, so `applied_lm_budget` (which reads
+            # `lm.kwargs`) and dspy's own bookkeeping describe the LM that will actually be called.
+            duplicate.model = getattr(base, "model", self.model)
+            duplicate.kwargs = dict(getattr(base, "kwargs", {}) or {})
+            return duplicate
+
+        # dspy's `RLM._query_lm` accepts dspy's TYPED response OR the legacy `list[str | dict]`.
         # This returns whichever the BASE LM returned, never a shape of its own choosing.
         def __call__(self, *args: Any, **kwargs: Any):
             recorder = current_recorder()
@@ -194,8 +220,8 @@ def intercept_sub_lm(
                             })
                     raise
                 # SHAPE-PRESERVING. This used to be `[outputs]` for anything non-list, which turned
-                # a typed `LMResponse` into `[LMResponse]` and made dspy raise "Sub-LM response must
-                # contain text, got LMResponse": invisible on the default path, fatal under
+                # a typed response into `[response]` and made dspy raise "Sub-LM response must
+                # contain text": invisible on the default path, fatal under
                 # `dspy.context(experimental=True)`, and on course to become the DEFAULT after dspy
                 # 3.4. Both the read and the rebuild are resolved in `_dspy_compat`, never here.
                 raw = _dspy_compat.sub_lm_response_text(outputs)
@@ -278,9 +304,9 @@ def model_as_tool(name: str, lm: Any, *, description: str = "") -> Callable[[str
         # it is also the one whose duration the kit can supply without the consumer doing it.
         t0 = time.perf_counter()
         outputs = lm(prompt=prompt)
-        # Read through the shim, never by indexing: dspy's LMs return a typed `LMResponse` on the
+        # Read through the shim, never by indexing: dspy's LMs can return a typed response on the
         # experimental path and the legacy list otherwise, and `outputs[0]` on the former yielded
-        # `str(LMResponse)`: the whole repr, handed to the model AND written to the trace as the
+        # `str(response)`: the whole repr, handed to the model AND written to the trace as the
         # tool's result. Same defect the sub-LM path carried; fixed in the same place, once.
         text = _dspy_compat.sub_lm_response_text(outputs)
         if text is None:

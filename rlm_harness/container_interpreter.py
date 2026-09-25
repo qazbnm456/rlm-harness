@@ -187,7 +187,7 @@ class ContainerInterpreter:
     def execution_instructions(self) -> str:
         """What the model is told its REPL can do, in the action prompt.
 
-        dspy renders this (via `_dspy_compat.interpreter_instructions_kwargs`); without it dspy
+        dspy renders this (via `_dspy_compat.interpreter_kwargs`); without it dspy
         describes EVERY run as Pyodide, i.e. tells this interpreter's model that subprocesses are
         unavailable: the one capability this interpreter exists to provide.
 

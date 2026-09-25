@@ -31,7 +31,7 @@ from . import _dspy_compat
 from ._retry import run_with_retry
 from .config import RLMConfig
 from .runtime import get_config, get_sub_lm
-from .sandbox import SandboxCancelled, build_interpreter
+from .sandbox import SandboxCancelled, build_interpreter, caller_owned
 from .sub_lm import _ensure_sub_call_recording, bind_recorder_to_sub_lm
 from .trace import _ensure_tool_timing, current_recorder
 
@@ -254,7 +254,6 @@ class RLMTask:
         # Set per build by `_build_rlm`: the interpreter that `arun` passes to forward() as
         # its first positional arg. Initialised here so the attribute always exists, even for
         # a caller that inspects a task it never ran.
-        self._forward_interpreter: Any | None = None
 
         # `tools=` is stashed and resolved in `_build_rlm`, NOT written to `self.tools` here.
         # That is what makes it ORDER-INDEPENDENT. Assigning `self.tools` in `__init__` would
@@ -310,16 +309,31 @@ class RLMTask:
         signature = dspy.Signature(
             self.signature, instructions=instructions, **sig_kwargs
         )
-        interpreter = self._interpreter if self._interpreter is not None else build_interpreter(
-            self._config.interpreter,
-            allow_insecure=self._config.allow_insecure_sandbox,
-            container=self._config.container,
-            turn_timeout_s=self._config.sandbox_turn_timeout_s,
-            cancel_event=self._cancel_event,
-        )
-        # We now construct the deno/pyodide interpreter ourselves (to inject the
-        # JSON-literal aliases), so its teardown is ours: dspy.RLM only shuts down
-        # an interpreter it built itself. Stash it for _teardown_interpreter().
+        injected = self._interpreter
+
+        def _make_interpreter() -> Any:
+            return build_interpreter(
+                self._config.interpreter,
+                allow_insecure=self._config.allow_insecure_sandbox,
+                container=self._config.container,
+                turn_timeout_s=self._config.sandbox_turn_timeout_s,
+                cancel_event=self._cancel_event,
+            )
+
+        # BUILD ONE EAGERLY EVEN THOUGH DSPY WILL CALL THE FACTORY ITSELF. Two reasons, both
+        # load-bearing. It keeps `build_interpreter`'s `SandboxSecurityError` (the `local`
+        # refusal) and its wrong-kind `cancel_event` `ValueError` at BUILD time, instead of
+        # inside a forward pass that `run_with_retry` would then retry and wrap in
+        # `RLMTaskError`. And it is the only way to read `execution_instructions`, which on
+        # `ContainerInterpreter` is a config-derived INSTANCE property, without writing a second
+        # derivation of that text that could drift. Both `PythonInterpreter.__init__` and
+        # `ContainerInterpreter.__init__` are lazy (no Deno subprocess, no container), so it costs
+        # nothing.
+        interpreter = injected if injected is not None else _make_interpreter()
+        # Stash it for `_teardown_interpreter`. On the injected path this stays our single
+        # shutdown, because `caller_owned` below is what dspy shuts down instead. On the string
+        # path dspy shuts down each pass's own interpreter and this one is re-shut-down
+        # redundantly at teardown, which is harmless: both kinds' `shutdown()` are idempotent.
         self._built_interpreter = interpreter
 
         # Tools go in TIMED. `_ensure_tool_timing` publishes a start time that
@@ -333,22 +347,34 @@ class RLMTask:
             "tools": [_ensure_tool_timing(t) for t in self.resolved_tools],
         }
 
-        # The caller's interpreter goes to forward()/aforward() as the first POSITIONAL
-        # argument (dspy >= 3.3.0), not to the constructor, so stash it for `arun`.
-        # OWNERSHIP stays ours: dspy shuts down only an interpreter it created itself, which
-        # is what keeps `_teardown_interpreter` correct. So never SUPPLY the interpreter via
-        # `interpreter_factory=`: dspy DOES shut down whatever that factory returns, which
-        # would double-shutdown our sandbox.
-        self._forward_interpreter = interpreter
+        # THE SEAM. dspy >= 3.4.0 supplies the interpreter ONLY through this factory, which it
+        # calls once per forward pass and whose return value it shuts down. So CREATION is ours
+        # (the guard runs on every pass) and shutdown is dspy's, EXCEPT for a caller-supplied
+        # double: that one goes out through `caller_owned`, whose `shutdown()` is a no-op, so the
+        # caller keeps owning its own object exactly as `RLMTask(interpreter=…)` promises.
+        #
+        # A retry therefore gets a FRESH sandbox on the string path, which fixes a bug that
+        # predates this: `_build_rlm` ran once, so every `run_with_retry` attempt re-entered the
+        # SAME interpreter while dspy rebuilt its `REPLHistory` empty. The model was shown a blank
+        # history over a namespace still dirty from the previous attempt.
+        first = [interpreter]
 
-        # ...which is why the kwargs below need reading carefully: from dspy 3.3.1 they MAY
-        # contain an `interpreter_factory`, and it is NOT a way of supplying an interpreter.
-        # dspy sources the prompt's "Execution environment:" text from that object's
-        # `execution_instructions` attribute, so this passes a metadata CARRIER dspy only ever
-        # reads: never calls, and it raises if it ever is. Without it every run is described to
-        # the model as Pyodide, including a `container` run that can genuinely spawn
-        # subprocesses. See `_dspy_compat.interpreter_instructions_kwargs`.
-        kwargs.update(_dspy_compat.interpreter_instructions_kwargs(interpreter))
+        def _interpreter_factory() -> Any:
+            if injected is not None:
+                return caller_owned(injected)
+            # Hand out the eagerly-built one first so a single-pass run builds exactly one
+            # interpreter, then build fresh per pass.
+            if first:
+                return first.pop()
+            return _make_interpreter()
+
+        # dspy reads the prompt's "Execution environment:" text off this same object. Without it
+        # every run is described to the model as Pyodide, including a `container` run that can
+        # genuinely spawn subprocesses.
+        kwargs.update(_dspy_compat.interpreter_kwargs(
+            _interpreter_factory,
+            execution_instructions=str(getattr(interpreter, "execution_instructions", "") or ""),
+        ))
 
         # Budget caps are mapped onto the names the installed dspy accepts (3.3.x renamed
         # `max_iterations` to `max_iters`). The `except TypeError` below is now only a
@@ -386,7 +412,6 @@ class RLMTask:
         the run (sub-LM and tool events are recorded live during it).
         """
         rlm = self._build_rlm()
-        forward_args = _dspy_compat.forward_interpreter_args(self._forward_interpreter)
         # Two wrappers, and the ORDER is load-bearing.
         #
         # INNER (`_ensure_sub_call_recording`, 1.7.0): make the escalation record itself even when
@@ -445,7 +470,7 @@ class RLMTask:
                     # On dspy 3.3.x a caller-owned interpreter is the first POSITIONAL
                     # argument here rather than a constructor kwarg; empty tuple when the task
                     # has no caller-owned interpreter.
-                    prediction = await rlm.aforward(*forward_args, **inputs)
+                    prediction = await rlm.aforward(**inputs)
                 captured["prediction"] = prediction
                 captured["attempt"] = index
                 return prediction
