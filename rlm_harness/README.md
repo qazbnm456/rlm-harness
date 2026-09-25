@@ -1342,6 +1342,21 @@ enables is one this kit has already documented once, under `max_tokens`.
                 {"attempt": 1, "turns_recorded": false,
                  "calls": {"openai/gpt-4o": [{"prompt_tokens": 1234, "completion_tokens": 16384}]}}]
 
+**A truncation has THREE causes once a thinking budget is in play, and the fix differs per cause.**
+Read them off `completion_tokens`, `reasoning_tokens` and the two recorded caps, per CALL, which
+needs no mapping from a call to a turn. Reasoning AT the thinking ceiling and completion AT the cap
+means the budget is working and the TOTAL is too small: raise `max_tokens`, or lower the thinking
+budget to leave the answer room. LOW reasoning and completion at the cap is a content runaway the
+thinking budget cannot reach, so raising it will not help. No thinking budget at all is the original
+case below. Measured on one deployment: of 6 cap hits in 1762 calls, 3 were the first kind and 1 the
+second.
+
+**Repeated hits at the thinking ceiling look like a precursor, on n=2.** Without a budget the ratio
+below has a hole and gives no early warning. With one, calls pile up AT the ceiling instead of
+passing through it, and on that deployment both failing runs showed 10+ consecutive calls at the
+ceiling before dying. Two runs is a hypothesis, not a signal: worth watching, not worth alerting on
+yet.
+
 Read `completion_tokens == cap` as a truncation. **Whether the RATIO gives early warning depends on
 how generous your cap is, and 1.10.0 shipped claiming it always does.** On the first production
 corpus: one model, cap 32768, **385 runs reaching `run_end`: 379 that succeeded and 6 that
