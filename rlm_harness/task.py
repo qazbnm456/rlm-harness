@@ -251,9 +251,6 @@ class RLMTask:
         # bypasses `build_interpreter` entirely: a caller supplying their own interpreter object
         # owns its cancellation behavior too, exactly like `ScriptedInterpreter` owns its own.
         self._cancel_event = cancel_event
-        # Set per build by `_build_rlm`: the interpreter that `arun` passes to forward() as
-        # its first positional arg. Initialised here so the attribute always exists, even for
-        # a caller that inspects a task it never ran.
 
         # `tools=` is stashed and resolved in `_build_rlm`, NOT written to `self.tools` here.
         # That is what makes it ORDER-INDEPENDENT. Assigning `self.tools` in `__init__` would
@@ -363,10 +360,15 @@ class RLMTask:
             if injected is not None:
                 return caller_owned(injected)
             # Hand out the eagerly-built one first so a single-pass run builds exactly one
-            # interpreter, then build fresh per pass.
-            if first:
+            # interpreter, then build fresh per pass. `try/pop` rather than `if first: pop()`:
+            # dspy 3.4.0 documents that the factory "may be invoked concurrently", and a
+            # check-then-act would let two threads both pass the check and the loser raise
+            # `IndexError`. Unreachable on today's single-`aforward` path, but `optimize.compile_task`
+            # is exactly the caller that would run passes in parallel once enabled.
+            try:
                 return first.pop()
-            return _make_interpreter()
+            except IndexError:
+                return _make_interpreter()
 
         # dspy reads the prompt's "Execution environment:" text off this same object. Without it
         # every run is described to the model as Pyodide, including a `container` run that can
@@ -467,9 +469,9 @@ class RLMTask:
             baseline = _dspy_compat.usage_baseline(tracker) if tracker is not None else {}
             try:
                 with _live_main_timing(recorder):
-                    # On dspy 3.3.x a caller-owned interpreter is the first POSITIONAL
-                    # argument here rather than a constructor kwarg; empty tuple when the task
-                    # has no caller-owned interpreter.
+                    # Inputs ONLY. dspy >= 3.4.0 made `aforward` keyword-only and deleted the
+                    # positional interpreter argument 3.3.x took here; the interpreter now
+                    # reaches dspy through the constructor factory `_build_rlm` passes.
                     prediction = await rlm.aforward(**inputs)
                 captured["prediction"] = prediction
                 captured["attempt"] = index
@@ -557,10 +559,20 @@ class RLMTask:
     def _teardown_interpreter(self) -> None:
         """Shut down the sandbox interpreter built for this run, if any.
 
-        dspy.RLM tears down only an interpreter it constructed itself; because we
-        now supply the deno/pyodide one (to inject the JSON-literal aliases), its
-        lifecycle is ours. Best-effort: a mock interpreter's ``shutdown`` is a
-        no-op, and a teardown failure must never mask the run's result/exception.
+        **What this owns changed in 1.14.0, and the old sentence is why it is spelled out here.**
+        It used to read "dspy tears down only an interpreter it constructed itself, so the
+        lifecycle is ours", which dspy 3.4.0 falsified: dspy now shuts down whatever
+        ``interpreter_factory`` returns, once per forward pass.
+
+        So on the STRING path dspy is the shutdown point and this method re-shuts the eagerly built
+        one, which is harmless because both kinds' ``shutdown()`` are idempotent (``PythonInterpreter``
+        nulls ``deno_process``; ``ContainerInterpreter`` nulls ``_sandbox`` and returns early) and
+        because the ``suppress`` below would absorb it anyway. On the INJECTED path this stays the
+        SINGLE shutdown: dspy is handed ``sandbox.caller_owned(…)``, whose ``shutdown()`` is a
+        no-op, so the caller's own object reaches here intact.
+
+        Best-effort either way: a mock interpreter's ``shutdown`` is a no-op, and a teardown failure
+        must never mask the run's result or exception.
         """
         interp = getattr(self, "_built_interpreter", None)
         if interp is None:

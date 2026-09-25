@@ -99,7 +99,12 @@ class _CallerOwnedInterpreter:
         return object.__getattribute__(self, "_interp").start()
 
     def execute(self, code: str, variables: dict | None = None) -> Any:
-        return object.__getattribute__(self, "_interp").execute(code, variables)
+        # `variables=` BY KEYWORD, never positionally. dspy itself calls
+        # `repl.execute(code, variables=dict(input_args))`, so it already requires the parameter to
+        # be named that, and forwarding positionally is strictly narrower than what it accepts: a
+        # caller-supplied interpreter declaring `def execute(self, code, *, variables=None)` works
+        # when handed to dspy directly and would raise `TypeError` only through this view.
+        return object.__getattribute__(self, "_interp").execute(code, variables=variables)
 
     def shutdown(self) -> None:
         """Deliberately nothing: the CALLER owns this interpreter's lifetime."""

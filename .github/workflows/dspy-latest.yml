@@ -6,8 +6,11 @@ name: newest deps
 # MCP one was added in 1.5.0 after SDK 2.0's camelCase->snake_case field rename made every FAILED
 # MCP tool call read as a SUCCESS to the model, with the whole suite green on the locked 1.x.
 #
-# Why this exists: `rlm-harness` declares only a FLOOR on dspy (>=3.3.1) while consumers pin the KIT, so a
-# consumer's fresh install resolves whatever dspy is current. `ci.yml` resolves dspy from
+# Why this exists: `rlm-harness` declares a floor AND (since 1.14.0) a cap on dspy
+# (>=3.4.0,<3.5.0) while consumers pin the KIT. The cap stops a fresh install silently resolving
+# the NEXT breaking dspy; this job is what tells us that dspy exists, and it still works under the
+# cap because `uv run --with "dspy==<exact>"` overrides the bound. It goes red the day the next
+# minor ships, which is exactly when the floor bump is due. `ci.yml` resolves dspy from
 # `uv.lock`, so it tests a version nobody installing from PyPI necessarily gets. dspy 3.3.0
 # renamed three things at once (see CHANGELOG 1.0.1) and the whole suite stayed green while
 # the kit was completely unrunnable on a fresh install: one break was loud, two were silent.

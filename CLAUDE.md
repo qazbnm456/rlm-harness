@@ -53,7 +53,7 @@ One companion rule ships under `.claude/rules/`:
   a contributor's unrelated PR, which is the very reason the job below is kept off that trigger.
 - **`.github/workflows/dspy-latest.yml` runs the same suite against the NEWEST published dspy,
   and since the 1.2.0 floor bump it is the ONLY dspy axis** (the floor and `uv.lock` are both on
-  3.3.1 since 1.5.0, so `ci.yml` no longer covers a second version; the workflow says so in a
+  3.4.0 since 1.14.0, so `ci.yml` no longer covers a second version; the workflow says so in a
   `::notice::` and restores real two-version coverage by itself the day a newer dspy ships).
   **It carries a SECOND job on the same triggers, `mcp-latest`**, for the same reason and for the
   dependency that had no such defence: the `mcp` extra is uncapped, `uv.lock` held 1.x, and SDK
@@ -112,8 +112,9 @@ One companion rule ships under `.claude/rules/`:
   cannot run it** (the runner has no list, so it would skip), and `--no-verify` bypasses it. It
   guards the moment the mistake is actually made, which is local.
 - A *live* `dspy.RLM` run needs real model credentials **and** a Deno sandbox
-  (`brew install deno`, or `pip install "dspy[deno]"`; dspy 3.3.1 hard-gates the version to
-  `>=2.0.0,<3.0.0` and raises at startup otherwise). Don't run it in CI; it costs money.
+  (`brew install deno`, or `pip install "dspy[deno]"`; dspy 3.4.0 hard-gates the version to
+  `>=2.4.5,<3.0.0`, RAISED from `>=2.0.0` in 3.3.1, and raises at startup otherwise, so a Deno
+  between 2.0 and 2.4 that used to be fine no longer is). Don't run it in CI; it costs money.
   `examples/` show it.
 - Before claiming done, actually run the two commands above and paste the output. (The
   newest-dspy workflow is NOT one of them. It needs network, and CI runs it for you.)
@@ -169,10 +170,17 @@ One companion rule ships under `.claude/rules/`:
   dropped once during this feature's own design revision and only caught by a second adversarial
   review pass; keep it isolated and commented so it cannot be dropped silently again.
 - **Every dspy API difference is resolved in `_dspy_compat.py`: one place, by introspection.**
-  The kit declares only a FLOOR on dspy (`>=3.3.1` since 1.5.0, `>=3.3.0` since 1.2.0) while
-  consumers pin the KIT, so a
-  consumer's fresh install picks up whatever dspy is current and the kit must survive dspy's
-  renames without them noticing. The 1.2.0 floor bump deleted the 3.2.x BRANCHES but deliberately
+  The kit declares a FLOOR **and, since 1.14.0, a CAP** on dspy (`>=3.4.0,<3.5.0`; the floor was
+  `>=3.3.1` since 1.5.0 and `>=3.3.0` since 1.2.0). Consumers pin the KIT, so a consumer's fresh
+  install used to pick up whatever dspy was current, and the kit had to survive dspy's renames
+  without them noticing. **That premise is retired**: it was tested twice and broke a consumer both
+  times (3.3.0 renamed three things, CHANGELOG 1.0.1; 3.4.0 deleted the interpreter seam), because
+  a detector cannot protect an install that happens before anyone reads it. The cap is upstream's
+  own boundary rather than a guess, since several 3.4.0 deprecations say "removal in 3.5". The
+  shims still matter for exactly the same reason WITHIN the allowed range, and a cap does not make
+  `dspy-latest.yml` decorative: `uv run --with "dspy==<newer>"` overrides the bound, measured, so
+  that job still tests the newest dspy and still reddens the day the next minor ships, which is
+  when the next floor bump is due. The 1.2.0 floor bump deleted the 3.2.x BRANCHES but deliberately
   kept this module: its value was never "supports two versions", it is that every dspy fact lives
   at ONE introspected call site. Do NOT collapse a shim into its call site just because it now
   resolves a single answer: that is how the next rename gets to be silent again. Three

@@ -147,7 +147,8 @@ def test_build_rlm_ALWAYS_passes_a_factory_even_for_a_silent_interpreter(monkeyp
     assert name in captured, "the interpreter has no other way to reach dspy"
     factory = captured[name]
     assert not getattr(factory, "execution_instructions", ""), (
-        "an interpreter that describes nothing must not stamp empty text over dspy's own default"
+        "an interpreter that describes nothing must stamp nothing; there is no dspy default to "
+        "fall back to, because the kit's own factory is what dspy reads the text off"
     )
     # And the factory really hands dspy the caller's object, through the shutdown-suppressing view.
     handed = factory()
@@ -312,7 +313,7 @@ def test_arun_records_result_on_success(tmp_path):
     assert any(e["type"] == EVENT_RESULT for e in ev)       # success → result recorded as before
 
 
-def test_cancel_event_reaches_the_built_interpreter_end_to_end():
+def test_cancel_event_reaches_the_built_interpreter_end_to_end(monkeypatch):
     """Not just unit-tested in isolation on sandbox.py: confirms RLMTask(cancel_event=...)
     actually threads through `_build_rlm()` -> `build_interpreter(...)` and lands on the
     real, constructed interpreter instance's `_cancel_event` attribute."""
@@ -325,20 +326,32 @@ def test_cancel_event_reaches_the_built_interpreter_end_to_end():
 
     ev = threading.Event()
     task = T(cancel_event=ev)
-    rlm = task._build_rlm()
 
-    # Assert on the KIT's own handle, not dspy's private slot: dspy holds no interpreter of its
-    # own, it builds one per forward pass from the factory.
+    # CAPTURE the kwargs dspy is constructed with, rather than reading them back off the module.
+    # `rlm._interpreter_factory` would be asserting on a dspy PRIVATE, which CLAUDE.md forbids and
+    # which would redden CI for a rename that breaks nothing. This is the pattern
+    # `test_build_rlm_describes_a_custom_interpreters_runtime_to_the_model` already uses.
+    captured = {}
+    real_init = dspy.RLM.__init__
+
+    def _spy(self, signature, **kwargs):
+        captured.update(kwargs)
+        real_init(self, signature, **kwargs)
+
+    monkeypatch.setattr(dspy.RLM, "__init__", _spy)
+    task._build_rlm()
+
+    # Assert on the KIT's own handle: dspy holds no interpreter of its own, it builds one per
+    # forward pass from the factory.
     built = task._built_interpreter
     assert built is not None and built._cancel_event is ev
 
     # ...and that what dspy will ACTUALLY execute carries it too. Without this half the test would
     # still pass if `_build_rlm` built a correct interpreter and then handed dspy a different one.
-    # Since 1.14.0 that means calling the factory the way dspy does, rather than reading a stashed
-    # instance: dspy takes a NEW interpreter per pass, so every pass has to carry the event, not
-    # just the first.
+    # Calling the factory twice is the point: dspy takes a NEW interpreter per pass, so EVERY pass
+    # has to carry the event, not just the first.
     name = _dspy_compat._interpreter_factory_param()
-    factory = getattr(rlm, f"_{name}", None) or rlm.__dict__[name]
+    factory = captured[name]
     first, second = factory(), factory()
     assert first._cancel_event is ev
     assert second._cancel_event is ev, "a later forward pass would run without the cancel event"

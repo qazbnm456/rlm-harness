@@ -182,6 +182,9 @@ def test_dspy_ACTUALLY_INVOKES_the_factory_it_is_given():
     with rlm._interpreter_context({}, factory):
         pass
     assert calls[0] == "factory", "dspy did not invoke the factory; the seam moved again"
+    # The OTHER half of the premise, and the half `sandbox.caller_owned` exists because of: dspy
+    # shuts down what the factory returned. If this stops holding, the view is dead weight.
+    assert "shutdown" in calls, "dspy no longer shuts down the interpreter it was handed"
 
 
 def test_the_shim_RAISES_rather_than_silently_dropping_the_interpreter(monkeypatch):
@@ -289,7 +292,14 @@ def test_a_module_carrying_the_factory_still_copies_and_serialises():
 
 def test_an_interpreter_that_describes_nothing_stamps_nothing():
     """The factory is still passed, because it is the only way in; what a silent interpreter
-    changes is only whether the text is stamped over dspy's own correct default."""
+    changes is only whether any text is stamped on it.
+
+    And with nothing stamped there is NO "Execution environment:" section at all, not dspy's
+    Pyodide default: dspy reads the attribute off the factory the kit supplies, and the kit always
+    supplies one now. That is a prompt change from 1.13.0 for an undescribed custom interpreter,
+    and an improvement, since the old behaviour asserted Pyodide about a runtime that was not it.
+    The default `pyodide` path is unaffected, because there the kit stamps `PythonInterpreter`'s
+    own text back."""
     for interp in (object(), None):
         kwargs = _kwargs_for(interp)
         assert len(kwargs) == 1
@@ -322,8 +332,9 @@ def test_every_interpreter_the_kit_ships_describes_itself():
 
 
 def test_no_text_is_stamped_when_dspy_does_not_render_it(monkeypatch):
-    """A dspy that never renders it gets no stamp: the shim resolves the answer by introspection,
-    so an older dspy degrades to exactly today's behaviour. The factory itself still goes."""
+    """A dspy that never renders the text gets no stamp: the shim resolves that by introspection
+    rather than by version, so a dspy without the feature is simply not given a string it would
+    ignore. The factory itself still goes, because it is the only way to supply the interpreter."""
     monkeypatch.setattr(_dspy_compat, "_dspy_reads_execution_instructions", lambda: False)
     factory = next(iter(_kwargs_for(_Descriptive()).values()))
     assert not getattr(factory, "execution_instructions", "")
@@ -464,6 +475,78 @@ def test_var_keyword_signature_falls_back_to_the_current_names(monkeypatch):
         max_iterations=7, max_llm_calls=11, max_output_chars=13
     )
     assert resolved == {"max_iters": 7, "max_llm_calls": 11, "max_output_chars": 13}
+
+
+# ---- copying an LM the kit only duck-types ------------------------------------------------
+
+
+def test_copy_lm_asks_the_TYPE_not_the_instance():
+    """An instance `getattr` is what a `unittest.mock` double manufactures for ANY name, and a mock
+    sub-LM is a base the kit supports wrapping, so `getattr(lm, "copy")` would return a child mock
+    and call it a copy. This is the same trap `_ensure_sub_call_recording`'s `records_sub_call`
+    probe is `is True` for."""
+    from unittest.mock import MagicMock
+
+    m = MagicMock()
+    assert getattr(type(m), "copy", None) is None       # the class has none...
+    assert m.copy is not None               # ...the instance manufactures one
+    out = _dspy_compat.copy_lm(m, rollout_id=1)
+    assert out is not m
+    assert out.kwargs["rollout_id"] == 1, "the updates were lost to a manufactured copy()"
+
+
+def test_copy_lm_delegates_to_dspys_own_copy_for_a_real_LM():
+    """A real `dspy.LM` knows how to copy itself, including the private state 3.4.0's `LM.copy`
+    reads; the shim must defer to it rather than shallow-copying around it."""
+    lm = dspy.LM("openai/gpt-4o-mini", api_key="x")
+    assert _dspy_compat.copy_lm(lm, rollout_id=7).kwargs["rollout_id"] == 7
+    assert lm.kwargs.get("rollout_id") is None, "the original was mutated"
+
+
+def test_claude_agent_lm_keeps_NO_engine_spec_so_dspy_still_calls_its_own_forward():
+    """In dspy 3.4.0 the ABSENCE of `_engine_spec` is how `dspy.clients.execution.prepare`
+    recognises a legacy `forward`/`aforward` LM (`managed = hasattr(lm, "_engine_spec")`). Stamping
+    one on to satisfy `LM.copy` would silently reroute a subscription LM through litellm instead of
+    its own `forward`, with nothing going red. This is the pin for that."""
+    import rlm_harness
+
+    cls = rlm_harness.ClaudeAgentLM          # gettable without the subscription extra installed
+    assert "_engine_spec" not in dir(cls)
+    assert cls.copy is dspy.BaseLM.copy and cls.copy is not dspy.LM.copy
+
+
+def test_copy_lm_merges_updates_into_kwargs_when_the_base_has_no_copy():
+    """The fallback mirrors `BaseLM.copy`'s own rule, for a duck-typed base that has no `copy`."""
+    class _Bare:
+        def __init__(self):
+            self.model = "bare/lm"
+            self.kwargs = {"temperature": 0}
+
+    base = _Bare()
+    dup = _dspy_compat.copy_lm(base, rollout_id=3)
+    assert dup is not base
+    assert dup.kwargs == {"temperature": 0, "rollout_id": 3}
+    assert base.kwargs == {"temperature": 0}, "the original was mutated"
+
+
+def test_copy_with_probes_the_protocol_rather_than_calling_model_copy():
+    """3.4's lm15 types are FROZEN DATACLASSES (`dataclasses.replace`); 3.3's were pydantic
+    (`model_copy(update=...)`). Both shapes go through one call site, so neither is written down."""
+    import dataclasses
+
+    @dataclasses.dataclass(frozen=True)
+    class _Frozen:
+        text: str
+
+    class _Pydanticish:
+        def __init__(self, text):
+            self.text = text
+
+        def model_copy(self, update):
+            return _Pydanticish(update["text"])
+
+    assert _dspy_compat._copy_with(_Frozen("a"), text="b").text == "b"
+    assert _dspy_compat._copy_with(_Pydanticish("a"), text="b").text == "b"
 
 
 def _typed_response(*texts):
@@ -833,5 +916,21 @@ def test_the_aggregator_survives_a_nested_value_on_this_dspy():
         assert merged["m"]["prompt_tokens"] == 2, "the counts stopped adding"
         rounds = merged["m"]["x"]["rounds"]
         assert isinstance(rounds, list) and {"a": 1} in rounds, "the nested value was dropped"
+
+    # THE NEGATIVE HALF, which is the entire reason `_api_rounds` nests rather than a nicety. The
+    # un-nested form has no safe outcome on any version: 3.3.1 raised `TypeError: int + list` and
+    # 3.4.0 silently keeps the first and drops the second. Asserting either by name would pin
+    # dspy's arithmetic-of-the-day, so this asserts only that a BARE list does not survive intact,
+    # which is what makes the wrapper load-bearing and holds on both.
+    bare_survived = False
+    try:
+        flat = totals({"x": [{"a": 1}]}, {"x": [{"a": 2}]})
+        bare_survived = flat["m"]["x"] == [{"a": 1}, {"a": 2}]
+    except TypeError:
+        pass                                              # 3.3.1's outcome: it raised
+    assert not bare_survived, (
+        "a bare list now merges cleanly, so the nesting in `_api_rounds` may no longer be needed; "
+        "re-read that docstring before simplifying it"
+    )
 
 

@@ -126,37 +126,33 @@ def test_bind_recorder_to_sub_lm_is_a_noop_without_a_recorder():
 # way the shim does, off the installed dspy, so the test exercises the real class dspy branches on
 # rather than a shape this file invented.
 
-_TYPED_CLS = getattr(getattr(dspy, "lm15", None), "Response", None) or getattr(dspy, "LMResponse", None)
+_TYPED_CLS = dspy.lm15.Response
 
 
 def _typed(*texts, extra_parts=()):
-    """dspy's typed response carrying `texts` as separate text parts, on either layout."""
-    if getattr(dspy, "lm15", None) is not None:
-        from dspy.lm15 import Message, Response, TextPart, Usage
+    """dspy's typed response carrying `texts` as separate text parts.
 
-        parts = tuple(TextPart(text=t) for t in texts) + tuple(extra_parts)
-        return Response(id=None, model="m", message=Message(role="assistant", parts=parts),
-                        finish_reason="stop", usage=Usage())
-    from dspy.clients.base_lm import LMResponse
-    from dspy.core.types import LMOutput, LMTextPart
+    Single-version on purpose: the kit's floor is dspy >= 3.4.0, so there is no 3.3 layout to
+    build. A dual-version helper here would be dead code claiming support the CHANGELOG declines,
+    and the one that briefly existed was itself broken (3.3.1's thinking part takes `text`, not
+    `thinking`), which is what dead branches do.
+    """
+    from dspy.lm15 import Message, Response, TextPart, Usage
 
-    parts = [LMTextPart(text=t) for t in texts] + list(extra_parts)
-    return LMResponse(model="m", outputs=[LMOutput(parts=parts)])
+    parts = tuple(TextPart(text=t) for t in texts) + tuple(extra_parts)
+    return Response(id=None, model="m", message=Message(role="assistant", parts=parts),
+                    finish_reason="stop", usage=Usage())
 
 
 def _thinking_part(text):
     """A non-text part, for asserting substitution leaves it alone.
 
-    Note it carries a `.text` field of its own on 3.4.0, which is exactly why the shim
-    discriminates on the part's `type` tag and never on `hasattr(part, "text")`.
+    It carries a `.text` field of its OWN, which is exactly why the shim discriminates on the
+    part's `type` tag and never on `hasattr(part, "text")`.
     """
-    if getattr(dspy, "lm15", None) is not None:
-        from dspy.lm15 import ThinkingPart
+    from dspy.lm15 import ThinkingPart
 
-        return ThinkingPart(text=text)
-    from dspy.core.types import LMThinkingPart
-
-    return LMThinkingPart(thinking=text)
+    return ThinkingPart(text=text)
 
 
 def _as_dspy_reads_it(response):
@@ -219,14 +215,21 @@ def test_substitution_replaces_ALL_text_of_a_multi_part_response():
     rest appended: it round-tripped to "ABB". dspy emits one text part per content item, so any
     provider returning a content array produces several.
 
-    The JOINER itself is read off dspy, not written down: 3.3 joined with "" and 3.4 joins with
-    "\n", and hardcoding either would make this test assert the kit against one dspy rather than
-    against the property that matters, which is that NO un-substituted tail survives."""
+    The postprocessor has to CHANGE the text, and that is the whole reason this reads `str.lower`
+    rather than `str.upper`. With `str.upper` over parts "A" and "B" the pipeline is a no-op, the
+    shim correctly returns dspy's own object by identity, no rebuild happens at all, and the
+    assertion passes without ever exercising the substitution it is named for. It was written that
+    way and passed for that reason on both dspy versions.
+
+    The JOINER is read off dspy rather than written down: 3.3 joined with "" and 3.4 with "\n", and
+    hardcoding either would assert the kit against one dspy instead of against the property that
+    matters, which is that no un-substituted tail survives."""
     joined = _typed("A", "B").text
+    assert joined.lower() != joined, "the postprocessor must change the text or this proves nothing"
     base = ShapedLM(_typed("A", "B"))
-    out = intercept_sub_lm(base, postprocessors=[str.upper])(prompt="q")
-    assert out.text == joined.upper()
-    assert "B" not in out.text.removeprefix(joined.upper()), "an old text part survived"
+    out = intercept_sub_lm(base, postprocessors=[str.lower])(prompt="q")
+    assert out.text == joined.lower(), "an un-substituted text part survived the rebuild"
+    assert len(_parts_of(out)) == 1, "the later text part was kept and will be appended to `.text`"
 
 
 def _parts_of(response):
@@ -324,6 +327,22 @@ def test_the_auto_payload_matches_an_explicit_no_argument_wrap():
 
     assert actions(str(d / "a.jsonl")) == actions(str(d / "e.jsonl"))
     assert len(actions(str(d / "a.jsonl"))) == 1
+
+
+def test_the_wrappers_copy_updates_the_object_that_MAKES_the_request():
+    """The second half of the 1.14.0 copy fix, and it was wrong on EVERY dspy version.
+
+    The inherited `copy()` updated the WRAPPER's decorative `kwargs` while `_base`, the object that
+    actually makes the request, was shared by reference and never saw the update. So
+    `copy(rollout_id=1)` produced an LM that reported a rollout id it would not send.
+    """
+    base = FakeLM(["hi"])
+    dup = intercept_sub_lm(base).copy(rollout_id=1)
+    assert dup.__dict__["_base"] is not base, "the base was shared by reference"
+    assert dup.__dict__["_base"].kwargs["rollout_id"] == 1, "the update never reached the caller"
+    assert base.kwargs.get("rollout_id") is None, "the original base was mutated"
+    assert dup.kwargs["rollout_id"] == 1, "the wrapper's mirror disagrees with its base"
+    assert dup.records_sub_call is True, "the copy stopped recording escalations"
 
 
 def test_the_wrapper_survives_copy_deepcopy_and_dspys_own_copy():

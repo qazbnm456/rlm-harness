@@ -78,6 +78,20 @@ dspy 3.4.0 deleted the seam the kit supplies its sandbox through, and 1.13.0 ins
   `dspy.context(experimental=True)` no longer changes that. The test that used to drive dspy into
   producing one now pins the acceptance contract against dspy's own source instead.
 
+- **An interpreter that describes nothing now yields NO "Execution environment:" prompt section**,
+  where 1.13.0 gave it dspy's Pyodide text. Small, and an improvement, but it IS a prompt change:
+  because the kit now always supplies the factory and dspy reads `execution_instructions` off it,
+  a custom interpreter with none leaves the section empty rather than inheriting a description of a
+  runtime it is not. Only a consumer with an undescribed custom interpreter sees any difference;
+  the default `pyodide` path is byte-identical, since the kit stamps `PythonInterpreter`'s own text
+  back.
+
+- **Older releases stay broken on dspy 3.4.0, and the cap cannot reach back.** It protects installs
+  of 1.14.0 and later. `pip install rlm-harness==1.13.0` still resolves dspy 3.4.0 and still fails,
+  as does every earlier version, and PyPI metadata cannot be amended after upload. A consumer
+  pinned to an older kit has two options: pin `dspy<3.4.0` alongside it, or upgrade. Said here
+  because the release that diagnoses the pattern should also say who is still exposed to it.
+
 ### Fixed
 
 - **`_InterceptedSubLM.copy()`**, because 3.4.0's new `dspy.LM.copy` reads `self._engine_spec`,
