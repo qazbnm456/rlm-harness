@@ -1351,11 +1351,13 @@ thinking budget cannot reach, so raising it will not help. No thinking budget at
 case below. Measured on one deployment: of 6 cap hits in 1762 calls, 3 were the first kind and 1 the
 second.
 
-**Repeated hits at the thinking ceiling look like a precursor, on n=2.** Without a budget the ratio
-below has a hole and gives no early warning. With one, calls pile up AT the ceiling instead of
-passing through it, and on that deployment both failing runs showed 10+ consecutive calls at the
-ceiling before dying. Two runs is a hypothesis, not a signal: worth watching, not worth alerting on
-yet.
+**Repeated hits at the thinking ceiling look like a precursor, and what it detects is a STUCK
+model rather than a hard task.** Without a budget the ratio below has a hole and gives no early
+warning. With one, calls pile up AT the ceiling instead of passing through it. On one deployment
+both failing runs showed 10+ consecutive calls at the ceiling before dying, and the same page then
+SUCCEEDED on a later attempt with 2 ceiling hits and never two in a row. That pair is what says the
+pattern is not the page needing more thinking, since the budget was identical on all three
+attempts: it is the trajectory looping. Still one page, so watch it rather than alert on it.
 
 Read `completion_tokens == cap` as a truncation. **Whether the RATIO gives early warning depends on
 how generous your cap is, and 1.10.0 shipped claiming it always does.** On the first production
