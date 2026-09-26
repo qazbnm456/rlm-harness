@@ -1379,10 +1379,22 @@ hold, but nothing here settles it.)
 
 That corpus also measured what truncation costs, which was invisible before this release: **21 runs
 of 385 (5.5%) hit the cap, and 16 of those 21 (76%) finished anyway.** Not luck. It is WHERE in the
-turn the truncation landed. A truncated CODE cell is a `SyntaxError`, and dspy's own in-loop feedback
-hands it back to the model, which repairs it. A truncated FINAL answer is an adapter parse failure
+turn the truncation landed. A truncated CODE cell raises a `SyntaxError` that dspy hands back to the
+model as another turn, and the model repairs it. A truncated FINAL answer is an adapter parse failure
 with no handler, and kills the run. So the visible failures are the ~24% that land in the wrong
 place, and the rest self-heal without anyone knowing they happened.
+
+**The recovery is NOT the diagnostic doing the work, and this sentence used to say it was.** On the
+default `pyodide`/`deno` interpreter, the message dspy hands back for a syntax error is EMPTY. Not
+sometimes: measured against a real Deno sandbox, the raw JSON-RPC carries `{"message": "",
+"data": {"type": "SyntaxError", "args": []}}`, because dspy's `runner.js` excludes `SyntaxError`
+from its args extraction on the grounds that "only python exceptions have args" while a Python
+`SyntaxError`'s args are exactly where the line and offset live. A consumer counted 1029 of these
+across four kit versions and not one carried a non-empty message. So the model sees `[Error] Invalid
+Python syntax. message:` and nothing else, and the 76% is what it recovers with NO information about
+what was wrong, which makes the figure more impressive and the feedback path worth fixing upstream
+rather than relied on. The kit's own `container` interpreter does not share the hole: its agent sends
+`str(e)`, so the same failure reads `invalid syntax (<sandbox>, line 1)` there.
 
 Five things to know:
 

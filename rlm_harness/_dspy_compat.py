@@ -574,8 +574,11 @@ def dspy_refuses_fence(code: Any) -> bool:
 # (16.9%) into the empty band, so the hole is an artifact of a cap set at ~2x what the model needs,
 # not a property of the model. Do not promise early warning unconditionally, and do not deny it
 # either -- it depends on the caller's cap. What holds regardless: the count separates a truncation
-# from a malformed reply, and 76% of truncations self-heal because dspy's own SyntaxError feedback
-# repairs a truncated CODE cell while a truncated FINAL answer has no handler.
+# from a malformed reply, and 76% of truncations self-heal, because a truncated CODE cell comes back
+# as a SyntaxError turn the model can retry while a truncated FINAL answer has no handler at all.
+# NOT because the diagnostic says anything: on the pyodide/deno path that message is measurably
+# EMPTY every time (see the guide's "Read `completion_tokens == cap`" section), so the recovery is
+# the model re-reading its own cut-off code.
 
 _LM_BUDGET_KEYS = ("max_tokens", "max_completion_tokens")
 
