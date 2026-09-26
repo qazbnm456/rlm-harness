@@ -1348,8 +1348,29 @@ needs no mapping from a call to a turn. Reasoning AT the thinking ceiling and co
 means the budget is working and the TOTAL is too small: raise `max_tokens`, or lower the thinking
 budget to leave the answer room. LOW reasoning and completion at the cap is a content runaway the
 thinking budget cannot reach, so raising it will not help. No thinking budget at all is the original
-case below. Measured on one deployment: of 6 cap hits in 1762 calls, 3 were the first kind and 1 the
-second.
+case below, and it has a signature worth recognising on sight: **`reasoning_tokens ==
+completion_tokens == cap` means the model emitted NO content at all**, having spent the entire
+generation budget thinking. Measured on one deployment: of 6 cap hits in 1762 calls, 3 were the first
+kind and 1 the second.
+
+**What a thinking budget actually buys on the committing turn is ROOM FOR THE ANSWER, not better
+reasoning.** This is the sharper reading of the same knob and it came from a paired rerun on that
+deployment: three questions, same model, same wiki, same 12-turn fast-mode cap, with only the budget
+unset. With it, 3 of 3 finished. Without it, 3 of 3 FAILED, every one at the last iteration, every
+one with the identical shape `(completion 32768, reasoning 32768)`: the whole cap spent reasoning,
+zero content, dspy's truncation warning, then `RLMTaskError`. The budgeted runs reached that same
+turn, were cut at the ceiling, and dspy's forced extract had tokens left to write an answer with.
+
+Two things follow that a rate would not tell you. **Both conditions used all 12 turns**, so a budget
+does not cause or prevent iteration-cap pressure: that came from the questions, each a 2,000-2,900
+character five-part audit. And the failure concentrates on the turn that has to COMMIT, the one with
+the most to synthesise, which is why looking at a distribution over all turns misses it and why the
+consecutive-ceiling precursor below points at the same place. In the failing runs one of the earlier
+turns also reasoned past 16384 and completed anyway, so cutting a normal turn at the ceiling is not
+what was at stake.
+
+n=3, paired, one variable, and one disclosed confound: the reruns carried no page context that the
+originals may have had, which the trace cannot settle. Read it as a mechanism, not a rate.
 
 **Repeated hits at the thinking ceiling look like a precursor, and what it detects is a STUCK
 model rather than a hard task.** Without a budget the ratio below has a hole and gives no early
