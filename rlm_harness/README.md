@@ -1348,10 +1348,26 @@ needs no mapping from a call to a turn. Reasoning AT the thinking ceiling and co
 means the budget is working and the TOTAL is too small: raise `max_tokens`, or lower the thinking
 budget to leave the answer room. LOW reasoning and completion at the cap is a content runaway the
 thinking budget cannot reach, so raising it will not help. No thinking budget at all is the original
-case below, and it has a signature worth recognising on sight: **`reasoning_tokens ==
-completion_tokens == cap` means the model emitted NO content at all**, having spent the entire
-generation budget thinking. Measured on one deployment: of 6 cap hits in 1762 calls, 3 were the first
-kind and 1 the second.
+case below. Measured on one deployment: of 6 cap hits in 1762 calls, 3 were the first kind and 1 the
+second.
+
+**A NO-CONTENT reply has its own signature, and it is not a truncation at all: `reasoning_tokens ==
+completion_tokens`.** Equal counts mean every generated token went to reasoning and the model emitted
+nothing, and that is worth reading BEFORE the three branches above, because it explains a failure
+that has no cap to point at. This bullet first said the signature was `reasoning == completion ==
+cap`, which was written from three observations that all happened to sit at the cap; a later corpus
+produced `(completion 1384, reasoning 1383)` on a final call, far below both limits, with no
+truncation to explain it. So the cap is a SPECIAL CASE of the shape and not its definition, and the
+over-specified version would have missed the instance that showed it. Treat an empty reply as its own
+failure mode rather than as a symptom of running out of room.
+
+**Do not read the three branches as predicting the OUTCOME. Position does that.** On the same corpus
+a branch-1 call (reasoning at the ceiling, completion at the cap) landed mid-run at call 24 and the
+run RECOVERED, while a branch-2 call (content runaway) landed on the FINAL call and the run failed.
+That is the 1.10.1 finding restated: a truncated CODE cell comes back as a turn the model can retry,
+and a truncated FINAL answer has no handler. The branch tells you which knob to reach for; where the
+call sits in the run tells you whether it was survivable. Bucketing outcomes by branch alone will
+attribute to the branch what position caused.
 
 **What a thinking budget actually buys on the committing turn is ROOM FOR THE ANSWER, not better
 reasoning.** This is the sharper reading of the same knob and it came from a paired rerun on that
