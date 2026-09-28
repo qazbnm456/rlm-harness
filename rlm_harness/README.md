@@ -1351,15 +1351,30 @@ thinking budget cannot reach, so raising it will not help. No thinking budget at
 case below. Measured on one deployment: of 6 cap hits in 1762 calls, 3 were the first kind and 1 the
 second.
 
-**A NO-CONTENT reply has its own signature, and it is not a truncation at all: `reasoning_tokens ==
-completion_tokens`.** Equal counts mean every generated token went to reasoning and the model emitted
-nothing, and that is worth reading BEFORE the three branches above, because it explains a failure
-that has no cap to point at. This bullet first said the signature was `reasoning == completion ==
-cap`, which was written from three observations that all happened to sit at the cap; a later corpus
-produced `(completion 1384, reasoning 1383)` on a final call, far below both limits, with no
-truncation to explain it. So the cap is a SPECIAL CASE of the shape and not its definition, and the
-over-specified version would have missed the instance that showed it. Treat an empty reply as its own
-failure mode rather than as a symptom of running out of room.
+**Token counts cannot tell you WHAT the model emitted. Only the response text can, and the trace
+carries it.** This paragraph asserted a "no content" signature twice and both versions were wrong, so
+the rule it leaves behind is the useful part. First it said `reasoning_tokens == completion_tokens ==
+cap` means the model emitted nothing, generalised from three observations that all happened to sit at
+the cap. Then a call at `(completion 1384, reasoning 1383)`, far below both limits, was taken as
+proof that the cap was incidental and the EQUALITY was the signature. Reading that call's actual response
+settled it: the model had returned a full paragraph of prose, and the provider had counted the
+visible content as reasoning tokens. **So `reasoning == completion` is consistent with a complete
+reply, and neither version of the claim survives.** The earlier cap-level observations may well
+have been empty, but the counts were never what showed it.
+
+What to read instead: `run_end.payload.error_chain`, whose `AdapterParseError` frame embeds the head
+of `LM Response:`. That is what identified the call above, and `short_error`'s ~600-character cap
+keeps the beginning, which is the part that distinguishes an empty reply from a full one in the wrong
+shape. Usage answers "how many tokens"; the error chain answers "what came back". Do not substitute
+one for the other, which is what both retracted versions of this paragraph did.
+
+**One failure class that IS worth recognising, from the same call.** The reply was thinking-style
+prose opened with a bare `{`, sitting where the JSON envelope's `reasoning` and `code` fields belong,
+so `Actual output fields parsed from the LM response: []`. That is the model's thinking leaking into
+the CONTENT channel and breaking the envelope, which is close to an ordinary wrong-shape reply and
+nowhere near a truncation: no cap, no ceiling, nothing to raise or lower. One instance. Distinct from
+the reasoning-model case `_LenientJSONAdapter` already handles, where the whole structured turn
+arrives in `reasoning_content` and `content` is empty; here the channels are the other way round.
 
 **Do not read the three branches as predicting the OUTCOME. Position does that.** On the same corpus
 a branch-1 call (reasoning at the ceiling, completion at the cap) landed mid-run at call 24 and the
@@ -1427,7 +1442,9 @@ sometimes: measured against a real Deno sandbox, the raw JSON-RPC carries `{"mes
 "data": {"type": "SyntaxError", "args": []}}`, because dspy's `runner.js` excludes `SyntaxError`
 from its args extraction on the grounds that "only python exceptions have args" while a Python
 `SyntaxError`'s args are exactly where the line and offset live. A consumer counted 1029 of these
-across four kit versions and not one carried a non-empty message. So the model sees `[Error] Invalid
+across four kit versions and not one carried a non-empty message, and filed it upstream as
+[dspy#10509](https://github.com/stanfordnlp/dspy/issues/10509) with the two-line fix; until that
+lands, assume the feedback carries nothing. So the model sees `[Error] Invalid
 Python syntax. message:` and nothing else, and the 76% is what it recovers with NO information about
 what was wrong, which makes the figure more impressive and the feedback path worth fixing upstream
 rather than relied on. The kit's own `container` interpreter does not share the hole: its agent sends
