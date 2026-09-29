@@ -53,7 +53,14 @@ def atomic_write_text(path: str, text: str, *, encoding: str = "utf-8") -> None:
     os.makedirs(dirname, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=dirname, prefix=".tmp-")
     try:
-        with os.fdopen(fd, "w", encoding=encoding) as fh:
+        # `newline=""` disables the text layer's newline TRANSLATION, so the bytes written are the
+        # bytes the caller passed. Without it this is a no-op on POSIX and silently rewrites every
+        # "\n" as "\r\n" on Windows, which makes three things wrong at once: a tool whose contract
+        # is "write this content" does not, `atomic_write_stream` right below opens "wb" and so
+        # disagrees with its own sibling on the same platform, and `max_bytes` accounting would
+        # measure a different length than the file gets. Found while adding `ci.yml`'s
+        # `test-windows` job, which exists because `pyproject.toml` claims `OS Independent`.
+        with os.fdopen(fd, "w", encoding=encoding, newline="") as fh:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())

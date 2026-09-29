@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import stat
 
 import pytest
@@ -169,3 +170,21 @@ def test_atomic_write_stream_budget_checked_after_every_chunk_not_only_at_the_en
         atomic_write_stream(path, chunks(), max_bytes=8)
     assert len(consumed) < 1000
     assert not os.path.exists(path)
+
+
+def test_the_writer_does_not_TRANSLATE_newlines(tmp_path):
+    """The bytes on disk are the bytes the caller passed, on every platform.
+
+    A no-op assertion on POSIX and the whole point on Windows, where the text layer rewrites
+    "\\n" as "\\r\\n" unless `newline=""` is set. Asserted on BYTES, so it fails on Windows if the
+    translation ever comes back; reading it as text would hide the bug by translating it away.
+    `atomic_write_stream` opens "wb" and never translated, so this also pins the two writers in
+    the same module to the same answer.
+    """
+    path = str(tmp_path / "crlf.txt")
+    atomic_write_text(path, "a\nb\n")
+    assert pathlib.Path(path).read_bytes() == b"a\nb\n"
+
+    stream_path = str(tmp_path / "crlf-stream.txt")
+    atomic_write_stream(stream_path, [b"a\nb\n"])
+    assert pathlib.Path(stream_path).read_bytes() == pathlib.Path(path).read_bytes()

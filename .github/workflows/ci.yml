@@ -49,6 +49,47 @@ jobs:
         # `pathspec` package rather than skip.
         run: uv run --group dev --extra mcp --extra grep --extra gitignore python -m pytest -q
 
+  test-windows:
+    # `pyproject.toml` declares `Operating System :: OS Independent`, and until this job that was
+    # a claim nothing checked: every other job in this repo is `ubuntu-latest` except
+    # `install-check.yml`'s macOS leg, so the THIRD platform a PyPI classifier promises had no
+    # reader at all. A Windows user reported the gap from the other end (no obvious way to get
+    # Deno), which is what prompted looking.
+    #
+    # A SEPARATE job rather than a row in the matrix above, for two reasons: the matrix's job
+    # names stay byte-identical, so any required-status-check configured against `test (py3.11)`
+    # keeps resolving; and the platform axis deserves its own explanation, which a matrix row
+    # cannot carry.
+    #
+    # ONE interpreter, not three. A Windows break is OS-shaped, not version-shaped: it is a path
+    # separator, a signal that does not exist, or a file lock, none of which differ across 3.11 to
+    # 3.13. Three rows would triple the cost for a repeat of the same answer. 3.12 because it is
+    # the project's default interpreter; `docs/VERIFY.md` explains why the 3.11 FLOOR is the one
+    # worth repeating by hand, and that reasoning is about stdlib drift on the axis already
+    # covered above.
+    #
+    # **What a green here does and does not mean.** It means the library imports and the suite
+    # passes on Windows. It does NOT mean a live run works there: Deno is started lazily on the
+    # sandbox's first turn and no CI job anywhere in this repo starts one, so the WASM sandbox is
+    # unproven on every platform, Windows included. `pip install "dspy[deno]"` resolves a
+    # `win_amd64` wheel and no `win_arm64` one, so Windows ARM has no managed Deno regardless of
+    # what this job reports.
+    name: test (windows, py3.12)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Run tests
+        # The same three extras as the Linux matrix, for the same reason: without them the MCP,
+        # `regex`-timeout and `.gitignore` suites SKIP, and a green row would mean the extras were
+        # missing rather than that the tests passed. That failure mode is worse here than on Linux,
+        # because a skip on a brand-new platform reads as "Windows is fine".
+        run: uv run --group dev --extra mcp --extra grep --extra gitignore python -m pytest -q
+
   mcp-major:
     # The `mcp` extra is UNCAPPED, and `uv.lock` can only hold one version, so the suite above
     # proves nothing about the OTHER published major. It went unnoticed once: SDK 2.0 renamed the

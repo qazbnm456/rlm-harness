@@ -1324,7 +1324,7 @@ That matters because `RLMTaskError`'s message is deliberately generic. `run_with
 nothing but the generic sentence, on the one artifact that outlives an intermittent failure you
 cannot reproduce.
 
-    "error": "RLMTaskError(\"Failed to produce a valid 'result' after 2 attempts\")",
+    "error": "RLMTaskError(\"Failed to produce a valid 'result' after 2 attempts: ValueError: adapter could not parse the completion\")",
     "error_chain": ["ValueError: adapter could not parse the completion",
                     "ConnectionError: proxy: read timeout on POST /v1/chat/completions"]
 
@@ -1874,9 +1874,13 @@ to hold the chain-of-thought AND the structured answer of the same turn. When a 
 it, the reply is cut off *mid-JSON*, so the adapter cannot parse what came back and the run dies as
 
 ```
-RLMTaskError: Failed to produce a valid '<field>' after N attempts
-    caused by AdapterParseError: ... failed to parse the LM response
+RLMTaskError: Failed to produce a valid '<field>' after N attempts:
+    AdapterParseError: ... failed to parse the LM response
 ```
+
+Since 1.14.1 the cause is in that message rather than only on `__cause__`, so a consumer that
+catches `RLMTaskError` and prints `str(e)` shows it too. `error_chain` in the trace is unchanged and
+still carries the full chain.
 
 That is a **truncation**, not a model that cannot follow the schema, and it is easy to misdiagnose
 as one: the text in the error often looks like well-formed output right up to where it stops.

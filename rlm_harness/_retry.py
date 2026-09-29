@@ -158,6 +158,17 @@ async def run_with_retry(
                 "RLM attempt %d/%d failed: %s", attempt, max_retries, short_error(exc)
             )
 
+    # The CAUSE goes in the MESSAGE, not only on `__cause__`. Two user reports traced to the
+    # same line: a missing Deno, and a `claude-agent-sdk` CLI that failed under a different
+    # uid. In both the underlying exception already said exactly what to do -- dspy writes
+    # "Deno executable not found. Install ... `pip install "dspy[deno]"`", and the SDK's
+    # `ProcessError` folds the CLI's exit code AND its stderr into its own message -- and both
+    # diagnoses ended here, replaced by a sentence naming only the output field. `__cause__`
+    # and `run_end.payload.error_chain` still carried it, but a consumer whose CLI catches
+    # `RLMTaskError` and prints `str(e)` showed the user nothing actionable, which is how an
+    # environment problem with a one-line fix reads as the harness going in circles.
+    # `short_error` keeps the head and the tail, so a long stderr cannot flood the terminal.
     raise RLMTaskError(
-        f"Failed to produce a valid '{output_field}' after {max_retries} attempts"
+        f"Failed to produce a valid '{output_field}' after {max_retries} attempts: "
+        f"{short_error(last_error)}"
     ) from last_error

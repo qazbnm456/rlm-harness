@@ -323,3 +323,48 @@ async def test_retry_log_does_not_flood_on_huge_exception(caplog):
     assert "Adapter failed" in msg           # head kept
     assert "end-of-error" in msg             # tail kept
     assert "chars elided" in msg
+
+
+async def test_the_error_MESSAGE_carries_the_cause_not_only__cause__():
+    """Two user reports, one line: the remedy has to survive into `str(e)`.
+
+    A missing Deno and a `claude-agent-sdk` CLI failing under a different uid both arrive here
+    as an exception whose own message already says exactly what to do (dspy names
+    `pip install "dspy[deno]"`; the SDK's `ProcessError` folds in the CLI's exit code and
+    stderr). Wrapping used to replace that with a sentence naming only the output field, so a
+    consumer whose CLI catches `RLMTaskError` and prints `str(e)` showed the user nothing
+    actionable. `__cause__` still carries it, and so does `run_end.payload.error_chain`, but
+    neither is what a caught-and-printed error shows.
+    """
+    remedy = 'Deno executable not found. Install ... `pip install "dspy[deno]"`'
+
+    async def runner():
+        raise FileNotFoundError(remedy)
+
+    with pytest.raises(RLMTaskError) as excinfo:
+        await run_with_retry(runner, output_field="answer", max_retries=1)
+
+    assert remedy in str(excinfo.value)
+    assert "FileNotFoundError" in str(excinfo.value)
+    assert "after 1 attempts" in str(excinfo.value)          # the old text is kept, not replaced
+    assert isinstance(excinfo.value.__cause__, FileNotFoundError)
+
+
+async def test_a_huge_cause_does_not_flood_the_error_message_either():
+    """The message goes through `short_error`, so the flood guard covers it as well as the log.
+
+    Without this the fix above would trade an unhelpful error for an unreadable one: a
+    degenerate model's `AdapterParseError` embeds the entire raw completion.
+    """
+    flood = "loop " * 5000
+
+    async def runner():
+        raise RuntimeError(f"Adapter failed. LM Response: {flood} end-of-error")
+
+    with pytest.raises(RLMTaskError) as excinfo:
+        await run_with_retry(runner, output_field="finding", max_retries=1)
+
+    text = str(excinfo.value)
+    assert len(text) < 900                   # bounded, not the ~25k-char flood
+    assert "Adapter failed" in text          # head kept
+    assert "end-of-error" in text            # tail kept

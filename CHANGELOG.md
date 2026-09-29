@@ -6,6 +6,45 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`RLMTaskError`'s message now carries the cause, not only `__cause__`.** Two user reports, one
+  line. A missing Deno and a `claude-agent-sdk` CLI failing under a different uid both arrive at
+  `_retry.py`'s wrap site as an exception that already says exactly what to do: dspy writes "Deno
+  executable not found. Install DSPy's managed Deno runtime with: `pip install "dspy[deno]"`", and
+  the SDK's `ProcessError` folds the CLI's exit code AND its stderr into its own message. Both
+  diagnoses ended there, replaced by a sentence naming only the output field.
+
+  `__cause__` carried it and so did `run_end.payload.error_chain`, but neither is what a consumer
+  sees: a CLI that catches `RLMTaskError` and prints `str(e)` showed the user nothing actionable,
+  which is how an environment problem with a one-line fix reads as the harness going in circles.
+  The text goes through the existing public `short_error`, so a degenerate model's
+  `AdapterParseError` cannot flood a terminal through this path either. Nothing else moves: the
+  original exception is still chained, `error_chain` is unchanged, and the old sentence is kept as
+  the head rather than replaced.
+
+- **`atomic_write_text` translated newlines on Windows.** `os.fdopen(fd, "w")` without
+  `newline=""` rewrites every `\n` as `\r\n` there, so a tool whose contract is "write this
+  content" did not, `atomic_write_stream` ten lines below opens `"wb"` and therefore disagreed with
+  its own sibling on the same platform, and `max_bytes` accounting measured a different length than
+  the file received. A no-op on POSIX, which is why it survived. Pinned with a BYTE-level
+  assertion; reading the file back as text would translate the bug away and pass either way.
+
+### Added
+
+- **`ci.yml` gains a `test-windows` job**, because `pyproject.toml` has declared
+  `Operating System :: OS Independent` all along and nothing checked it: every other job in this
+  repo is `ubuntu-latest` except `install-check.yml`'s macOS leg, so the third platform a PyPI
+  classifier promises had no reader. A separate job rather than a matrix row, so the existing job
+  names stay byte-identical for any configured required status check, and one interpreter rather
+  than three, because a Windows break is OS-shaped (a path separator, a signal that does not exist,
+  a file lock) and does not differ across 3.11 to 3.13.
+
+  **A green there will not mean a live run works on Windows.** Deno starts lazily on the sandbox's
+  first turn and no job in this repo starts one, so the WASM sandbox is unproven on every platform.
+  `pip install "dspy[deno]"` resolves a `win_amd64` wheel and no `win_arm64` one, so Windows ARM has
+  no managed Deno regardless.
+
 ### Changed
 
 - **`CLAUDE.md` is gone; the agent guide is `AGENTS.md`, and the rules it used to carry moved into
@@ -46,6 +85,13 @@ All notable changes to `rlm-harness`. Format loosely follows
   existed under that name at the time. Nothing machine-reads either name, and `packages =
   ["rlm_harness"]` means none of this was ever in the wheel.
 
+- **The README leads with the portable Deno install.** It opened with `brew install deno`, a macOS
+  command, and presented `pip install "dspy[deno]"` as the alternative, so a Windows or Linux reader
+  met a package manager they may not have before the path that works everywhere. The order is
+  reversed, the platforms are named, and the README now states the thing that makes a missing Deno
+  confusing rather than merely inconvenient: it is started LAZILY on the sandbox's first turn, so it
+  fails neither at import nor at `configure()`.
+
 ### Known, not fixed here
 
 - **Two pre-existing test flakes, both outside 1.14.0's diff, both worth one issue.** Recorded
@@ -69,6 +115,13 @@ All notable changes to `rlm-harness`. Format loosely follows
   failing 1 in 5 on 3.12 and 1 in 8 on 3.11, always on the cold or loaded first run of a batch. Its
   own comment anticipates the fast-host direction; these are the slow-host side of the same
   fragility.
+
+- **The edit tool's READ side still translates newlines** (`tools/edit.py:200` opens without
+  `newline=""`). Left alone deliberately, because unlike the write side it is a judgement rather
+  than a bug: with translation a model's `\n` search string matches a CRLF file but the edit
+  rewrites every line ending in it; without translation the file is preserved but the search misses.
+  Both are defensible and the choice wants a Windows run to inform it, which is what the new job
+  will provide.
 
 ## [1.14.0] - 2026-09-26
 
