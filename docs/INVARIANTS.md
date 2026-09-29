@@ -90,7 +90,11 @@ reason is in the rule.
   a view whose `shutdown()` is a no-op, so `RLMTask._teardown_interpreter` stays its single
   shutdown and `RLMTask(interpreter=…)` keeps meaning what it says. Two consequences worth keeping:
   a retry now gets a FRESH sandbox on the string path (it used to re-enter the same dirty REPL
-  namespace while dspy rebuilt an empty history), and `caller_owned` must declare the
+  namespace while dspy rebuilt an empty history). **The handle for re-checking this on the next dspy
+  is `dspy.predict.rlm.resolve_interpreter_factory`**: it prefers the module's own factory over
+  `dspy.settings.interpreter_factory`, which is what makes a settings-level factory unable to
+  substitute the runtime that executes model code while the kit always supplies one. Read that
+  function, not this sentence, when the version moves. And `caller_owned` must declare the
   `CodeInterpreter` protocol members STATICALLY, because from CPython 3.12 `isinstance` against a
   `@runtime_checkable` Protocol resolves through `inspect.getattr_static` and never consults
   `__getattr__`: a purely dynamic proxy passes on the 3.11 floor and fails on 3.12/3.13, so the
@@ -139,6 +143,15 @@ reason is in the rule.
   `import rlm_harness` stay dspy-free. `claude_agent_lm.py` (optional `rlm-harness[subscription]`)
   additionally keeps its `claude-agent-sdk` import out of module top: deferred to instance
   construction, so `rlm_harness.ClaudeAgentLM` is gettable without the extra, like `mcp_tools`.
+
+  **`ClaudeAgentLM` subclasses `dspy.BaseLM` and implements `forward`/`aforward`, and that interface
+  has an announced EXPIRY.** dspy 3.4 deprecates it in favour of an engine with
+  `complete(Request) -> Response` passed as `dspy.LM(engine=...)`, and says removal is scheduled for
+  3.5, which is exactly the `<3.5.0` cap `pyproject.toml` now carries. The suite emits that
+  DeprecationWarning today; it is expected, not noise. `BaseLM.__call__` is the handle for
+  re-checking what the subclass still owes when the floor moves, and `dspy-latest.yml` is the
+  instrument that goes red when 3.5 ships. Do NOT silence the warning: it is the only thing that
+  dates the exemption.
 - **`import rlm_harness` must not import dspy.** `RLMTask` and `configure` are lazy
   re-exports in `__init__.py` (PEP 562). Don't make them eager.
 - **Resolve custom output types via `output_model`.** `RLMTask._build_rlm` passes

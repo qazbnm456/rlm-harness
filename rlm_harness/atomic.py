@@ -52,9 +52,14 @@ def atomic_write_text(path: str, text: str, *, encoding: str = "utf-8") -> None:
     """
     dirname = os.path.dirname(path) or "."
     os.makedirs(dirname, exist_ok=True)
-    # Validated BEFORE `mkstemp`, so the one `os.fdopen` failure a caller can reach raises with no
-    # descriptor and no temp file in existence. `encoding` arrives from `make_write_file_tool` and
-    # `make_edit_file_tool`, which pass it straight through with no build-time check of their own.
+    # Validated BEFORE `mkstemp`, so the COMMON `os.fdopen` failure a caller can reach, a misspelled
+    # encoding, raises with no descriptor and no temp file in existence. `encoding` arrives from
+    # `make_write_file_tool` and `make_edit_file_tool`, which pass it straight through with no
+    # build-time check of their own. It does not catch everything and does not need to: a non-TEXT
+    # codec (`hex_codec`, `rot_13`, …) PASSES `codecs.lookup` and then fails inside `os.fdopen` with
+    # its own `LookupError: ... is not a text encoding`. That path is correct too, measured: `io.open`
+    # closes the fd, the `except BaseException` below removes the temp file, and the real exception
+    # propagates. The gate buys an earlier, cleaner failure for the reachable case, not totality.
     #
     # **Do not "fix" the leak here by closing the fd in an `except` around `os.fdopen`.** That was
     # tried and is worse than the leak: CPython's `io.open` ALREADY closes the descriptor on most

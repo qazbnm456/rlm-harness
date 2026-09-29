@@ -218,3 +218,21 @@ def test_a_bad_encoding_raises_ITSELF_and_creates_nothing(tmp_path):
 
     assert not os.path.exists(path)
     assert [f for f in os.listdir(tmp_path) if f.startswith(".tmp-")] == []
+
+
+def test_a_NON_TEXT_codec_also_ends_clean_even_though_the_gate_passes_it(tmp_path):
+    """`codecs.lookup` is not a totality check, and the uncaught path must still end correctly.
+
+    `hex_codec`, `rot_13` and four siblings PASS `codecs.lookup` and then fail inside `os.fdopen`
+    with their own `LookupError: ... is not a text encoding`. So a descriptor and a temp file DO
+    briefly exist on this path, unlike the misspelled-encoding one the gate catches. What has to hold
+    is the outcome: `io.open` closes the fd, the `except BaseException` removes the temp file, and the
+    caller's real exception propagates rather than a bookkeeping one. Untested until an independent
+    review pointed out the comment above the gate claimed more than the gate delivers.
+    """
+    path = str(tmp_path / "out.txt")
+    with pytest.raises(LookupError, match="not a text encoding"):
+        atomic_write_text(path, "hello", encoding="rot_13")
+
+    assert not os.path.exists(path)
+    assert [f for f in os.listdir(tmp_path) if f.startswith(".tmp-")] == []

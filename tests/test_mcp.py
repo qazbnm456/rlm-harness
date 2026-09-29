@@ -691,6 +691,13 @@ def _process_is_alive(pid: int) -> bool:
     OUTSIDE that set and is never reached, which is the load-bearing part:
     `TerminateProcess(handle, 0)` is a valid call that would have SUCCEEDED and killed the child, so
     the old probe would have passed this test by destroying its subject.
+
+    **The two branches answer slightly different questions, and the Windows one is weaker.**
+    `os.kill(pid, 0)` keeps succeeding for a zombie, a child that has exited but not been waited on,
+    so POSIX enforces exited AND reaped. `GetExitCodeProcess` reports the exit immediately, so Windows
+    enforces exited only. Under a test named `..._child_is_reaped` that means a regression which
+    terminates the child without waiting fails on Linux and passes on Windows. Linux is the gating
+    axis for this test, which is why the asymmetry is disclosed rather than closed.
     """
     import os
 

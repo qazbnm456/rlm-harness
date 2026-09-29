@@ -64,13 +64,15 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 - **`CLAUDE.md` is gone; the agent guide is `AGENTS.md`, and its rules moved into `docs/`.** Claude Code
   reads `AGENTS.md` natively, so a Claude-specific filename costs cross-agent portability and buys
-  nothing. The split is the substance: 532 lines loaded on every request, about 13k tokens whether or
-  not any of it applied, became a 63-line root holding what is true for every task plus the trigger for
+  nothing. The split is the substance: 532 lines loaded on every request, about 13k tokens whether or not
+  any of it applied, became a root that holds only what is true for every task, plus the trigger for
   each of [`docs/INVARIANTS.md`](docs/INVARIANTS.md) (the 24 invariants),
-  [`docs/VERIFY.md`](docs/VERIFY.md) (the six CI axes),
+  [`docs/VERIFY.md`](docs/VERIFY.md) (the CI axes and what each cannot see),
   [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) (versioning and the consumer loop) and
   [`docs/HANDOFF.md`](docs/HANDOFF.md), which was `.claude/rules/handoff.md` and which Claude Code
-  auto-loaded.
+  auto-loaded. **No line count is quoted for the root on purpose**: the first draft of this entry said
+  63, the review round after it made the file 66, and the round that fixed THAT made it 73, while this
+  same entry records the change that grew it. A self-reported size is a claim the next edit falsifies.
 
   **What moved is the CONTENT; every TRIGGER stayed resident**, because progressive disclosure fails on
   a tripwire: an agent that has not read a rule does not know the rule applies. So the root names the
@@ -1431,8 +1433,9 @@ it is resolved rather than left for whoever next reads that note.
 
 If you pin `dspy==3.2.x`, this upgrade will **fail to resolve** at install time. Either unpin dspy (the
 kit's documented model is "pin the KIT, not dspy") or stay on `rlm-harness~=1.1.0`. Your Python floor is
-unaffected, and dspy 3.3.0 carries fewer exact pins than 3.2.1, so for most consumers the bump relaxes
-the transitive constraint graph rather than tightening it.
+unaffected: dspy 3.2.1 and 3.3.0 both require `>=3.10,<3.15`. And dspy 3.3.0 carries FEWER exact pins
+than 3.2.1, dropping `asyncer`, `typeguard`, `numpy` and `xxhash`, so for most consumers the bump
+relaxes the transitive constraint graph rather than tightening it.
 
 ### Why
 
@@ -1692,8 +1695,8 @@ decisions that are not readable off the API are spelled out here.
   `instructions`, `tools`) with retry, validation, sandbox selection, budget caps and observability
   inherited. `configure(cfg, main_lm=…, sub_lm=…)` plus `get_config` / `get_sub_lm` as the public
   injection seam and accessors. The 8192 `max_tokens` default is a measured floor rather than a guess:
-  16 calls at a 16384 cap produced 0 empty completions and 0 length-truncations, against an empty one
-  at a 1000 cap.
+  16 calls at a 16384 cap produced 0 empty completions and 0 length-truncations, against an empty one at
+  a 1000 cap, read off each call's `finish_reason`, token counts and `reasoning_len`.
 - **The sandbox.** The default `pyodide`/`deno` interpreter, the refused `local` one, and an opt-in
   `interpreter="container"` that runs the REPL inside an isolated Docker container so model code can
   spawn subprocesses. A per-turn execution budget and a real cancellation seam, whose two outcomes

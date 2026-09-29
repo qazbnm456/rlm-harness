@@ -19,7 +19,7 @@ name: newest deps
 # Why it is NOT a job inside `ci.yml`:
 #
 #  * `schedule:` applies to the WHOLE workflow, so adding it to `ci.yml` would fire the
-#    3-way Python matrix and the lint job on every tick too.
+#    3-way Python matrix, `test-windows`, `mcp-major`, `packaging` and `lint` on every tick too.
 #  * `concurrency` is workflow-scoped. `ci.yml` uses `group: ci-${{ github.ref }}` with
 #    `cancel-in-progress: true`, and a `schedule` event's `github.ref` is the default branch
 #    ref, so a cron tick and a push to `main` would land in the SAME group and cancel each

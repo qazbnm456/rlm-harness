@@ -4,9 +4,9 @@ name: install check
 #
 # Every other job in this repo answers a question about the SOURCE TREE. `ci.yml`'s `packaging`
 # job comes closest: it builds a wheel, installs it into a clean environment with no lockfile, and
-# runs a real task from it, but it builds that wheel LOCALLY, and every job here and in
-# `release.yml` and `dspy-latest.yml` is `ubuntu-latest` bar `ci.yml`'s own `test-windows`. So two
-# axes had no reader:
+# runs a real task from it, but it builds that wheel LOCALLY, and every job in `ci.yml`,
+# `release.yml` and `dspy-latest.yml` is `ubuntu-latest` bar `ci.yml`'s own `test-windows` ("here"
+# would be wrong: this file's own install job has a macos-latest leg). So two axes had no reader:
 #
 #   1. The PUBLISHED artifact. A wheel that builds here is not evidence that the thing on PyPI
 #      installs: what was actually uploaded, the metadata PyPI serves, and the dependency set a
