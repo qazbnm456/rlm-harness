@@ -107,8 +107,14 @@ All notable changes to `rlm-harness`. Format loosely follows
   entry count, an invariant count, a job count. Each of those was correct when written and wrong within
   a round, because the commit that states such a number is usually the one that changes it, and a
   reader cannot tell a stale one from a live one. `tests/test_contract.py` is the other exit where a
-  count is genuinely load-bearing, which is why the seven `EVENT_*` strings can be counted safely and
-  prose cannot. And RESTORING a dropped measurement is exactly as capable of inventing one as cutting
+  count is genuinely load-bearing. **But a test MENTIONING the number is not a pin: it has to go RED
+  when the count moves.** `test_event_type_strings_are_frozen` names all seven `EVENT_*` constants and
+  asserts their values, which catches a rename and catches nothing about an eighth arriving, measured:
+  adding `EVENT_FOO` to `trace.py` passed the entire suite. So "seven" was quoted in three documents on
+  the strength of a test that did not pin it, inside the very rule written to stop that. There is a real
+  pin now, `test_the_event_type_SET_is_closed`, in the strict shape `RUN_FACT_KEYS` already used, and it
+  goes red on an eighth. Adding an event type stays legal under additive-only-within-v1; the visible
+  diff to a contract test is the point, since every downstream reader has to learn the new type. And RESTORING a dropped measurement is exactly as capable of inventing one as cutting
   was of losing it: this entry's own restoration pass wrote "verified on both dspy 3.2.1 and 3.3.0"
   into 1.2.0, a release whose headline is that 3.2.x no longer installs. Diff a restoration against the
   original text, never against memory of it.

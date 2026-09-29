@@ -21,9 +21,14 @@ cannot see.
   repeating by hand.** `uv run` without `--python` takes the project's default interpreter (3.12
   today; `requires-python` is `>=3.11`), so a stdlib behavior that changed between 3.11 and 3.12 is
   invisible locally and reddens exactly one matrix cell AFTER the push. Not hypothetical:
-  `make_extract_archive_tool` let a raw `IndexError` escape its own refusal path because CPython
-  3.11's `ZipInfo.is_dir()` indexes `filename[-1]` where 3.12+ uses `endswith("/")`: a green local
-  run plus green 3.12/3.13 jobs said nothing about it (CHANGELOG 1.3.0). So when a change leans on
+  `make_extract_archive_tool` let a raw `IndexError` escape its own refusal path because the 3.11
+  `ZipInfo.is_dir()` of the day indexed `filename[-1]` where 3.12+ used `endswith("/")`: a green
+  local run plus green 3.12/3.13 jobs said nothing about it (CHANGELOG 1.3.0). **That particular
+  divergence is gone: CPython backported the `endswith` form into 3.11.x, so `is_dir` behaves
+  identically on 3.11, 3.12 and 3.13 today, measured.** The axis is not stale, though, and the live
+  example is one function over: `ZipFile.writestr("", b"x")` still raises `IndexError` on 3.11 and
+  returns fine on 3.12+, which `tests/test_archive.py`'s fixture builder has to work around. Quote
+  THAT one, not `is_dir`, and re-measure before quoting either. So when a change leans on
   stdlib behavior (`zipfile`/`tarfile`, `resource`, `multiprocessing`, `asyncio`), also run the
   suite with `--python 3.11`. The matrix FLOOR is where a "the stdlib does X" assumption breaks
   first. Then pin the lesson in a test that fails on EVERY version (a stub whose accessor raises
@@ -121,7 +126,7 @@ cannot see.
   vendor-neutral") held for every FILE and every published release note and
   failed twice in commit MESSAGES: two prose mentions of a private consumer, 128 and 176 commits
   deep, found only because someone thought to look. Removing them cost a history rewrite and a
-  force-push of all 25 tags. So it is a machine check now: `pre-commit` scans ADDED lines and staged
+  force-push of every tag. So it is a machine check now: `pre-commit` scans ADDED lines and staged
   paths, `commit-msg` scans the message, and `check-private-names all` audits the whole tree, every
   commit message and every tag message on demand. Enable it in a fresh clone with **`git config
   core.hooksPath .githooks`**. Hooks are not versioned state, so a clone does not inherit it.

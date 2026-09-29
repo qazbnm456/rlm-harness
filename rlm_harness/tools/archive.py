@@ -154,10 +154,12 @@ def _pass1_validate(
     for count, raw in enumerate(raw_iter, start=1):
         # The entry's NAME is read and refused FIRST, before any other piece of its metadata is
         # touched. A degenerate name is not merely invalid input to the checks below -- it can
-        # break the archive library's own metadata accessors: CPython 3.11's `ZipInfo.is_dir()`
-        # detects a trailing "/" with `filename[-1]` and so raises IndexError on an empty name
-        # (3.12+ tests it with `endswith("/")` and returns False). Calling `is_dir()` before this
-        # check let an empty-name entry escape as a raw IndexError instead of the refusal here.
+        # break the archive library's own metadata accessors: the 3.11 `ZipInfo.is_dir()` of the
+        # day detected a trailing "/" with `filename[-1]` and so raised IndexError on an empty name,
+        # where 3.12+ tested it with `endswith("/")` and returned False. Calling `is_dir()` before
+        # this check let an empty-name entry escape as a raw IndexError instead of the refusal here.
+        # CPython has since backported `endswith` into 3.11.x, so that specific divergence is gone
+        # and the ordering below is what still closes the class, on every version.
         # Ordering is what closes that class -- not another exception type in the caught tuple.
         raw_name = raw.filename if fmt == "zip" else raw.name
         normalized = raw_name.replace("\\", "/")

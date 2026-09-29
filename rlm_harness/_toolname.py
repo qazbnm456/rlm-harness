@@ -24,8 +24,10 @@ dspy validates a tool's name when ``RLM`` is constructed: it must be a Python
 identifier, must not be a keyword, and must be unique across the task's tools. A name that fails any of those aborts the WHOLE tool registration, so one bad
 name takes every other tool down with it.
 
-Four places in this kit derive a tool name from data it does not control, and every one
-of them shipped broken (CHANGELOG 1.0.2):
+Four places in this kit built a tool name that dspy then refused, and every one of them
+shipped broken (CHANGELOG 1.0.2). Three DERIVE the name from data the kit does not control
+and are the reason this module exists; the fourth collided on a hardcoded name and is listed
+with them because it is the same failure at registration:
 
 - ``mcp.py``: the external MCP server's tool name. Hyphens and dots are the MCP naming
   norm (``get-weather``, ``db.query``), and both are hard failures.

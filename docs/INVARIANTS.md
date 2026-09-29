@@ -380,7 +380,7 @@ reason is in the rule.
   identity lives only in the consumer's runtime config, exactly as `make_command_tool` takes an injected
   `Runner`. A dead / slow / looping child degrades (`endpoint_error` / `circuit_broken`), never sinking
   the parent run. (The CLIENT side; its SERVER-side mirror is `serve_harness` below. Both sides are the
-  consumer guide's step 6, `rlm_harness/README.md`.)
+  consumer guide's "Delegate to another harness, or be one" step, `rlm_harness/README.md`.)
 - **`serve_harness` is the SERVER-side mirror of `make_harness_tool`: so connecting a harness needs no
   bespoke glue.** `make_harness_tool` is the CLIENT (the parent wraps a harness as a tool via an injected
   `call_endpoint`); `serving.py`'s `serve_harness(run, to_pointer, …)` + the `python -m

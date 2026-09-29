@@ -1,6 +1,6 @@
 """The ``RLMTask`` base class: the one abstraction this scaffold exists for.
 
-A task is declared by subclassing ``RLMTask`` and filling four fields:
+A task is declared by subclassing ``RLMTask`` and filling its declaration fields:
 
     class Summarize(RLMTask):
         signature = "document: str -> article: Article"

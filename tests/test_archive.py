@@ -402,11 +402,15 @@ def test_empty_name_entry_refused_not_isadirectoryerror(tmp_path):
 
 
 class _EmptyNameZipInfo:
-    """A zip entry whose name-derived accessor behaves the way CPython 3.11's `ZipInfo.is_dir()`
-    does on an empty name (`filename[-1]` -> IndexError). 3.12+ returns False instead, so the
-    real-archive test above only exercises this on 3.11 -- this stub pins the ordering on EVERY
-    version, and would go red again the moment a metadata accessor is read before the name is
-    refused."""
+    """A zip entry whose name-derived accessor raises on an empty name the way the 3.11
+    `ZipInfo.is_dir()` of the day did (`filename[-1]` -> IndexError), where 3.12+ returned False.
+
+    CPython has since backported `endswith` into 3.11.x, so NO interpreter in the matrix reproduces
+    that divergence any more and the real-archive test exercises it on none of them. This stub is
+    why that does not matter: it raises unconditionally, so the ordering is pinned on EVERY version
+    and would go red the moment a metadata accessor is read before the name is refused. That is the
+    rule in `docs/VERIFY.md` working as intended, and the reason the protection outlived the
+    stdlib detail its story was built on."""
 
     filename = ""
     file_size = 1

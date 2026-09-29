@@ -21,6 +21,32 @@ def test_schema_id_is_frozen_at_v1():
     assert T.SCHEMA == "rlm-harness/trace/v1"
 
 
+def test_the_event_type_SET_is_closed(monkeypatch):
+    """The COUNT is pinned, not just each value, and this test has to FAIL when one is added.
+
+    `test_event_type_strings_are_frozen` below names all seven constants and asserts their values,
+    which catches a rename or a re-spelling and catches NOTHING about an eighth arriving: adding
+    `EVENT_FOO = "foo"` to `trace.py` passed the whole suite, measured. That gap mattered because
+    three documents counted "seven" and one of them cited this file as the reason the number was safe
+    to quote. **A test mentioning a number is not a pin; it has to go red when the number moves.**
+
+    So this is deliberately the strict shape `RUN_FACT_KEYS` already uses: a closed set, asserted
+    exactly. `trace/v1` is additive-only, so a NEW event type is a legitimate change rather than a
+    defect, and the one-line edit here is the point: every downstream reader has to learn the new
+    type, so adding one should cost a visible diff to a contract test rather than passing silently.
+    """
+    declared = {n for n in dir(T) if n.startswith("EVENT_")}
+    assert declared == {
+        "EVENT_RUN_START",
+        "EVENT_MAIN_STEP",
+        "EVENT_SUB_CALL",
+        "EVENT_TOOL_CALL",
+        "EVENT_FINAL",
+        "EVENT_RESULT",
+        "EVENT_RUN_END",
+    }
+
+
 def test_event_type_strings_are_frozen():
     # downstream readers key on these literal STRINGS, not the constant names, so pin the values.
     assert (
