@@ -431,7 +431,7 @@ def test_the_caller_owned_view_declares_the_protocol_STATICALLY():
 
     So this sweeps `getattr_static` rather than asserting `isinstance`. An `isinstance` assertion
     would be GREEN on the 3.11 floor and red only on 3.12/3.13, i.e. it could not stop the
-    regression coming back on the version most local runs use. docs/INVARIANTS.md's rule for exactly this:
+    regression coming back on the version most local runs use. `docs/VERIFY.md`'s rule for this:
     pin the lesson in a test that fails on EVERY version.
     """
     import inspect

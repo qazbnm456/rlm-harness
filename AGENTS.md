@@ -41,8 +41,11 @@ failure it came from. Skipping it is how they get broken a second time. It is th
 - the trace as a versioned, additive-only wire format, and trajectories-never-reward
 - the public surface, and how a consumer extends instead of forking
 
-[`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) covers versioning (SemVer on the public surface, with
-deprecation aliases rather than hard renames) and the consumer-driven hardening loop.
+**Read [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) before bumping the version, before adding,
+renaming or removing a public name, and before promoting a consumer's workaround into the kit.** It
+covers SemVer on the public surface (deprecation aliases, never a hard rename) and the
+consumer-driven hardening loop. One mechanical rule from it that no test enforces: `pyproject.toml`
+`[project].version` and `rlm_harness/__init__.__version__` must stay in sync.
 
 **Keep the public surface vendor-neutral.** Source, docs, and commit messages refer to downstream
 consumers generically. A `.githooks/` check enforces this on commit; enable it in a fresh clone with

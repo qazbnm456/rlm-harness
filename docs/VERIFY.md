@@ -89,7 +89,8 @@ cannot see.
   the RELEASED artifact on ONE interpreter, so a break on `main`, or one at the 3.11 floor, is
   invisible to it.
 - **`.githooks/` refuses a commit carrying a private project name, and the denylist is NOT in this
-  repo.** The vendor-neutrality rule below held for every FILE and every published release note and
+  repo.** The vendor-neutrality rule (`docs/INVARIANTS.md`, "Keep the public surface
+  vendor-neutral") held for every FILE and every published release note and
   failed twice in commit MESSAGES: two prose mentions of a private consumer, 128 and 176 commits
   deep, found only because someone thought to look. Removing them cost a history rewrite and a
   force-push of all 25 tags. So it is a machine check now: `pre-commit` scans ADDED lines and staged

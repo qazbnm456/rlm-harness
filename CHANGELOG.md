@@ -34,7 +34,13 @@ All notable changes to `rlm-harness`. Format loosely follows
 
   Pointers were rewritten by target rather than by pattern: a citation of an invariant now names
   `docs/INVARIANTS.md`, and `install-check.yml`'s OS-axis note names `docs/VERIFY.md`, because they
-  were never pointing at the same section. Two deliberate non-edits: the `CLAUDE.md` in
+  were never pointing at the same section. **That is the rule, and an independent review found the
+  one place the first pass broke it**, along with three more defects the split created and nothing
+  else would have caught: a test docstring citing the invariants file for a rule that had moved to
+  the verify file, a bare `CLAUDE` that a `CLAUDE\.md` search could not see, a "the rule below" whose
+  below had moved to another file, and a fourth document left with a description where every other
+  one got a moment. A split creates exactly this class: a cross-reference that was true while one
+  file held both ends. Sweep **direction words** and **partial names**, not just the filename. Two deliberate non-edits: the `CLAUDE.md` in
   `claude_agent_lm.py`'s `setting_sources=[]` comment means the END USER's own file, not this
   repo's, and the dozen mentions inside `CHANGELOG.md` are a historical record of a file that
   existed under that name at the time. Nothing machine-reads either name, and `packages =

@@ -10,7 +10,8 @@ when the conversation is about to compact, preserve only what they do NOT alread
 So a handoff summary should carry the *in-flight session state* those files miss. Prioritize,
 in order:
 
-1. **Decisions we agreed on this session** that are not yet in CHANGELOG/CLAUDE: design choices
+1. **Decisions we agreed on this session** that are not yet in `CHANGELOG.md` or
+   `docs/INVARIANTS.md`: design choices
    ("depth stays 1: depth>1 recursion is out of scope", "skills are knowledge-only, no script
    exec", "dataset split by tool name, not `kind=='tool'`"), API-shape calls, and the *reason*.
    Promote durable ones into `docs/INVARIANTS.md` or `CHANGELOG.md` (change) before they fade.
