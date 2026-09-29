@@ -2,7 +2,7 @@
 
 Thanks for helping improve `rlm-harness`: a small, reusable scaffold over `dspy.RLM`
 (Recursive Language Models) for building tasks of any kind. This guide is the short
-version; the deep design rules live in [`CLAUDE.md`](./CLAUDE.md) and the
+version; the deep design rules live in [`docs/INVARIANTS.md`](./docs/INVARIANTS.md) and the
 extension contract in the guide's [**Building a consumer**](./rlm_harness/README.md#building-a-consumer).
 
 ## Development setup
@@ -53,7 +53,8 @@ primitive in the base/wrap shape: not a special case for one user.
 
 ## What not to break
 
-These are load-bearing; see [`CLAUDE.md`](./CLAUDE.md) for the full list and the *why*.
+These are load-bearing; see [`docs/INVARIANTS.md`](./docs/INVARIANTS.md) for the full list and the
+*why*.
 
 - **The sandbox is the security boundary.** The default interpreter is sandboxed
   (`pyodide`/`deno`); the `local` interpreter stays refused unless explicitly opted in.

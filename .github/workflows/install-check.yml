@@ -10,7 +10,7 @@ name: install check
 #   1. The PUBLISHED artifact. A wheel that builds here is not evidence that the thing on PyPI
 #      installs: what was actually uploaded, the metadata PyPI serves, and the dependency set a
 #      fresh resolve picks TODAY are all outside this repo.
-#   2. macOS. `CLAUDE.md` documents the OS axis, but only in the direction that got caught:
+#   2. macOS. `docs/VERIFY.md` documents the OS axis, but only in the direction that got caught:
 #      `RLIMIT_AS` enforces on Linux and the macOS kernel refuses it, found by a red Linux run. A
 #      break that is green on Linux and red on macOS has never had an instrument, and a consumer's
 #      macOS install can fail on a transitive wheel gap this repo never resolves for itself.
@@ -19,7 +19,7 @@ name: install check
 # the published 1.11.1 resolved dspy 3.3.1 + litellm 1.99.0 and passed the smoke below. Nothing was
 # broken. This is a TRIPWIRE, not a fix: added because the alternative was a manual probe that runs
 # only when someone remembers, and "an instrument that fires only if you remember" is this project's
-# most expensive recurring failure (see the `sub_call` invariant in CLAUDE.md).
+# most expensive recurring failure (see the `sub_call` invariant in docs/INVARIANTS.md).
 #
 # **THIS JOB IS INFORMATIONAL. A red is fix-forward, never a rollback.** It runs after `Release`
 # has completed, so the upload already happened, and PyPI never lets a version be reused: there is

@@ -64,7 +64,7 @@ def _whitespace_joiner(before: str, after: str) -> str:
 
     Word-ness is tested with Python's UNICODE ``\\w``, never an ASCII class: CJK characters are word
     characters, so ``你好 世界`` keeps requiring the space against ``你好世界`` exactly as it does
-    today. An ASCII class would silently start accepting it: the same trap CLAUDE.md's
+    today. An ASCII class would silently start accepting it: the same trap docs/INVARIANTS.md's
     ``sanitize_tool_name`` rule names for identifier validity.
 
     Both neighbours are guaranteed non-empty: the quote is stripped before splitting, so no empty

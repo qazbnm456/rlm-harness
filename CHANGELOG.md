@@ -6,6 +6,40 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 ## [Unreleased]
 
+### Changed
+
+- **`CLAUDE.md` is gone; the agent guide is `AGENTS.md`, and the rules it used to carry moved into
+  `docs/`.** Claude Code reads `AGENTS.md` natively now, so a Claude-specific filename buys nothing
+  and costs cross-agent portability. `AGENTS.md` had been a symlink to `CLAUDE.md` since 2026-08-24;
+  it is a real file now, and the symlink is gone.
+
+  **The split is the substance, not the rename.** The old file was 532 lines that loaded on every
+  single request, about 13k tokens whether or not any of it applied to the task at hand. The new
+  root is 63 lines, roughly 920 tokens, and holds only what is true for every task: what the kit
+  is, the package manager, the two commands CI gates on, and the trigger for each of the four
+  documents below. The detail moved to where it can be read when it applies:
+
+  - [`docs/INVARIANTS.md`](docs/INVARIANTS.md): the 24 invariants, verbatim and unabridged.
+  - [`docs/VERIFY.md`](docs/VERIFY.md): the five CI axes and what each one cannot see.
+  - [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md): versioning, and the consumer-driven loop.
+  - [`docs/HANDOFF.md`](docs/HANDOFF.md): was `.claude/rules/handoff.md`, which Claude Code
+    auto-loaded. It no longer loads by itself, so its trigger is stated in `AGENTS.md` instead.
+
+  **What moved is the CONTENT; every trigger stayed resident.** Progressive disclosure fails on a
+  tripwire, because an agent that has not read the rule does not know the rule applies: "read the
+  invariants when relevant" is unactionable in a way "read `docs/TYPESCRIPT.md` before writing
+  TypeScript" is not. So the root file names the moment for each document ("before editing anything
+  under `rlm_harness/`", "before auto-compacting") and indexes what `docs/INVARIANTS.md` governs in
+  six lines, which is what makes the pointer answerable without loading it.
+
+  Pointers were rewritten by target rather than by pattern: a citation of an invariant now names
+  `docs/INVARIANTS.md`, and `install-check.yml`'s OS-axis note names `docs/VERIFY.md`, because they
+  were never pointing at the same section. Two deliberate non-edits: the `CLAUDE.md` in
+  `claude_agent_lm.py`'s `setting_sources=[]` comment means the END USER's own file, not this
+  repo's, and the dozen mentions inside `CHANGELOG.md` are a historical record of a file that
+  existed under that name at the time. Nothing machine-reads either name, and `packages =
+  ["rlm_harness"]` means none of this was ever in the wheel.
+
 ### Known, not fixed here
 
 - **Two pre-existing test flakes, both outside 1.14.0's diff, both worth one issue.** Recorded

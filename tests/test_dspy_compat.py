@@ -224,7 +224,7 @@ def test_recoverable_error_is_catchable_as_the_base_class():
 
 
 def test_sandbox_cancelled_is_never_caught_as_an_interpreter_error():
-    """The `SandboxCancelled` invariant (CLAUDE.md), asserted against the REAL classes
+    """The `SandboxCancelled` invariant (docs/INVARIANTS.md), asserted against the REAL classes
     rather than by reading the code: a caller-driven cancel must not be absorbed by
     dspy's recoverable-error handling on ANY supported dspy, or it degrades into a
     retried turn and the cancel is silently ignored."""
@@ -415,7 +415,7 @@ def test_missing_lm_error_class_degrades_to_never_fast_fail(monkeypatch):
 
 
 def test_module_top_is_dspy_free():
-    """`_dspy_compat` is on the dspy-free list (CLAUDE.md): importing it must NOT drag
+    """`_dspy_compat` is on the dspy-free list (docs/INVARIANTS.md): importing it must NOT drag
     dspy in. It is imported at `task.py`'s module top and from inside `sandbox.py`, so a
     stray top-level `import dspy` here would quietly make `sandbox.py` dspy-bearing.
     Checked in a SUBPROCESS because this test session has already imported dspy."""

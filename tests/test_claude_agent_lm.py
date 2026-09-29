@@ -270,7 +270,7 @@ def test_an_unreported_usage_stays_absent_instead_of_becoming_three_zeroes(sdk_r
         lm(prompt="hi")
     assert tracker.get_total_tokens() == {}, "an absent usage was recorded as a zero-token call"
     # Both dspy reads, not just the legacy one: the typed path resolves usage through
-    # `usage_from_response` rather than `getattr(response, "usage", {})`, and `CLAUDE.md` flags
+    # `usage_from_response` rather than `getattr(response, "usage", {})`, and `docs/INVARIANTS.md` flags
     # the typed/legacy split as exactly the kind of dspy difference that moves between versions.
     with dspy.context(experimental=True), dspy.track_usage() as typed_tracker:
         lm(prompt="hi")

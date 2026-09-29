@@ -4,7 +4,7 @@
 builds its own `dspy.Tool`s. Inside `mcp.py` the kit fixes both halves: the NAME (a
 hyphen is the MCP norm and dspy refuses it) and the SIGNATURE (a `**kwargs` wrapper
 registers one proxy param literally called `kwargs`). Both were private, so that consumer
-had no sanctioned remedy: CLAUDE.md's "consumers EXTEND, they don't fork" invariant bars
+had no sanctioned remedy: docs/INVARIANTS.md's "consumers EXTEND, they don't fork" invariant bars
 reaching into a `_`-private name, and 1.0.2's `assert_repl_safe` detects both problems
 while offering no fix.
 

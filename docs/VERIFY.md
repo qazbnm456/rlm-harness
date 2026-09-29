@@ -1,0 +1,118 @@
+# Verifying a change to rlm-harness
+
+Read this before pushing, and whenever a change leans on stdlib, platform, or dspy behaviour.
+The short form lives in `AGENTS.md`; this file is the five CI axes and what each one can and
+cannot see.
+
+## Verify
+
+- Run what CI gates on, BOTH jobs, before pushing:
+  - `uvx ruff check .`: lint (ruff defaults, line-length 110). CI fails the build on any
+    violation; it is NOT part of the pytest suite, so a green `pytest` is not enough on its own.
+  - `uv run --group dev --extra mcp --extra grep --extra gitignore python -m pytest -q`: the
+    full suite (CI runs it on 3.11/3.12/3.13). `--extra mcp` so the MCP-client tests run instead of
+    skipping; `--extra grep` so `make_grep_files_tool`'s timeout tests exercise a REAL `regex`
+    timeout instead of skipping (the whole point of that suite is verifying an actual timeout
+    fires, not that the code merely imports); `--extra gitignore` so `list_candidate_paths`'s
+    `.gitignore`-parsing tests exercise the real `pathspec` package instead of skipping. No live
+    LLM, network, or Deno needed: the dspy-bearing tests use `DummyLM` or are skipped if dspy is
+    absent.
+- **That local `pytest` run is ONE of CI's three interpreter axes. 3.11 is the one worth
+  repeating by hand.** `uv run` without `--python` takes the project's default interpreter (3.12
+  today; `requires-python` is `>=3.11`), so a stdlib behavior that changed between 3.11 and 3.12 is
+  invisible locally and reddens exactly one matrix cell AFTER the push. Not hypothetical:
+  `make_extract_archive_tool` let a raw `IndexError` escape its own refusal path because CPython
+  3.11's `ZipInfo.is_dir()` indexes `filename[-1]` where 3.12+ uses `endswith("/")`: a green local
+  run plus green 3.12/3.13 jobs said nothing about it (CHANGELOG 1.3.0). So when a change leans on
+  stdlib behavior (`zipfile`/`tarfile`, `resource`, `multiprocessing`, `asyncio`), also run the
+  suite with `--python 3.11`. The matrix FLOOR is where a "the stdlib does X" assumption breaks
+  first. Then pin the lesson in a test that fails on EVERY version (a stub whose accessor raises
+  the way the old stdlib does), never one that only reproduces on 3.11.
+- **The OS axis a local run cannot see at all.** CI is Linux; macOS is not. `run_in_subprocess`'s
+  `max_memory_mb` (`RLIMIT_AS`) genuinely enforces on Linux and is refused outright by the macOS
+  kernel, so its edge cases are Linux-only by nature and the relay-starvation one was found by a
+  red CI run, not by local testing or by an independent review (CHANGELOG 1.3.0). When the
+  PLATFORM is what differs, widen the TEST's accepted outcomes and disclose it; don't bend the
+  production behavior toward whichever host you happen to be on.
+- **`.github/workflows/ci.yml` also has a `packaging` job**: builds the wheel, installs it into a
+  clean environment with NO lockfile, and runs a task from it. Every other job runs from the source
+  tree via `uv run`, so a module missing from the wheel would ship silently. It is the PACKAGING
+  axis only: an offline end-to-end run still returns the right answer while a renamed dspy kwarg
+  silently drops the caller's budget cap, so it is blind to exactly the failures `_dspy_compat`
+  exists for. Never let it stand in for the job below. It PINS dspy to `uv.lock`'s version on
+  purpose: it runs on `pull_request`, and a floating dspy would let an upstream release redden
+  a contributor's unrelated PR, which is the very reason the job below is kept off that trigger.
+- **`.github/workflows/dspy-latest.yml` runs the same suite against the NEWEST published dspy,
+  and since the 1.2.0 floor bump it is the ONLY dspy axis** (the floor and `uv.lock` are both on
+  3.4.0 since 1.14.0, so `ci.yml` no longer covers a second version; the workflow says so in a
+  `::notice::` and restores real two-version coverage by itself the day a newer dspy ships).
+  **It carries a SECOND job on the same triggers, `mcp-latest`**, for the same reason and for the
+  dependency that had no such defence: the `mcp` extra is uncapped, `uv.lock` held 1.x, and SDK
+  2.0's camelCase→snake_case field rename made every failed MCP tool call read as a SUCCESS to the
+  model (CHANGELOG 1.5.0). `ci.yml` additionally carries a PINNED 2.x leg, so a major that is
+  already published stays covered on every PR without an upstream release being able to redden one.
+  Both jobs live in that separate workflow, on a weekly cron + `workflow_dispatch` +
+  push-to-main, never on a PR (an upstream break is not a contributor's problem). It exists because the two jobs above
+  resolve dspy from `uv.lock`, so they test a version nobody installing from PyPI necessarily gets:
+  dspy 3.3.0 renamed three things at once and the whole suite stayed green while the kit was
+  completely unrunnable on a fresh install: one break loud, two silent (CHANGELOG 1.0.1). It
+  resolves the newest version from PyPI at run time and ASSERTS it actually installed that; a
+  hardcoded floor goes stale, and "fail if resolved == locked" false-alarms right after every lock
+  bump. `--with "dspy==<exact>"` is what overrides the lock: a bare `--with dspy` (and
+  `--isolated --with dspy`) resolve back to the LOCKED version and would make the job decorative.
+  **When it goes red, the kit is broken for every fresh install: a release blocker, not a flake.**
+  But do NOT read green as "a fresh install works": the overlay upgrades ONLY dspy (plus whatever
+  transitive it forces), so everything else stays locked and a break from, say, the newest
+  `pydantic` is invisible to it. Reproduce locally with
+  `uv run --group dev --extra mcp --extra grep --with "dspy==<newest>" python -m pytest -q`. It leaves
+  `uv.lock` untouched.
+- **`.github/workflows/install-check.yml` is the only job that touches the PUBLISHED artifact, and
+  the only one that runs on macOS.** Every other job in this repo: `ci.yml`'s `test`, `mcp-major`,
+  `packaging` and `lint`, both jobs in `dspy-latest.yml`, and `release.yml`'s `build` and `publish`,
+  is `ubuntu-latest`, and every one that builds anything builds it from this tree (`publish` is
+  the exception that proves it: it has no checkout because it uploads what `build` handed it). So two axes had no reader: what PyPI actually
+  serves, and a break that is green on Linux and red on macOS. That second direction is not
+  symmetric with the `RLIMIT_AS` case ABOVE: that one is Linux-only behaviour a Linux CI caught,
+  while nothing here installs the published wheel on a Mac at all, which is what a consumer on that
+  platform actually does. It runs weekly, on demand, and CHAINED off `Release` completing: never on
+  `release: [published]` itself, the event `release.yml` keys on, which would race the upload and
+  fail against an index that has nothing yet. On that chained path it demands the exact version just
+  tagged rather than "latest", and FAILS rather than falling back if the tag is missing: a stale CDN
+  would otherwise resolve the PREVIOUS release, pass, and report green on an artifact it never
+  installed. It carries NO `actions/checkout` on purpose, with no source on the runner,
+  "accidentally installed from the tree" is unavailable rather than merely discouraged. Its smoke
+  body is byte-identical to `packaging`'s but for one print; if you change one, change both.
+  **It is INFORMATIONAL, and a red is fix-forward, never a rollback**: it runs after the upload,
+  and PyPI never lets a version be reused, so there is no undo to go looking for; a red means yank
+  and ship `X.Y.Z+1`. A red also does not always mean broken-for-everyone: CDN lag past the retry
+  window, a PyPI 5xx or a runner hiccup redden a healthy artifact. And green is narrow: it tests
+  the RELEASED artifact on ONE interpreter, so a break on `main`, or one at the 3.11 floor, is
+  invisible to it.
+- **`.githooks/` refuses a commit carrying a private project name, and the denylist is NOT in this
+  repo.** The vendor-neutrality rule below held for every FILE and every published release note and
+  failed twice in commit MESSAGES: two prose mentions of a private consumer, 128 and 176 commits
+  deep, found only because someone thought to look. Removing them cost a history rewrite and a
+  force-push of all 25 tags. So it is a machine check now: `pre-commit` scans ADDED lines and staged
+  paths, `commit-msg` scans the message, and `check-private-names all` audits the whole tree, every
+  commit message and every tag message on demand. Enable it in a fresh clone with **`git config
+  core.hooksPath .githooks`**. Hooks are not versioned state, so a clone does not inherit it.
+  **The list lives at `~/.claude/private-names.txt` (override with `PRIVATE_NAMES_FILE`), outside
+  every repo on purpose: putting the names into a public repo's own checker would publish exactly
+  what the checker exists to keep private.** No file means no check: a contributor without one is
+  told once and not blocked. Two limits that follow from that design and are not defects: **CI
+  cannot run it** (the runner has no list, so it would skip), and `--no-verify` bypasses it. It
+  guards the moment the mistake is actually made, which is local.
+- A *live* `dspy.RLM` run needs real model credentials **and** a Deno sandbox
+  (`brew install deno`, or `pip install "dspy[deno]"`). **Two Deno bounds exist and they are not
+  the same number; quote the one that applies.** dspy's RUNTIME gate is
+  `MIN_DENO_VERSION = (2, 0, 0)` in `dspy/primitives/python_interpreter.py`, which raises at startup
+  outside `>=2.0.0,<3.0.0`; the `dspy[deno]` EXTRA pins the pip-installed `deno` package at
+  `>=2.4.5,<3.0.0`. Both are byte-identical on 3.3.1 and 3.4.0: **3.4.0 changed nothing about Deno.**
+  This bullet claimed for three releases that 3.4.0 raised the gate to 2.4.5 and broke a working
+  Deno 2.1, and it reached a consumer's upgrade advice before anyone measured it. Both numbers were
+  real and read off real files; the DELTA between them was invented by putting an extra's pin and a
+  runtime constant in one sentence. A version bound is worth nothing without the file it came from.
+  Don't run a live run in CI; it costs money. `examples/` show it.
+- Before claiming done, actually run the two commands above and paste the output. (The
+  newest-dspy workflow is NOT one of them. It needs network, and CI runs it for you.)
+

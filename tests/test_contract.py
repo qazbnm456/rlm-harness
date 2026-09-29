@@ -3,7 +3,7 @@ silently break a downstream reader (a consumer's report renderer + RL export, a 
 UI, a future RL trainer) fails HERE, in rlm-harness's own suite, instead of in the consumer with no
 clue why.
 
-Three frozen things (see CLAUDE.md "The trace is a VERSIONED wire format"):
+Three frozen things (see docs/INVARIANTS.md "The trace is a VERSIONED wire format"):
   1. the trace SCHEMA + the seven EVENT_* type strings,
   2. the recorded-event ENVELOPE shape,
   3. the dataset-exporter RECORD shapes (export_actions / export_sft_turns / export_rl / run_label_bundle),

@@ -203,7 +203,7 @@ def test_whitespace_between_two_word_characters_stays_mandatory():
 
 def test_word_ness_is_unicode_so_cjk_still_requires_its_whitespace():
     """Pinned deliberately: an ASCII `[A-Za-z0-9_]` class would treat CJK as non-word and silently
-    start accepting a space the source never had. Same trap CLAUDE.md names for tool-name validity.
+    start accepting a space the source never had. Same trap docs/INVARIANTS.md names for tool-name validity.
     """
     assert verify_quote("你好世界", "你好 世界").startswith("MISMATCH")
     assert verify_quote("你好 世界", "你好 世界").startswith("MATCH")

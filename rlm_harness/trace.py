@@ -111,7 +111,7 @@ def _ensure_tool_timing(tool: Any) -> Any:
     # its own duration already (MCP does) or is not a shape this can time. A coroutine function is
     # skipped too: dspy branches on `inspect.iscoroutinefunction(tool.func)`, which does NOT follow
     # `__wrapped__`, so wrapping one turns a working async tool into "calling __call__ on an async
-    # tool". (CLAUDE.md forbids async tools anyway; this keeps the wrapper from making it worse. An ASYNC
+    # tool". (docs/INVARIANTS.md forbids async tools anyway; this keeps the wrapper from making it worse. An ASYNC
     # GENERATOR function is neither, so it IS wrapped and, like a plain generator function, records
     # nothing -- same forbidden category, same already-documented degradation.)
     if not (inspect.isfunction(tool) or inspect.ismethod(tool)):

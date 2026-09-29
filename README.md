@@ -168,7 +168,8 @@ A *live* run additionally needs real credentials and a Deno sandbox
 `examples/mini_run.py` shows it. To drive the real forward
 loop offline (no model, no Deno), see the guide's
 [Testing the forward path offline](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#testing-the-forward-path-offline-rlm_harnesstesting).
-See `CLAUDE.md` for invariants when modifying the kit.
+See [`docs/INVARIANTS.md`](docs/INVARIANTS.md) for the invariants that govern changes to the kit,
+and [`AGENTS.md`](AGENTS.md) for the short orientation an agent reads first.
 
 ## Status
 

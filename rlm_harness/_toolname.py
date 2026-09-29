@@ -7,7 +7,7 @@ since 1.1.0, re-exported from ``rlm_harness.__all__``: :func:`is_valid_tool_name
 
 They were promoted because a consumer driving :class:`rlm_harness.McpCatalog` gets the
 server's RAW tool names and builds its own ``dspy.Tool``s from them: hitting exactly the
-defects 1.0.2 fixed inside ``mcp.py``, with no sanctioned remedy, since CLAUDE.md's
+defects 1.0.2 fixed inside ``mcp.py``, with no sanctioned remedy, since docs/INVARIANTS.md's
 "consumers EXTEND, they don't fork" invariant bars reaching into a ``_private`` name.
 Both halves are needed: the NAME rule alone leaves that consumer with a valid name on a
 ``**kwargs`` tool that ``assert_repl_safe`` still rejects.

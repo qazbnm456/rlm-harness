@@ -331,7 +331,7 @@ def model_as_tool(name: str, lm: Any, *, description: str = "") -> Callable[[str
 def _ensure_sub_call_recording(sub_lm: Any) -> Any:
     """Return a sub-LM that emits ``sub_call`` events, wrapping only if it does not already.
 
-    ``CLAUDE.md`` states as an invariant that a sub-LM escalation "is recorded as a ``sub_call``".
+    ``docs/INVARIANTS.md`` states as an invariant that a sub-LM escalation "is recorded as a ``sub_call``".
     Before 1.7.0 that held only when the CONSUMER remembered to call :func:`intercept_sub_lm`
     itself: a plain ``dspy.LM`` is invoked by dspy directly and records nothing. Surveyed across
     nine consumers, four never wrapped; two of those four had corpora, 141 traces, in which

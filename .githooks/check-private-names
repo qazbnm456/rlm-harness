@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Refuse to commit content or a commit message containing a name from a LOCAL denylist.
 #
-# Why this exists: this repo's vendor-neutrality rule (CLAUDE.md, "Keep the public surface
+# Why this exists: this repo's vendor-neutrality rule (docs/INVARIANTS.md, "Keep the public surface
 # vendor-neutral") says the kit refers to downstream consumers generically and never by project
 # name. That rule held for every FILE and every published release note, and failed twice in commit
 # MESSAGES: two prose mentions, 128 and 176 commits deep, found only because someone thought to
@@ -46,7 +46,7 @@ fail() {
     printf '%s\n' "$2" | sed 's/^/    /' >&2
     echo "" >&2
     echo "  These names must not appear in a public repo. Rewrite the wording generically," >&2
-    echo "  \"a consumer\", \"a downstream harness\": the way CLAUDE.md's vendor-neutrality" >&2
+    echo "  \"a consumer\", \"a downstream harness\": the way docs/INVARIANTS.md's vendor-neutrality" >&2
     echo "  rule requires for every other mention." >&2
     echo "" >&2
     echo "  Deliberate exception? Commit with --no-verify, and be sure it is deliberate:" >&2

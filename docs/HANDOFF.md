@@ -3,7 +3,7 @@
 `rlm-harness` already routes durable knowledge into its tracked docs: keep using them, and
 when the conversation is about to compact, preserve only what they do NOT already hold:
 
-- **Stable invariants** → the **Invariants** section of `CLAUDE.md`.
+- **Stable invariants** → [`docs/INVARIANTS.md`](INVARIANTS.md).
 - **Resolved decisions / shipped changes** → `CHANGELOG.md` (under the current version).
 - **Open / proposed work** → the issue tracker, or the CHANGELOG's unreleased section.
 
@@ -13,7 +13,7 @@ in order:
 1. **Decisions we agreed on this session** that are not yet in CHANGELOG/CLAUDE: design choices
    ("depth stays 1: depth>1 recursion is out of scope", "skills are knowledge-only, no script
    exec", "dataset split by tool name, not `kind=='tool'`"), API-shape calls, and the *reason*.
-   Promote durable ones into CLAUDE.md (invariant) or CHANGELOG.md (change) before they fade.
+   Promote durable ones into `docs/INVARIANTS.md` or `CHANGELOG.md` (change) before they fade.
 2. **Files / symbols changed**, as `path:symbol` one-liners on the *final* shape: e.g.
    `sub_lm.py:_InterceptedSubLM.__call__ records the escalation input on the sub_call event`,
    `dataset.py:export_actions emits per-action (planner/tool/sub) records with run reward`. Drop
@@ -29,7 +29,8 @@ in order:
 
 **Do NOT preserve** (reconstructable / already durable):
 
-- Anything already in `CLAUDE.md`, `CHANGELOG.md`, `README.md`, or `pyproject.toml`.
+- Anything already in `AGENTS.md`, `docs/INVARIANTS.md`, `CHANGELOG.md`, `README.md`, or
+  `pyproject.toml`.
 - Tool-call transcripts, `grep` output, file listings, full file contents readable from disk.
 - Step-by-step exploration narration; speculative reasoning that led to no decision.
 
@@ -42,7 +43,7 @@ in order:
 - Status: <what passes pytest, what doesn't, last command + result>
 
 ## Decisions
-- <decision>: <why>   (→ promote to CLAUDE.md invariant / CHANGELOG.md)
+- <decision>: <why>   (→ promote to docs/INVARIANTS.md / CHANGELOG.md)
 
 ## Changed
 - <path:symbol>: <what & why>

@@ -328,7 +328,7 @@ def test_cancel_event_reaches_the_built_interpreter_end_to_end(monkeypatch):
     task = T(cancel_event=ev)
 
     # CAPTURE the kwargs dspy is constructed with, rather than reading them back off the module.
-    # `rlm._interpreter_factory` would be asserting on a dspy PRIVATE, which CLAUDE.md forbids and
+    # `rlm._interpreter_factory` would be asserting on a dspy PRIVATE, which docs/INVARIANTS.md forbids and
     # which would redden CI for a rename that breaks nothing. This is the pattern
     # `test_build_rlm_describes_a_custom_interpreters_runtime_to_the_model` already uses.
     captured = {}

@@ -427,7 +427,7 @@ def test_a_coroutine_function_is_passed_through(tmp_path):
     dspy branches on `inspect.iscoroutinefunction(tool.func)`, which does NOT follow `__wrapped__`.
     Wrapping an async tool therefore makes dspy take the SYNC path and raise "You are calling
     __call__ on an async tool" -- turning a run that completes into an `RLMTaskError`. Async tools
-    are forbidden by CLAUDE.md and degrade to the model seeing `<coroutine object ...>`; the point
+    are forbidden by docs/INVARIANTS.md and degrade to the model seeing `<coroutine object ...>`; the point
     here is that the seam must not make that worse."""
     async def async_tool(n: int = 1) -> str:
         return "never awaited"

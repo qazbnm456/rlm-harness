@@ -128,7 +128,7 @@ def test_shipped_repl_factory_is_safe(factory, tmp_path):
 
 
 def test_sweep_covers_every_shipped_repl_factory():
-    """What actually backs CLAUDE.md's "sweeps every shipped factory" claim.
+    """What actually backs docs/INVARIANTS.md's "sweeps every shipped factory" claim.
 
     The table above is hand-built. Each factory takes different arguments, so it cannot be driven
     generically, but NOTICING a new one is automatic: a `make_*` added to
@@ -189,7 +189,7 @@ _ok = lambda raw: types.SimpleNamespace(ok=True, errors=[])
 
 def test_model_and_harness_tools_do_not_collide():
     """D1. Both factories returned a closure literally named `call`, and dspy raises
-    `Duplicate tool name`. CLAUDE.md calls using both together an expected pattern."""
+    `Duplicate tool name`. docs/INVARIANTS.md calls using both together an expected pattern."""
     model_tool = make_model_tool(lambda spec: "x", _ok)
     harness_tool = make_harness_tool(lambda src: types.SimpleNamespace(content="x"), _ok)
     assert model_tool.__name__ != harness_tool.__name__
