@@ -18,9 +18,12 @@ cannot see.
     LLM, network, or Deno needed: the dspy-bearing tests use `DummyLM` or are skipped if dspy is
     absent.
 - **That local `pytest` run is ONE of CI's three interpreter axes. 3.11 is the one worth
-  repeating by hand.** `uv run` without `--python` takes the project's default interpreter (3.12
-  today; `requires-python` is `>=3.11`), so a stdlib behavior that changed between 3.11 and 3.12 is
-  invisible locally and reddens exactly one matrix cell AFTER the push. Not hypothetical:
+  repeating by hand.** `uv run` without `--python` takes the NEWEST interpreter present, because
+  `requires-python` is `>=3.11` and there is no `.python-version`. **So there is no "project default"
+  to name, and a local run can land on an interpreter the matrix does not test at all**: this venv is
+  on 3.14.3 while CI covers 3.11, 3.12 and 3.13. Any "N passed" from a local run is qualified by
+  that. A stdlib behavior that differs across those versions is therefore invisible locally and
+  reddens exactly one matrix cell AFTER the push. Not hypothetical:
   `make_extract_archive_tool` let a raw `IndexError` escape its own refusal path because the 3.11
   `ZipInfo.is_dir()` of the day indexed `filename[-1]` where 3.12+ used `endswith("/")`: a green
   local run plus green 3.12/3.13 jobs said nothing about it (CHANGELOG 1.3.0). **That particular
@@ -33,6 +36,16 @@ cannot see.
   suite with `--python 3.11`. The matrix FLOOR is where a "the stdlib does X" assumption breaks
   first. Then pin the lesson in a test that fails on EVERY version (a stub whose accessor raises
   the way the old stdlib does), never one that only reproduces on 3.11.
+
+  **And the failure this bullet is framed around is not the one that has actually happened here.**
+  It teaches "the versions differ", while both recorded instances are **the floor moving underneath
+  a claim that was true when written**, invalidated by a 3.11 PATCH rather than by the 3.11-to-3.12
+  boundary. `ZipInfo.is_dir()` indexed `filename[-1]` on 3.11.0 and uses `endswith` by 3.11.13; the
+  integer-conversion error read `(4300)` on 3.11.0 and `(4300 digits)` by 3.11.13. Both were cited in
+  shipped files as live 3.11-versus-3.12 differences long after they had stopped being differences at
+  all. So when a claim names 3.11 behaviour, **re-measure it against CURRENT 3.11.x, not against
+  3.12**: `uv run --python 3.11 --no-project python -c ...` settles one in seconds, and the axis is
+  the patch level, not the minor.
 - **The OS axis a local run cannot see at all.** CI is Linux except for the two legs named below, a
   Windows one and a macOS one; a local run sees neither. `run_in_subprocess`'s
   `max_memory_mb` (`RLIMIT_AS`) genuinely enforces on Linux and is refused outright by the macOS
@@ -164,7 +177,15 @@ cannot see.
   action's SHA-to-tag mapping, a behaviour of `os.kill` on Windows, a module missing from mcp 1.0.0.
   Auditable, but not by a local sweep, since it needs network, another platform or an uncached wheel.
   **Write the command or the page that would settle it next to the claim**, or it lands in the bucket
-  below by default and gets treated as permanently on trust when it is one `curl` away.
+  below by default and gets treated as permanently on trust when it is one `curl` away. The three
+  in this repo today, each with the command that settles it, so nobody has to re-derive it:
+
+  - `@runtime_checkable` on `CodeInterpreter` in dspy 3.2.1 (CHANGELOG 1.6.0):
+    `uv run --with "dspy==3.2.1" --no-project python -c "from dspy.primitives.python_interpreter import CodeInterpreter as C; print(getattr(C,'_is_runtime_protocol',False))"`
+  - hatchling 1.27's own default metadata version (`pyproject.toml`, `release.yml`):
+    `uv run --with "hatchling==1.27.0" --no-project python -c "from hatchling.metadata.spec import DEFAULT_METADATA_VERSION as d; print(d)"`
+  - no `win_arm64` wheel for `deno` (`ci.yml`, CHANGELOG Unreleased):
+    `curl -s https://pypi.org/pypi/deno/json | jq -r '.urls[].filename'`
 
   A **corpus-attributed** claim ("385 runs", "141 traces", "57% of tool wall-clock") can be audited
   exactly ONCE, at the moment it is written, and never again by anyone. No review of this repo can

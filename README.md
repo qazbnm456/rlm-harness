@@ -69,7 +69,7 @@ Windows x64 (its own pin is the narrower `>=2.4.5,<3.0.0`; there is no Windows-A
 install Deno yourself there). A system-wide Deno also works: `brew install deno` on macOS, or see
 [deno.com/install](https://docs.deno.com/runtime/getting_started/installation/) for every platform.
 
-Deno is started LAZILY, on the sandbox's first turn, so a missing one does not fail at import or at
+Deno is started LAZILY, at the top of the first forward pass, so a missing one does not fail at import or at
 `configure()`: it surfaces on the first live run. dspy's error names the fix, and the kit
 keeps that text in `RLMTaskError`'s own message rather than only on `__cause__`.
 

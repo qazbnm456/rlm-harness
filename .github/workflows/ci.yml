@@ -68,9 +68,11 @@ jobs:
     # `ZipInfo.is_dir()` for this: that one moved in a PATCH within 3.11, since 3.11.0 indexes
     # `filename[-1]` and 3.11.13 does not, so "between 3.11 and 3.12" was never right. That axis is
     # the matrix above; this job is the platform one.) Three rows would triple the cost for a repeat
-    # of the same answer. 3.12 because it is
-    # the project's default interpreter; `docs/VERIFY.md` explains why the 3.11 FLOOR is the one
-    # worth repeating by hand, and that reasoning is about stdlib drift on the axis already
+    # of the same answer. 3.12 because it is the MATRIX MIDPOINT, which is a reason that stays
+    # true: it used to say "the project's default interpreter", and there is no such thing here,
+    # since `requires-python` is open and no `.python-version` pins one. `docs/VERIFY.md` explains
+    # why the 3.11 FLOOR is the one worth repeating by hand, and that reasoning is about stdlib drift
+    # on the axis already
     # covered above.
     #
     # **What a green here does and does not mean.** It means the library imports and the suite

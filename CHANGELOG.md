@@ -233,6 +233,32 @@ All notable changes to `rlm-harness`. Format loosely follows
   when it chains through `__context__` only, have no live site at all and are left standing as the
   record of what was believed.
 
+- **Two more stdlib claims went stale under the FLOOR rather than above it, which is a different
+  failure from the one the docs teach.** `grounding.py` quoted the integer-conversion error as
+  `Exceeds the limit (4300)`; measured, that is right on 3.11.0 and reads `(4300 digits)` from
+  3.11.13 onward. Together with `ZipInfo.is_dir()`, which indexed `filename[-1]` on 3.11.0 and uses
+  `endswith` by 3.11.13, that is two claims written against 3.11.0, invalidated by a 3.11 PATCH, and
+  still cited in shipped files as live 3.11-versus-3.12 differences. `docs/VERIFY.md`'s 3.11 bullet
+  was framed entirely around "the versions differ" and now names the one that actually happens:
+  **re-measure a 3.11 claim against CURRENT 3.11.x, because the axis is the patch level.**
+- **"The project's default interpreter (3.12 today)" describes nothing, and a CI decision rested on
+  it.** `requires-python` is `>=3.11` with no `.python-version`, so `uv run` takes the newest
+  interpreter present: this checkout resolves to **3.14.3**, which the CI matrix (3.11, 3.12, 3.13)
+  does not test at all. **So every "N passed" reported from a local run here is qualified by that**,
+  and `ci.yml`'s "3.12 because it is the project's default interpreter" was resting a real choice on
+  a non-existent fact. It now says the matrix midpoint, which stays true. `AGENTS.md` says to check
+  `uv run python -V` before trusting a local pass.
+- **The three claims that cannot be checked from here now carry the command that settles each**, per
+  the middle tier of the two-kinds-of-claim rule: `@runtime_checkable` in dspy 3.2.1, hatchling
+  1.27's own default metadata version, and the absent `win_arm64` `deno` wheel. Writing the command
+  beside the claim is what keeps them out of the corpus bucket, where they would be treated as
+  permanently on trust while being one command away.
+- **Two reported leads were dropped as false positives rather than passed on**, which is worth
+  recording because the cost of a false finding is a pointless edit to correct prose: `discover.py`
+  already distinguishes pathspec's deprecated `gitwildmatch` FACTORY NAME from the `gitwildmatch`
+  SYNTAX the docs name, and every live `UsageTracker` site is already version-scoped, with 3.4.0
+  still ADDING same-typed values and only the mixed case becoming first-wins.
+
 ### Known, not fixed here
 
 - **The edit tool's READ side still translates newlines** (`tools/edit.py:200` opens without

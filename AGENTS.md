@@ -5,7 +5,9 @@ building tasks of any kind. A task is a *declaration*: an `RLMTask` subclass wit
 `output_field`, optional `output_model`, `instructions`, and `tools`. Retry, validation, sandbox
 selection, budget caps, and observability are inherited rather than written per task.
 
-Python, managed with `uv`. `requires-python = ">=3.11"`; the default interpreter is 3.12.
+Python, managed with `uv`. `requires-python = ">=3.11"` with no `.python-version`, so a local
+`uv run` takes the NEWEST interpreter you have, which may be one CI does not test: the matrix is
+3.11, 3.12 and 3.13. Check with `uv run python -V` before trusting a local pass.
 
 ## Verify
 

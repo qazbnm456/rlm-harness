@@ -193,8 +193,10 @@ def _coordinate_match(source: str, quote: str) -> int | None:
       emitting. Treating the trailing empty element as a CLAIMED blank line instead drops the fire
       rate from 83.16% to 14.70% and fixes NEITHER residual.
     * **``{1,9}`` on the digit run is a contract fix.** ``verify_quote`` documents that it never
-      raises, and on CPython 3.11 ``int("9" * 4301)`` raises ``ValueError: Exceeds the limit
-      (4300)``. An unbounded ``[0-9]+`` matched such a gutter. Nine digits covers 999,999,999 lines.
+      raises, and on CPython 3.11 ``int("9" * 4301)`` raises ``ValueError: Exceeds the limit ...
+      for integer string conversion``. An unbounded ``[0-9]+`` matched such a gutter. Nine digits
+      covers 999,999,999 lines. (The message's own wording is not quoted here on purpose: it read
+      ``(4300)`` on 3.11.0 and ``(4300 digits)`` from 3.11.13, a change WITHIN the floor.)
 
     Note ``split("\n")``, never ``splitlines()``: the latter breaks on eight separators
     universal-newline ``readlines()`` does not, and the renderer uses ``readlines()``. The mismatch
