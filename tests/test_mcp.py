@@ -682,10 +682,15 @@ def test_mcp_catalog_lazy_wedged_http_connect_is_bounded_and_reaped():
 def _process_is_alive(pid: int) -> bool:
     """Portable existence probe for a pid the test spawned.
 
-    `os.kill(pid, 0)` is the POSIX idiom and is NOT one on Windows: `os.kill` there maps to
-    `TerminateProcess` and signal 0 is not a valid parameter, so it raises `WinError 87`
-    whichever way the answer should have gone. This test used it and read the raise as "gone"
-    only because on POSIX the raise IS the answer.
+    `os.kill(pid, 0)` is the POSIX idiom and is NOT one on Windows, and the mechanism matters
+    because the obvious one is wrong in the direction that would have hidden this.
+    `signal.CTRL_C_EVENT` IS 0, and CPython's Windows `os.kill` branches on
+    `sig == CTRL_C_EVENT || sig == CTRL_BREAK_EVENT` FIRST, calling
+    `GenerateConsoleCtrlEvent(sig, pid)` whose second parameter is a process-GROUP id rather than a
+    pid, hence `ERROR_INVALID_PARAMETER (87)`. `TerminateProcess` is the fallback for a signal
+    OUTSIDE that set and is never reached, which is the load-bearing part:
+    `TerminateProcess(handle, 0)` is a valid call that would have SUCCEEDED and killed the child, so
+    the old probe would have passed this test by destroying its subject.
     """
     import os
 
@@ -697,18 +702,35 @@ def _process_is_alive(pid: int) -> bool:
         return True
 
     import ctypes
+    from ctypes import wintypes
 
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     STILL_ACTIVE = 259
+    ERROR_INVALID_PARAMETER = 87  # OpenProcess's answer for a pid that does not exist
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # Typed, because a HANDLE is pointer-sized and the default `c_int` restype truncates it on 64-bit.
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
     handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
-        return False
+        err = ctypes.get_last_error()
+        if err == ERROR_INVALID_PARAMETER:
+            return False
+        # **Every other failure must RAISE, not read as "gone".** The caller's loop treats "not
+        # alive" as proof that `close()` reaped the child, so an `ERROR_ACCESS_DENIED` would satisfy
+        # the assertion without the child ever having been reaped: the hollow-green direction, on the
+        # one platform nobody runs locally.
+        raise OSError(err, f"OpenProcess({pid}) failed: {ctypes.FormatError(err)}")
     try:
         # A handle can still open briefly after exit, so the exit code is the real answer.
-        code = ctypes.c_ulong()
+        code = wintypes.DWORD()
         if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-            return False
+            err = ctypes.get_last_error()
+            raise OSError(err, f"GetExitCodeProcess({pid}) failed: {ctypes.FormatError(err)}")
         return code.value == STILL_ACTIVE
     finally:
         kernel32.CloseHandle(handle)

@@ -183,11 +183,15 @@ def _error_chain(exc: BaseException, cap: int = _ERROR_CHAIN_CAP) -> list[str]:
 def recorder_scope(recorder: TraceRecorder | None) -> Iterator[None]:
     """Make ``recorder`` the active recorder for the CURRENT context (thread), restoring on exit.
 
-    A ``ContextVar`` is NOT inherited by threads a ``ThreadPoolExecutor`` spawns, so when
-    ``dspy.RLM.llm_query_batched`` fans the sub-LM across executor workers, those workers see
-    ``current_recorder() is None`` and the batched escalations record NO ``sub_call`` (under-counting
-    the lifeline). Re-establishing the recorder per call inside the worker thread fixes that. Used by
-    the per-run sub-LM binding in ``rlm_harness.sub_lm`` (kept here because ``_active`` is module-private)."""
+    A ``ContextVar`` is NOT inherited by a thread a ``ThreadPoolExecutor`` spawns unless the caller
+    copies the context across, and re-establishing the recorder per call inside the worker is what
+    makes the binding independent of whether it does. **dspy 3.4.0 does copy it**:
+    ``llm_query_batched`` submits with ``contextvars.copy_context().run``, so its workers DO see the
+    recorder today, which is why a batched escalation's usage reaches the trace (CHANGELOG 1.13.0).
+    What this still buys is the case with no copying at all: ``tools/_async.py``'s ``run_isolated``
+    always runs its coroutine on a dedicated bare thread, and a dspy that stopped copying would
+    silently under-count the lifeline again. Used by the per-run sub-LM binding in
+    ``rlm_harness.sub_lm`` (kept here because ``_active`` is module-private)."""
     token = _active.set(recorder)
     try:
         yield

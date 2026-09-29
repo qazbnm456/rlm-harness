@@ -323,7 +323,7 @@ def test_container_isolation_real_docker():
     # NOT weakened for CI: the GitHub runner has a live daemon, so this still executes there. The gate
     # only spares a local checkout whose engine happens to be stopped.
     if not _docker_daemon_available():
-        pytest.skip("docker daemon not reachable")
+        pytest.skip("no docker daemon reachable, or its engine does not run Linux containers")
 
     import os
 

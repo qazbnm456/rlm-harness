@@ -6,8 +6,9 @@ setup, politeness policy, and trade-offs live in its module docstring
 
   1. Log in to the Claude Code CLI with your Pro/Max account (`claude` → `/login`).
   2. `unset ANTHROPIC_API_KEY` (a leftover key would bill API credit; the adapter refuses).
-  3. `uv sync --extra subscription` (or `pip install "rlm-harness[subscription]"`), plus Deno
-     `>=2.4.5,<3.0.0`: `brew install deno`, or `pip install "dspy[deno]"` for dspy's managed one.
+  3. `uv sync --extra subscription` (or `pip install "rlm-harness[subscription]"`), plus a Deno in
+     dspy's runtime range `>=2.0.0,<3.0.0`: `brew install deno`, or `pip install "dspy[deno]"` for
+     dspy's managed binary, whose own pin is the narrower `>=2.4.5,<3.0.0`.
   4. `uv run --no-sync python -m examples.claude_agent_lm`
 """
 

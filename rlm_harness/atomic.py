@@ -16,6 +16,7 @@ pose zero regression risk to ``atomic_write_text``'s own already-shipped, alread
 
 from __future__ import annotations
 
+import codecs
 import os
 import stat
 import tempfile
@@ -51,24 +52,27 @@ def atomic_write_text(path: str, text: str, *, encoding: str = "utf-8") -> None:
     """
     dirname = os.path.dirname(path) or "."
     os.makedirs(dirname, exist_ok=True)
+    # Validated BEFORE `mkstemp`, so the one `os.fdopen` failure a caller can reach raises with no
+    # descriptor and no temp file in existence. `encoding` arrives from `make_write_file_tool` and
+    # `make_edit_file_tool`, which pass it straight through with no build-time check of their own.
+    #
+    # **Do not "fix" the leak here by closing the fd in an `except` around `os.fdopen`.** That was
+    # tried and is worse than the leak: CPython's `io.open` ALREADY closes the descriptor on most
+    # failure paths (measured: a bad `encoding` raises `LookupError` and a bad `newline` raises
+    # `ValueError`, both with the fd already closed; only a bad `mode`, which is a literal here,
+    # leaves it open). So the close is a DOUBLE close that raises `OSError: [Errno 9]` over the real
+    # error, demoting the caller's actual mistake to `__context__`, and in a process with other
+    # threads it can close a descriptor one of them has since been handed at the same number.
+    codecs.lookup(encoding)
     fd, tmp_path = tempfile.mkstemp(dir=dirname, prefix=".tmp-")
     try:
         # `newline=""` disables the text layer's newline TRANSLATION, so the bytes written are the
         # bytes the caller passed. Without it this is a no-op on POSIX and silently rewrites every
-        # "\n" as "\r\n" on Windows, which makes three things wrong at once: a tool whose contract
-        # is "write this content" does not, `atomic_write_stream` right below opens "wb" and so
-        # disagrees with its own sibling on the same platform, and `max_bytes` accounting would
-        # measure a different length than the file gets. Found while adding `ci.yml`'s
+        # "\n" as "\r\n" on Windows, which makes two things wrong at once: a tool whose contract is
+        # "write this content" does not, and `atomic_write_stream` right below opens "wb" and so
+        # disagrees with its own sibling on the same platform. Found while adding `ci.yml`'s
         # `test-windows` job, which exists because `pyproject.toml` claims `OS Independent`.
-        try:
-            fh = os.fdopen(fd, "w", encoding=encoding, newline="")
-        except BaseException:
-            # `os.fdopen` takes ownership of `fd` only once it SUCCEEDS. If it raises, nothing
-            # closes the descriptor `mkstemp` handed back: a plain leak on POSIX, and on Windows
-            # also an undeletable temp file, since the cleanup below cannot remove an open one.
-            os.close(fd)
-            raise
-        with fh:
+        with os.fdopen(fd, "w", encoding=encoding, newline="") as fh:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())

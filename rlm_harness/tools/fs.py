@@ -80,7 +80,19 @@ def resolve_within_root(root: str, path: str) -> str | None:
     """
     root_real = os.path.realpath(root)
     candidate = os.path.realpath(os.path.join(root, path))
-    if os.path.commonpath([root_real, candidate]) != root_real:
+    try:
+        common = os.path.commonpath([root_real, candidate])
+    except ValueError:
+        # `commonpath` RAISES rather than answering when the two paths share no anchor: on Windows
+        # `ntpath.commonpath(["C:\\root", "D:\\evil"])` is `ValueError: Paths don't have the same
+        # drive`, and `os.path.join` lets an absolute candidate replace the root outright, so a
+        # `"D:/evil"` argument reaches it. A path on another drive is definitionally outside the
+        # root, so this is a REFUSAL, and it has to be one rather than a raise: every caller treats
+        # only `None` as the refusal, and `make_write_file_tool`/`make_edit_file_tool` promise their
+        # tool returns a string "(never raises)" for a path that escapes. Without this the tool
+        # raises out of the REPL on Windows for an input the guard is supposed to reject calmly.
+        return None
+    if common != root_real:
         return None
     return candidate
 

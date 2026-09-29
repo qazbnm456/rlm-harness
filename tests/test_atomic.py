@@ -199,3 +199,22 @@ def test_the_writer_does_not_TRANSLATE_newlines(tmp_path):
     stream_path = str(tmp_path / "crlf-stream.txt")
     atomic_write_stream(stream_path, [b"a\nb\n"])
     assert pathlib.Path(stream_path).read_bytes() == pathlib.Path(path).read_bytes()
+
+
+def test_a_bad_encoding_raises_ITSELF_and_creates_nothing(tmp_path):
+    """The failure a caller can actually reach must not be replaced by a bookkeeping error.
+
+    `encoding` arrives from `make_write_file_tool` / `make_edit_file_tool` with no validation of
+    their own, and an earlier fix for the descriptor leak closed the fd in an `except` around
+    `os.fdopen`. CPython's `io.open` already closes it for a bad `encoding`, so that close was a
+    DOUBLE close and the caller got `OSError: [Errno 9] Bad file descriptor` with the real
+    `LookupError` demoted to `__context__`. Validating before `mkstemp` removes the failure instead
+    of handling it, which is why this asserts on the exception TYPE and on there being no temp file:
+    the old branch left the raise reachable and this test would have caught the substitution.
+    """
+    path = str(tmp_path / "out.txt")
+    with pytest.raises(LookupError, match="unknown encoding"):
+        atomic_write_text(path, "hello", encoding="not-a-real-encoding")
+
+    assert not os.path.exists(path)
+    assert [f for f in os.listdir(tmp_path) if f.startswith(".tmp-")] == []

@@ -146,14 +146,19 @@ reason is in the rule.
   *name* by walking the call stack's globals/locals, which works only while a
   caller frame holds the name and raises `Unknown name` for dynamic types or
   runner-driven paths. Do NOT reintroduce reliance on that call-stack resolution.
-- **Tools passed to `RLMTask(tools=…)` MUST be sync.** dspy's interpreter invokes a
-  tool with a plain synchronous call (`PythonInterpreter._handle_tool_call`:
-  `result = self.tools[name](**kwargs)`, then `str(result)`). There is no `await` on
-  either the `forward` or `aforward` path. An `async def` tool therefore returns an
-  un-awaited coroutine: its body never runs and the model receives the literal
-  `"<coroutine object …>"`. So `tools/` factories (`make_fetch_tool`,
-  `make_web_search_tool`, …) and their `fetcher`/`searcher` inputs are sync. Don't make
-  a tool `async`; wrap an async client into a sync call yourself.
+- **Tools passed to `RLMTask(tools=…)` MUST be sync.** dspy's interpreter invokes a tool with a
+  plain synchronous call: `PythonInterpreter.invoke_tool` is
+  `result = self.tools[name](**kwargs)`. **The consequence changed in dspy 3.4.0 and the rule did
+  not, which is worth stating so a reader who checks the old mechanism and finds it false does not
+  conclude the rule is obsolete.** 3.4.0 appends
+  `return _await_in_sync(result) if asyncio.iscoroutine(result) else result`, and `_await_in_sync`
+  calls `asyncio.run` when there is no running loop and `loop.run_until_complete` when there is. The
+  kit always reaches the sandbox from inside a running loop, since `RLMTask.arun()` is async and
+  `run()` wraps it, so an `async def` tool now raises
+  `RuntimeError: This event loop is already running` rather than handing the model an un-awaited
+  `"<coroutine object …>"`. Loud instead of silent, and still a broken tool. So `tools/` factories
+  (`make_fetch_tool`, `make_web_search_tool`, …) and their `fetcher`/`searcher` inputs are sync.
+  Don't make a tool `async`; wrap an async client into a sync call yourself.
 - **A tool injected into the REPL MUST expose EXPLICIT params: never `*args`/`**kwargs`.** dspy.RLM
   builds the in-sandbox tool proxy from `inspect.signature(tool.func)` (NOT `dspy.Tool.args`), and this
   holds for BOTH backends: dspy's Deno `PythonInterpreter._extract_parameters` AND rlm-harness's
@@ -195,9 +200,10 @@ reason is in the rule.
   inherited into it.** `tools/_async.py`'s `run_isolated` (a bridging primitive for a consumer's own
   in-process harness-delegation transport: see `tools/harness.py`'s `pointer_to_invocation` and
   `examples/harness_local_run.py`) always runs its coroutine on a dedicated new thread, which means
-  the SAME non-inheritance `trace.recorder_scope`'s docstring already documents for
-  `dspy.RLM.llm_query_batched`'s `ThreadPoolExecutor` sub-LM workers applies here too: arguably more
-  starkly (no partial context-copying at all). Concretely: a `TraceRecorder` entered AROUND a
+  contextvars are not inherited into it. **That is a CONTRAST with
+  `dspy.RLM.llm_query_batched`'s `ThreadPoolExecutor` sub-LM workers, not an analogue**: dspy submits
+  those with `contextvars.copy_context().run`, so they DO see the caller's context, which is exactly
+  why `bind_recorder_to_sub_lm` works there and why nothing equivalent rescues a bare thread here. Concretely: a `TraceRecorder` entered AROUND a
   `run_isolated(...)` call is invisible to `current_recorder()` INSIDE the coroutine it runs, so any
   `record_tool_call`/`intercept_sub_lm` activity a delegated child triggers would go silently
   unrecorded. Any contextvar-scoped state needed inside the isolated call, notably a delegated
@@ -292,8 +298,9 @@ reason is in the rule.
   `dspy.lm15.Response` (one `.message`, a frozen dataclass), so `_lm_response_cls` resolves the
   class dspy's own `isinstance` names, the rebuild probes the container off the OBJECT rather than
   assuming either layout, and `_copy_with` probes the copy-with-changes protocol instead of calling
-  `model_copy`. Three rules the shim encodes: a shape it does NOT recognise is returned UNTOUCHED
-  so dspy raises its own error (rebuilding it as `[""]` converts a loud failure into a silent empty
+  `model_copy`. Three rules this path encodes: a shape the shim does not recognise is returned
+  UNTOUCHED by its caller (`sub_lm.py`, not the shim, which ends `return [text]`) so dspy raises its
+  own error (rebuilding it as `[""]` converts a loud failure into a silent empty
   completion that reaches the planner and the RL data); substituting text drops the response's
   LATER text parts because its `.text` JOINS them (with `""` on 3.3, `"\n"` on 3.4, so a test must
   not assert the separator); and a text part is discriminated on its `type` tag, NEVER on
@@ -329,8 +336,9 @@ reason is in the rule.
   bullet, and a genuine break is still a `v2` with a migration.
 - **rlm-harness produces TRAJECTORIES, never reward.** The kit runs the RLM, records the trace, and
   turns traces into datasets (`export_sft_turns` / `export_rl` / `export_actions`). It does NOT
-  score them: every exporter carries a `reward=` HOOK the downstream trainer fills, and passes
-  `reward=None` itself. Reward composition, credit assignment, and GRPO/SFT are a SEPARATE
+  score them: `export_rl` and `export_actions` carry a `reward=` HOOK the downstream trainer fills
+  and pass `reward=None` themselves, and `export_sft_turns` has no such parameter at all, which is
+  the stronger version of the same property rather than a gap in it. Reward composition, credit assignment, and GRPO/SFT are a SEPARATE
   fine-tuning project: rlm-harness + its consumer are the ROLLOUT stage only. Emit raw labels/metrics;
   let the trainer score. (A prompt/policy convention that improves rollout QUALITY is in scope:
   better rollouts ≠ reward.)

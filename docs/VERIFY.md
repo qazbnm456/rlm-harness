@@ -1,7 +1,7 @@
 # Verifying a change to rlm-harness
 
 Read this before pushing, and whenever a change leans on stdlib, platform, or dspy behaviour.
-The short form lives in `AGENTS.md`; this file is the six CI axes and what each one can and
+The short form lives in `AGENTS.md`; this file is the CI axes and what each one can and
 cannot see.
 
 ## Verify
@@ -28,7 +28,8 @@ cannot see.
   suite with `--python 3.11`. The matrix FLOOR is where a "the stdlib does X" assumption breaks
   first. Then pin the lesson in a test that fails on EVERY version (a stub whose accessor raises
   the way the old stdlib does), never one that only reproduces on 3.11.
-- **The OS axis a local run cannot see at all.** CI is Linux; macOS is not. `run_in_subprocess`'s
+- **The OS axis a local run cannot see at all.** CI is Linux except for the two legs named below, a
+  Windows one and a macOS one; a local run sees neither. `run_in_subprocess`'s
   `max_memory_mb` (`RLIMIT_AS`) genuinely enforces on Linux and is refused outright by the macOS
   kernel, so its edge cases are Linux-only by nature and the relay-starvation one was found by a
   red CI run, not by local testing or by an independent review (CHANGELOG 1.3.0). When the
@@ -37,11 +38,20 @@ cannot see.
 - **`ci.yml`'s `test-windows` job is the THIRD platform, and it exists because
   `pyproject.toml` declares `Operating System :: OS Independent`.** That claim went unchecked from
   1.0.0 until the job landed, and its first run answered the question it was added to ask: 12
-  failures, 1045 passes, and every failure was a POSIX assumption in a TEST rather than a defect in
-  the library. Windows has no POSIX mode bits, `os.kill(pid, 0)` is not an existence probe there
-  (`os.kill` maps to `TerminateProcess`, so signal 0 raises `WinError 87` whichever way the answer
-  should have gone), a backslash is a path separator so a "literal `pkg\util.py`" check contradicts
-  its own neighbour, and a daemon that answers `docker info` can still refuse every Linux image.
+  failures, 1045 passes, and every one of the twelve was a POSIX assumption in a TEST rather than a
+  defect in the library. **The axis still produced two library fixes**, found while writing the job
+  rather than by running it: `atomic_write_text` translated newlines on Windows, and the first
+  attempt to fix its descriptor leak was worse than the leak. Windows has no POSIX mode bits; a backslash is a path separator, so a "literal
+  `pkg\util.py`" check contradicts its own neighbour; a daemon that answers `docker info` can still
+  refuse every Linux image; and `os.kill(pid, 0)` is not an existence probe there. **That last one is
+  worth stating by mechanism, because the obvious mechanism is wrong and the wrong one implies the
+  opposite behaviour.** `signal.CTRL_C_EVENT` IS 0, and CPython's Windows `os.kill` branches on
+  `sig == CTRL_C_EVENT || sig == CTRL_BREAK_EVENT` FIRST (`Modules/posixmodule.c`), calling
+  `GenerateConsoleCtrlEvent(sig, pid)` whose second parameter is a process-GROUP id, not a pid, hence
+  `ERROR_INVALID_PARAMETER (87)`. `TerminateProcess` is the fallback for a signal OUTSIDE that set, so
+  it is never reached here, and `TerminateProcess(handle, 0)` would have SUCCEEDED and killed the
+  child, making the old test pass by destroying its subject. The list above is the classes, not all
+  twelve failures.
   **Two lessons worth more than the fixes.** A platform difference exposes a test that was weaker
   than its own docstring: `test_non_ascii_still_reaches_the_file_raw` documented a raw-BYTE check
   and asserted on `read_text()`, which decodes with the platform's preferred encoding and therefore
@@ -69,7 +79,7 @@ cannot see.
   model (CHANGELOG 1.5.0). `ci.yml` additionally carries a PINNED 2.x leg, so a major that is
   already published stays covered on every PR without an upstream release being able to redden one.
   Both jobs live in that separate workflow, on a weekly cron + `workflow_dispatch` +
-  push-to-main, never on a PR (an upstream break is not a contributor's problem). It exists because the two jobs above
+  push-to-main, never on a PR (an upstream break is not a contributor's problem). It exists because the jobs above
   resolve dspy from `uv.lock`, so they test a version nobody installing from PyPI necessarily gets:
   dspy 3.3.0 renamed three things at once and the whole suite stayed green while the kit was
   completely unrunnable on a fresh install: one break loud, two silent (CHANGELOG 1.0.1). It
@@ -81,12 +91,13 @@ cannot see.
   But do NOT read green as "a fresh install works": the overlay upgrades ONLY dspy (plus whatever
   transitive it forces), so everything else stays locked and a break from, say, the newest
   `pydantic` is invisible to it. Reproduce locally with
-  `uv run --group dev --extra mcp --extra grep --with "dspy==<newest>" python -m pytest -q`. It leaves
+  `uv run --group dev --extra mcp --extra grep --extra gitignore --with "dspy==<newest>" python -m pytest -q`. It leaves
   `uv.lock` untouched.
 - **`.github/workflows/install-check.yml` is the only job that touches the PUBLISHED artifact, and
   the only one that runs on macOS.** Every other job in this repo: `ci.yml`'s `test`, `mcp-major`,
   `packaging` and `lint`, both jobs in `dspy-latest.yml`, and `release.yml`'s `build` and `publish`,
-  is `ubuntu-latest`, and every one that builds anything builds it from this tree (`publish` is
+  is `ubuntu-latest`, as is everything except `ci.yml`'s own `test-windows`, and every one that
+  builds anything builds it from this tree (`publish` is
   the exception that proves it: it has no checkout because it uploads what `build` handed it). So two axes had no reader: what PyPI actually
   serves, and a break that is green on Linux and red on macOS. That second direction is not
   symmetric with the `RLIMIT_AS` case ABOVE: that one is Linux-only behaviour a Linux CI caught,

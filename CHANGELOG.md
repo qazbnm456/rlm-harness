@@ -17,12 +17,31 @@ All notable changes to `rlm-harness`. Format loosely follows
   an environment problem with a one-line fix reads as the harness going in circles. The cause now goes
   through the existing public `short_error`, so this path cannot flood a terminal either.
 - **`atomic_write_text` translated newlines on Windows, and leaked `mkstemp`'s descriptor when
-  `os.fdopen` raised.** Without `newline=""` the text layer rewrites every `\n` as `\r\n` there, so a
-  tool whose contract is "write this content" did not, `atomic_write_stream` ten lines below opens
-  `"wb"` and disagreed with its own sibling on the same platform, and `max_bytes` measured a length the
-  file never received. A no-op on POSIX, which is why it survived; pinned on BYTES, since a text
-  read-back translates the bug away and passes either way. Separately, `os.fdopen` takes ownership of
-  the fd only once it succeeds, so nothing closed it on the raising path.
+  a bad `encoding` substituted a bookkeeping error for the caller's own.** Without `newline=""` the
+  text layer rewrites every `\n` as `\r\n` on Windows, so a tool whose contract is "write this
+  content" did not, and `atomic_write_stream` ten lines below opens `"wb"` and disagreed with its own
+  sibling on the same platform. A no-op on POSIX, which is why it survived; pinned on BYTES, since a
+  text read-back translates the bug away and passes either way.
+
+  The second half is a fix for this release's own first attempt at it. `os.fdopen` takes ownership of
+  `mkstemp`'s descriptor only once it succeeds, so an `except BaseException: os.close(fd)` looked like
+  the obvious repair. **CPython's `io.open` already closes the fd on most failure paths**, so that
+  close was a DOUBLE close raising `OSError: [Errno 9]` over the real error and demoting it to
+  `__context__`, and in a process with other threads it could close a descriptor one of them had since
+  been handed at the same number. Reachable from the public surface, since `make_write_file_tool` and
+  `make_edit_file_tool` pass a caller's `encoding` straight through. `codecs.lookup(encoding)` before
+  `mkstemp` removes the failure instead of handling it: the caller now gets their own `LookupError`,
+  with no descriptor and no temp file ever created.
+
+- **`resolve_within_root` RAISED instead of refusing for a path with no shared anchor.**
+  `os.path.commonpath` does not answer when two paths share no anchor, it raises, and on Windows
+  `ntpath.commonpath(["C:\\root", "D:\\evil"])` is `ValueError: Paths don't have the same drive`.
+  `os.path.join` lets an absolute candidate replace the root outright, so a `"D:/evil"` argument
+  reaches it. Every caller treats only `None` as the refusal, and `make_write_file_tool` /
+  `make_edit_file_tool` promise their tool returns a string "(never raises)" for a path that escapes
+  the root, so on Windows the tool raised out of the REPL for an input the guard exists to reject
+  calmly. A path on another drive is definitionally outside the root, so it is a refusal now.
+  Pre-existing and POSIX-invisible; surfaced by adding the Windows axis rather than by running it.
 
 ### Added
 
@@ -63,16 +82,48 @@ All notable changes to `rlm-harness`. Format loosely follows
   partial names, not the moved filename.** Two deliberate non-edits: the `CLAUDE.md` in
   `claude_agent_lm.py`'s `setting_sources=[]` comment means the END USER's own file, and this file's own
   mentions record a file that had that name at the time.
-- **This file is no longer a running account.** Every entry was rewritten to carry the settled facts,
-  the measurements, and the one reason that makes each non-obvious, and to drop investigation narration,
-  process steps and design deliberation. 3,201 lines became about 1,600 with no claim and no number
-  removed. The durable rules those entries used to re-teach live in `docs/INVARIANTS.md`, which is
-  where a reader is sent instead.
+- **This file is no longer a running account.** Every entry across all 28 releases was rewritten to
+  carry the settled facts, the measurements, and the one reason that makes each non-obvious, and to drop
+  investigation narration, process steps and design deliberation. 3,174 lines became about 1,700. The
+  durable rules those entries used to re-teach live in `docs/INVARIANTS.md`, which is where a reader is
+  sent instead.
+
+  **An independent review then found the first pass had overclaimed itself.** It said "no claim and no
+  number removed", and that was false on nine counts: a dangling reference where 1.2.1 cites what
+  "1.2.0 left open" after the referent was deleted, two consumer-actionable warnings (that the pre-1.6.0
+  corpus cannot be split by kit version at all, and that neither 1.5.0 floor breaks a consumer because
+  nothing pins dspy or mcp directly), two verification runs, and the per-release version matrices that
+  recorded which dspy, Python and mcp versions each release was actually verified against. All are
+  restored above. **A subtractive rewrite cannot audit itself**: the same pass that decides a sentence
+  is narration is the one that would have to notice another entry quotes it, and it reads both with the
+  same eye. Two of the three greps used to check this file also gave confident wrong answers, because
+  re-wrapping moves a quoted phrase across a line boundary: check it whitespace-insensitively, and read
+  cross-references per entry rather than by pattern.
 - **The README leads with the portable Deno install.** `brew install deno` was first and
   `pip install "dspy[deno]"` was the alternative, so a Windows or Linux reader met a package manager
   they may not have before the path that works everywhere. It also now states what makes a missing Deno
   confusing rather than merely inconvenient: it starts LAZILY on the sandbox's first turn, so it fails
   at neither import nor `configure()`.
+
+### Documented
+
+- **Four invariants described mechanisms that dspy 3.4.0 changed, while the rules they carry still
+  bind.** Corrected because a reader who checks a stated mechanism, finds it false, and concludes the
+  rule is obsolete is the failure mode a stale justification actually causes. An `async def` tool no
+  longer hands the model an un-awaited `"<coroutine object …>"`: 3.4.0's `invoke_tool` appends
+  `_await_in_sync`, which calls `run_until_complete` on the loop `RLMTask.arun` is already running,
+  so it raises `RuntimeError` instead. Loud rather than silent, and still a broken tool. dspy's
+  `llm_query_batched` submits with `contextvars.copy_context().run`, so its workers DO inherit the
+  caller's context, which makes `run_isolated`'s bare thread a CONTRAST rather than the analogue the
+  note claimed. The untouched-return-on-unrecognised-shape rule lives in `sub_lm.py`, not in the
+  shim, which ends `return [text]`. And `export_sft_turns` has no `reward=` parameter at all, which
+  is a stronger version of the reward-free property than "every exporter carries the hook", not a gap
+  in it.
+- **`AGENTS.md` under-counted the CI axes and left two invariants without a resident trigger.** The
+  count is ten jobs across four workflows. The two measurement invariants fire when you are READING a
+  corpus rather than editing a file, so "before editing anything under `rlm_harness/`" never reaches
+  them; they have their own moment now. The "paste the output" half of the verify rule moved into the
+  root too, since it applies to every done claim rather than only to a stdlib or platform change.
 
 ### Known, not fixed here
 
@@ -1023,7 +1074,9 @@ that **this kit cannot be measured from its own traces**:
   attribution had to infer durations from inter-event gaps, which charges a whole turn's model
   generation to that turn's first tool call. **Every number produced against this corpus before 1.6.0
   had that error.**
-- No trace said which kit wrote it. `schema` is the FORMAT version.
+- No trace said which kit wrote it. `schema` is the FORMAT version. **Most of the corpus predates
+  the fleet's move to a released version and there is no way to tell which parts**, so anyone
+  re-analysing it cannot split it by kit version at all.
 
 ### Added
 
@@ -1086,6 +1139,10 @@ anyio does not unwrap a single child exception, so `SandboxCancelled` arrives as
 One new public name and two corrected dependency floors. **The headline is a correctness fix, not a
 feature**: on the MCP SDK major a fresh install resolves today, a FAILED MCP tool call was reported to
 the model, and recorded in the trace, as a SUCCESS. `trace/v1` is untouched.
+
+Both floors move, `dspy>=3.3.1` (was `>=3.3.0`) and `mcp>=1.8.1` (was `>=1.0`). **Neither is a
+breaking change for a consumer: nothing pins dspy or mcp directly.** Verified on Python 3.11 and
+3.13, and on mcp 1.8.1 (the declared floor), 1.28.0 (the lock) and 2.1.1 (the newest).
 
 ### Fixed
 
@@ -1418,6 +1475,14 @@ silent. **Do not collapse a shim into its call site just because it currently ha
   `_build_rlm()` or injected a `ScriptedInterpreter`, which overrides the string path. Now implements the
   full surface, with a regression test driving a real forward pass through the STRING `mock` path.
 
+Verified on **both dspy 3.2.1 and 3.3.0**, which is the pair this release exists to stop bridging.
+
+**Still open, not in this release: fast-failing non-retryable LM errors.** The floor bump makes the
+shim writable (`isinstance(exc, dspy.LMError) and not dspy.is_retryable_lm_error(exc)`), but the
+residual set is contested: `ContextWindowExceededError` should probably still retry here, because
+`run_with_retry` re-runs the whole trajectory and may produce a shorter context that fits. 1.2.1
+resolves it.
+
 ## [1.1.0] - 2026-08-07
 
 Additive on the API surface: nothing removed, renamed or re-typed, and `rlm-harness/trace/v1` is
@@ -1497,6 +1562,8 @@ resolves the output type off the call stack and raises `Unknown name` for a dyna
   install, because a bare `--with dspy` silently resolves back to the locked version and the job would
   be decorative.
 
+Verified on **both dspy 3.2.1 and 3.3.0**.
+
 ## [1.0.2] - 2026-08-06
 
 **Four shipped tool-naming defects.** dspy validates a tool's NAME when `RLM(...)` is constructed: it
@@ -1545,6 +1612,8 @@ Added:
   server's whole tool list at run time, which never enters the trace. Read it as
   `payload.get("repl_name") or payload["tool"]`.
 
+Verified on **both dspy 3.2.1 and 3.3.0**.
+
 ## [1.0.1] - 2026-08-06
 
 **Compatibility fix: the kit did not run at all on `dspy` 3.3.0.** No public surface change, no
@@ -1579,7 +1648,8 @@ since from 3.3.0 `CodeInterpreter` is a `@runtime_checkable` Protocol checked be
 
 `tests/test_dspy_compat.py` (new) asserts the shim's contract against whichever dspy is installed, so the
 next rename lands as a red test here rather than in a consumer's rollout, and
-`tests/test_integration_dspy.py` stopped asserting on dspy internals.
+`tests/test_integration_dspy.py` stopped asserting on dspy internals. Verified on **both dspy 3.2.1
+and 3.3.0**.
 
 ## [1.0.0] - 2026-08-04
 
@@ -1621,7 +1691,9 @@ decisions that are not readable off the API are spelled out here.
 - **The harness core.** `RLMTask` as a declaration (`signature`, `output_field`, `output_model`,
   `instructions`, `tools`) with retry, validation, sandbox selection, budget caps and observability
   inherited. `configure(cfg, main_lm=…, sub_lm=…)` plus `get_config` / `get_sub_lm` as the public
-  injection seam and accessors.
+  injection seam and accessors. The 8192 `max_tokens` default is a measured floor rather than a guess:
+  16 calls at a 16384 cap produced 0 empty completions and 0 length-truncations, against an empty one
+  at a 1000 cap.
 - **The sandbox.** The default `pyodide`/`deno` interpreter, the refused `local` one, and an opt-in
   `interpreter="container"` that runs the REPL inside an isolated Docker container so model code can
   spawn subprocesses. A per-turn execution budget and a real cancellation seam, whose two outcomes
@@ -1640,7 +1712,9 @@ decisions that are not readable off the API are spelled out here.
   behind an SSRF guard that includes the resolved-IP check `resolved_host_is_safe` for the direct-fetch
   pattern, `make_command_tool` over a consumer-supplied isolated runner, `make_json_schema_validator`,
   and `ModelToolResult.cause` / `.validator_ran`, because `ok=False` has three causes and they needed
-  names.
+  names. What made that concrete: `rejections` counted every `ok is False` while `circuit_breaks`
+  counted the breaks separately, and a break carries `ok=False` too, so one real trace reported
+  `calls=3, breaks=7, rejections=10`.
 - **Knowledge, not execution.** `load_skills_as_tools` over the Agent-Skills convention, progressive
   disclosure via `list_skills` → `read_skill`, which returns markdown TEXT and never runs a bundled
   script. `read_skill` records a content `preview`.

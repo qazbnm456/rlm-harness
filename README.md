@@ -70,8 +70,8 @@ install Deno yourself there). A system-wide Deno also works: `brew install deno`
 [deno.com/install](https://docs.deno.com/runtime/getting_started/installation/) for every platform.
 
 Deno is started LAZILY, on the sandbox's first turn, so a missing one does not fail at import or at
-`configure()`: it surfaces on the first live run. dspy's error names the fix, and since 1.14.1 the
-kit keeps that text in `RLMTaskError`'s own message instead of only on `__cause__`.
+`configure()`: it surfaces on the first live run. dspy's error names the fix, and the kit
+keeps that text in `RLMTaskError`'s own message rather than only on `__cause__`.
 
 ## What's in the box
 

@@ -63,7 +63,9 @@ jobs:
     #
     # ONE interpreter, not three. A Windows break is OS-shaped, not version-shaped: it is a path
     # separator, a signal that does not exist, or a file lock, none of which differ across 3.11 to
-    # 3.13. Three rows would triple the cost for a repeat of the same answer. 3.12 because it is
+    # 3.13. (Not a claim that this repo has no version-shaped stdlib drift: `ZipInfo.is_dir()` moved
+    # between 3.11 and 3.12, which CHANGELOG 1.3.0 records. That axis is the matrix above; this job is
+    # the platform one.) Three rows would triple the cost for a repeat of the same answer. 3.12 because it is
     # the project's default interpreter; `docs/VERIFY.md` explains why the 3.11 FLOOR is the one
     # worth repeating by hand, and that reasoning is about stdlib drift on the axis already
     # covered above.

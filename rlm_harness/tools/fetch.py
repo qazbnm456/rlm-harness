@@ -142,9 +142,11 @@ Fetcher = Callable[[str], str]
 def make_fetch_tool(fetcher: Fetcher) -> Callable[[str], str]:
     """Wrap ``fetcher`` with the SSRF guard, returning a SYNC tool for dspy.RLM.
 
-    SYNC because dspy.RLM's interpreter invokes tools synchronously (no await); an
-    ``async def`` tool there returns an un-awaited coroutine the model never sees the
-    result of, so ``fetcher`` must be sync too.
+    SYNC because dspy.RLM's interpreter invokes tools with a plain call. On dspy 3.4.0 a
+    coroutine return is then handed to ``_await_in_sync``, which calls ``run_until_complete`` on
+    the loop ``RLMTask.arun`` is already running, so an ``async def`` tool raises
+    ``RuntimeError: This event loop is already running`` (before 3.4.0 it silently returned an
+    un-awaited coroutine instead). Broken either way, so ``fetcher`` must be sync too.
 
     The wrapper rejects unsafe URLs before the fetcher ever runs, and turns a fetcher
     error into a short string too (rather than raising), so the RLM can react to either

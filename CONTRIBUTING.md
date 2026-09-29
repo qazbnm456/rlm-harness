@@ -21,8 +21,9 @@ and `list_candidate_paths`'s `.gitignore` parsing untested.
 
 The dspy-bearing tests use a `DummyLM` or skip when dspy is absent, so the suite
 runs anywhere. A *live* `dspy.RLM` run additionally needs model credentials and a
-Deno sandbox (`brew install deno`; dspy 3.4.0 requires Deno `>=2.4.5,<3.0.0`): only `examples/`
-exercise that.
+Deno sandbox: only `examples/` exercise that. dspy's runtime gate is Deno `>=2.0.0,<3.0.0`, so
+`brew install deno` satisfies it; `pip install "dspy[deno]"` uses dspy's managed binary, whose own
+pin is the narrower `>=2.4.5,<3.0.0`. See `docs/VERIFY.md` for why those are two different bounds.
 
 **Enable the commit hooks in your clone:** `git config core.hooksPath .githooks`. They refuse a
 commit that would publish a private downstream project's name, reading a denylist from

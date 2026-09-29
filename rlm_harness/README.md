@@ -1117,8 +1117,9 @@ RL export together. Six steps:
    searcher)? rlm-harness owns the GENERIC base + the syntactic guard + the async-safe factory
    (`make_model_tool`, `make_fetch_tool`, `make_web_search_tool`); the consumer owns the PROVIDER
    (the endpoint/validator/messages, or the httpx/vendor call) and the project-side TRACING. Tools
-   passed to `RLMTask(tools=…)` MUST be sync: dspy's interpreter calls them with a plain `()`, so
-   an `async def` tool returns an un-awaited coroutine and never runs.
+   passed to `RLMTask(tools=…)` MUST be sync: dspy's interpreter calls them with a plain `()`, and
+   on dspy 3.4.0 an `async def` tool then raises `RuntimeError: This event loop is already running`
+   (it silently returned an un-awaited coroutine before 3.4.0).
 3. **Pick the recursion seat deliberately.** A DETERMINISTIC transform of the sub-LM's output →
    `intercept_sub_lm` (the escalation seat, recorded as a `sub_call`). An action the main LM CHOOSES
    to take → a tool (`tools=`, recorded as a `tool_call`). Don't smuggle a model-judgement (asking
@@ -1878,7 +1879,7 @@ RLMTaskError: Failed to produce a valid '<field>' after N attempts:
     AdapterParseError: ... failed to parse the LM response
 ```
 
-Since 1.14.1 the cause is in that message rather than only on `__cause__`, so a consumer that
+The cause is in that message rather than only on `__cause__`, so a consumer that
 catches `RLMTaskError` and prints `str(e)` shows it too. `error_chain` in the trace is unchanged and
 still carries the full chain.
 
