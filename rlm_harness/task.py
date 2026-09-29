@@ -297,10 +297,15 @@ class RLMTask:
         instructions = self.instructions or None
         if self.output_model is not None:
             sig_kwargs["custom_types"] = {self.output_model.__name__: self.output_model}
-            # dspy silently drops custom_types when instructions is None (it
-            # re-parses the signature via Signature(sig, "") without them). Pass an
-            # empty string instead of None so the explicit binding survives even for
-            # a task that declared no instructions.
+            # Historically dspy dropped custom_types when instructions was None, re-parsing the
+            # signature without them, so this passed "" instead. **That premise is dead on dspy
+            # 3.4.0 and the line is kept only because it costs nothing.** Measured with a valid
+            # control, a type created in one function and passed to another so no frame holds its
+            # NAME: without custom_types both None and "" raise `ValueError: Unknown name`, and with
+            # custom_types both resolve. Getting that control right is the whole experiment, since a
+            # type reachable by dspy's `sys._getframe` fallback makes the control PASS and proves
+            # nothing. The invariant this protects, that a dynamic output type must not rely on
+            # call-stack resolution, is unchanged and is exactly what the failing control shows.
             if instructions is None:
                 instructions = ""
         signature = dspy.Signature(

@@ -1,8 +1,15 @@
 """``make_extract_archive_tool``: safe zip/tar extraction into a bounded local directory.
 
-Python's ``zipfile.extractall()``/``tarfile.extractall()`` are not safe by default: a malicious
-archive entry can carry an absolute path, a ``..``-traversal path, or (tar) a symlink/hardlink
-pointing outside the extraction target: "zip slip," a well-known vulnerability class. A task
+The stdlib extractors do not give the guarantee this tool needs, but **not in the way this
+docstring used to claim, and the correction matters because the old version named zip as the
+example it is least true of.** Measured: ``zipfile.extractall()`` SANITISES both an absolute path
+and a ``..`` traversal (entries ``../evil`` and ``/abs_evil`` both land inside the destination) and
+never creates symlinks, on every supported version. ``tarfile.extractall()`` is the one that
+escapes, on 3.11 and 3.13, and stops doing so on 3.14, whose default ``data`` filter raises
+``OutsideDestinationError``, which is inside dspy's own ``>=3.10,<3.15``. So the stdlib's behaviour
+here is format-dependent AND version-dependent, and that is the reason to own the check rather than
+inherit it: this tool refuses by its own containment on every format and every version, which is a
+promise the stdlib does not make. A task
 that fetches an archive (``fetch_url`` + ``write_file``, or the model is simply handed one) and
 wants to unpack it needs a safe way to do so. This mirrors ``resolve_within_root``'s exact
 reasoning, applied to archive ENTRIES rather than a single path argument.

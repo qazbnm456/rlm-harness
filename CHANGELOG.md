@@ -200,13 +200,55 @@ All notable changes to `rlm-harness`. Format loosely follows
   `ca29731`, which named three Deno sites and fixed two. A finding without a sibling sweep is half a
   finding, in either direction: the reporter owes the sweep as much as the fixer does.
 
+- **`task.py`'s `custom_types` workaround has a dead premise.** It said dspy "silently drops
+  `custom_types` when `instructions is None`". It does not, on 3.4.0: measured, without
+  `custom_types` both `None` and `""` raise `ValueError: Unknown name`, and with it both resolve.
+  The line stays because it costs nothing; the comment no longer asserts the mechanism.
+
+  **Getting the CONTROL right is the whole experiment, and it took three attempts.** dspy falls back
+  to walking the call stack with `sys._getframe`, so a type reachable by NAME from any frame makes
+  the control PASS, which proves nothing. Binding it at module level fails that way; so does creating
+  it inside the function that calls `dspy.Signature`, because that frame holds the name too. Only a
+  type minted in one function and passed to another under a different name is genuinely unreachable.
+  A passing control is the signature of this mistake, and the invariant about not relying on
+  call-stack resolution is exactly what the failing control demonstrates.
+- **`make_extract_archive_tool`'s standing justification named zip as the example it is least true
+  of.** "`zipfile.extractall()`/`tarfile.extractall()` are not safe by default: a malicious entry can
+  carry an absolute path, a `..`-traversal path" is wrong for zip on every supported version:
+  measured, entries `../evil` and `/abs_evil` both land INSIDE the destination, and zipfile never
+  creates symlinks. `tarfile` does escape, on 3.11 and 3.13, and stops on 3.14, whose default `data`
+  filter raises `OutsideDestinationError`, which is inside dspy's own `>=3.10,<3.15`.
+
+  So the stdlib's behaviour is format-dependent AND version-dependent, which is a better argument
+  for owning the check than the one it replaces: this tool refuses by its own containment on every
+  format and every version, a promise the stdlib does not make. No security defect: the code always
+  did its own `resolve_within_root` containment and is unchanged.
+
+  Worth recording how this was found. The claim also sits in a dated 1.3.0 entry, and the instinct
+  was to leave that alone, correctly, since this project's convention is to retract in the CURRENT
+  entry rather than edit a historical one. **Sweeping first moved the finding off the historical
+  entry and onto two LIVE ones**, which is where it mattered. Two further claims measured wrong in
+  the same pass, PyPI's refusal of `rlm-kit` attributed to PEP 503 normalisation when
+  `canonicalize_name` leaves the two names distinct, and litellm described as chaining with `from`
+  when it chains through `__context__` only, have no live site at all and are left standing as the
+  record of what was believed.
+
 ### Known, not fixed here
 
 - **The edit tool's READ side still translates newlines** (`tools/edit.py:200` opens without
   `newline=""`). Unlike the write side this is a judgement, not a bug: with translation a model's `\n`
   search string matches a CRLF file but the edit rewrites every line ending in it; without it the file
   is preserved and the search misses.
-- **Two pre-existing test flakes, both outside 1.14.0's diff, both worth one issue.**
+- **A THIRD flake, observed once and previously unrecorded**:
+  `tests/test_mcp.py::test_mcp_catalog_lazy_is_per_transport`, a `TimeoutError`. It spawns a stdio
+  MCP subprocess under `McpCatalog(..., timeout=5)`, the tightest budget in that file, and it failed
+  in the slowest full-suite run recorded during this work (196.7s against a normal 80-116s) while
+  passing 5 of 5 in isolation. **Not reachable from this range's diff**: `rlm_harness/mcp.py` is not
+  in it at all, and the only change to `tests/test_mcp.py` is a `_process_is_alive` helper used by a
+  different test. Recorded rather than left for the next person to rediscover, because this review
+  spent real effort twice on flakes whose written characterisation was wrong, and an unrecorded one
+  costs strictly more than a wrongly-described one. One observation is not a rate.
+- **Two further pre-existing test flakes, both outside 1.14.0's diff, both worth one issue.**
   `tests/test_isolation.py::test_sigterm_ignoring_factory_escalates_to_sigkill` is not a slow-host
   timing flake: it reproduced 8 times in 10 on a loaded machine against a LOWER-bound assertion
   (`assert 1.5 < elapsed`), observed failing at 1.10s. A fast failure means the child died on

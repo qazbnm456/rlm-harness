@@ -616,11 +616,16 @@ finding = MyTask(tools=[read_file, grep_files, write_file, edit_file]).run(...)
 
 ## Extracting archives safely (`tools/archive.py`)
 
-`make_extract_archive_tool(root)`: a safe `zip`/tar extraction tool. `zipfile.extractall()`/
-`tarfile.extractall()` are not safe by default: a malicious entry can carry an absolute path, a
-`..`-traversal path, or (tar) a symlink/hardlink pointing outside the extraction target ("zip
-slip"): the same `resolve_within_root` reasoning `read_file`/`write_file` already apply to a
-single path argument, generalized here to every entry of an archive.
+`make_extract_archive_tool(root)`: a safe `zip`/tar extraction tool, applying the same
+`resolve_within_root` reasoning `read_file`/`write_file` use for a single path argument to every
+entry of an archive.
+
+**The stdlib's own behaviour here is both format- and version-dependent, which is the reason to own
+the check rather than inherit it.** Measured: `zipfile.extractall()` sanitises an absolute path and
+a `..` traversal and never creates symlinks, on every supported version, so the classic "zip slip"
+framing is the case it is least true of. `tarfile.extractall()` does escape on 3.11 and 3.13, and
+stops on 3.14, whose default `data` filter raises `OutsideDestinationError`. This tool refuses by
+its own containment regardless of format or version, which is a promise the stdlib does not make.
 
 ```python
 from rlm_harness.tools import make_extract_archive_tool
