@@ -51,22 +51,70 @@ def test_atomic_write_text_overwrites_atomically(tmp_path):
 
 
 def test_atomic_write_text_leaves_no_partial_or_temp_file_on_failure(tmp_path, monkeypatch):
+    """A failure mid-write leaves neither a partial destination nor a temp file.
+
+    The raise happens INSIDE the `with`, which is where a real one happens, so the handle is closed
+    by the time the cleanup runs. That matters on Windows, where an open file cannot be deleted: the
+    earlier version of this test raised from a patched `os.fdopen` AFTER the real one had adopted the
+    fd, leaving a live handle no `with` would ever close, and then asserted the temp file was gone.
+
+    **It passed on Windows only because of a defect.** `atomic_write_text` briefly carried an
+    `except BaseException: os.close(fd)` around `os.fdopen`, which closed the handle this test had
+    leaked and so let the cleanup delete the file. That close was a double close on every path where
+    `io.open` had already closed the fd itself, and removing it turned this test's hollow green red on
+    the Windows axis. Modelling the real shape fixes it on both platforms instead of skipping one.
+    """
     path = str(tmp_path / "out.txt")
 
     real_fdopen = os.fdopen
 
-    def boom(fd, *a, **kw):
-        fh = real_fdopen(fd, *a, **kw)
-        fh.write("partial")
-        raise RuntimeError("simulated failure mid-write")
+    class _FailsOnWrite:
+        def __init__(self, fh):
+            self._fh = fh
 
-    monkeypatch.setattr(os, "fdopen", boom)
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._fh.close()
+            return False
+
+        def write(self, text):
+            self._fh.write("partial")
+            raise RuntimeError("simulated failure mid-write")
+
+        def flush(self):
+            self._fh.flush()
+
+        def fileno(self):
+            return self._fh.fileno()
+
+    closed_before_cleanup = []
+    real_remove = os.remove
+
+    def watching_remove(p):
+        closed_before_cleanup.append(wrappers[-1]._fh.closed)
+        return real_remove(p)
+
+    wrappers = []
+
+    def fake_fdopen(fd, *a, **kw):
+        w = _FailsOnWrite(real_fdopen(fd, *a, **kw))
+        wrappers.append(w)
+        return w
+
+    monkeypatch.setattr(os, "fdopen", fake_fdopen)
+    monkeypatch.setattr(os, "remove", watching_remove)
     with pytest.raises(RuntimeError, match="simulated failure"):
         atomic_write_text(path, "should never land")
 
     assert not os.path.exists(path)
     leftovers = [f for f in os.listdir(tmp_path) if f.startswith(".tmp-")]
     assert leftovers == []
+    # The property the Windows axis actually depends on, asserted rather than assumed: the handle is
+    # already closed when the cleanup removes the file. On POSIX the removal succeeds either way, so
+    # without this the test would go on passing here while failing there.
+    assert closed_before_cleanup == [True]
 
 
 def test_atomic_write_text_replace_only_called_after_content_is_complete(tmp_path, monkeypatch):
