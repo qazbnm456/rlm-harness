@@ -1,7 +1,7 @@
 # Verifying a change to rlm-harness
 
 Read this before pushing, and whenever a change leans on stdlib, platform, or dspy behaviour.
-The short form lives in `AGENTS.md`; this file is the five CI axes and what each one can and
+The short form lives in `AGENTS.md`; this file is the six CI axes and what each one can and
 cannot see.
 
 ## Verify
@@ -34,6 +34,23 @@ cannot see.
   red CI run, not by local testing or by an independent review (CHANGELOG 1.3.0). When the
   PLATFORM is what differs, widen the TEST's accepted outcomes and disclose it; don't bend the
   production behavior toward whichever host you happen to be on.
+- **`ci.yml`'s `test-windows` job is the THIRD platform, and it exists because
+  `pyproject.toml` declares `Operating System :: OS Independent`.** That claim went unchecked from
+  1.0.0 until the job landed, and its first run answered the question it was added to ask: 12
+  failures, 1045 passes, and every failure was a POSIX assumption in a TEST rather than a defect in
+  the library. Windows has no POSIX mode bits, `os.kill(pid, 0)` is not an existence probe there
+  (`os.kill` maps to `TerminateProcess`, so signal 0 raises `WinError 87` whichever way the answer
+  should have gone), a backslash is a path separator so a "literal `pkg\util.py`" check contradicts
+  its own neighbour, and a daemon that answers `docker info` can still refuse every Linux image.
+  **Two lessons worth more than the fixes.** A platform difference exposes a test that was weaker
+  than its own docstring: `test_non_ascii_still_reaches_the_file_raw` documented a raw-BYTE check
+  and asserted on `read_text()`, which decodes with the platform's preferred encoding and therefore
+  could never have distinguished the UTF-8 file it pins from a locale-encoded one. And a diagnosis
+  built from an error CODE plus nearby source, rather than from the traceback, invented an
+  architecture problem that did not exist: `WinError 87` was read as asyncio refusing to spawn a
+  subprocess from `mcp.py`'s background-thread loop, concluding stdio MCP could not work on Windows
+  at all. The traceback said the child had already spawned and the raise was the test's own probe.
+  **Read the frame, not the code around the error.**
 - **`.github/workflows/ci.yml` also has a `packaging` job**: builds the wheel, installs it into a
   clean environment with NO lockfile, and runs a task from it. Every other job runs from the source
   tree via `uv run`, so a module missing from the wheel would ship silently. It is the PACKAGING

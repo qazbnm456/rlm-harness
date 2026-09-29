@@ -19,10 +19,10 @@ uv run --group dev --extra mcp --extra grep --extra gitignore python -m pytest -
 The extras are not optional. Without them the MCP, `regex`-timeout, and `.gitignore` tests skip
 instead of running, which is how a suite stays green while the thing it exists to prove is untested.
 
-That local run is one of CI's five axes and cannot see the other four. **Read
+That local run is one of CI's six axes and cannot see the other five. **Read
 [`docs/VERIFY.md`](docs/VERIFY.md) when a change leans on stdlib, platform, or dspy behaviour, or
-when you are about to release**: it covers the 3.11 floor, the Linux-only axis, packaging, the
-newest-dspy job, and what each one is blind to. Add `--python 3.11` yourself when a change touches
+when you are about to release**: it covers the 3.11 floor, the Linux-only axis, Windows,
+packaging, the newest-dspy job, and what each one is blind to. Add `--python 3.11` yourself when a change touches
 `zipfile`/`tarfile`, `resource`, `multiprocessing`, or `asyncio`.
 
 A *live* `dspy.RLM` run additionally needs model credentials and a Deno sandbox; `examples/` show

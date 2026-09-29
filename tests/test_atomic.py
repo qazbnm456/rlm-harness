@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import pathlib
 import stat
+import sys
 
 import pytest
 
@@ -84,6 +85,11 @@ def test_atomic_write_text_replace_only_called_after_content_is_complete(tmp_pat
     assert _read(path) == "complete-content"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX mode bits do not exist on Windows: `os.chmod` there toggles only the "
+    "read-only flag, so the mode this asserts is unrepresentable rather than unpreserved.",
+)
 def test_atomic_write_text_preserves_permission_bits_on_overwrite(tmp_path):
     # tempfile.mkstemp always creates its temp file at mode 0600 regardless of umask, and
     # os.replace does NOT carry the destination's mode across -- without the fix, overwriting an
@@ -114,6 +120,11 @@ def test_atomic_write_stream_creates_a_nested_directory(tmp_path):
     assert _read_bytes(path) == b"nested"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX mode bits do not exist on Windows: `os.chmod` there toggles only the "
+    "read-only flag, so the mode this asserts is unrepresentable rather than unpreserved.",
+)
 def test_atomic_write_stream_preserves_permission_bits_on_overwrite(tmp_path):
     # Same regression this fix already covers for atomic_write_text -- tempfile.mkstemp always
     # creates its temp file at mode 0600 regardless of umask, and os.replace does not carry the

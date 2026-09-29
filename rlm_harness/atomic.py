@@ -60,7 +60,15 @@ def atomic_write_text(path: str, text: str, *, encoding: str = "utf-8") -> None:
         # disagrees with its own sibling on the same platform, and `max_bytes` accounting would
         # measure a different length than the file gets. Found while adding `ci.yml`'s
         # `test-windows` job, which exists because `pyproject.toml` claims `OS Independent`.
-        with os.fdopen(fd, "w", encoding=encoding, newline="") as fh:
+        try:
+            fh = os.fdopen(fd, "w", encoding=encoding, newline="")
+        except BaseException:
+            # `os.fdopen` takes ownership of `fd` only once it SUCCEEDS. If it raises, nothing
+            # closes the descriptor `mkstemp` handed back: a plain leak on POSIX, and on Windows
+            # also an undeletable temp file, since the cleanup below cannot remove an open one.
+            os.close(fd)
+            raise
+        with fh:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())

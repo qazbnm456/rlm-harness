@@ -302,14 +302,21 @@ def _docker_daemon_available() -> bool:
     engine is stopped, so a which-only check lets this test run against a dead daemon and fail as
     though the interpreter were broken. Probe the daemon itself, with a timeout so a hung engine
     cannot stall the run. Called from inside the test, not at collection time, so the probe costs
-    nothing for the runs that never select it."""
+    nothing for the runs that never select it.
+
+    A reachable daemon is not enough: it must run LINUX containers. A Windows runner answers
+    `docker info` while refusing every Linux image with exit 125, which this test then reported as
+    the interpreter being broken rather than as the platform having no engine for it. The test body
+    asserts `platform.system() == "Linux"` inside the container, so the gate asks the daemon the
+    same question the assertion does."""
     if shutil.which("docker") is None:
         return False
     try:
-        return subprocess.run(["docker", "info"], check=False,
-                              capture_output=True, timeout=15).returncode == 0
+        probe = subprocess.run(["docker", "info", "--format", "{{.OSType}}"], check=False,
+                               capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.SubprocessError):
         return False
+    return probe.returncode == 0 and probe.stdout.strip() == "linux"
 
 
 def test_container_isolation_real_docker():

@@ -936,11 +936,17 @@ def test_non_ascii_still_reaches_the_file_raw(tmp_path, text):
     ever written into backslash-u escapes. Only the raw-byte check separates the two.
 
     Applies to non-ASCII only: JSON escapes newlines, quotes and backslashes by specification,
-    which is not what this is about."""
+    which is not what this is about.
+
+    Asserted on BYTES, which is what the paragraph above says and what this used to only claim.
+    `read_text()` decodes with the platform's preferred encoding, so on Windows it decoded a
+    correctly-written UTF-8 file with the locale codepage and the comparison failed for a reason
+    that has nothing to do with the encoder. It also could not have distinguished a UTF-8 file
+    from a locale-encoded one, which is the whole distinction being pinned."""
     p = tmp_path / "t.jsonl"
     with TraceRecorder(str(p), run_id="r") as rec:
         rec.record("main_step", {"turn": 1, "code": text})
-    assert text in p.read_text()
+    assert text.encode("utf-8") in p.read_bytes()
 
 
 def _fail_with(chain_depth, path, run_id="r"):

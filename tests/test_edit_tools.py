@@ -3,6 +3,7 @@ offline, dspy-free.
 """
 import os
 import stat
+import sys
 import types
 
 import pytest
@@ -50,6 +51,11 @@ def test_write_file_creates_a_not_yet_existing_nested_subdirectory(tmp_path):
     assert (tmp_path / "a" / "b" / "c" / "out.txt").read_text() == "nested"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX mode bits do not exist on Windows: `os.chmod` there toggles only the "
+    "read-only flag, so the mode this asserts is unrepresentable rather than unpreserved.",
+)
 def test_write_file_overwrite_preserves_permission_bits(tmp_path):
     path = tmp_path / "script.sh"
     path.write_text("#!/bin/sh\necho hi\n")
@@ -195,6 +201,11 @@ def test_edit_file_directory_path_is_an_error_string_not_a_raised_exception(tmp_
     assert "error" in result.lower()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX mode bits do not exist on Windows: `os.chmod` there toggles only the "
+    "read-only flag, so the mode this asserts is unrepresentable rather than unpreserved.",
+)
 def test_edit_file_preserves_permission_bits(tmp_path):
     # edit_file ALWAYS operates on a pre-existing file (unlike write_file, which can create a
     # brand-new one) -- making this arguably the more important of the two permission tests.

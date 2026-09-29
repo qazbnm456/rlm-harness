@@ -678,8 +678,42 @@ def test_mcp_catalog_lazy_wedged_http_connect_is_bounded_and_reaped():
                 conn.close()
 
 
-def test_mcp_connection_wedged_stdio_child_is_reaped(tmp_path):
+
+def _process_is_alive(pid: int) -> bool:
+    """Portable existence probe for a pid the test spawned.
+
+    `os.kill(pid, 0)` is the POSIX idiom and is NOT one on Windows: `os.kill` there maps to
+    `TerminateProcess` and signal 0 is not a valid parameter, so it raises `WinError 87`
+    whichever way the answer should have gone. This test used it and read the raise as "gone"
+    only because on POSIX the raise IS the answer.
+    """
     import os
+
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return False
+        return True
+
+    import ctypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    try:
+        # A handle can still open briefly after exit, so the exit code is the real answer.
+        code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return code.value == STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+def test_mcp_connection_wedged_stdio_child_is_reaped(tmp_path):
     import time
 
     # A stdio "server" that NEVER speaks MCP: record its pid, then sleep. start() times out on the
@@ -707,12 +741,10 @@ def test_mcp_connection_wedged_stdio_child_is_reaped(tmp_path):
     assert pid is not None, "the stdio child never spawned"
     reaped = False
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)          # 0 == existence probe; raises when the child is gone
-            time.sleep(0.1)
-        except (ProcessLookupError, PermissionError):
+        if not _process_is_alive(pid):
             reaped = True
             break
+        time.sleep(0.1)
     assert reaped, f"stdio child {pid} was not reaped by close()"
 
 

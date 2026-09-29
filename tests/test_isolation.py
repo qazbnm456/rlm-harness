@@ -7,6 +7,7 @@ child interpreter, the exact constraint the function under test itself documents
 import functools
 import os
 import signal
+import sys
 import time
 
 import pytest
@@ -107,6 +108,11 @@ def test_timeout_raises_and_the_process_is_actually_gone(monkeypatch):
     assert not proc.is_alive()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows has no catchable SIGTERM: `terminate()` maps to TerminateProcess, which the "
+    "child cannot ignore, so the escalation this test is named for can never be reached there.",
+)
 def test_sigterm_ignoring_factory_escalates_to_sigkill(monkeypatch):
     processes = []
     _patch_process_capture(monkeypatch, processes)

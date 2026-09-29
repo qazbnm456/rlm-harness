@@ -8,120 +8,93 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 ### Fixed
 
-- **`RLMTaskError`'s message now carries the cause, not only `__cause__`.** Two user reports, one
-  line. A missing Deno and a `claude-agent-sdk` CLI failing under a different uid both arrive at
-  `_retry.py`'s wrap site as an exception that already says exactly what to do: dspy writes "Deno
-  executable not found. Install DSPy's managed Deno runtime with: `pip install "dspy[deno]"`", and
-  the SDK's `ProcessError` folds the CLI's exit code AND its stderr into its own message. Both
-  diagnoses ended there, replaced by a sentence naming only the output field.
-
-  `__cause__` carried it and so did `run_end.payload.error_chain`, but neither is what a consumer
-  sees: a CLI that catches `RLMTaskError` and prints `str(e)` showed the user nothing actionable,
-  which is how an environment problem with a one-line fix reads as the harness going in circles.
-  The text goes through the existing public `short_error`, so a degenerate model's
-  `AdapterParseError` cannot flood a terminal through this path either. Nothing else moves: the
-  original exception is still chained, `error_chain` is unchanged, and the old sentence is kept as
-  the head rather than replaced.
-
-- **`atomic_write_text` translated newlines on Windows.** `os.fdopen(fd, "w")` without
-  `newline=""` rewrites every `\n` as `\r\n` there, so a tool whose contract is "write this
-  content" did not, `atomic_write_stream` ten lines below opens `"wb"` and therefore disagreed with
-  its own sibling on the same platform, and `max_bytes` accounting measured a different length than
-  the file received. A no-op on POSIX, which is why it survived. Pinned with a BYTE-level
-  assertion; reading the file back as text would translate the bug away and pass either way.
+- **`RLMTaskError`'s message carried none of the cause.** Two user reports resolved to one line. A
+  missing Deno and a `claude-agent-sdk` CLI failing under a different uid both arrive at
+  `_retry.py`'s wrap site as an exception that already says what to do: dspy names
+  `pip install "dspy[deno]"`, and the SDK's `ProcessError` folds in the CLI's exit code and stderr.
+  Wrapping replaced both with a sentence naming only the output field. `__cause__` and
+  `run_end.payload.error_chain` still carried it, but neither is what a consumer sees when its CLI
+  catches `RLMTaskError` and prints `str(e)`, which is how an environment problem with a one-line
+  fix reads as the harness going in circles. The cause now goes through the existing public
+  `short_error`, so this path cannot flood a terminal either; the old sentence is kept as the head.
+- **`atomic_write_text` leaked `mkstemp`'s descriptor when `os.fdopen` raised.** `os.fdopen` takes
+  ownership of the fd only once it succeeds, so nothing closed it on that path: a plain leak on
+  POSIX, and on Windows also an undeletable temp file, since the cleanup cannot remove an open one.
+- **`atomic_write_text` translated newlines on Windows.** `os.fdopen(fd, "w")` without `newline=""`
+  rewrites every `\n` as `\r\n` there, so a tool whose contract is "write this content" did not,
+  `atomic_write_stream` ten lines below opens `"wb"` and disagreed with its own sibling on the same
+  platform, and `max_bytes` measured a length the file never received. A no-op on POSIX, which is
+  why it survived. Pinned on BYTES: a text read-back translates the bug away and passes either way.
 
 ### Added
 
-- **`ci.yml` gains a `test-windows` job**, because `pyproject.toml` has declared
-  `Operating System :: OS Independent` all along and nothing checked it: every other job in this
-  repo is `ubuntu-latest` except `install-check.yml`'s macOS leg, so the third platform a PyPI
-  classifier promises had no reader. A separate job rather than a matrix row, so the existing job
-  names stay byte-identical for any configured required status check, and one interpreter rather
-  than three, because a Windows break is OS-shaped (a path separator, a signal that does not exist,
-  a file lock) and does not differ across 3.11 to 3.13.
-
-  **A green there will not mean a live run works on Windows.** Deno starts lazily on the sandbox's
+- **`ci.yml` gains a `test-windows` job.** `pyproject.toml` has declared
+  `Operating System :: OS Independent` since 1.0.0 and nothing checked it: every other job here is
+  `ubuntu-latest` bar `install-check.yml`'s macOS leg, so the third platform the classifier promises
+  had no reader. One interpreter, because a Windows break is OS-shaped rather than version-shaped.
+  **A green there does not mean a live run works on Windows**: Deno starts lazily on the sandbox's
   first turn and no job in this repo starts one, so the WASM sandbox is unproven on every platform.
   `pip install "dspy[deno]"` resolves a `win_amd64` wheel and no `win_arm64` one, so Windows ARM has
   no managed Deno regardless.
 
+  **Its first run answered the question it was added to ask: 12 failures, 1045 passes, and every
+  failure was a POSIX assumption in a TEST rather than a defect in the library.** Mode bits do not
+  exist on Windows, `os.kill(pid, 0)` is not an existence probe there, a backslash is a path
+  separator so a "literal `pkg\util.py`" check contradicts its own neighbour, `terminate()` maps to
+  an uncatchable `TerminateProcess`, and a daemon that answers `docker info` can still refuse every
+  Linux image. All twelve are now platform-aware, and the one library hole they exposed is fixed
+  above. `rlm-harness[mcp]` works there: the stdio child spawns and is reaped.
+
 ### Changed
 
-- **`CLAUDE.md` is gone; the agent guide is `AGENTS.md`, and the rules it used to carry moved into
-  `docs/`.** Claude Code reads `AGENTS.md` natively now, so a Claude-specific filename buys nothing
-  and costs cross-agent portability. `AGENTS.md` had been a symlink to `CLAUDE.md` since 2026-08-24;
-  it is a real file now, and the symlink is gone.
+- **`CLAUDE.md` is gone; the agent guide is `AGENTS.md`, and its rules moved into `docs/`.** Claude
+  Code reads `AGENTS.md` natively, so a Claude-specific filename costs cross-agent portability and
+  buys nothing. The split is the substance: 532 lines loaded on every request, about 13k tokens
+  whether or not any of it applied, became a 63-line root holding what is true for every task plus
+  the trigger for each of [`docs/INVARIANTS.md`](docs/INVARIANTS.md) (the 24 invariants),
+  [`docs/VERIFY.md`](docs/VERIFY.md) (the five CI axes),
+  [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) (versioning and the consumer loop) and
+  [`docs/HANDOFF.md`](docs/HANDOFF.md) (was `.claude/rules/handoff.md`, which Claude Code
+  auto-loaded and which no longer loads by itself).
 
-  **The split is the substance, not the rename.** The old file was 532 lines that loaded on every
-  single request, about 13k tokens whether or not any of it applied to the task at hand. The new
-  root is 63 lines, roughly 920 tokens, and holds only what is true for every task: what the kit
-  is, the package manager, the two commands CI gates on, and the trigger for each of the four
-  documents below. The detail moved to where it can be read when it applies:
+  **What moved is the CONTENT; every TRIGGER stayed resident**, because progressive disclosure fails
+  on a tripwire: an agent that has not read a rule does not know the rule applies. So the root names
+  the moment for each document rather than describing it.
 
-  - [`docs/INVARIANTS.md`](docs/INVARIANTS.md): the 24 invariants, verbatim and unabridged.
-  - [`docs/VERIFY.md`](docs/VERIFY.md): the five CI axes and what each one cannot see.
-  - [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md): versioning, and the consumer-driven loop.
-  - [`docs/HANDOFF.md`](docs/HANDOFF.md): was `.claude/rules/handoff.md`, which Claude Code
-    auto-loaded. It no longer loads by itself, so its trigger is stated in `AGENTS.md` instead.
-
-  **What moved is the CONTENT; every trigger stayed resident.** Progressive disclosure fails on a
-  tripwire, because an agent that has not read the rule does not know the rule applies: "read the
-  invariants when relevant" is unactionable in a way "read `docs/TYPESCRIPT.md` before writing
-  TypeScript" is not. So the root file names the moment for each document ("before editing anything
-  under `rlm_harness/`", "before auto-compacting") and indexes what `docs/INVARIANTS.md` governs in
-  six lines, which is what makes the pointer answerable without loading it.
-
-  Pointers were rewritten by target rather than by pattern: a citation of an invariant now names
-  `docs/INVARIANTS.md`, and `install-check.yml`'s OS-axis note names `docs/VERIFY.md`, because they
-  were never pointing at the same section. **That is the rule, and an independent review found the
-  one place the first pass broke it**, along with three more defects the split created and nothing
-  else would have caught: a test docstring citing the invariants file for a rule that had moved to
-  the verify file, a bare `CLAUDE` that a `CLAUDE\.md` search could not see, a "the rule below" whose
-  below had moved to another file, and a fourth document left with a description where every other
-  one got a moment. A split creates exactly this class: a cross-reference that was true while one
-  file held both ends. Sweep **direction words** and **partial names**, not just the filename. Two deliberate non-edits: the `CLAUDE.md` in
-  `claude_agent_lm.py`'s `setting_sources=[]` comment means the END USER's own file, not this
-  repo's, and the dozen mentions inside `CHANGELOG.md` are a historical record of a file that
-  existed under that name at the time. Nothing machine-reads either name, and `packages =
-  ["rlm_harness"]` means none of this was ever in the wheel.
-
-- **The README leads with the portable Deno install.** It opened with `brew install deno`, a macOS
-  command, and presented `pip install "dspy[deno]"` as the alternative, so a Windows or Linux reader
-  met a package manager they may not have before the path that works everywhere. The order is
-  reversed, the platforms are named, and the README now states the thing that makes a missing Deno
-  confusing rather than merely inconvenient: it is started LAZILY on the sandbox's first turn, so it
-  fails neither at import nor at `configure()`.
+  A split creates one defect class that nothing in the diff looks like: a cross-reference that was
+  true while one file held both ends. An independent review found four, including the one place the
+  first pass repointed by pattern instead of by target. **The sweep a split needs is direction words
+  and partial names, not the moved filename.** Two deliberate non-edits: the `CLAUDE.md` in
+  `claude_agent_lm.py`'s `setting_sources=[]` comment means the END USER's own file, and
+  `CHANGELOG.md`'s mentions record a file that had that name at the time.
+- **The README leads with the portable Deno install.** `brew install deno` was first and
+  `pip install "dspy[deno]"` was the alternative, so a Windows or Linux reader met a package manager
+  they may not have before the path that works everywhere. It also now states what makes a missing
+  Deno confusing rather than merely inconvenient: it starts LAZILY on the sandbox's first turn, so
+  it fails at neither import nor `configure()`.
 
 ### Known, not fixed here
 
-- **Two pre-existing test flakes, both outside 1.14.0's diff, both worth one issue.** Recorded
-  because an independent review reproduced them while checking that release and because the second
-  characterisation corrects the first guess, which is the part that changes the fix.
+- **The edit tool's READ side still translates newlines** (`tools/edit.py:200` opens without
+  `newline=""`). Unlike the write side this is a judgement, not a bug: with translation a model's
+  `\n` search string matches a CRLF file but the edit rewrites every line ending in it; without it
+  the file is preserved and the search misses. The new Windows job is what should inform the choice.
+- **Two pre-existing test flakes, both outside 1.14.0's diff, both worth one issue.**
 
-  `tests/test_isolation.py::test_sigterm_ignoring_factory_escalates_to_sigkill` is **not** a
-  slow-host timing flake. It reproduced 8 times in 10 on a loaded machine, and the assertion is a
-  LOWER bound (`assert 1.5 < elapsed`), observed failing at 1.10s. A fast failure there means the
-  child died on `terminate()`, i.e. **the SIGTERM-to-SIGKILL escalation the test is named for did
-  not fire**, because the child had not yet installed its handler when the signal arrived. That is
-  a child-startup race and the hollow-green direction, not a slow host. It is not macOS-specific
-  either: `isolation.py` pins the `spawn` context on every platform, so a shared CI runner is the
-  reproducing condition. A concrete lead for whoever takes it: `_patch_process_capture` assigns
-  `ctx.Process` on the object from `get_context("spawn")`, which is a SINGLETON, and `monkeypatch`
-  restores only `get_context`, so that override leaks into the rest of the session. The fix is to
-  observe the escalation directly rather than through wall-clock, and to restore `ctx.Process`.
+  `tests/test_isolation.py::test_sigterm_ignoring_factory_escalates_to_sigkill` is not a slow-host
+  timing flake. It reproduced 8 times in 10 on a loaded machine against a LOWER-bound assertion
+  (`assert 1.5 < elapsed`), observed failing at 1.10s. A fast failure there means the child died on
+  `terminate()`, so the SIGTERM-to-SIGKILL escalation the test is named for did not fire because the
+  child had not yet installed its handler: a child-startup race and the hollow-green direction. Not
+  macOS-specific either, since `isolation.py` pins the `spawn` context on every platform, so a
+  shared runner is the reproducing condition. `_patch_process_capture` assigns `ctx.Process` on the
+  `get_context("spawn")` SINGLETON while `monkeypatch` restores only `get_context`, so that override
+  leaks into the rest of the session. The fix is to observe the escalation directly rather than
+  through wall-clock, and to restore `ctx.Process`.
 
   `tests/test_tool_durations.py::test_the_fill_keeps_sub_millisecond_resolution` is the mirror
-  shape: a 1 ms wall-clock UPPER bound over `sum(range(20000))` plus the recording plumbing,
-  failing 1 in 5 on 3.12 and 1 in 8 on 3.11, always on the cold or loaded first run of a batch. Its
-  own comment anticipates the fast-host direction; these are the slow-host side of the same
-  fragility.
-
-- **The edit tool's READ side still translates newlines** (`tools/edit.py:200` opens without
-  `newline=""`). Left alone deliberately, because unlike the write side it is a judgement rather
-  than a bug: with translation a model's `\n` search string matches a CRLF file but the edit
-  rewrites every line ending in it; without translation the file is preserved but the search misses.
-  Both are defensible and the choice wants a Windows run to inform it, which is what the new job
-  will provide.
+  shape: a 1 ms UPPER bound over `sum(range(20000))` plus the recording plumbing, failing 1 in 5 on
+  3.12 and 1 in 8 on 3.11, always on the cold or loaded first run of a batch.
 
 ## [1.14.0] - 2026-09-26
 

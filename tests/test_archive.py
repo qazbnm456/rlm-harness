@@ -8,6 +8,7 @@ import shutil
 import stat
 import struct
 import subprocess
+import sys
 import tarfile
 import zipfile
 
@@ -440,7 +441,12 @@ def test_backslash_name_normalized_to_nested_path(tmp_path):
     result = tool("a.zip", "out")
     assert result.startswith("Extracted")
     assert _read_bytes(tmp_path / "out" / "pkg" / "util.py") == b"code"
-    assert not (tmp_path / "out" / "pkg\\util.py").exists()
+    if sys.platform != "win32":
+        # A LITERAL file called `pkg\util.py` is only expressible where backslash is not the path
+        # separator. On Windows pathlib parses this into `out/pkg/util.py`, the path the line above
+        # just asserted EXISTS, so the check would contradict its own neighbour rather than test
+        # the normalisation.
+        assert not (tmp_path / "out" / "pkg\\util.py").exists()
 
 
 # ---- streaming correctness for a single large, honestly-declared entry ----------------------
@@ -582,6 +588,11 @@ def test_atomic_write_stream_assembles_multiple_chunks_in_order(tmp_path):
     assert _read_bytes(path) == b"abcdefghi"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX mode bits do not exist on Windows: `os.chmod` there toggles only the "
+    "read-only flag, so the mode this asserts is unrepresentable rather than unpreserved.",
+)
 def test_atomic_write_stream_preserves_permission_bits_on_overwrite(tmp_path):
     path = str(tmp_path / "script.sh")
     atomic_write_stream(path, [b"#!/bin/sh\n"])
