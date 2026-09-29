@@ -19,10 +19,13 @@ rename is a one-line change here plus a red test in ``tests/test_dspy_compat.py`
 a silent behaviour change in someone's rollout. Do not collapse a shim into its call site just
 because it currently has one branch.
 
-Note one consequence of the floor: the interpreter seam is now HARDCODED to the
-``forward()``-positional form. A future dspy that moved it back to the constructor would fail
-LOUDLY (a ``TypeError`` from ``aforward``) rather than auto-adapting, which is the right
-trade, and ``.github/workflows/dspy-latest.yml`` is what catches it.
+Note one consequence of the floor: the interpreter seam is the FACTORY, and the kit passes it to
+the ``RLM(...)`` constructor. dspy 3.4.0 deleted the positional form this paragraph used to claim
+was hardcoded here: ``aforward`` is ``(self, *, interpreter_factory=None, **input_args)``,
+keyword-only, and ``task.py`` calls ``await rlm.aforward(**inputs)`` with nothing positional. A
+future dspy that moved the seam again would fail LOUDLY (a ``TypeError`` from the constructor)
+rather than auto-adapting, which is the right trade, and ``.github/workflows/dspy-latest.yml`` is
+what catches it. See ``interpreter_kwargs`` below for the arrangement as it actually is.
 
 This module must stay importable without dspy (its module top is dspy-free); every lookup
 imports dspy lazily and is cached, since the installed dspy cannot change mid-process.

@@ -243,11 +243,18 @@ def make_grep_files_tool(
     friendly ``ImportError`` at factory-BUILD time if it's missing, with NO silent fallback to
     stdlib ``re``. This is deliberate, not a convenience gap: ``pattern`` is LM-controlled,
     unbounded regex, matched against real file lines with no wall-clock budget anywhere else in
-    this kit's tool-call path, and stdlib ``re`` cannot be bounded by ANY pure-Python mechanism,
-    including ``signal.alarm`` (CPython's ``re`` engine does not yield to the signal dispatcher
-    mid-match; one ``re.search()`` call is a single, uninterruptible C-level operation from the
-    interpreter's point of view). A catastrophic-backtracking pattern (e.g. ``(a+)+$`` against a
-    non-matching line) can hang the host process indefinitely on stdlib ``re``. ``regex`` is
+    this kit's tool-call path, and stdlib ``re`` has no timeout of its own. A
+    catastrophic-backtracking pattern (e.g. ``(a+)+$`` against a non-matching line) can hang the
+    host process indefinitely on stdlib ``re``.
+
+    **``signal.alarm`` is not the answer, and the reason is NOT that it cannot interrupt the
+    match.** It can: measured, a ``SIGALRM`` handler broke out of
+    ``re.search(r"(a+)+$", "a"*40+"b")`` at 1.04s, mid-match on a pattern that otherwise runs for
+    minutes, because CPython's ``sre`` engine calls ``PyErr_CheckSignals()`` periodically. This
+    docstring claimed the opposite for several releases. The real disqualifiers are structural:
+    ``signal.alarm`` only works on the MAIN thread, and this tool is called from a ``dspy.RLM``
+    REPL and can be dispatched on a ``ThreadPoolExecutor`` worker, where setting it raises; and it
+    is POSIX-only, so Windows has no ``SIGALRM`` at all. ``regex`` is
     different: its own matching loop periodically checks elapsed wall-clock time internally and
     raises ``TimeoutError`` when exceeded: a real, working, pattern-structure-agnostic mechanism.
     This mirrors ``make_json_schema_validator``'s existing posture for its own optional
@@ -270,8 +277,8 @@ def make_grep_files_tool(
     except ImportError as exc:
         raise ImportError(
             "make_grep_files_tool needs the optional 'regex' package for a wall-clock-bounded "
-            "match (stdlib `re` has no way to bound catastrophic-backtracking cost: not even "
-            "via signal.alarm). Install it with:  pip install \"rlm-harness[grep]\""
+            "match (stdlib `re` has no timeout, and signal.alarm cannot substitute here: it is "
+            "main-thread-only and POSIX-only). Install it with:  pip install \"rlm-harness[grep]\""
         ) from exc
 
     def grep_files(

@@ -260,12 +260,20 @@ class RLMConfig:
     # unnecessary one. See `sandbox.py`'s `_build_sandboxed_interpreter` for the mechanism.
     sandbox_turn_timeout_s: float | None = None
 
-    # Wall-clock cap on ONE model HTTP request ATTEMPT (passed to ``dspy.LM(timeout=...)``, which
-    # hands it to litellm). ``None`` (the default) sends nothing, which is NOT the same as no cap:
-    # litellm then applies its own ``COMPLETION_HTTP_FALLBACK_SECONDS`` of 600.0
-    # (``litellm_core_utils/completion_timeout.py``; verified by execution, not read off the docs).
-    # So the real default is 600s per attempt, and this field REPLACES that number rather than
-    # introducing a bound where there was none.
+    # Wall-clock cap on ONE model HTTP request ATTEMPT, passed to ``dspy.LM(timeout=...)``.
+    # ``None`` (the default) sends nothing, which is NOT the same as no cap: the provider SDK
+    # applies its own. Measured on dspy 3.4.0 + openai 2.41.0: ``DEFAULT_TIMEOUT`` is
+    # ``Timeout(connect=5.0, read=600, write=600, pool=600)``, so the effective default is 600s per
+    # attempt and this field REPLACES that number rather than introducing a bound where there was
+    # none.
+    #
+    # **The 600 used to be attributed to litellm here: the right number with the wrong owner.**
+    # litellm's ``COMPLETION_HTTP_FALLBACK_SECONDS`` is genuinely 600.0, but litellm is not on dspy
+    # 3.4.0's default path at all. ``select_backend`` returns ``native=True`` for every LM shape this
+    # kit builds (plain, with ``api_base``, with ``timeout``) and ``_engine_spec`` is ``'auto'``, so
+    # the vendored ``lm15`` engine handles the call, and there is no 600 anywhere in ``lm15``. The
+    # figures coincide, which is why verifying the NUMBER by execution never surfaced the wrong
+    # OWNERSHIP.
     #
     # **It does not bound a run to its own value, because an attempt is not a request.** dspy
     # passes ``num_retries=3`` and litellm's first call hands the OpenAI SDK ``max_retries=2``, so
@@ -397,8 +405,8 @@ class RLMConfig:
         - ``RLM_MAX_LLM_CALLS`` (default ``30``).
         - ``RLM_MAX_OUTPUT_CHARS`` (default ``10000``): head+tail character cap on REPL
           output fed back to the planner (distinct from ``RLM_MAX_TOKENS``).
-        - ``RLM_REQUEST_TIMEOUT`` (default: unset, which is NOT no cap: litellm then applies
-          its own 600s): wall-clock seconds for ONE
+        - ``RLM_REQUEST_TIMEOUT`` (default: unset, which is NOT no cap: the provider SDK then
+          applies its own 600s): wall-clock seconds for ONE
           model HTTP request. Its sibling on the model side of a turn; see
           ``RLMConfig.request_timeout_s`` for the hang it exists to bound and why it has no
           default.

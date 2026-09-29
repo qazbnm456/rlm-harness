@@ -164,6 +164,42 @@ All notable changes to `rlm-harness`. Format loosely follows
   them; they have their own moment now. The "paste the output" half of the verify rule moved into the
   root too, since it applies to every done claim rather than only to a stdlib or platform change.
 
+### Fixed (claims about the outside world, found by running them)
+
+- **`make_grep_files_tool` told a consumer, in the `ImportError` they actually read, that stdlib `re`
+  "cannot be bounded by ANY pure-Python mechanism, including `signal.alarm`". It can.** Measured: a
+  `SIGALRM` handler broke out of `re.search(r"(a+)+$", "a"*40+"b")` at 1.04s, mid-match on a pattern
+  that otherwise runs for minutes, because CPython's `sre` engine calls `PyErr_CheckSignals()`
+  periodically. Requiring `regex` is still right, on grounds the text did not give and which are both
+  true and checkable: `signal.alarm` is MAIN-THREAD-only, and this tool runs from a `dspy.RLM` REPL
+  and can be dispatched on a `ThreadPoolExecutor` worker; and it is POSIX-only, so Windows has no
+  `SIGALRM` at all.
+- **The 600s request default and the retry ladder were attributed to litellm, which is not on dspy
+  3.4.0's default path.** `select_backend` returns `native=True` for every LM shape this kit builds,
+  plain, with `api_base`, and with `timeout`, and `_engine_spec` is `'auto'`, so the vendored `lm15`
+  engine handles the call and there is no 600 anywhere in it. The real owner, measured on
+  openai 2.41.0, is the provider SDK: `DEFAULT_TIMEOUT` is
+  `Timeout(connect=5.0, read=600, write=600, pool=600)` and `DEFAULT_MAX_RETRIES` is 2. litellm's
+  `COMPLETION_HTTP_FALLBACK_SECONDS` is genuinely 600.0, and dspy's `num_retries` is genuinely 3.
+  **Every figure was right and the ownership was wrong**, which is exactly why "verified by execution,
+  not read off the docs" did not catch it: execution verified the NUMBER. Corrected in `config.py`
+  and at four places in the guide.
+- **`_dspy_compat.py` asserted the seam dspy 3.4.0 deleted, and its own file contradicted it 90 lines
+  down.** It said the interpreter seam is "HARDCODED to the `forward()`-positional form" and that a
+  dspy moving it back to the constructor would raise from `aforward`. `aforward` is
+  `(self, *, interpreter_factory=None, **input_args)`, keyword-only, the kit passes the factory to
+  the CONSTRUCTOR, and `task.py` calls `await rlm.aforward(**inputs)` with nothing positional. The
+  predicted failure mode was backwards.
+- **`ci.yml` cited a stdlib boundary that never existed.** It said `ZipInfo.is_dir()` "moved between
+  3.11 and 3.12". Measured: 3.11.0 indexes `filename[-1]`, 3.11.13 does not, so the move was a PATCH
+  within 3.11 and the framing was wrong when written rather than stale now. It cites
+  `ZipFile.writestr("")` instead, which still raises on 3.11 and returns fine on 3.12+.
+
+  **This one survived the round that fixed its siblings because that round's report named three files
+  and nobody swept for the claim.** Exactly the failure this range already recorded against
+  `ca29731`, which named three Deno sites and fixed two. A finding without a sibling sweep is half a
+  finding, in either direction: the reporter owes the sweep as much as the fixer does.
+
 ### Known, not fixed here
 
 - **The edit tool's READ side still translates newlines** (`tools/edit.py:200` opens without
@@ -180,18 +216,41 @@ All notable changes to `rlm-harness`. Format loosely follows
   `_patch_process_capture` assigns `ctx.Process` on the `get_context("spawn")` SINGLETON while
   `monkeypatch` restores only `get_context`, so that override leaks into the rest of the session. The
   fix is to observe the escalation directly rather than through wall-clock, and to restore
-  `ctx.Process`. `tests/test_tool_durations.py::test_the_fill_keeps_sub_millisecond_resolution` is the
+  `ctx.Process`. **Its "8 times in 10" figure is the less-corroborated of the two and should be
+  re-measured rather than trusted**: it reproduced exactly ONCE across this entire review, in a
+  149.56s full-suite run, after two independent readers had each recorded that it never reproduced
+  for them at all. One observation is not a rate, and the rate it is recorded with came from a
+  different machine on a different day. `tests/test_tool_durations.py::test_the_fill_keeps_sub_millisecond_resolution` is the
   mirror shape: a 1 ms UPPER bound over `sum(range(20000))` plus the recording plumbing.
 
-  **Its reproducing condition is sharper than "a loaded host", which is what the first
-  characterisation said.** It failed twice in full-suite runs here, at 165s and at **96s**, and the
-  second is an ordinary unloaded time for this suite. It then passed 3 of 3 when
-  `tests/test_tool_durations.py` was run on its own. So the condition is the full-suite CONTEXT rather
-  than wall-clock pressure on the machine, which points at something accumulated before it runs rather
-  than at the host being busy. That is an observation, not a mechanism: nothing here isolates what
-  accumulates. Recorded because the earlier "cold or loaded first run of a batch" reading sent two
-  separate attempts at identifying this looking at the wrong variable, including one where the failure
-  went unnamed because only the summary line was captured.
+  **It has no reproducing condition. It has a heavy tail, and three attempts to name a trigger were
+  all fitting a story to a coin flip.** The recorded reading was "the cold or loaded first run of a
+  batch"; it then failed a full-suite run at 96s, an ordinary unloaded time here, so that was replaced
+  with "the full-suite CONTEXT"; and that is wrong too. Measured three ways, independently:
+
+  - **The timed work alone exceeds the ceiling unconditionally.** `sum(range(20000))`, sampled 600
+    times with nothing else running, gives p50 0.507 ms, **p95 1.437 ms**, p99 3.619 ms, max 18.2 ms,
+    and 10.0% of samples at or above the test's 1 ms bound. The assertion's window is wider than that,
+    since `record_tool_call`'s plumbing is inside it.
+  - **It fails in ISOLATION**, which is what settles it: 1 failure in 20 runs of that test alone on a
+    quiet host, and 3 in 25 on a busy one. No suite, no accumulation, no order effect (there is no
+    `pytest-randomly` here, so order is deterministic, and a deterministic order cannot produce
+    intermittent failure).
+  - **A handful of passes is not evidence against it.** At these rates, 8 consecutive passes is about
+    a 1-in-3 event and 3 is about 3-in-4. Both were read as pointing at a condition; neither was
+    informative. That is the "what would this reader return if everything were working" check in
+    `docs/INVARIANTS.md`, failed on a sample of three.
+
+  So a 1 ms ceiling over ~0.5 ms of real work, against a distribution whose p99 is several times its
+  median, fires at a rate that is a HOST property rather than a condition anyone can reproduce on
+  request. Linux CI has been green on it throughout, so that tail is far tighter. Whether load raises
+  the rate (5% quiet against 12% busy) is suggested and not established: small n, two setups.
+
+  **A lead for whoever takes it, not a fix**: the property under test is that the fill is NOT rounded
+  to milliseconds, and proving that by timing real work makes it a bet on host speed. The sibling test
+  in the same file already proves precision the robust way, passing an explicit `duration_s=0.001` and
+  asserting it round-trips at 6 dp. Asserting round-trip rather than magnitude would decouple the
+  property from the host entirely.
 
 ## [1.14.0] - 2026-09-26
 

@@ -713,13 +713,18 @@ to `pyodide`/`deno`:
   `RLM_SANDBOX_TURN_TIMEOUT`'s sibling on the other side of a turn: the sandbox side was bounded
   and the model side was not settable at all.
 
-  **Unset is not "no cap".** With nothing passed, litellm applies its own
-  `COMPLETION_HTTP_FALLBACK_SECONDS` of **600 s** per attempt. So this setting *replaces* that
-  number rather than introducing a bound where there was none, and a consumer whose turns
-  legitimately run longer than ten minutes must set it **up**, not leave it alone.
+  **Unset is not "no cap".** With nothing passed the provider SDK applies its own. Measured on
+  dspy 3.4.0 with openai 2.41.0, `DEFAULT_TIMEOUT` is
+  `Timeout(connect=5.0, read=600, write=600, pool=600)`, so the effective default is **600 s** per
+  attempt: this setting *replaces* that number rather than introducing a bound where there was none,
+  and a consumer whose turns legitimately run longer than ten minutes must set it **up**, not leave
+  it alone. (The 600 used to be attributed to litellm's `COMPLETION_HTTP_FALLBACK_SECONDS`, which is
+  genuinely 600.0 but is not on dspy 3.4.0's default path: `select_backend` returns `native=True`
+  for every LM shape this kit builds, so the vendored `lm15` engine handles the call. Same number,
+  different owner, which is why checking the figure never surfaced the mistake.)
 
-  **It does not bound a run to its own value.** dspy passes `num_retries=3`, and litellm's first
-  call hands the OpenAI SDK `max_retries=2`, so a dead endpoint is retried: the run-level wait is a
+  **It does not bound a run to its own value.** dspy's `LM` passes `num_retries=3` and the OpenAI
+  SDK's own `DEFAULT_MAX_RETRIES` is 2, so a dead endpoint is retried: the run-level wait is a
   MULTIPLE of this value plus backoff. Size a caller-side budget on the multiple.
 
   What prompted it, and an honest reading of it: against a self-hosted OpenAI-compatible endpoint
@@ -765,7 +770,7 @@ bounds a run's wall time. This is the whole map; reach for it before adding a se
 
 | Knob | Env | Default | Bounds | On expiry |
 |---|---|---|---|---|
-| `RLMConfig.request_timeout_s` | `RLM_REQUEST_TIMEOUT` | unset → litellm's own 600s | **one HTTP request attempt** to a litellm-backed LM | `LMTimeoutError`, which dspy classifies as RETRYABLE, so it is retried, not fatal |
+| `RLMConfig.request_timeout_s` | `RLM_REQUEST_TIMEOUT` | unset → the provider SDK's own 600s | **one HTTP request attempt** to a litellm-backed LM | `LMTimeoutError`, which dspy classifies as RETRYABLE, so it is retried, not fatal |
 | `ClaudeAgentLM(timeout_s=…)` |: (constructor only) | 600s | **one whole call**, INCLUDING time queued behind the SDK's concurrency semaphore | `TimeoutError` |
 | `RLMConfig.sandbox_turn_timeout_s` | `RLM_SANDBOX_TURN_TIMEOUT` | unset (disabled) | one whole `execute()` (`pyodide`/`deno`) (host-side tool and sub-LM dispatch time INCLUDED, which is why it is off by default | dspy's **recoverable** interpreter error) the model gets another turn |
 | `ContainerConfig.timeout_s` | `RLM_CONTAINER_TIMEOUT` | 120s | one `execute()`'s sandbox compute (`container`; host tool time excluded) | recoverable, same as above |
@@ -775,9 +780,9 @@ bounds a run's wall time. This is the whole map; reach for it before adding a se
 Three things about this table are easy to get wrong.
 
 **`request_timeout_s` does not bound a run to its own value.** An attempt is not a request: dspy's
-`LM` passes `num_retries=3` and litellm hands the OpenAI SDK `max_retries=2` of its own, so a dead
-endpoint is retried and the run-level wait is a MULTIPLE of this number plus backoff. Size a
-caller-side budget on the multiple. Leaving it unset is not "no cap" either: litellm then applies
+`LM` passes `num_retries=3` and the OpenAI SDK's own `DEFAULT_MAX_RETRIES` is 2, so a dead endpoint
+is retried and the run-level wait is a MULTIPLE of this number plus backoff. Size a caller-side
+budget on the multiple. Leaving it unset is not "no cap" either: the provider SDK then applies
 its own `COMPLETION_HTTP_FALLBACK_SECONDS` of 600s, so this field REPLACES that number rather than
 introducing a bound where none existed. A consumer whose turns legitimately run longer must set it
 UP, not leave it alone.
@@ -802,7 +807,7 @@ against a litellm-backed model on an endpoint that has stopped answering:
 ```
 one attempt      120s              the value you set
   x ~3-4         dspy's LM(num_retries=3) re-sends the request
-  x ~3           litellm hands the OpenAI SDK max_retries=2 of its own
+  x ~3           the OpenAI SDK's own DEFAULT_MAX_RETRIES is 2
 one turn       ~20min + backoff    for ONE wedged model call
   x 30 turns   ~10 hours           the iteration cap is the only thing that ends the run
 ```
