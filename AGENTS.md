@@ -54,6 +54,11 @@ covers SemVer on the public surface (deprecation aliases, never a hard rename) a
 consumer-driven hardening loop. One mechanical rule from it that no test enforces: `pyproject.toml`
 `[project].version` and `rlm_harness/__init__.__version__` must stay in sync.
 
+**Before writing down a fact about anything outside this repo**, a version bound, an upstream symbol
+or an upstream behaviour, read the two-kinds-of-claim bullet in [`docs/VERIFY.md`](docs/VERIFY.md).
+It has its own moment because the moment it applies is writing a sentence, which is not a moment that
+makes anyone open another file.
+
 **Keep the public surface vendor-neutral.** Source, docs, and commit messages refer to downstream
 consumers generically. A `.githooks/` check enforces this on commit; enable it in a fresh clone with
 `git config core.hooksPath .githooks`.

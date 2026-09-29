@@ -99,11 +99,11 @@ cannot see.
   `uv run --group dev --extra mcp --extra grep --extra gitignore --with "dspy==<newest>" python -m pytest -q`. It leaves
   `uv.lock` untouched.
 - **`.github/workflows/install-check.yml` is the only job that touches the PUBLISHED artifact, and
-  the only one that runs on macOS.** Every other job in this repo: `ci.yml`'s `test`, `mcp-major`,
-  `packaging` and `lint`, both jobs in `dspy-latest.yml`, and `release.yml`'s `build` and `publish`,
-  is `ubuntu-latest`, as is everything except `ci.yml`'s own `test-windows`, and every one that
-  builds anything builds it from this tree (`publish` is
-  the exception that proves it: it has no checkout because it uploads what `build` handed it). So two axes had no reader: what PyPI actually
+  the only one that runs on macOS.** Those two properties are the load-bearing part; the roster of
+  every other job is deliberately NOT enumerated here, because an enumeration goes stale the day
+  someone adds a legitimate job while the properties survive it. Every job that builds anything else
+  builds it from this tree (`release.yml`'s `publish` is the exception that proves it: it has no
+  checkout, because it uploads what `build` handed it). So two axes had no reader: what PyPI actually
   serves, and a break that is green on Linux and red on macOS. That second direction is not
   symmetric with the `RLIMIT_AS` case ABOVE: that one is Linux-only behaviour a Linux CI caught,
   while nothing here installs the published wheel on a Mac at all, which is what a consumer on that
@@ -146,6 +146,24 @@ cannot see.
   Deno 2.1, and it reached a consumer's upgrade advice before anyone measured it. Both numbers were
   real and read off real files; the DELTA between them was invented by putting an extra's pin and a
   runtime constant in one sentence. A version bound is worth nothing without the file it came from.
+- **Before writing down a fact about anything OUTSIDE this repo, know which of two kinds it is,
+  because only one of them can ever be checked again.** The Deno bound above is the instance this
+  rule came from, twice, and it is not the only one: a dspy version a release was verified on, and a
+  CPython behaviour, each went into a shipped file and each was false when someone finally ran it.
+
+  An **executable** claim names a version, a symbol, a file path or a behaviour of an installed
+  package, so anyone can run it. It is auditable forever, which cuts both ways: it WILL eventually
+  be checked, and a reader who checks it and finds it false concludes the rule it justifies is
+  obsolete. `ZipInfo.is_dir()` is the worked example: the claim was true when written, CPython
+  backported `endswith` into 3.11.x, and the sentence became the only evidence for a CI axis that is
+  still entirely justified by a different function. **Re-measure before requoting, and never requote
+  from memory when the original text is one command away.**
+
+  A **corpus-attributed** claim ("385 runs", "141 traces", "57% of tool wall-clock") can be audited
+  exactly ONCE, at the moment it is written, and never again by anyone. No review of this repo can
+  reach the corpus. So its only control is at write time, which is what "Before believing a count"
+  in `docs/INVARIANTS.md` already demands: quote the corpus size and the moment, not a bare rate.
+  Say this half out loud, or the rule reads as "sweep everything", and half of it cannot be swept.
   Don't run a live run in CI; it costs money. `examples/` show it.
 - Before claiming done, actually run the two commands above and paste the output. (The
   newest-dspy workflow is NOT one of them. It needs network, and CI runs it for you.)

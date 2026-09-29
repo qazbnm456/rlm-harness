@@ -114,10 +114,29 @@ All notable changes to `rlm-harness`. Format loosely follows
   the strength of a test that did not pin it, inside the very rule written to stop that. There is a real
   pin now, `test_the_event_type_SET_is_closed`, in the strict shape `RUN_FACT_KEYS` already used, and it
   goes red on an eighth. Adding an event type stays legal under additive-only-within-v1; the visible
-  diff to a contract test is the point, since every downstream reader has to learn the new type. And RESTORING a dropped measurement is exactly as capable of inventing one as cutting
+  diff to a contract test is the point, since every downstream reader has to learn the new type.
+
+  **And the discriminator for which exit to take, which is the part that stops the mechanism being
+  applied past the reason it worked: pin a count when drift imposes cost on someone OUTSIDE this
+  repo, drop it when drift only makes a sentence wrong.** That is why the `EVENT_*` set is pinned and
+  the CI job roster is not. An eighth event type is work every consumer reading `trace/v1` has to do.
+  A ninth CI job costs nobody anything, so a YAML-parsing test would charge the same price and buy
+  only doc accuracy, going red on a legitimate addition whose correct fix is to edit the test.
+  `docs/VERIFY.md` states the two PROPERTIES that bullet actually rested on instead, since a property
+  survives someone adding a job and a roster cannot. And RESTORING a dropped measurement is exactly as capable of inventing one as cutting
   was of losing it: this entry's own restoration pass wrote "verified on both dspy 3.2.1 and 3.3.0"
   into 1.2.0, a release whose headline is that 3.2.x no longer installs. Diff a restoration against the
   original text, never against memory of it.
+
+  **The general form of all of this is now a bullet in `docs/VERIFY.md`, beside the Deno bound it
+  came from**, with a resident trigger in `AGENTS.md` because the moment it applies is writing a
+  sentence. A claim about the world outside this repo is one of two kinds. An EXECUTABLE one, naming
+  a version, symbol, path or behaviour of an installed package, is auditable forever, so it will
+  eventually be checked and must be re-measured before being requoted. A CORPUS-ATTRIBUTED one
+  ("385 runs", "141 traces") is auditable exactly ONCE, at the moment it is written, because no
+  review of this repo can reach the corpus; its only control is quoting the corpus size and the
+  moment, which "Before believing a count" already demanded. Naming the second half is what stops
+  the rule being read as "sweep everything", when half of it can never be swept.
 - **The README leads with the portable Deno install.** `brew install deno` was first and
   `pip install "dspy[deno]"` was the alternative, so a Windows or Linux reader met a package manager
   they may not have before the path that works everywhere. It also now states what makes a missing Deno
@@ -162,8 +181,17 @@ All notable changes to `rlm-harness`. Format loosely follows
   `monkeypatch` restores only `get_context`, so that override leaks into the rest of the session. The
   fix is to observe the escalation directly rather than through wall-clock, and to restore
   `ctx.Process`. `tests/test_tool_durations.py::test_the_fill_keeps_sub_millisecond_resolution` is the
-  mirror shape: a 1 ms UPPER bound over `sum(range(20000))` plus the recording plumbing, failing 1 in 5
-  on 3.12 and 1 in 8 on 3.11, always on the cold or loaded first run of a batch.
+  mirror shape: a 1 ms UPPER bound over `sum(range(20000))` plus the recording plumbing.
+
+  **Its reproducing condition is sharper than "a loaded host", which is what the first
+  characterisation said.** It failed twice in full-suite runs here, at 165s and at **96s**, and the
+  second is an ordinary unloaded time for this suite. It then passed 3 of 3 when
+  `tests/test_tool_durations.py` was run on its own. So the condition is the full-suite CONTEXT rather
+  than wall-clock pressure on the machine, which points at something accumulated before it runs rather
+  than at the host being busy. That is an observation, not a mechanism: nothing here isolates what
+  accumulates. Recorded because the earlier "cold or loaded first run of a batch" reading sent two
+  separate attempts at identifying this looking at the wrong variable, including one where the failure
+  went unnamed because only the summary line was captured.
 
 ## [1.14.0] - 2026-09-26
 
