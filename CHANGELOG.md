@@ -19,8 +19,8 @@ All notable changes to `rlm-harness`. Format loosely follows
 - **`atomic_write_text` translated newlines on Windows, and leaked `mkstemp`'s descriptor when
   a bad `encoding` substituted a bookkeeping error for the caller's own.** Without `newline=""` the
   text layer rewrites every `\n` as `\r\n` on Windows, so a tool whose contract is "write this
-  content" did not, and `atomic_write_stream` ten lines below opens `"wb"` and disagreed with its own
-  sibling on the same platform. A no-op on POSIX, which is why it survived; pinned on BYTES, since a
+  content" did not, and `atomic_write_stream`, its sibling in the same module, opens `"wb"` and
+  therefore disagreed with it on the same platform. A no-op on POSIX, which is why it survived; pinned on BYTES, since a
   text read-back translates the bug away and passes either way.
 
   The second half is a fix for this release's own first attempt at it. `os.fdopen` takes ownership of
@@ -66,7 +66,7 @@ All notable changes to `rlm-harness`. Format loosely follows
   reads `AGENTS.md` natively, so a Claude-specific filename costs cross-agent portability and buys
   nothing. The split is the substance: 532 lines loaded on every request, about 13k tokens whether or not
   any of it applied, became a root that holds only what is true for every task, plus the trigger for
-  each of [`docs/INVARIANTS.md`](docs/INVARIANTS.md) (the 24 invariants),
+  each of [`docs/INVARIANTS.md`](docs/INVARIANTS.md) (the invariants),
   [`docs/VERIFY.md`](docs/VERIFY.md) (the CI axes and what each cannot see),
   [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) (versioning and the consumer loop) and
   [`docs/HANDOFF.md`](docs/HANDOFF.md), which was `.claude/rules/handoff.md` and which Claude Code
@@ -84,11 +84,11 @@ All notable changes to `rlm-harness`. Format loosely follows
   partial names, not the moved filename.** Two deliberate non-edits: the `CLAUDE.md` in
   `claude_agent_lm.py`'s `setting_sources=[]` comment means the END USER's own file, and this file's own
   mentions record a file that had that name at the time.
-- **This file is no longer a running account.** Every entry across all 28 releases was rewritten to
+- **This file is no longer a running account.** Every release entry in it was rewritten to
   carry the settled facts, the measurements, and the one reason that makes each non-obvious, and to drop
-  investigation narration, process steps and design deliberation. 3,174 lines became about 1,700. The
-  durable rules those entries used to re-teach live in `docs/INVARIANTS.md`, which is where a reader is
-  sent instead.
+  investigation narration, process steps and design deliberation, roughly halving it from the 3,174
+  lines it held at `f1595ac`. The durable rules those entries used to re-teach live in
+  `docs/INVARIANTS.md`, which is where a reader is sent instead.
 
   **An independent review then found the first pass had overclaimed itself.** It said "no claim and no
   number removed", and that was false on nine counts: a dangling reference where 1.2.1 cites what
@@ -96,11 +96,22 @@ All notable changes to `rlm-harness`. Format loosely follows
   corpus cannot be split by kit version at all, and that neither 1.5.0 floor breaks a consumer because
   nothing pins dspy or mcp directly), two verification runs, and the per-release version matrices that
   recorded which dspy, Python and mcp versions each release was actually verified against. All are
-  restored above. **A subtractive rewrite cannot audit itself**: the same pass that decides a sentence
+  restored in the entries they belong to. **A subtractive rewrite cannot audit itself**: the same pass that decides a sentence
   is narration is the one that would have to notice another entry quotes it, and it reads both with the
   same eye. Two of the three greps used to check this file also gave confident wrong answers, because
   re-wrapping moves a quoted phrase across a line boundary: check it whitespace-insensitively, and read
   cross-references per entry rather than by pattern.
+
+  **Two more rules came out of the rounds that followed, and both are about writing rather than
+  cutting.** A document must not assert a fact about ITSELF unless a test pins it: a line count, an
+  entry count, an invariant count, a job count. Each of those was correct when written and wrong within
+  a round, because the commit that states such a number is usually the one that changes it, and a
+  reader cannot tell a stale one from a live one. `tests/test_contract.py` is the other exit where a
+  count is genuinely load-bearing, which is why the seven `EVENT_*` strings can be counted safely and
+  prose cannot. And RESTORING a dropped measurement is exactly as capable of inventing one as cutting
+  was of losing it: this entry's own restoration pass wrote "verified on both dspy 3.2.1 and 3.3.0"
+  into 1.2.0, a release whose headline is that 3.2.x no longer installs. Diff a restoration against the
+  original text, never against memory of it.
 - **The README leads with the portable Deno install.** `brew install deno` was first and
   `pip install "dspy[deno]"` was the alternative, so a Windows or Linux reader met a package manager
   they may not have before the path that works everywhere. It also now states what makes a missing Deno
@@ -122,7 +133,8 @@ All notable changes to `rlm-harness`. Format loosely follows
   is a stronger version of the reward-free property than "every exporter carries the hook", not a gap
   in it.
 - **`AGENTS.md` under-counted the CI axes and left two invariants without a resident trigger.** The
-  count is ten jobs across four workflows. The two measurement invariants fire when you are READING a
+  root now points at `docs/VERIFY.md` for the job list instead of counting them. The two measurement
+  invariants fire when you are READING a
   corpus rather than editing a file, so "before editing anything under `rlm_harness/`" never reaches
   them; they have their own moment now. The "paste the output" half of the verify rule moved into the
   root too, since it applies to every done claim rather than only to a stdlib or platform change.
@@ -1478,7 +1490,7 @@ silent. **Do not collapse a shim into its call site just because it currently ha
   `_build_rlm()` or injected a `ScriptedInterpreter`, which overrides the string path. Now implements the
   full surface, with a regression test driving a real forward pass through the STRING `mock` path.
 
-Verified on **both dspy 3.2.1 and 3.3.0**, which is the pair this release exists to stop bridging.
+Verified on dspy 3.3.0, which the floor bump makes the only version it runs on.
 
 **Still open, not in this release: fast-failing non-retryable LM errors.** The floor bump makes the
 shim writable (`isinstance(exc, dspy.LMError) and not dspy.is_retryable_lm_error(exc)`), but the
