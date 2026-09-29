@@ -128,6 +128,22 @@ All notable changes to `rlm-harness`. Format loosely follows
   into 1.2.0, a release whose headline is that 3.2.x no longer installs. Diff a restoration against the
   original text, never against memory of it.
 
+  **And the rule the eight rounds actually earned, which is not "be more careful".** The asymmetry
+  driving them: a FINDING is verified against reality, while a FIX is verified against the finding,
+  so a fix inherits the finding's evidence and then writes new explanatory prose that carries none.
+  More care lowers the per-sentence error rate; it does not change that ratio. The regularity in this
+  range's own record is sharper than the argument: **every subtractive fix held, and every fix that
+  replaced one explanation with another needed a follow-up.** Held with no follow-up ever: the root's
+  line count, the `(4300)` quote, "the 24 invariants", "ten jobs across four workflows", "all 28
+  releases", the CI job roster, `task.py`'s "four fields", and "the matrix midpoint". Needed one: the
+  Deno bound (two more sites found later), the `is_dir` story (three files fixed, `ci.yml` missed),
+  the litellm ownership (four more sites), and the restoration pass that invented a dspy 3.2.1
+  verification. So **prefer the fix that deletes a claim to the fix that replaces it**: a deleted
+  claim cannot go stale or be miscited, while a replacement is a fresh liability with the same failure
+  modes as the one it replaced. The question before writing a replacement is not "is this true?" but
+  **"will I find out when this stops being true?"** If no, delete it, or attach the command that
+  settles it, which is what the third tier below does from the other side.
+
   **The general form of all of this is now a bullet in `docs/VERIFY.md`, beside the Deno bound it
   came from**, with a resident trigger in `AGENTS.md` because the moment it applies is writing a
   sentence. A claim about the world outside this repo is one of two kinds. An EXECUTABLE one, naming
@@ -265,6 +281,14 @@ All notable changes to `rlm-harness`. Format loosely follows
   `newline=""`). Unlike the write side this is a judgement, not a bug: with translation a model's `\n`
   search string matches a CRLF file but the edit rewrites every line ending in it; without it the file
   is preserved and the search misses.
+- **`requires-python` permits 3.14, and nothing else in the project acknowledges it.** Measured:
+  `requires-python` is `>=3.11` with no upper bound, the classifiers stop at 3.13, the CI matrix is
+  3.11/3.12/3.13, and `import rlm_harness` works on 3.14.3. So a consumer can install on an
+  interpreter this project neither declares nor tests, and the only evidence it works is that a local
+  venv happened to resolve there during this review. **Recorded rather than decided**, because the
+  three exits are a support-policy call and not a defect fix: cap `requires-python` at `<3.14`, or add
+  3.14 to the matrix and the classifiers, or leave it open and say in `AGENTS.md` that the floor is
+  tested and the ceiling is not.
 - **A THIRD flake, observed once and previously unrecorded**:
   `tests/test_mcp.py::test_mcp_catalog_lazy_is_per_transport`, a `TimeoutError`. It spawns a stdio
   MCP subprocess under `McpCatalog(..., timeout=5)`, the tightest budget in that file, and it failed
@@ -284,11 +308,19 @@ All notable changes to `rlm-harness`. Format loosely follows
   `_patch_process_capture` assigns `ctx.Process` on the `get_context("spawn")` SINGLETON while
   `monkeypatch` restores only `get_context`, so that override leaks into the rest of the session. The
   fix is to observe the escalation directly rather than through wall-clock, and to restore
-  `ctx.Process`. **Its "8 times in 10" figure is the less-corroborated of the two and should be
-  re-measured rather than trusted**: it reproduced exactly ONCE across this entire review, in a
-  149.56s full-suite run, after two independent readers had each recorded that it never reproduced
-  for them at all. One observation is not a rate, and the rate it is recorded with came from a
-  different machine on a different day. `tests/test_tool_durations.py::test_the_fill_keeps_sub_millisecond_resolution` is the
+  `ctx.Process`. **Record the SIGNATURE, not a rate: every failure lands UNDER the 1.5s bound and
+  every pass lands at 2.07s or more.** Measured across 28 isolated runs by two readers: 10 here gave
+  9 passes at 2.07-2.53s and one failure at 1.113s; 18 elsewhere gave failures at 1.49-1.65s against
+  passes at 2.07-2.73s. Bimodal, not a continuum, which is exactly a race resolving two ways and
+  confirms the child-startup cause above. **It is neither load-dependent nor suite-dependent**: one
+  batch failed three times with nothing else running and the next passed eight times immediately
+  after, and it reproduces with only its own test selected.
+
+  Its recorded "8 times in 10 on a loaded machine" is the third flake characterisation in this file to
+  be wrong, and all three were wrong the same way: **a condition fitted to a small sample.** At a
+  roughly bimodal 20%, six runs reads as 50% and eight reads as 0%, so "never reproduced for me",
+  "8 in 10" and "only under load" are the same event sampled too few times. A signature is checkable
+  in ONE run and cannot be wrong the way a rate can. `tests/test_tool_durations.py::test_the_fill_keeps_sub_millisecond_resolution` is the
   mirror shape: a 1 ms UPPER bound over `sum(range(20000))` plus the recording plumbing.
 
   **It has no reproducing condition. It has a heavy tail, and three attempts to name a trigger were

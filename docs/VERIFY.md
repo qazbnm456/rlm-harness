@@ -17,35 +17,32 @@ cannot see.
     `.gitignore`-parsing tests exercise the real `pathspec` package instead of skipping. No live
     LLM, network, or Deno needed: the dspy-bearing tests use `DummyLM` or are skipped if dspy is
     absent.
-- **That local `pytest` run is ONE of CI's three interpreter axes. 3.11 is the one worth
-  repeating by hand.** `uv run` without `--python` takes the NEWEST interpreter present, because
-  `requires-python` is `>=3.11` and there is no `.python-version`. **So there is no "project default"
-  to name, and a local run can land on an interpreter the matrix does not test at all**: this venv is
-  on 3.14.3 while CI covers 3.11, 3.12 and 3.13. Any "N passed" from a local run is qualified by
-  that. A stdlib behavior that differs across those versions is therefore invisible locally and
-  reddens exactly one matrix cell AFTER the push. Not hypothetical:
-  `make_extract_archive_tool` let a raw `IndexError` escape its own refusal path because the 3.11
-  `ZipInfo.is_dir()` of the day indexed `filename[-1]` where 3.12+ used `endswith("/")`: a green
-  local run plus green 3.12/3.13 jobs said nothing about it (CHANGELOG 1.3.0). **That particular
-  divergence is gone: CPython backported the `endswith` form into 3.11.x, so `is_dir` behaves
-  identically on 3.11, 3.12 and 3.13 today, measured.** The axis is not stale, though, and the live
-  example is one function over: `ZipFile.writestr("", b"x")` still raises `IndexError` on 3.11 and
-  returns fine on 3.12+, which `tests/test_archive.py`'s fixture builder has to work around. Quote
-  THAT one, not `is_dir`, and re-measure before quoting either. So when a change leans on
-  stdlib behavior (`zipfile`/`tarfile`, `resource`, `multiprocessing`, `asyncio`), also run the
-  suite with `--python 3.11`. The matrix FLOOR is where a "the stdlib does X" assumption breaks
-  first. Then pin the lesson in a test that fails on EVERY version (a stub whose accessor raises
-  the way the old stdlib does), never one that only reproduces on 3.11.
+- **That local `pytest` run is ONE interpreter on ONE patch level, and the PATCH level is the axis
+  that has actually bitten here.** Two stdlib claims in this repo went stale not across the
+  3.11-to-3.12 boundary this file used to reason about, but under a 3.11 PATCH: `ZipInfo.is_dir()`
+  indexed `filename[-1]` on 3.11.0 and uses `endswith` by 3.11.13, and the integer-conversion error
+  read `(4300)` on 3.11.0 and `(4300 digits)` by 3.11.13. Both were true when written and both stayed
+  in shipped files as live 3.11-versus-3.12 differences long after they had stopped being differences
+  at all. **So re-measure a 3.11 claim against CURRENT 3.11.x, never against 3.12**:
+  `uv run --python 3.11 --no-project python -c ...` settles one in seconds.
 
-  **And the failure this bullet is framed around is not the one that has actually happened here.**
-  It teaches "the versions differ", while both recorded instances are **the floor moving underneath
-  a claim that was true when written**, invalidated by a 3.11 PATCH rather than by the 3.11-to-3.12
-  boundary. `ZipInfo.is_dir()` indexed `filename[-1]` on 3.11.0 and uses `endswith` by 3.11.13; the
-  integer-conversion error read `(4300)` on 3.11.0 and `(4300 digits)` by 3.11.13. Both were cited in
-  shipped files as live 3.11-versus-3.12 differences long after they had stopped being differences at
-  all. So when a claim names 3.11 behaviour, **re-measure it against CURRENT 3.11.x, not against
-  3.12**: `uv run --python 3.11 --no-project python -c ...` settles one in seconds, and the axis is
-  the patch level, not the minor.
+  **And `uv run` without `--python` may not be testing a matrix version at all.**
+  `requires-python` is `>=3.11` with no `.python-version`, so it takes the NEWEST interpreter present:
+  this venv is on 3.14.3 while CI covers 3.11, 3.12 and 3.13. There is no "project default" to name,
+  and any "N passed" from a local run is qualified until you have checked `uv run python -V`.
+
+  The minor-level axis is real too, and it is why the floor is worth repeating by hand.
+  `make_extract_archive_tool` let a raw `IndexError` escape its own refusal path because the 3.11
+  `ZipInfo.is_dir()` of the day indexed `filename[-1]` where 3.12+ used `endswith("/")`, and a green
+  local run plus green 3.12/3.13 jobs said nothing about it (CHANGELOG 1.3.0). The live example today
+  is one function over: `ZipFile.writestr("", b"x")` still raises `IndexError` on 3.11 and returns
+  fine on 3.12+, which `tests/test_archive.py`'s fixture builder works around. Quote THAT one, not
+  `is_dir`. So when a change leans on stdlib behavior (`zipfile`/`tarfile`, `resource`,
+  `multiprocessing`, `asyncio`), also run the suite with `--python 3.11`, and pin the lesson in a test
+  that fails on EVERY version (a stub whose accessor raises the way the old stdlib did), never one
+  that only reproduces on 3.11. That last rule is why the protection outlived its own story: the
+  `_EmptyNameZipInfo` stub still pins the ordering although no interpreter reproduces the divergence.
+
 - **The OS axis a local run cannot see at all.** CI is Linux except for the two legs named below, a
   Windows one and a macOS one; a local run sees neither. `run_in_subprocess`'s
   `max_memory_mb` (`RLIMIT_AS`) genuinely enforces on Linux and is refused outright by the macOS
