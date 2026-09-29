@@ -61,8 +61,9 @@ login instead of an API key (`pip install "rlm-harness[subscription]"` →
 `rlm_harness.ClaudeAgentLM`, injected via `configure(main_lm=…)`). A
 *live* `dspy.RLM` run additionally needs model credentials (see the guide's
 [Configuration](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#configuration)) and a
-Deno sandbox: the logic and tests run without either. dspy 3.4.0 requires Deno `>=2.4.5,<3.0.0`:
-`brew install deno`, or let dspy manage it with `pip install "dspy[deno]"`.
+Deno sandbox: the logic and tests run without either. dspy's runtime gate is Deno
+`>=2.0.0,<3.0.0`: `brew install deno`, or let dspy manage it with `pip install "dspy[deno]"`,
+whose own pin is the narrower `>=2.4.5,<3.0.0`.
 
 ## What's in the box
 
@@ -162,8 +163,9 @@ Tests cover config parsing, the retry/validation engine, the sandbox guard, the
 tools, the sub-LM-hook/trace/replay/dataset layer, and a real-`dspy.RLM`
 construction check (dspy-bearing tests use `DummyLM` or skip if dspy is absent).
 A *live* run additionally needs real credentials and a Deno sandbox
-(`brew install deno`, or `pip install "dspy[deno]"` for dspy's managed binary; it requires Deno
-`>=2.4.5,<3.0.0`); `examples/mini_run.py` shows it. To drive the real forward
+(`brew install deno` for anything dspy accepts at runtime, `>=2.0.0,<3.0.0`, or `pip install
+"dspy[deno]"` for dspy's managed binary, whose pin is the narrower `>=2.4.5,<3.0.0`);
+`examples/mini_run.py` shows it. To drive the real forward
 loop offline (no model, no Deno), see the guide's
 [Testing the forward path offline](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#testing-the-forward-path-offline-rlm_harnesstesting).
 See `CLAUDE.md` for invariants when modifying the kit.

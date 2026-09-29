@@ -112,10 +112,16 @@ One companion rule ships under `.claude/rules/`:
   cannot run it** (the runner has no list, so it would skip), and `--no-verify` bypasses it. It
   guards the moment the mistake is actually made, which is local.
 - A *live* `dspy.RLM` run needs real model credentials **and** a Deno sandbox
-  (`brew install deno`, or `pip install "dspy[deno]"`; dspy 3.4.0 hard-gates the version to
-  `>=2.4.5,<3.0.0`, RAISED from `>=2.0.0` in 3.3.1, and raises at startup otherwise, so a Deno
-  between 2.0 and 2.4 that used to be fine no longer is). Don't run it in CI; it costs money.
-  `examples/` show it.
+  (`brew install deno`, or `pip install "dspy[deno]"`). **Two Deno bounds exist and they are not
+  the same number; quote the one that applies.** dspy's RUNTIME gate is
+  `MIN_DENO_VERSION = (2, 0, 0)` in `dspy/primitives/python_interpreter.py`, which raises at startup
+  outside `>=2.0.0,<3.0.0`; the `dspy[deno]` EXTRA pins the pip-installed `deno` package at
+  `>=2.4.5,<3.0.0`. Both are byte-identical on 3.3.1 and 3.4.0: **3.4.0 changed nothing about Deno.**
+  This bullet claimed for three releases that 3.4.0 raised the gate to 2.4.5 and broke a working
+  Deno 2.1, and it reached a consumer's upgrade advice before anyone measured it. Both numbers were
+  real and read off real files; the DELTA between them was invented by putting an extra's pin and a
+  runtime constant in one sentence. A version bound is worth nothing without the file it came from.
+  Don't run a live run in CI; it costs money. `examples/` show it.
 - Before claiming done, actually run the two commands above and paste the output. (The
   newest-dspy workflow is NOT one of them. It needs network, and CI runs it for you.)
 
