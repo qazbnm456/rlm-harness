@@ -4,7 +4,16 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
-## [Unreleased]
+## [1.14.1] - 2026-09-29
+
+Three small correctness fixes and a large documentation audit. No public name moves, `trace/v1` is
+untouched, and `RLMTask`'s declaration fields are unchanged, so this is a drop-in upgrade.
+
+**Its real content is what an independent review of everything since 1.14.0 turned up**, over ten
+rounds and nineteen findings. Two were code defects, one of them introduced by this range's own
+first fix. The rest were claims: about this repo, about the stdlib, and about dspy and its
+dependencies, each correct when written and each false by the time someone ran it. The six rules
+those failures earned are recorded below, and they are the part worth keeping.
 
 ### Fixed
 
