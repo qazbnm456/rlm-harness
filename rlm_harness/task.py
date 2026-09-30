@@ -154,9 +154,13 @@ def _applied_dspy_settings(sub_lm: Any) -> dict[str, Any]:
     main_lm = getattr(dspy.settings, "lm", None)
     cache: dict[str, Any] = {}
     for role, lm in (("main", main_lm), ("sub", sub_lm)):
-        value = getattr(lm, "cache", None)
-        if isinstance(value, bool):
-            cache[role] = value
+        if lm is None:
+            continue
+        # `_dspy_compat.lm_cache_is_live`, not `lm.cache`: an unmanaged LM carries `cache=True` and
+        # never consults the cache, so the raw attribute records a live cache for the one LM that
+        # cannot have one. False there is definitive; True means "not ruled out".
+        with contextlib.suppress(Exception):
+            cache[role] = _dspy_compat.lm_cache_is_live(lm)
     if cache:
         out["cache"] = cache
     return out

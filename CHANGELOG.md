@@ -4,6 +4,31 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.15.1] - 2026-09-30
+
+One corrected value in the trace field 1.15.0 added. No public name moves; `trace/v1` gains and loses
+no key.
+
+### Fixed
+
+- **`run_end.payload.dspy_settings.cache` reported a LIVE cache for the one LM that cannot have
+  one.** It was read off `lm.cache`, and `ClaudeAgentLM` inherits `cache=True` from `dspy.BaseLM`
+  while carrying no `_engine_spec`, so dspy treats it as unmanaged and never consults the cache at
+  all. A subscription run therefore recorded `cache: {"sub": true}` for a role that structurally
+  could not be served from cache. **1.15.0's own entry states that mechanism and its reader ignored
+  it.**
+
+  The gate now lives in `_dspy_compat.lm_cache_is_live`, where every dspy fact belongs, rather than
+  at the call site. **Its answer is asymmetric and callers must treat it that way**: `False` is
+  definitive, since an unmanaged LM or one with `cache=False` cannot be served from cache, while
+  `True` means "not ruled out", because dspy narrows `managed` twice more on whether
+  `forward`/`aforward` is overridden and reproducing that derivation here would be a second copy of
+  upstream logic.
+
+  **A corpus spanning this release holds two meanings for that field on a subscription run**, and
+  `run_start.rlm_harness` is what separates them. Nothing else moves: the `disable_history` value,
+  the per-role shape, and every other payload key are unchanged.
+
 ## [1.15.0] - 2026-09-30
 
 Two dspy defaults `configure()` now turns off, promoted from a downstream consumer. Two new

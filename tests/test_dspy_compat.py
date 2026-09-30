@@ -944,3 +944,31 @@ def test_the_aggregator_survives_a_nested_value_on_this_dspy():
     )
 
 
+
+
+def test_lm_cache_is_live_rules_OUT_an_unmanaged_lm_that_reads_cache_True():
+    """`lm.cache` is the wrong reader, and it misreads in the direction that matters.
+
+    `ClaudeAgentLM` inherits `cache=True` from `dspy.BaseLM` while carrying no `_engine_spec`, so
+    dspy treats it as unmanaged and never consults the cache. A trace field built on the raw
+    attribute therefore reported a LIVE cache for the one LM that structurally cannot have one, which
+    is what 1.15.0 shipped and 1.15.1 fixes.
+
+    Asserted against the REAL classes, and asymmetrically, because that is the contract: False is
+    definitive, True only means dspy's further narrowing has not been reproduced here.
+    """
+    dspy = pytest.importorskip("dspy")
+
+    class _Unmanaged(dspy.BaseLM):
+        def forward(self, prompt=None, messages=None, **kwargs):  # pragma: no cover
+            raise AssertionError("never called")
+
+    unmanaged = _Unmanaged(model="x")
+    assert unmanaged.cache is True, "the premise: BaseLM hands it a truthy cache"
+    assert not hasattr(unmanaged, "_engine_spec"), "the premise: no engine spec"
+    assert _dspy_compat.lm_cache_is_live(unmanaged) is False
+
+    managed = dspy.LM("openai/gpt-4o", api_key="k")
+    assert hasattr(managed, "_engine_spec")
+    assert _dspy_compat.lm_cache_is_live(managed) is True
+    assert _dspy_compat.lm_cache_is_live(dspy.LM("openai/gpt-4o", api_key="k", cache=False)) is False

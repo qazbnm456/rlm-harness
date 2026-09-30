@@ -712,6 +712,33 @@ def applied_thinking_budget(lm: Any) -> dict[str, Any] | None:
     return None
 
 
+def lm_cache_is_live(lm: Any) -> bool:
+    """Is dspy's response cache actually reachable for ``lm``? A dspy fact, so it lives here.
+
+    ``lm.cache`` alone is the wrong reader and misreads in the direction that matters.
+    ``ClaudeAgentLM`` carries ``cache=True`` inherited from ``dspy.BaseLM`` while never consulting
+    the cache at all, so a trace field built on the raw attribute reports a live cache for the one
+    LM that structurally cannot have one.
+
+    dspy 3.4.0 gates it in ``clients/execution.py``:
+    ``use_cache = kwargs.get("cache", lm.cache) if managed and getattr(lm, "_cache_responses", True)
+    else False``, where ``managed`` starts as ``hasattr(lm, "_engine_spec")``. That absence is the
+    same property ``docs/INVARIANTS.md`` pins for ``ClaudeAgentLM``: it is how dspy recognises a
+    legacy ``forward``/``aforward`` LM, which is why the class must never be given one.
+
+    **The answer is asymmetric and callers must treat it that way.** ``False`` is definitive: an
+    unmanaged LM, or one with ``cache=False``, cannot be served from cache. ``True`` means "not ruled
+    out", because dspy narrows ``managed`` twice more, on whether ``forward``/``aforward`` is
+    overridden, and reproducing that derivation here would be a second copy of upstream logic, which
+    is what this module exists to prevent.
+    """
+    if not hasattr(lm, "_engine_spec"):
+        return False
+    if not getattr(lm, "_cache_responses", True):
+        return False
+    return bool(getattr(lm, "cache", False))
+
+
 def current_usage_tracker() -> Any:
     """dspy's active ``UsageTracker``, or ``None`` -- through the PUBLIC ``dspy.settings``.
 
