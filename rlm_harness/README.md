@@ -768,6 +768,46 @@ never wrapped in `RLMTaskError`) is what makes `SandboxCancelled` survive `RLMTa
 retry engine untouched. A caller-driven cancellation must never be silently absorbed by a retry
 that respawns the sandbox and restarts the whole trajectory from scratch.
 
+## Two dspy defaults the kit turns off
+
+`configure()` sets `dspy.configure(disable_history=True)` and builds its LMs with `cache=False`.
+Both are properties of the RLM WORKLOAD rather than of any one consumer, which is why they belong
+here rather than in each project: a whole corpus as the input, retries that re-send identical
+inputs, and a process that outlives many runs.
+
+**History** (`RLMConfig.disable_history`, `RLM_DISABLE_HISTORY`, default on). dspy's `record_history`
+appends every call's full entry, messages and response and outputs, to `GLOBAL_HISTORY` and
+`lm.history` up to `MAX_HISTORY_SIZE = 10_000`. In an RLM each entry holds a whole turn's prompt plus
+a reasoning-model reply, so the list grows with corpus size times turns. One consumer running a
+repository's tasks in a single process measured 2,413 calls carrying 121.4M prompt and 12.6M
+completion tokens, with the container's cgroup recording `oom_kill 2` and the process dying 17s into
+run 81. The kit never reads that history, and turning it off does not change the trace: measured,
+`run_end.payload` carries the same keys either way, because usage comes from dspy's separate tracker.
+
+**Cache** (`RLMConfig.lm_cache`, `RLM_LM_CACHE`, default off). `dspy.LM` defaults `cache=True`.
+**Every recovery an RLM consumer has is a retry with identical inputs**, so a live cache turns each
+one into a replay of the failure it exists to escape. Two consumers found this independently, each
+after a "fresh attempt" completed in seconds having made no model call.
+
+**Why the per-LM flag and not `dspy.configure_cache`.** On dspy 3.4.0 the per-LM flag GATES access
+to the global store: `clients/execution.py` computes `use_cache` as false unless the LM is `managed`,
+so switching either one off prevents the replay and the per-LM one is the narrower change. It reaches
+only the LMs `configure()` BUILDS. An injected `main_lm`/`sub_lm` is used verbatim, as every other
+injected-LM rule here says, so pass `dspy.LM(…, cache=False)` yourself if you build one. `ClaudeAgentLM`
+needs nothing: it carries no `_engine_spec`, so dspy treats it as unmanaged and it never consults the
+cache at all.
+
+**Opting back in, and the one thing to know first.** `RLM_DISABLE_HISTORY=0` restores dspy's history
+and `RLM_LM_CACHE=1` restores the cache. The history one is a PROCESS-wide dspy setting, so a
+consumer that calls `configure()` and then uses `dspy.inspect_history()` for its own debugging gets
+nothing back until it opts in. A per-role passthrough still wins over the cache default, so
+`RLM_MAIN_LM_KWARGS='{"cache": true}'` keeps dspy's behaviour for the planner only.
+
+**What ran is in the trace.** `run_end.payload.dspy_settings` carries
+`{"disable_history": bool, "cache": {"main": bool, "sub": bool}}`, read back off `dspy.settings` and
+off the LMs rather than echoed from config, because an injected LM keeps its own `cache` and a
+non-kit caller that configured dspy first keeps its own `disable_history`. Additive within trace/v1.
+
 ## Timeouts: what bounds what
 
 Six different things can end a stuck run, on three different clocks, and no single one of them
@@ -1823,7 +1863,8 @@ All via env (`RLMConfig.from_env()`): `RLM_MAIN_MODEL` (or `AI_MODEL_NAME`),
 `RLM_BASE_URL` (or `AI_BASE_URL`), `RLM_INTERPRETER`, `RLM_ADAPTER`,
 `RLM_MAX_TOKENS`, `RLM_MAX_OUTPUT_CHARS`, `RLM_ALLOW_INSECURE_SANDBOX`,
 `RLM_MAX_ITERATIONS`, `RLM_MAX_LLM_CALLS`, `RLM_MAX_RETRIES`, `RLM_SANDBOX_TURN_TIMEOUT`,
-`RLM_REQUEST_TIMEOUT`, `RLM_MAIN_LM_KWARGS`, `RLM_SUB_LM_KWARGS`, `RLM_OBSERVE`.
+`RLM_REQUEST_TIMEOUT`, `RLM_MAIN_LM_KWARGS`, `RLM_SUB_LM_KWARGS`, `RLM_DISABLE_HISTORY`,
+`RLM_LM_CACHE`, `RLM_OBSERVE`.
 
 (`RLM_REQUEST_TIMEOUT` is this kit's own name. litellm separately reads a bare `REQUEST_TIMEOUT`
 for its global default: setting that one moves litellm, not this.)

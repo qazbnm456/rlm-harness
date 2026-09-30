@@ -130,6 +130,38 @@ def _live_main_timing(recorder: Any):
             logger.debug("main-step timing context exit failed", exc_info=True)
 
 
+def _applied_dspy_settings(sub_lm: Any) -> dict[str, Any]:
+    """The two dspy process defaults the kit turns off, READ BACK rather than echoed from config.
+
+    Same reason `_applied_budgets` reads the LM instead of `RLMConfig`: an injected `main_lm`/`sub_lm`
+    is used verbatim, so the config's `lm_cache` says nothing about a role `configure()` did not
+    build, and a non-kit caller that configured dspy first keeps its own `disable_history`.
+
+    `cache` is per-role because the two roles can differ, which is exactly what happens when one is
+    injected and the other is built. `disable_history` is one value because dspy's is one setting.
+    Absent keys rather than guessed ones: an LM with no `cache` attribute contributes nothing.
+
+    The main LM comes off `dspy.settings.lm`, which is the LM dspy will actually use. `RLMTask` holds
+    only `_sub_lm`, so there is no task-side attribute to read for the other role, and the staging
+    call is wrapped in `contextlib.suppress`: reaching for one that does not exist loses the field
+    silently rather than loudly.
+    """
+    import dspy
+
+    out: dict[str, Any] = {}
+    with contextlib.suppress(Exception):
+        out["disable_history"] = bool(dspy.settings.disable_history)
+    main_lm = getattr(dspy.settings, "lm", None)
+    cache: dict[str, Any] = {}
+    for role, lm in (("main", main_lm), ("sub", sub_lm)):
+        value = getattr(lm, "cache", None)
+        if isinstance(value, bool):
+            cache[role] = value
+    if cache:
+        out["cache"] = cache
+    return out
+
+
 def _applied_budgets(sub_lm: Any, config: Any, caps_dropped: bool) -> dict[str, Any]:
     """The generation caps each LM CARRIES, per role, for `run_end.payload.budgets`.
 
@@ -511,6 +543,9 @@ class RLMTask:
                 )
                 if budgets and hasattr(rec, "note_budgets"):
                     rec.note_budgets(budgets)
+                applied = _applied_dspy_settings(self._sub_lm)
+                if applied and hasattr(rec, "note_dspy_settings"):
+                    rec.note_dspy_settings(applied)
                 if attempt_usage and hasattr(rec, "note_usage"):
                     recorded = captured.get("attempt")
                     for entry in attempt_usage:

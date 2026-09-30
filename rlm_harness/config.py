@@ -294,6 +294,38 @@ class RLMConfig:
     # and a consumer whose turns exceed 600s must set this UP, not merely leave it alone.
     request_timeout_s: float | None = None
 
+    # Two dspy defaults this kit turns OFF, because both are properties of the RLM WORKLOAD rather
+    # than of any one consumer: a whole corpus as the input, retries that re-send identical inputs,
+    # and a process that outlives many runs.
+    #
+    # ``disable_history`` (dspy's own settings key, named verbatim so it greps): dspy's
+    # ``record_history`` appends every call's full entry, messages and response and outputs, to
+    # ``GLOBAL_HISTORY`` and ``lm.history`` up to ``MAX_HISTORY_SIZE = 10_000``. In an RLM each entry
+    # holds a whole turn's prompt plus a reasoning-model reply, so the list is a memory sink
+    # proportional to corpus size times turns. A consumer running one repository's tasks in ONE
+    # process measured 2,413 calls carrying 121.4M prompt and 12.6M completion tokens, and the
+    # container's cgroup recorded ``oom_kill 2`` with the process dying 17s into run 81. The kit
+    # never READS history (verified: the only mentions in the package are prose), and turning it off
+    # does not touch the trace, measured: `run_end.payload` keys are identical either way, because
+    # usage comes from dspy's separate tracker. Set ``RLM_DISABLE_HISTORY=0`` to get dspy's history
+    # back, which is what ``dspy.inspect_history()`` and an optimizer's sampling read.
+    #
+    # ``lm_cache`` (dspy's ``dspy.LM(cache=…)`` kwarg, prefixed the way this file already prefixes
+    # per-role LM settings): dspy defaults it to ``True``. **Every recovery an RLM consumer has is a
+    # retry with identical inputs** -- a fresh attempt, a retry of one page, a resume -- so a live
+    # cache turns each into a replay of the failure it exists to escape. Two consumers found this
+    # independently, each after a "fresh attempt" finished in seconds with no model call.
+    #
+    # Deliberately NOT ``dspy.configure_cache(...)``, which is the global store. On dspy 3.4.0 the
+    # per-LM flag GATES access to that store (`clients/execution.py`: ``use_cache`` is false unless
+    # ``managed``), so switching either off prevents the replay, and the per-LM one is the narrower
+    # change. It reaches only the LMs ``configure()`` BUILDS: an injected ``main_lm``/``sub_lm`` is
+    # used verbatim, as every other injected-LM rule here says, so pass ``dspy.LM(…, cache=False)``
+    # yourself if you build one. The one injected LM that needs nothing is ``ClaudeAgentLM``, which
+    # carries no ``_engine_spec`` and is therefore unmanaged, so it never consults the cache at all.
+    disable_history: bool = True
+    lm_cache: bool = False
+
     # Per-ROLE passthrough of extra ``dspy.LM`` kwargs, merged over what ``configure()`` builds for
     # that role only (``None`` = send nothing, byte-identical to not having this field).
     #
@@ -410,6 +442,12 @@ class RLMConfig:
           model HTTP request. Its sibling on the model side of a turn; see
           ``RLMConfig.request_timeout_s`` for the hang it exists to bound and why it has no
           default.
+        - ``RLM_DISABLE_HISTORY`` (default ``1``) and ``RLM_LM_CACHE`` (default ``0``): the two
+          dspy defaults this kit turns off, because both are properties of the RLM workload rather
+          than of any consumer. Set ``RLM_DISABLE_HISTORY=0`` to get dspy's call history back, which
+          is what ``dspy.inspect_history()`` and an optimizer's sampling read; set ``RLM_LM_CACHE=1``
+          to let identical-input retries be served from cache again. See ``RLMConfig.disable_history``
+          and ``RLMConfig.lm_cache`` for the measurements behind both defaults.
         - ``RLM_MAIN_LM_KWARGS`` / ``RLM_SUB_LM_KWARGS`` (default: unset), a JSON OBJECT of
           extra ``dspy.LM`` kwargs for that ROLE only, merged over what ``configure()`` builds.
           The kit ships the mechanism and no vocabulary, because the key that bounds a model's
@@ -451,6 +489,8 @@ class RLMConfig:
             max_output_chars=_env_int("RLM_MAX_OUTPUT_CHARS", 10_000),
             sandbox_turn_timeout_s=_env_optional_float("RLM_SANDBOX_TURN_TIMEOUT"),
             request_timeout_s=_env_optional_float("RLM_REQUEST_TIMEOUT"),
+            disable_history=_env_bool("RLM_DISABLE_HISTORY", True),
+            lm_cache=_env_bool("RLM_LM_CACHE", False),
             main_lm_kwargs=_env_lm_kwargs("RLM_MAIN_LM_KWARGS"),
             sub_lm_kwargs=_env_lm_kwargs("RLM_SUB_LM_KWARGS"),
             max_retries=_env_int("RLM_MAX_RETRIES", 1),

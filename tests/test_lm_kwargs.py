@@ -13,11 +13,15 @@ ignored a key.** Every test here that pins a loud failure (malformed JSON, a ref
 that can never act) exists because silence is the failure mode this knob is most exposed to.
 """
 
+import asyncio
 import contextlib
 import json
+import os
+import tempfile
 
 import pytest
 
+import rlm_harness
 from rlm_harness import _dspy_compat as compat
 from rlm_harness.config import RLMConfig
 
@@ -339,3 +343,121 @@ def test_the_established_main_and_sub_shapes_are_UNCHANGED(tmp_path):
     budgets = _run_end(tmp_path, cfg)["budgets"]
     assert "main" not in budgets, "no token cap was set, so the role key must stay absent"
     assert budgets["thinking"]["main"]["value"] == 16384
+
+
+# ---- the two dspy process defaults the kit turns off (1.15.0) --------------------------------
+
+
+def test_the_kit_turns_off_dspy_history_and_the_lm_cache_by_default():
+    """Both default OFF, and both are read back rather than echoed from config.
+
+    `disable_history` is a dspy SETTINGS key with no per-LM equivalent, so `configure()` sets it
+    globally. `cache` is a `dspy.LM` kwarg, and the per-LM flag is deliberately the whole mechanism:
+    on dspy 3.4.0 it GATES access to the global store, so `dspy.configure_cache` would be surface
+    covering only an injected LM, which this kit uses verbatim by invariant.
+    """
+    dspy = pytest.importorskip("dspy")
+    cfg = rlm_harness.RLMConfig(
+        main_model="openai/x", sub_model="openai/x", api_key="k", interpreter="mock"
+    )
+    assert cfg.disable_history is True
+    assert cfg.lm_cache is False
+
+    rlm_harness.configure(cfg)
+    assert dspy.settings.disable_history is True
+    assert dspy.settings.lm.cache is False
+    assert rlm_harness.get_sub_lm().cache is False
+
+
+def test_a_role_passthrough_still_overrides_the_cache_default():
+    """`main_lm_kwargs` merges OVER the shared kwargs, so a consumer can keep dspy's behaviour.
+
+    This is why `cache` sits in the shared dict rather than being forced after the merge. It also
+    only works because `cache` is not in `_LM_KWARGS_REFUSED`, which is deliberate: unlike the five
+    keys in there, `cache` is readable back off the LM and therefore visible in the trace.
+    """
+    dspy = pytest.importorskip("dspy")
+    cfg = rlm_harness.RLMConfig(
+        main_model="openai/x",
+        sub_model="openai/x",
+        api_key="k",
+        interpreter="mock",
+        main_lm_kwargs={"cache": True},
+    )
+    rlm_harness.configure(cfg)
+    assert dspy.settings.lm.cache is True
+    assert rlm_harness.get_sub_lm().cache is False
+
+
+def test_turning_history_off_does_not_change_the_trace_payload():
+    """The claim a consumer asked to have verified before depending on it.
+
+    dspy's usage tracker is separate from `record_history`, so `run_end.payload` must carry the same
+    keys either way. Asserted on the KEY SET rather than on values, since usage numbers legitimately
+    differ between runs.
+    """
+    pytest.importorskip("dspy")
+    from rlm_harness.testing import ScriptedInterpreter, call
+
+    class _T(rlm_harness.RLMTask):
+        signature = "doc: str -> answer: str"
+        output_field = "answer"
+
+    def keys_for(disable_history):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "t.jsonl")
+            cfg = rlm_harness.RLMConfig(
+                main_model="openai/x", sub_model="openai/x", api_key="k",
+                interpreter="mock", max_retries=1, disable_history=disable_history,
+            )
+            rlm_harness.configure(cfg)
+            with rlm_harness.TraceRecorder(path, run_id="r"):
+                task = _T(interpreter=ScriptedInterpreter([call("submit", answer="ok")]))
+                with contextlib.suppress(Exception):
+                    asyncio.run(task.arun(doc="x"))
+            with open(path) as fh:
+                for line in fh:
+                    event = json.loads(line)
+                    if event["type"] == "run_end":
+                        return set(event["payload"])
+        return set()
+
+    assert keys_for(True) == keys_for(False)
+
+
+def test_the_applied_values_reach_the_trace_and_are_NOT_the_config_echo():
+    """`run_end.payload.dspy_settings` records what was read back, per role.
+
+    The first draft of the reader reached for a `self._main_lm` that `RLMTask` does not have. That
+    raised inside the `contextlib.suppress` around the staging call, so the field silently never
+    appeared: the hollow-green direction. This asserts the field is PRESENT and shaped, which is
+    what that bug would have failed.
+    """
+    pytest.importorskip("dspy")
+    from rlm_harness.testing import ScriptedInterpreter, call
+
+    class _T(rlm_harness.RLMTask):
+        signature = "doc: str -> answer: str"
+        output_field = "answer"
+
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "t.jsonl")
+        cfg = rlm_harness.RLMConfig(
+            main_model="openai/x", sub_model="openai/x", api_key="k",
+            interpreter="mock", max_retries=1,
+        )
+        rlm_harness.configure(cfg)
+        with rlm_harness.TraceRecorder(path, run_id="r"):
+            task = _T(interpreter=ScriptedInterpreter([call("submit", answer="ok")]))
+            with contextlib.suppress(Exception):
+                asyncio.run(task.arun(doc="x"))
+        applied = None
+        with open(path) as fh:
+            for line in fh:
+                event = json.loads(line)
+                if event["type"] == "run_end":
+                    applied = event["payload"].get("dspy_settings")
+
+    assert applied is not None, "dspy_settings never reached run_end"
+    assert applied["disable_history"] is True
+    assert applied["cache"] == {"main": False, "sub": False}

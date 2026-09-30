@@ -4,6 +4,69 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.15.0] - 2026-09-30
+
+Two dspy defaults `configure()` now turns off, promoted from a downstream consumer. Two new
+`RLMConfig` fields and one optional `trace/v1` payload field, all additive.
+
+### Added
+
+- **`RLMConfig.disable_history` (`RLM_DISABLE_HISTORY`, default on) and `RLMConfig.lm_cache`
+  (`RLM_LM_CACHE`, default off).** Both are properties of the RLM workload rather than of one
+  consumer, which is why they belong here: a whole corpus as the input, retries that re-send
+  identical inputs, and a process that outlives many runs.
+
+  **History.** dspy's `record_history` appends every call's full entry, messages and response and
+  outputs, to `GLOBAL_HISTORY` and `lm.history` up to `MAX_HISTORY_SIZE = 10_000`, and in an RLM each
+  entry holds a whole turn's prompt plus a reasoning-model reply. A consumer running one repository's
+  tasks in a SINGLE process recorded 2,413 calls carrying 121.4M prompt and 12.6M completion tokens,
+  with the container's cgroup reporting `oom_kill 2` and the process dying 17s into run 81. The
+  retained size is estimated from those token counts, since a dead process cannot be measured after
+  the fact; the mechanism does not depend on the estimate. The kit never READS that history, and
+  turning it off leaves `run_end.payload` carrying identical keys, because usage comes from dspy's
+  separate tracker.
+
+  **Cache.** `dspy.LM` defaults `cache=True`, and **every recovery an RLM consumer has is a retry
+  with identical inputs**, so a live cache turns each one into a replay of the failure it exists to
+  escape. Two consumers hit this independently, each after a "fresh attempt" finished in seconds
+  having made no model call. Two independent discoveries is this project's trigger for owning
+  something rather than leaving it in each consumer.
+
+- **`run_end.payload.dspy_settings`**: `{"disable_history": bool, "cache": {"main": bool,
+  "sub": bool}}`, read off `dspy.settings` and off the LMs rather than echoed from config, for the
+  same reason `budgets` is read off the LM. Its own key rather than a field on `budgets`, because
+  `budgets` means generation CAPS and overloading it would repeat what 1.12.0 refused for
+  `budgets.thinking`. Additive within trace/v1.
+
+### Changed
+
+- **`configure()` now sets a dspy GLOBAL, which is a process-wide side effect and not only a kit
+  one.** A consumer that calls `configure()` and then reaches for `dspy.inspect_history()` gets
+  nothing back until it sets `RLM_DISABLE_HISTORY=0`; an optimizer's sampling reads the same history.
+  The setting rides the existing owner-locked `dspy.configure` call, so on the path where another
+  thread configured dspy first it is not applied, for the same reason the LM and adapter are not.
+- **An injected `main_lm`/`sub_lm` keeps its own `cache`.** The per-LM flag reaches only the LMs
+  `configure()` builds, which is the injected-LM invariant rather than an oversight, so pass
+  `dspy.LM(…, cache=False)` yourself if you build one. `RLM_MAIN_LM_KWARGS='{"cache": true}'` still
+  wins for one role, because `cache` sits in the shared kwargs before the per-role merge and is
+  deliberately not in `_LM_KWARGS_REFUSED`: unlike the five keys in there, it is readable back off
+  the LM and therefore visible in the trace.
+
+### Not done, deliberately
+
+- **`dspy.configure_cache(enable_disk_cache=False, enable_memory_cache=False)`**, which is what the
+  consumer asked for and runs locally. On dspy 3.4.0 the per-LM flag GATES access to the global
+  store, so either one prevents the replay and the per-LM flag is the narrower change. Measured on
+  the real objects: a plain `dspy.LM` has `_engine_spec=True` and resolves `use_cache=True`, while
+  `ClaudeAgentLM` has `_engine_spec=False` and resolves `use_cache=False`, so the one injected LM
+  that mattered never consulted the cache at all.
+
+  **One upstream detail to re-check rather than trust when the dspy version moves.**
+  `clients/execution.py`'s `prepare` assigns `managed` three times, and the second is a plain
+  overwrite that does not reference the previous value. Read alone it looks able to make an LM with
+  no `_engine_spec` managed. It cannot, because it sits inside `if managed and not direct:` and can
+  only narrow, so the enclosing guard is the part that decides.
+
 ## [1.14.1] - 2026-09-29
 
 Three small correctness fixes and a large documentation audit. No public name moves, `trace/v1` is

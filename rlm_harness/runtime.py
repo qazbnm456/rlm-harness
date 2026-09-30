@@ -237,7 +237,12 @@ def configure(
     except Exception:
         pass
 
-    lm_kwargs = {"api_key": cfg.api_key, "base_url": cfg.base_url}
+    # `cache` goes in unconditionally, unlike `timeout` above, because sending it explicitly IS the
+    # change: dspy.LM's own default is True and the RLM workload wants False. It sits in the shared
+    # dict rather than being forced after the merge, so `main_lm_kwargs={"cache": true}` still wins
+    # for a consumer who wants dspy's behaviour on one role. See `RLMConfig.lm_cache` for why the
+    # per-LM flag rather than `dspy.configure_cache`, and for which injected LMs it cannot reach.
+    lm_kwargs = {"api_key": cfg.api_key, "base_url": cfg.base_url, "cache": cfg.lm_cache}
     if cfg.max_tokens is not None:
         lm_kwargs["max_tokens"] = cfg.max_tokens
     if cfg.base_url:
@@ -319,7 +324,17 @@ def configure(
     # call and is READABLE from every thread, so on a non-owner thread we simply reuse it. Swallow ONLY
     # that ownership error; re-raise anything else.
     try:
-        dspy.configure(lm=main_lm, adapter=_build_adapter(cfg.adapter))
+        # `disable_history` rides the SAME call, so it shares that call's owner-lock fate: when
+        # another thread configured dspy first, the except below reuses the global config and this
+        # setting is not applied either. That is narrow rather than benign: a thread that reached
+        # here through the kit's own `configure()` already applied it, so the gap is a NON-kit caller
+        # configuring dspy first. Stated because a global setting that silently fails to apply is
+        # worse than one that was never offered.
+        dspy.configure(
+            lm=main_lm,
+            adapter=_build_adapter(cfg.adapter),
+            disable_history=cfg.disable_history,
+        )
     except RuntimeError as exc:
         msg = str(exc)
         if "thread that initially configured it" not in msg and "same async task" not in msg:

@@ -386,6 +386,12 @@ class TraceRecorder:
         # Staged by the task via note_budgets / note_usage; folded into run_end. Empty means
         # "nothing staged", and the fields are then ABSENT rather than empty -- see __exit__.
         self._budgets: dict = {}
+        # Staged the same way and for the same reason as `_budgets`, under its own key because it
+        # means something else: `budgets` is generation CAPS, this is the two dspy process defaults
+        # the kit turns off. Overloading `budgets` would repeat what 1.12.0 refused for
+        # `budgets.thinking`, where a reader's `budgets["main"]["cap"]` assumption was the thing
+        # protected. Empty means nothing staged.
+        self._dspy_settings: dict = {}
         self._usage: list = []
         self._abs_path: str | None = None
         self._step = 0
@@ -471,6 +477,8 @@ class TraceRecorder:
             # recorded" from "recorded, and there were none".
             if self._budgets:
                 payload["budgets"] = self._budgets
+            if self._dspy_settings:
+                payload["dspy_settings"] = self._dspy_settings
             if self._usage:
                 payload["usage"] = self._usage
             if self._record_metrics:
@@ -565,6 +573,23 @@ class TraceRecorder:
         with self._lock:
             self._main_ts = []
             self._exec_s = []
+
+    def note_dspy_settings(self, settings: dict) -> None:
+        """Stage the dspy process defaults the kit turned off, for `run_end.payload.dspy_settings`.
+
+        Additive within trace/v1: a new optional payload field on an existing event, no new event
+        type and no envelope key.
+
+        It exists because "was the cache live for this run" is exactly the question that becomes
+        unanswerable once the process is gone, and because the answer is not derivable from the
+        config a consumer recorded in `run_start.meta`: an injected LM keeps its own `cache`, and a
+        non-kit caller that configured dspy first keeps its own `disable_history`. So this records
+        what was READ BACK off the LMs and off dspy's settings, which is the same distinction
+        `note_budgets` exists for.
+
+        Plain dicts in; this module stays dspy-free.
+        """
+        self._dspy_settings = dict(settings)
 
     def note_budgets(self, budgets: dict) -> None:
         """Stage the generation caps the LMs CARRY, for `run_end.payload.budgets`.
