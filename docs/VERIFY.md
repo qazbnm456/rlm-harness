@@ -157,6 +157,13 @@ cannot see.
   real and read off real files; the DELTA between them was invented by putting an extra's pin and a
   runtime constant in one sentence. A version bound is worth nothing without the file it came from.
   Don't run a live run in CI; it costs money. `examples/` show it.
+- **`tests/test_sandbox_real_deno.py` is the one file that drives a REAL Deno sandbox, and it
+  skips without `deno` on PATH, which includes CI.** Every other sandbox test monkeypatches
+  `PythonInterpreter.execute`, and a fake `execute` can neither exit nor end a dspy session, which
+  is how a model's own exception killing Deno, and a turn timeout that never restarted, both
+  shipped with the suite green. Run it locally on any change to `sandbox.py` or the runner shim in
+  `_dspy_compat.py`, and on a dspy bump: it asserts the BEHAVIOUR, so it stays the guard after
+  upstream fixes `runner.js` and the shim stops applying.
 - **Before writing down a fact about anything OUTSIDE this repo, know which of two kinds it is,
   because only one of them can ever be checked again.** The Deno bound above is the instance this
   rule came from, twice, and it is not the only one: a dspy version a release was verified on, and a

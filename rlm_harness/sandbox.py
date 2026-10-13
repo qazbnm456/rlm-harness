@@ -252,7 +252,11 @@ def _build_sandboxed_interpreter(
     if _sandboxed_interpreter_cls is None:
         from dspy.primitives.python_interpreter import PythonInterpreter
 
-        from ._dspy_compat import recoverable_interpreter_error
+        from ._dspy_compat import (
+            recoverable_interpreter_error,
+            reset_interpreter_session,
+            runner_path_with_safe_error_args,
+        )
 
         # The class dspy's RLM loop CATCHES, resolved for the installed dspy rather than
         # hardcoded. This IS the recoverable/terminal distinction the two raises below turn
@@ -281,6 +285,12 @@ def _build_sandboxed_interpreter(
             _JSON_ALIASES = _JSON_LITERAL_ALIASES
             _turn_timeout_s: float | None = None
             _cancel_event: threading.Event | None = None
+
+            def _get_runner_path(self) -> str:
+                # dspy's own runner, with the one helper that lets a model's exception kill the
+                # sandbox replaced. Applies whether or not either watchdog knob is set: the
+                # failure is in how ANY failed cell is reported. See the shim's docstring.
+                return runner_path_with_safe_error_args(super()._get_runner_path())
 
             def execute(self, code: str, variables: dict | None = None) -> Any:
                 merged = {**self._JSON_ALIASES, **(variables or {})}
@@ -364,6 +374,12 @@ def _build_sandboxed_interpreter(
                 # regardless of whether the underlying work technically finished.
                 reason = fired["reason"]
                 if reason == "timeout":
+                    # The kill made dspy mark this session ENDED, so without a reset the
+                    # "will restart" below was false: the model's next cell got
+                    # `PythonInterpreter session has ended`, which dspy treats as terminal, and
+                    # a turn timeout ended the whole run one turn late. Measured on a
+                    # deployment, every turn-timeout death took that path.
+                    reset_interpreter_session(self)
                     raise _RecoverableExecError(
                         f"execution exceeded the {self._turn_timeout_s:g}s per-turn "
                         f"sandbox budget; the interpreter was killed and will restart "

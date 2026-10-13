@@ -4,6 +4,32 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.15.2] - 2026-10-13
+
+Two ways a pyodide/deno sandbox died for good when the model could have recovered. No public name
+moves; `trace/v1` is unchanged.
+
+### Fixed
+
+- **A cell whose exception carries a value JSON cannot encode no longer kills the sandbox.**
+  `d[:500]` on a dict raises `KeyError(slice(None, 500, None))`, and dspy's `runner.js` reports a
+  failed cell with a plain `json.dumps` of the exception's args. That raise happened while the
+  error was being reported, so Deno exited and the run ended with
+  `Deno exited (code 0) ... Unhandled async error: PythonError` instead of handing the model an
+  ordinary error to fix. The same happened for a `UnicodeDecodeError` (its args hold bytes), a
+  `bytes` or `frozenset` key, a `nan` argument, and a `SUBMIT` payload holding a `set`. These now
+  come back as the usual `CodeExecutionError`, with the value shown as its `repr`, and the session
+  keeps its state.
+  Ordinary errors read exactly as before. The kit runs a copy of dspy's `runner.js` with that one
+  helper replaced, and stops using the copy by itself once a dspy release fixes it upstream.
+- **A turn timeout (`RLM_SANDBOX_TURN_TIMEOUT`) now restarts the sandbox as its message says.**
+  It reported "the interpreter was killed and will restart with FRESH state on the next call", but
+  dspy marks a session ended once its Deno dies, so the next cell got `PythonInterpreter session
+  has ended` and the run failed one turn later. The next cell now runs in a new sandbox with tools
+  registered again. Variables from before the timeout are gone, as the message already said.
+
+Nothing to change on your side: both apply to every `pyodide`/`deno` run after upgrading.
+
 ## [1.15.1] - 2026-09-30
 
 One corrected value in the trace field 1.15.0 added. No public name moves; `trace/v1` gains and loses

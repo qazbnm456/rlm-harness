@@ -37,7 +37,7 @@ import contextlib
 import copy
 import dataclasses
 import inspect
-from functools import lru_cache
+from functools import cache, lru_cache
 from typing import Any
 
 # Canonical kit name -> the dspy kwarg names that have carried it, NEWEST FIRST.
@@ -802,3 +802,115 @@ def usage_since(tracker: Any, baseline: dict[str, int]) -> dict[str, list]:
         if fresh:
             out[str(model)] = fresh
     return out
+
+
+# ---- the sandbox runner: one line of dspy's runner.js, replaced ------------------------------
+
+#: The exact text dspy's ``runner.js`` defines the error-args helper with. ``execute`` reports a
+#: failed cell by calling it, and a plain ``json.dumps`` RAISES on any argument it cannot encode
+#: (``KeyError(slice(None, 500, None))``, a ``UnicodeDecodeError``'s bytes, a ``set``). The raise
+#: happens inside the error-reporting path, escapes as an unhandled rejection, and Deno exits:
+#: no error reaches the model and the session is gone. ``nan`` fails differently but just as
+#: fatally, since Python emits a bare ``NaN`` and the JS side's ``JSON.parse`` refuses it.
+_RUNNER_ERROR_ARGS = (
+    "def last_exception_args():\n"
+    "    return json.dumps(sys.last_exc.args) if sys.last_exc else None\n"
+)
+
+#: The replacement. Same JSON array the JS side already parses; an argument JSON cannot carry is
+#: sent as its ``repr`` instead of killing the process. ``allow_nan=False`` turns the ``NaN`` case
+#: into a ``ValueError`` here, where it can be answered, and a circular reference lands in the
+#: same branch. The ``SUBMIT`` path reads this helper too, so a payload holding a ``set`` now
+#: reaches the host as a string the output schema can refuse, rather than as a dead sandbox.
+_RUNNER_ERROR_ARGS_SAFE = (
+    "def last_exception_args():\n"
+    "    if not sys.last_exc:\n"
+    "        return None\n"
+    "    try:\n"
+    "        return json.dumps(sys.last_exc.args, default=repr, allow_nan=False)\n"
+    "    except (TypeError, ValueError):\n"
+    "        return json.dumps([repr(a) for a in sys.last_exc.args])\n"
+)
+
+
+@cache
+def runner_path_with_safe_error_args(stock_path: str) -> str:
+    """A copy of dspy's ``runner.js`` whose error-args helper cannot kill the sandbox.
+
+    Returns ``stock_path`` itself whenever the copy cannot be made: the stock file is
+    unreadable, the temp directory is unwritable, or the helper is not spelled exactly as
+    ``_RUNNER_ERROR_ARGS``. The last case is the one that matters. A dspy that fixed this
+    upstream will have changed that text, and the stock runner is then the right one, so this
+    shim retires itself without anyone deleting it. ``tests/test_sandbox_real_deno.py`` asserts
+    the BEHAVIOUR (a dict slice is a recoverable error) rather than that the patch applied, so a
+    dspy that changed the text WITHOUT fixing it goes red there instead of silently losing the
+    protection.
+
+    The copy lives in a private ``mkdtemp`` directory, once per process: a read-only package
+    directory (a container image) is the normal case for a deployment, and the file must not be
+    one another local user could swap. dspy grants Deno read access to whatever path
+    ``_get_runner_path`` returns, so nothing else has to change.
+    """
+    import logging
+    import os
+    import tempfile
+
+    log = logging.getLogger(__name__)
+    try:
+        with open(stock_path, encoding="utf-8") as f:
+            source = f.read()
+    except OSError:
+        return stock_path
+    if source.count(_RUNNER_ERROR_ARGS) != 1:
+        log.debug("dspy runner.js no longer carries the known error-args helper; using it as is")
+        return stock_path
+    try:
+        directory = tempfile.mkdtemp(prefix="rlm-harness-runner-")
+        path = os.path.join(directory, "runner.js")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(source.replace(_RUNNER_ERROR_ARGS, _RUNNER_ERROR_ARGS_SAFE))
+    except OSError:
+        log.warning("could not write a patched dspy runner.js; using the stock one")
+        return stock_path
+    return path
+
+
+# ---- restarting a PythonInterpreter after the kit killed its Deno -----------------------------
+
+#: The per-session fields ``PythonInterpreter.__init__`` sets, at the values it sets them to.
+#: dspy has no public "restart" and, from 3.3.0, marks a session ENDED the moment its Deno dies,
+#: so every later ``execute`` raises ``PythonInterpreter session has ended``. Resetting exactly
+#: what a fresh instance starts with is what makes the next call spawn a new Deno, mount files
+#: again and register tools again. ``tests/test_dspy_compat.py`` checks each name still exists
+#: on a fresh instance, so a dspy rename is a red test rather than a reset that quietly misses.
+_INTERPRETER_SESSION_FIELDS: tuple[tuple[str, Any], ...] = (
+    ("deno_process", None),
+    ("_mounted_files", False),
+    ("_tools_registered", False),
+    ("_last_diagnostic", None),
+    ("_owner_thread", None),
+    ("_handling_tool_call", False),
+    ("_session_ended", False),
+)
+
+
+def reset_interpreter_session(interp: Any) -> None:
+    """Put a killed ``PythonInterpreter`` back in the state of a fresh one.
+
+    The caller has already killed the process. ``_pending_large_vars`` is reset to a NEW dict
+    rather than shared, since dspy fills it per ``execute``. Best-effort on the reap: a process
+    that is somehow still alive is terminated and waited for, so no Deno outlives its handle.
+    """
+    proc = getattr(interp, "deno_process", None)
+    if proc is not None:
+        with contextlib.suppress(Exception):
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+        for stream in (getattr(proc, n, None) for n in ("stdin", "stdout", "stderr")):
+            if stream is not None:
+                with contextlib.suppress(Exception):
+                    stream.close()
+    for name, value in _INTERPRETER_SESSION_FIELDS:
+        setattr(interp, name, value)
+    interp._pending_large_vars = {}

@@ -972,3 +972,98 @@ def test_lm_cache_is_live_rules_OUT_an_unmanaged_lm_that_reads_cache_True():
     assert hasattr(managed, "_engine_spec")
     assert _dspy_compat.lm_cache_is_live(managed) is True
     assert _dspy_compat.lm_cache_is_live(dspy.LM("openai/gpt-4o", api_key="k", cache=False)) is False
+
+
+# ---- runner.js error-args patch, and the interpreter session reset ---------------------------
+
+
+def _stock_runner(tmp_path, body: str) -> str:
+    path = tmp_path / "runner.js"
+    path.write_text(body, encoding="utf-8")
+    return str(path)
+
+
+def test_the_runner_patch_replaces_exactly_the_error_args_helper(tmp_path):
+    stock = _stock_runner(tmp_path, "// head\n" + _dspy_compat._RUNNER_ERROR_ARGS + "// tail\n")
+    _dspy_compat.runner_path_with_safe_error_args.cache_clear()
+    patched = _dspy_compat.runner_path_with_safe_error_args(stock)
+    assert patched != stock
+    with open(patched, encoding="utf-8") as f:
+        text = f.read()
+    assert text == "// head\n" + _dspy_compat._RUNNER_ERROR_ARGS_SAFE + "// tail\n"
+    with open(stock, encoding="utf-8") as f:
+        assert f.read().count(_dspy_compat._RUNNER_ERROR_ARGS) == 1
+
+
+def test_the_runner_patch_retires_itself_when_dspy_changed_the_helper(tmp_path):
+    """The upstream fix changes this text, and then the stock runner is the right one."""
+    stock = _stock_runner(tmp_path, "def last_exception_args():\n    return json.dumps(x, default=repr)\n")
+    _dspy_compat.runner_path_with_safe_error_args.cache_clear()
+    assert _dspy_compat.runner_path_with_safe_error_args(stock) == stock
+
+
+def test_the_runner_patch_falls_back_to_stock_when_unreadable(tmp_path):
+    _dspy_compat.runner_path_with_safe_error_args.cache_clear()
+    missing = str(tmp_path / "no-such-runner.js")
+    assert _dspy_compat.runner_path_with_safe_error_args(missing) == missing
+
+
+def test_the_safe_helper_answers_where_the_stock_one_raises():
+    """Run both helpers as Python, against the exceptions that killed real sessions."""
+    import json
+    import math
+    import types
+
+    def helper(src: str):
+        ns = {"json": json, "sys": types.SimpleNamespace(last_exc=None)}
+        exec(src, ns)  # noqa: S102 - our own constant
+        return ns
+
+    stock, safe = helper(_dspy_compat._RUNNER_ERROR_ARGS), helper(_dspy_compat._RUNNER_ERROR_ARGS_SAFE)
+    cases = [KeyError(slice(None, 500, None)), ValueError(object()), KeyError(frozenset({1})),
+             KeyError(b"x"), ValueError(math.nan)]
+    try:
+        b"\xff".decode()
+    except UnicodeDecodeError as e:
+        cases.append(e)
+    for exc in cases:
+        for ns in (stock, safe):
+            ns["sys"].last_exc = exc
+        try:
+            out = stock["last_exception_args"]()
+            # nan does not raise in Python; it emits a literal JSON.parse refuses.
+            assert "NaN" in out, exc
+        except (TypeError, ValueError):
+            pass
+        out = safe["last_exception_args"]()
+        decoded = json.loads(out)  # strict enough: Python accepts NaN, so check the text too
+        assert "NaN" not in out and isinstance(decoded, list) and len(decoded) == len(exc.args), exc
+    # Ordinary exceptions report byte-identically to before.
+    for ns in (stock, safe):
+        ns["sys"].last_exc = ZeroDivisionError("division by zero")
+    assert safe["last_exception_args"]() == stock["last_exception_args"]()
+
+
+def test_every_session_field_the_reset_writes_exists_on_a_fresh_interpreter():
+    """A dspy rename must be a red test here, not a reset that silently misses a field."""
+    from dspy.primitives.python_interpreter import PythonInterpreter
+
+    fresh = PythonInterpreter()
+    for name, value in _dspy_compat._INTERPRETER_SESSION_FIELDS:
+        assert hasattr(fresh, name), name
+        assert getattr(fresh, name) == value, name
+    assert fresh._pending_large_vars == {}
+
+
+def test_the_reset_reopens_an_ended_session():
+    from dspy.primitives.python_interpreter import PythonInterpreter
+
+    interp = PythonInterpreter()
+    interp._session_ended = True
+    interp._tools_registered = True
+    interp._mounted_files = True
+    interp._pending_large_vars = {"x": 1}
+    _dspy_compat.reset_interpreter_session(interp)
+    interp._check_session_active()  # raises if still ended
+    assert interp._tools_registered is False and interp._mounted_files is False
+    assert interp._pending_large_vars == {}
