@@ -17,9 +17,11 @@ moves; `trace/v1` is unchanged.
   error was being reported, so Deno exited and the run ended with
   `Deno exited (code 0) ... Unhandled async error: PythonError` instead of handing the model an
   ordinary error to fix. The same happened for a `UnicodeDecodeError` (its args hold bytes), a
-  `bytes` or `frozenset` key, a `nan` argument, and a `SUBMIT` payload holding a `set`. These now
-  come back as the usual `CodeExecutionError`, with the value shown as its `repr`, and the session
-  keeps its state.
+  `bytes` or `frozenset` key, a `nan` or `inf` argument, a circular reference, and a `SUBMIT`
+  payload holding a `set`. A failed cell now comes back as the usual `CodeExecutionError`, with the
+  value shown as its `repr`, and the session keeps its state. A `SUBMIT` that cannot be serialized
+  is refused instead of stringified, so a `set` is never accepted as the text `'{1, 2}'`: the model
+  gets a recoverable error and submits again.
   Ordinary errors read exactly as before. The kit runs a copy of dspy's `runner.js` with that one
   helper replaced, and stops using the copy by itself once a dspy release fixes it upstream.
 - **A turn timeout (`RLM_SANDBOX_TURN_TIMEOUT`) now restarts the sandbox as its message says.**

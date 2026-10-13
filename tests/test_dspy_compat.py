@@ -985,7 +985,7 @@ def _stock_runner(tmp_path, body: str) -> str:
 
 def test_the_runner_patch_replaces_exactly_the_error_args_helper(tmp_path):
     stock = _stock_runner(tmp_path, "// head\n" + _dspy_compat._RUNNER_ERROR_ARGS + "// tail\n")
-    _dspy_compat.runner_path_with_safe_error_args.cache_clear()
+    _dspy_compat._remove_patched_runners()
     patched = _dspy_compat.runner_path_with_safe_error_args(stock)
     assert patched != stock
     with open(patched, encoding="utf-8") as f:
@@ -998,12 +998,12 @@ def test_the_runner_patch_replaces_exactly_the_error_args_helper(tmp_path):
 def test_the_runner_patch_retires_itself_when_dspy_changed_the_helper(tmp_path):
     """The upstream fix changes this text, and then the stock runner is the right one."""
     stock = _stock_runner(tmp_path, "def last_exception_args():\n    return json.dumps(x, default=repr)\n")
-    _dspy_compat.runner_path_with_safe_error_args.cache_clear()
+    _dspy_compat._remove_patched_runners()
     assert _dspy_compat.runner_path_with_safe_error_args(stock) == stock
 
 
 def test_the_runner_patch_falls_back_to_stock_when_unreadable(tmp_path):
-    _dspy_compat.runner_path_with_safe_error_args.cache_clear()
+    _dspy_compat._remove_patched_runners()
     missing = str(tmp_path / "no-such-runner.js")
     assert _dspy_compat.runner_path_with_safe_error_args(missing) == missing
 
@@ -1020,8 +1020,10 @@ def test_the_safe_helper_answers_where_the_stock_one_raises():
         return ns
 
     stock, safe = helper(_dspy_compat._RUNNER_ERROR_ARGS), helper(_dspy_compat._RUNNER_ERROR_ARGS_SAFE)
+    loop: list = []
+    loop.append(loop)
     cases = [KeyError(slice(None, 500, None)), ValueError(object()), KeyError(frozenset({1})),
-             KeyError(b"x"), ValueError(math.nan)]
+             KeyError(b"x"), ValueError(math.nan), ValueError(math.inf), ValueError(loop)]
     try:
         b"\xff".decode()
     except UnicodeDecodeError as e:
@@ -1031,13 +1033,13 @@ def test_the_safe_helper_answers_where_the_stock_one_raises():
             ns["sys"].last_exc = exc
         try:
             out = stock["last_exception_args"]()
-            # nan does not raise in Python; it emits a literal JSON.parse refuses.
-            assert "NaN" in out, exc
+            # nan/inf do not raise in Python; they emit a literal JSON.parse refuses.
+            assert "NaN" in out or "Infinity" in out, exc
         except (TypeError, ValueError):
             pass
         out = safe["last_exception_args"]()
         decoded = json.loads(out)  # strict enough: Python accepts NaN, so check the text too
-        assert "NaN" not in out and isinstance(decoded, list) and len(decoded) == len(exc.args), exc
+        assert "NaN" not in out and "Infinity" not in out and isinstance(decoded, list) and len(decoded) == len(exc.args), exc
     # Ordinary exceptions report byte-identically to before.
     for ns in (stock, safe):
         ns["sys"].last_exc = ZeroDivisionError("division by zero")
@@ -1067,3 +1069,13 @@ def test_the_reset_reopens_an_ended_session():
     interp._check_session_active()  # raises if still ended
     assert interp._tools_registered is False and interp._mounted_files is False
     assert interp._pending_large_vars == {}
+
+
+def test_a_mixed_args_error_keeps_its_readable_arguments_unquoted():
+    """Only the argument JSON cannot carry becomes a repr; the message beside it stays as is."""
+    import json
+    import types
+
+    ns = {"json": json, "sys": types.SimpleNamespace(last_exc=ValueError("bad key", slice(1, 2)))}
+    exec(_dspy_compat._RUNNER_ERROR_ARGS_SAFE, ns)  # noqa: S102 - our own constant
+    assert json.loads(ns["last_exception_args"]()) == ["bad key", "slice(1, 2, None)"]

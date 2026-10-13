@@ -37,7 +37,7 @@ import contextlib
 import copy
 import dataclasses
 import inspect
-from functools import cache, lru_cache
+from functools import lru_cache
 from typing import Any
 
 # Canonical kit name -> the dspy kwarg names that have carried it, NEWEST FIRST.
@@ -817,23 +817,43 @@ _RUNNER_ERROR_ARGS = (
     "    return json.dumps(sys.last_exc.args) if sys.last_exc else None\n"
 )
 
-#: The replacement. Same JSON array the JS side already parses; an argument JSON cannot carry is
-#: sent as its ``repr`` instead of killing the process. ``allow_nan=False`` turns the ``NaN`` case
+#: The replacement. Same JSON array the JS side already parses. ``allow_nan=False`` turns ``nan``
 #: into a ``ValueError`` here, where it can be answered, and a circular reference lands in the
-#: same branch. The ``SUBMIT`` path reads this helper too, so a payload holding a ``set`` now
-#: reaches the host as a string the output schema can refuse, rather than as a dead sandbox.
+#: same branch.
+#:
+#: The two callers get different answers ON PURPOSE. A failed cell's args are only there to be
+#: READ, so an argument JSON cannot carry is sent as its ``repr``. A ``SUBMIT`` payload is the
+#: run's ANSWER, and a ``repr`` there would be accepted as data: ``{1, 2}`` in a ``str`` field
+#: would come back as the string ``'{1, 2}'`` and dspy would take it. So a payload that does not
+#: serialize is sent as a one-line explanation instead of a dict; dspy's RLM loop refuses any
+#: non-dict ``SUBMIT`` with a recoverable "FINAL returned str" error and the model tries again.
 _RUNNER_ERROR_ARGS_SAFE = (
     "def last_exception_args():\n"
     "    if not sys.last_exc:\n"
     "        return None\n"
+    "    args = sys.last_exc.args\n"
+    "    final = type(sys.last_exc).__name__ == '_DSPyFinalOutput'\n"
     "    try:\n"
-    "        return json.dumps(sys.last_exc.args, default=repr, allow_nan=False)\n"
-    "    except (TypeError, ValueError):\n"
-    "        return json.dumps([repr(a) for a in sys.last_exc.args])\n"
+    "        return json.dumps(args, default=None if final else repr, allow_nan=False)\n"
+    "    except (TypeError, ValueError) as e:\n"
+    "        if final:\n"
+    "            return json.dumps(['SUBMIT payload is not JSON-serializable: ' + str(e)])\n"
+    "        return json.dumps([repr(a) for a in args])\n"
 )
 
+#: Patched copies this process wrote, keyed by the stock path, so ``atexit`` can remove them.
+_patched_runners: dict[str, str] = {}
 
-@cache
+
+def _remove_patched_runners() -> None:
+    import os
+    import shutil
+
+    for path in _patched_runners.values():
+        shutil.rmtree(os.path.dirname(path), ignore_errors=True)
+    _patched_runners.clear()
+
+
 def runner_path_with_safe_error_args(stock_path: str) -> str:
     """A copy of dspy's ``runner.js`` whose error-args helper cannot kill the sandbox.
 
@@ -846,15 +866,24 @@ def runner_path_with_safe_error_args(stock_path: str) -> str:
     dspy that changed the text WITHOUT fixing it goes red there instead of silently losing the
     protection.
 
-    The copy lives in a private ``mkdtemp`` directory, once per process: a read-only package
-    directory (a container image) is the normal case for a deployment, and the file must not be
-    one another local user could swap. dspy grants Deno read access to whatever path
-    ``_get_runner_path`` returns, so nothing else has to change.
+    The copy lives in a private ``mkdtemp`` directory (a read-only package directory is the
+    normal case for a deployment, and the file must not be one another local user could swap),
+    is reused while it EXISTS and rewritten when it does not (a tmp reaper may delete it under a
+    long-lived process, and dspy builds every interpreter's Deno command from this path), and is
+    removed at interpreter exit. Only a success is remembered, so one failed write does not drop
+    the protection for the rest of the process. dspy grants Deno read access to whatever path
+    ``_get_runner_path`` returns; it also refuses ``enable_write_paths`` overlapping that path,
+    so a caller mounting the whole temp directory writable would be refused where the stock
+    runner was not.
     """
+    import atexit
     import logging
     import os
     import tempfile
 
+    cached = _patched_runners.get(stock_path)
+    if cached is not None and os.path.isfile(cached):
+        return cached
     log = logging.getLogger(__name__)
     try:
         with open(stock_path, encoding="utf-8") as f:
@@ -872,7 +901,19 @@ def runner_path_with_safe_error_args(stock_path: str) -> str:
     except OSError:
         log.warning("could not write a patched dspy runner.js; using the stock one")
         return stock_path
+    if not _patched_runners:
+        atexit.register(_remove_patched_runners)
+    if cached is not None:
+        _remove_patched_runners_dir(cached)
+    _patched_runners[stock_path] = path
     return path
+
+
+def _remove_patched_runners_dir(path: str) -> None:
+    import os
+    import shutil
+
+    shutil.rmtree(os.path.dirname(path), ignore_errors=True)
 
 
 # ---- restarting a PythonInterpreter after the kit killed its Deno -----------------------------

@@ -379,6 +379,10 @@ def _build_sandboxed_interpreter(
                     # `PythonInterpreter session has ended`, which dspy treats as terminal, and
                     # a turn timeout ended the whole run one turn late. Measured on a
                     # deployment, every turn-timeout death took that path.
+                    # The watcher was told to stop and joined with a timeout; make sure it has
+                    # really gone before the reset, or a late tick could kill the NEXT Deno.
+                    if watcher.is_alive():
+                        watcher.join()
                     reset_interpreter_session(self)
                     raise _RecoverableExecError(
                         f"execution exceeded the {self._turn_timeout_s:g}s per-turn "
