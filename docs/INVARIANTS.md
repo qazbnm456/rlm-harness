@@ -56,7 +56,7 @@ reason is in the rule.
   dropped once during this feature's own design revision and only caught by a second adversarial
   review pass; keep it isolated and commented so it cannot be dropped silently again.
 - **Every dspy API difference is resolved in `_dspy_compat.py`: one place, by introspection.**
-  The kit declares a FLOOR **and, since 1.14.0, a CAP** on dspy (`>=3.4.0,<3.5.0`; the floor was
+  The kit declares a FLOOR **and, since 1.14.0, a CAP** on dspy (`>=3.4.0,<3.4.1` since 1.15.2, `<3.5.0` in 1.14.0 and 1.15.0-1.15.1, see `pyproject.toml` for why 3.4.1 is excluded; the floor was
   `>=3.3.1` since 1.5.0 and `>=3.3.0` since 1.2.0). Consumers pin the KIT, so a consumer's fresh
   install used to pick up whatever dspy was current, and the kit had to survive dspy's renames
   without them noticing. **That premise is retired**: it was tested twice and broke a consumer both
@@ -147,7 +147,7 @@ reason is in the rule.
   **`ClaudeAgentLM` subclasses `dspy.BaseLM` and implements `forward`/`aforward`, and that interface
   has an announced EXPIRY.** dspy 3.4 deprecates it in favour of an engine with
   `complete(Request) -> Response` passed as `dspy.LM(engine=...)`, and says removal is scheduled for
-  3.5, which is exactly the `<3.5.0` cap `pyproject.toml` now carries. The suite emits that
+  3.5, which is why the cap can never pass `<3.5.0` (it is tighter still today, see `pyproject.toml`). The suite emits that
   DeprecationWarning today; it is expected, not noise. `BaseLM.__call__` is the handle for
   re-checking what the subclass still owes when the floor moves, and `dspy-latest.yml` is the
   instrument that goes red when 3.5 ships. Do NOT silence the warning: it is the only thing that

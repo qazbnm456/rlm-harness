@@ -6,8 +6,8 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 ## [1.15.2] - 2026-10-13
 
-Two ways a pyodide/deno sandbox died for good when the model could have recovered. No public name
-moves; `trace/v1` is unchanged.
+Two ways a pyodide/deno sandbox died for good when the model could have recovered, and a tighter
+dspy cap. No public name moves; `trace/v1` is unchanged.
 
 ### Fixed
 
@@ -30,7 +30,17 @@ moves; `trace/v1` is unchanged.
   has ended` and the run failed one turn later. The next cell now runs in a new sandbox with tools
   registered again. Variables from before the timeout are gone, as the message already said.
 
-Nothing to change on your side: both apply to every `pyodide`/`deno` run after upgrading.
+### Changed
+
+- **dspy is capped below 3.4.1 (`dspy>=3.4.0,<3.4.1`).** dspy 3.4.1 is a patch release that
+  changes what a run does: every RLM prompt gains a paragraph about building sub-agents,
+  sub-agent calls count against `max_llm_calls`, and one extra setup step runs in the sandbox
+  before the first turn. That step shifts every `ScriptedInterpreter` script by one, so scripted
+  tests written against 3.4.0 fail on 3.4.1. A fresh install now resolves 3.4.0, and the cap goes
+  back to `<3.5.0` in the release that supports 3.4.1.
+
+Nothing to change on your side. If your lock already holds dspy 3.4.1, upgrading moves it back
+to 3.4.0. Both fixes apply to every `pyodide`/`deno` run after upgrading.
 
 ## [1.15.1] - 2026-09-30
 

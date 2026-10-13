@@ -53,7 +53,15 @@ dependencies = [
     # it does not. `uv run --with "dspy==<newer>"` OVERRIDES this bound, so that workflow still
     # installs and tests the newest dspy and still goes red the day 3.5.0 ships, which is exactly
     # when the next floor bump is due.
-    "dspy>=3.4.0,<3.5.0",
+    #
+    # TIGHTER STILL since 1.15.2: `<3.4.1`, because 3.4.1 is a patch release that changes what a
+    # run does. It installs a sandbox "dspy facade" with an extra `execute` before the first
+    # turn, appends a sub-agent paragraph to every RLM prompt, and charges sub-agent LM calls to
+    # `max_llm_calls`. The extra `execute` shifts every `ScriptedInterpreter` script by one step
+    # (two kit tests fail on 3.4.1, measured), and a turn-timeout restart does not reinstall the
+    # facade while the prompt still offers it. Lift this to `<3.5.0` with the release that
+    # handles both, not before.
+    "dspy>=3.4.0,<3.4.1",
     # 2.11 is dspy 3.4.0's own floor. Declaring less would be a floor the kit cannot run on.
     "pydantic>=2.11.0",
 ]
