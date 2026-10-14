@@ -48,6 +48,29 @@ jobs:
         # --extra gitignore so list_candidate_paths's .gitignore-parsing tests exercise the real
         # `pathspec` package rather than skip.
         run: uv run --group dev --extra mcp --extra grep --extra gitignore python -m pytest -q
+      - name: Import every example
+        # `examples/` is what a reader runs first, and until now no workflow executed any of it:
+        # 1.17.0 reached PyPI before a single example had been run against it. A broken example
+        # fails no suite, it just makes the kit look broken to someone in their first ten minutes.
+        #
+        # What this ADDS over the lint job, which already covers these files for syntax and
+        # undefined names: a `from rlm_harness import X` where X no longer exists resolves only at
+        # RUNTIME, so no static pass can see it. That is the CHANGELOG 1.0.1 shape (the kit
+        # unrunnable on a fresh install while the whole suite stayed green), pointed at the files
+        # people copy from. It is cheap because every example is `__main__`-guarded, so importing
+        # one runs its imports and its class bodies and nothing else.
+        #
+        # A green here means "still importable", NEVER "still works": `main()` is not called, and
+        # a real run needs a live model, a Deno and money. `docs/VERIFY.md` owns that half and it
+        # stays manual, per release, on the axes the release touched.
+        run: |
+          set -euo pipefail
+          for f in examples/*.py; do
+            uv run --group dev --extra mcp --extra grep --extra gitignore python -c \
+              'import importlib.util as u, sys; s = u.spec_from_file_location("example", sys.argv[1]); s.loader.exec_module(u.module_from_spec(s))' \
+              "$f" || { echo "::error file=$f::this example no longer imports"; exit 1; }
+            echo "ok $f"
+          done
 
   test-windows:
     # `pyproject.toml` declares `Operating System :: OS Independent`, and until this job that was
