@@ -16,7 +16,7 @@ pitch, the quickstart, and installation: start at the
 | `_retry.py` | Validation + retry engine (dspy-free, unit-tested). Mostly private, but `short_error` is public: head-and-tail elision for a caught exception, so a giant `AdapterParseError` (which embeds the whole raw completion) becomes one readable log line instead of thousands. |
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
 | `atomic.py` | `atomic_write_text` / `atomic_write_stream`: a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write; `atomic_write_stream` takes an iterable of `bytes` chunks instead of one in-memory blob, aborting once a running total exceeds an optional `max_bytes`. dspy-free. |
-| `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` / `RUN_FACT_KEYS` / `compute_run_facts` / `compute_run_facts_by_run` (the generic half of a rubric's facts): reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded `trace/v1` events. dspy-free. |
+| `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` / `RUN_FACT_KEYS` / `compute_run_facts` / `compute_run_facts_by_run` (the generic half of a rubric's facts): reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded trace events. dspy-free. |
 | `isolation.py` | `run_in_subprocess`: a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
 | `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema: the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` (see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths`) a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` (safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `make_extract_archive_tool`) safe `zip`/tar extraction in `tools/archive.py` (see below), `verify_quote` (a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool`) a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool`: the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
 | `optimize.py` | GEPA harness: metric templates now, compile in Phase 2. |
@@ -815,7 +815,8 @@ nothing back until it opts in. A per-role passthrough still wins over the cache 
 **What ran is in the trace.** `run_end.payload.dspy_settings` carries
 `{"disable_history": bool, "cache": {"main": bool, "sub": bool}}`, read back off `dspy.settings` and
 off the LMs rather than echoed from config, because an injected LM keeps its own `cache` and a
-non-kit caller that configured dspy first keeps its own `disable_history`. Additive within trace/v1.
+non-kit caller that configured dspy first keeps its own `disable_history`. Additive: a new optional
+payload field.
 
 ## Sandbox sub-agents (`RLMConfig.sandbox_sub_agents`, `RLM_SANDBOX_SUB_AGENTS`, default on)
 
@@ -1672,9 +1673,12 @@ Five things to know:
   The payload keeps the `rounds` nesting so a reader that already parsed `api_rounds["rounds"]`
   parses it unchanged. The old key is GONE rather than deprecated: a reader still looking at
   `run_end.payload.usage[...]["api_rounds"]` finds nothing, not a stale value. That half is a
-  removal inside `trace/v1`, taken because upstream left no way to keep the key, and `SCHEMA` stays
-  `v1` because a bump would break every reader of every event to announce the loss of one optional
-  sub-field. `docs/INVARIANTS.md` records it beside the additive-only rule. The field's purpose is the CONTEXT WINDOW SIZE: the provider's documentation says to calculate
+  removal, not an addition, so **it is what took the wire format from `trace/v1` to
+  `rlm-harness/trace/v2`** in the same release: the additive-only rule asks for a version bump with
+  a migration rather than a key quietly disappearing, and this is the whole migration. Nothing else
+  about v2 differs from v1, the kit validates the string nowhere, so an existing v1 corpus still
+  loads through `load_events` and every exporter; a consumer that does validate it should accept
+  both. The field's purpose is the CONTEXT WINDOW SIZE: the provider's documentation says to calculate
   it "from the last `message` entry". **The totals give you that too, but only conditionally.**
   When a call made one API request running one SAMPLING ITERATION, the top-level fields and that
   single entry are the same numbers and `prompt_tokens` already IS the context size. ("One
@@ -1879,7 +1883,7 @@ print(u.tool_call_rate, u.sub_call_rate)   # per root-LM turn taken; None if mai
 ```
 
 `compute_utilization_by_run(events)` computes every run's `RunUtilization` in one call, for a
-batch/dataset-level view. Reads only already-frozen `trace/v1` fields: `event["type"]`,
+batch/dataset-level view. Reads only already-frozen trace fields: `event["type"]`,
 `payload["tool"]`, the optional `payload["duration_s"]`, and (through `payload_cause`, never
 directly) `circuit_broken` / `endpoint_error` / `error` / `ok`. No new event type, nothing the
 trace contract needs to change for.

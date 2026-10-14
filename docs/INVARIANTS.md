@@ -287,7 +287,7 @@ reason is in the rule.
   subprocess): treat the server as a TRUSTED dependency and its output as untrusted LM context (a
   prompt-injection surface, like `fetch_url`). `mcp.py` lives OUTSIDE `tools/` so it may import
   dspy + mcp; `mcp_tools` is a lazy `__getattr__` export so `import rlm_harness` stays dspy/mcp-free.
-  Each call records a `tool_call` (trace/v1, no schema change). Keep it client-only + sync-bridged.
+  Each call records a `tool_call` (an existing event type, no schema change). Keep it client-only + sync-bridged.
 - **The sub-LM intercept does deterministic transforms only** (validate / post-process).
   Agentic actions (external tool calls) stay LM-decided via `tools=`, so the
   decision lands in the trajectory: keeping the run an RLM and the RL data honest.
@@ -383,34 +383,41 @@ reason is in the rule.
   or expand linked files (don't add silent exec. The sandbox is the only place code runs).
   Third-party skills are usable but their text becomes LM context: treat untrusted skills as
   a prompt-injection surface. See the guide (`rlm_harness/README.md`) "Skills (progressive disclosure)".
-- **The trace is a VERSIONED wire format: additive-only within v1.** `SCHEMA =
-  "rlm-harness/trace/v1"` + the eight `EVENT_*` type strings + the `{schema, run_id, step_id, ts, type,
+- **The trace is a VERSIONED wire format: additive-only within a version.** `SCHEMA =
+  "rlm-harness/trace/v2"` + the eight `EVENT_*` type strings + the `{schema, run_id, step_id, ts, type,
   payload}` envelope + the dataset-exporter record shapes are a CONTRACT that offline readers build
   on (replay, the `export_*` exporters, AND every consumer's report renderer / dataset / re-render).
-  Within v1 you MAY add an optional payload field; you may NOT remove, rename, or re-type an existing
-  event type, envelope key, or established payload field: that silently breaks every downstream
-  reader without a test failure here. A breaking change bumps `SCHEMA` to `v2` with a migration.
-
-  **One removal has been taken inside v1, and it is recorded here so it reads as a decision rather
-  than an oversight.** 1.17.0 removed `api_rounds` from the `run_end.payload.usage` call entries,
-  where it had shipped in 1.11.0 as a key the kit set itself. It was forced: an engine-backed LM's
-  usage reaches dspy's tracker through `usage_dict`, which rebuilds a fixed key set off the typed
-  `lm15.Usage`, and a tracker entry carries no per-call identity to re-attach it by (measured both
-  ways). `SCHEMA` deliberately stayed `v1`: a `v2` bump breaks every reader of every event to
-  announce the loss of one optional sub-field, which costs the consumers this rule protects more
-  than the removal does. The migration is one line, `EVENT_API_ROUNDS`, whose payload keeps the
-  same `rounds` nesting. Do NOT read this as a precedent for the next removal: what made it
-  acceptable is that upstream left no way to keep the field, and the replacement landed in the
-  same release. `tests/test_contract.py` pins no usage-entry shape, which is why nothing went red,
-  and that remains true: the entry's keys are dspy's.
+  Within a version you MAY add an optional payload field; you may NOT remove, rename, or re-type an
+  existing event type, envelope key, or established payload field: that silently breaks every
+  downstream reader without a test failure here. A breaking change bumps `SCHEMA` to the next
+  version with a migration (`v2` since 1.17.0, so `v3` next).
   `tests/test_contract.py` pins all of this: if it goes red you are about to break a consumer, not
-  the test. **The SCHEMA string itself is frozen from 1.0.0 too**: it read `rlm-kit/trace/v1` until
-  the pre-publication rename to `rlm-harness` (CHANGELOG 1.0.0), which moved the vendor tag while
-  leaving `v1` and the shape byte-identical. That was a ONE-TIME change, safe only because the format
-  had zero external readers at the time and because every reader here and in all nine consumers keys
-  off `type`, never off `schema` (audited before the change; traces predating it still read
-  correctly). Do NOT treat it as a precedent: the string is now as frozen as everything else in this
-  bullet, and a genuine break is still a `v2` with a migration.
+  the test.
+
+  **The version has moved exactly twice, and only one of those was a format change.** It read
+  `rlm-kit/trace/v1` until the pre-publication rename to `rlm-harness` (CHANGELOG 1.0.0), which
+  moved the vendor tag while leaving `v1` and the shape byte-identical: safe only because the
+  format had zero external readers at the time. Then **1.17.0 took `v1` to `v2`**, for one key:
+  `api_rounds` left the `run_end.payload.usage` call entries, where it had shipped in 1.11.0 as a
+  field the kit set itself, so the additive-only rule covered it. The removal was forced, not
+  chosen: an engine-backed LM's usage reaches dspy's tracker through `usage_dict`, which rebuilds
+  a fixed key set off the typed `lm15.Usage`, and a tracker entry carries no per-call identity to
+  re-attach it by (measured both ways). What was a CHOICE is the bump: the same release first
+  described the whole thing as a "move" and called it additive, which is true of the new
+  `EVENT_API_ROUNDS` and false of the old key, and a removal carried quietly inside a version is
+  exactly what this rule exists to stop. Nothing else about v2 differs from v1.
+
+  Two things that make a bump cheap here, and both are properties to KEEP rather than facts to
+  assume. The kit writes `schema` and reads it back nowhere, so a v1 corpus still loads through
+  `load_events` and every exporter: pinned by
+  `tests/test_contract.py::test_a_v1_trace_still_reads_because_nothing_validates_the_schema`, and
+  the obvious post-bump "improvement" of validating the string is what that test exists to refuse.
+  And every reader here and in all ten consumers keys off `type`, never off `schema`: audited
+  before the 1.0.0 rename, and re-audited across every consumer checkout before this bump (the
+  only `schema ==` comparison downstream is `diff-sentry` checking its OWN `diff-sentry/` prefix).
+  Re-audit it the same way next time rather than inheriting the conclusion; "no consumer validates
+  the version" is a measurement with a date on it, and the first release that asserted it without
+  measuring got the cost of a bump backwards.
 - **rlm-harness produces TRAJECTORIES, never reward.** The kit runs the RLM, records the trace, and
   turns traces into datasets (`export_sft_turns` / `export_rl` / `export_actions`). It does NOT
   score them: `export_rl` and `export_actions` carry a `reward=` HOOK the downstream trainer fills
@@ -438,7 +445,7 @@ reason is in the rule.
   enforced by SHAPE), and `harness_from_endpoint` binds that WHOLE context to the downstream harness's
   long-text input field: the child then runs a FULL RLM loop (REPL + its own MCP / skills / fetch) over
   it, not a one-shot completion. TRAJECTORY SEPARATION is load-bearing: the parent records ONE leaf
-  tool_call + a `child_run_id` / `child_trace` link (additive within trace/v1), while the child owns its
+  tool_call + a `child_run_id` / `child_trace` link (additive: no new event type), while the child owns its
   OWN trace/rollout, exported separately (both reward-free). The kit ships NO transport and NAMES no
   harness: the consumer injects `call_endpoint` (subprocess / in-process / HTTP) and the harness's
   identity lives only in the consumer's runtime config, exactly as `make_command_tool` takes an injected

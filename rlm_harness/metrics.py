@@ -2,10 +2,10 @@
 turns, tool calls, and sub-LM escalations. A sibling to ``rubric.py``'s "derive facts from a trace"
 shape, but structurally different: ``rubric.criteria_facts`` slices a CALLER-SUPPLIED facts dict
 against a caller-supplied lens; this module COMPUTES fixed counts/rates directly from the raw
-``trace/v1`` event stream, with no caller input beyond the events themselves. Reward-free, like
+``trace`` event stream, with no caller input beyond the events themselves. Reward-free, like
 every other trace-derived module here: raw counts and rates, never a score.
 
-Reads only already-frozen ``trace/v1`` fields: ``event["type"]``, ``payload["tool"]``, the
+Reads only already-frozen trace fields: ``event["type"]``, ``payload["tool"]``, the
 optional ``payload["duration_s"]``, ``payload["code"]`` and ``payload["final_reasoning"]`` (both
 1.8.0, for :func:`compute_run_facts`), and (through :func:`rlm_harness.trace.payload_cause`, never
 directly) ``circuit_broken`` / ``endpoint_error`` / ``error`` / ``ok``. No new event type, nothing
@@ -168,7 +168,7 @@ class ToolWaste:
 def compute_tool_waste(events: Iterable[dict]) -> dict[str, ToolWaste]:
     """Per-tool outcome and cost breakdown for one run's events, keyed by tool name.
 
-    Pure function over ``trace/v1`` events, same shape as :func:`compute_run_utilization`: pass
+    Pure function over trace events, same shape as :func:`compute_run_utilization`: pass
     one run's events, or use :func:`compute_tool_waste_by_run` across many.
     """
     calls: dict[str, int] = {}

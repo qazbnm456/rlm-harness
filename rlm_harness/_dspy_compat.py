@@ -684,7 +684,7 @@ def applied_lm_budget(lm: Any) -> dict[str, Any] | None:
     killed by a signal never reaches, and a runaway is exactly the kind of run that gets killed.
     Reading it here and putting it in the ``run_start`` meta closes that, with no second copy of
     the key list to drift. The return SHAPE was already frozen before this became public, since it
-    is what ``budgets.main`` publishes in trace/v1.
+    is what ``budgets.main`` publishes in the trace.
 
     Read off the LM, never from ``RLMConfig``: ``runtime`` builds an LM from config ONLY for a role
     that is still ``None``, and an injected ``main_lm``/``sub_lm`` is used verbatim -- so the

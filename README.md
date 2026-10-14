@@ -187,12 +187,13 @@ used to restate the current one and fell five versions behind, so it no longer t
 
 What is worth saying here is the part that does not change with a version number.
 
-1.0.0 means the public surface is a contract: `__init__.__all__`, the `rlm-harness/trace/v1` wire format,
+1.0.0 means the public surface is a contract: `__init__.__all__`, the `rlm-harness/trace/v2` wire format,
 and `RLMTask`'s declaration fields are frozen under
 [SemVer](https://semver.org/) and pinned by `tests/test_contract.py`. Additions ship in a minor
 release; a rename or removal ships with an alias and a `DeprecationWarning` first, and the removal
 itself waits for the next major. The trace format carries its own version and evolves
-additive-only within v1. A `_`-prefixed name or module internal is not part of that promise.
+additive-only within it; a break bumps that version instead, which has happened once (`v1` to `v2`
+in 1.17.0, for one removed usage key, and a v1 trace still reads). A `_`-prefixed name or module internal is not part of that promise.
 
 Next: enable `optimize.compile_task` against a labelled trainset to actually
 GEPA-compile tasks (currently a documented stub).

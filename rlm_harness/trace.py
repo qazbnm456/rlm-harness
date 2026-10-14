@@ -32,7 +32,23 @@ from collections.abc import Callable, Iterable, Iterator
 from contextvars import ContextVar, Token
 from typing import Any, Self
 
-SCHEMA = "rlm-harness/trace/v1"
+#: The wire-format version. **v2 since 1.17.0; v1 for every release before it.** The ONE
+#: difference: a `run_end.payload.usage` call entry no longer carries an `api_rounds` key. It moved
+#: to its own event (:data:`EVENT_API_ROUNDS`, which has the mechanism that forced it). Nothing
+#: else was removed, renamed or re-typed, so a reader of any other field changes nothing.
+#:
+#: Why a bump rather than a quiet removal inside v1: the key shipped in 1.11.0 as an ANNOUNCED
+#: field that the kit set itself, so v1's additive-only rule covered it, and taking it out is a
+#: break however forced the mechanism was. `docs/CONVENTIONS.md` settles what that costs: "a break
+#: there is a `v2` migration, not a SemVer major on its own", which is why this lands in a minor
+#: release.
+#:
+#: The kit never reads this string back. It is written here and validated nowhere, so a v1 corpus
+#: loads through `load_events` and every exporter unchanged (pinned in `tests/test_trace.py` and
+#: `tests/test_contract.py` by hand-built v1 events, which are deliberately NOT swept to v2). A
+#: consumer that does validate it should accept both. For "which kit wrote this file", the field
+#: is `run_start.payload.rlm_harness`, not this one.
+SCHEMA = "rlm-harness/trace/v2"
 
 # Event types written to the stream.
 EVENT_RUN_START = "run_start"
@@ -55,11 +71,11 @@ EVENT_RUN_END = "run_end"
 #:
 #: **The old location is gone, and THAT half is a removal, not an addition.** The key shipped in
 #: 1.11.0 and the kit owned it (it set `api_rounds` on its own usage object), so v1's additive-only
-#: rule covered it and "additive in v1" describes only the new event. The removal is taken INSIDE
-#: v1 on purpose: bumping `SCHEMA` to v2 would break every reader of every event to announce the
-#: loss of one optional sub-field, which costs the same consumers the rule exists to protect more
-#: than the removal does. A reader that used the key takes the last `api_rounds` event instead; its
-#: `rounds` payload is identical to what the key held, which is why the nesting was kept.
+#: rule covered it, and the new event alone is the additive half. The removal is what bumped
+#: :data:`SCHEMA` to `rlm-harness/trace/v2` in this same release, which is the migration the
+#: additive-only rule asks for instead of a removal carried quietly inside v1. A reader that used
+#: the key takes the last `api_rounds` event instead; its `rounds` payload is identical to what the
+#: key held, which is why the nesting was kept.
 #:
 #: **Ordering caveat.** The breakdown is recorded DURING the call, so its `step_id` precedes the
 #: `main_step` or `sub_call` for that same call rather than following it. "Take the last one" is
@@ -471,7 +487,7 @@ class TraceRecorder:
         # because `trace.py` is imported BY `__init__.py`: at module top this is circular, and
         # by the time a recorder is entered the package is fully imported.
         #
-        # Why at all: `schema` is the FORMAT version (`trace/v1`), which says nothing about which
+        # Why at all: `schema` is the FORMAT version, which says nothing about which
         # kit wrote the file. A corpus spanning several releases is then un-attributable: you
         # cannot tell a behaviour change from a version change, which is exactly the wall this
         # release's own measurement work hit.
@@ -601,8 +617,8 @@ class TraceRecorder:
     def note_dspy_settings(self, settings: dict) -> None:
         """Stage the dspy process defaults the kit turned off, for `run_end.payload.dspy_settings`.
 
-        Additive within trace/v1: a new optional payload field on an existing event, no new event
-        type and no envelope key.
+        Additive: a new optional payload field on an existing event, no new event type and no
+        envelope key.
 
         It exists because "was the cache live for this run" is exactly the question that becomes
         unanswerable once the process is gone, and because the answer is not derivable from the

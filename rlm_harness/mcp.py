@@ -398,7 +398,7 @@ class McpCatalog:
 def _repl_alias(name: str, repl: str) -> dict:
     """The optional ``repl_name`` payload field: emitted ONLY when sanitising changed the name.
 
-    Additive within ``rlm-harness/trace/v1`` (a new OPTIONAL payload field is allowed; the
+    Additive (a new OPTIONAL payload field is allowed; the
     envelope, the event types and the established fields are untouched). Conditional so the
     common case stays byte-identical to pre-1.0.2 payloads: nine consumers hold golden
     fixtures, and a field that appears on every MCP event would churn all of them for nothing.

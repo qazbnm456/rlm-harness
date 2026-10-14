@@ -102,7 +102,7 @@ __all__ = [
     "record_tool_call",
     "load_events",
     "group_by_run",
-    # trace/v1 contract constants: read a trace without hardcoding the wire strings
+    # trace contract constants: read a trace without hardcoding the wire strings
     "EVENT_RUN_START",
     "EVENT_MAIN_STEP",
     "EVENT_SUB_CALL",

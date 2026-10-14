@@ -1,4 +1,4 @@
-"""Trace utilization metrics: pure functions over plain trace/v1 event dicts. All offline,
+"""Trace utilization metrics: pure functions over plain trace event dicts. All offline,
 dspy-free (constructs events by hand, same style as test_rubric.py: no real TraceRecorder needed).
 """
 

@@ -6,13 +6,33 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 ## [1.17.0] - 2026-10-14
 
-`ClaudeAgentLM` moves off the dspy interface that 3.5 removes. `api_rounds` moves with it, from a
-usage key to its own trace event: the event is additive in `trace/v1`, the old key is gone, and a
-reader that followed it has one place to change. No public name moves. `n` changes meaning: it
-now costs one CLI call per candidate.
+**The trace wire format is `rlm-harness/trace/v2`.** One key moved: `api_rounds` left the
+`run_end.payload.usage` call entries and became its own event. That is the whole migration, a v1
+trace still reads, and no public name moves. `ClaudeAgentLM` moves off the dspy interface that 3.5
+removes, which is what forced the key. `n` changes meaning too: it now costs one CLI call per
+candidate.
 
 ### Changed
 
+- **The trace wire format is `rlm-harness/trace/v2`** (`SCHEMA`, in every event envelope). It was
+  `v1` from 1.0.0 through 1.16.0. Exactly one thing differs: a `run_end.payload.usage` call entry
+  no longer carries an `api_rounds` key, which is now its own event. Nothing else was removed,
+  renamed or re-typed.
+
+  **What to do:** nothing, unless you read that key or compare the version string. If you read the
+  key, take the last `api_rounds` event instead; its payload keeps the same `rounds` nesting, so
+  the parse is unchanged. If you compare the string, accept both. The kit writes `schema` and reads
+  it back nowhere, so every v1 trace you already have still loads through `load_events` and every
+  exporter, which a test now pins so a later "let us validate the version" cannot strand a corpus.
+  `run_start.payload.rlm_harness` remains the field that says which kit wrote a file.
+
+  **Why a bump for one optional sub-field.** Because the rule says so, and the alternative was
+  taking the removal quietly inside v1 on the argument that a bump would break every reader of
+  every event. That argument was never measured. It is false here: no consumer validates the
+  version string (audited across every consumer checkout; the only `schema ==` comparison
+  downstream is one consumer checking its own unrelated prefix), and `docs/CONVENTIONS.md` already
+  settled that a trace break is a `v2` migration and not a SemVer major on its own, which is why
+  this ships in a minor release.
 - **`ClaudeAgentLM` is an engine now, not a `forward()`/`aforward()` subclass.** dspy 3.4
   deprecates implementing a custom LM that way and schedules removal for 3.5, in its own words:
   "Implement an engine with `complete(Request) -> Response` and pass it to `dspy.LM(engine=...)`
@@ -47,12 +67,11 @@ now costs one CLI call per candidate.
   breakdown no longer passes through `dspy.track_usage()`'s aggregator, which used to merge every
   call's rounds into one flat list with the per-call boundaries lost.
 
-  **Only the new event is additive. The old key's removal is not**, and this entry called the
-  whole change additive. The key shipped in 1.11.0 and the kit set it itself, so `trace/v1`'s
-  additive-only rule covered it. `SCHEMA` stays `v1` regardless: a bump would break every reader
-  of every event to announce the loss of one optional sub-field, which hurts the readers that rule
-  protects more than the removal does. `docs/INVARIANTS.md` now records it beside the rule, with
-  the migration and with what made this one acceptable.
+  **Only the new event is additive. The old key's removal is not**, and this entry first called
+  the whole change additive, which is how a contract break nearly shipped as a footnote. The key
+  arrived in 1.11.0 as an announced field the kit set itself, so the additive-only rule covered it,
+  and a removal under that rule is a version bump with a migration rather than a quiet
+  disappearance. Hence `trace/v2`, below.
 
   One caveat comes with the new location: the event is recorded mid-call, so its `step_id` precedes
   the `main_step` or `sub_call` for that same call rather than following it. Taking the last

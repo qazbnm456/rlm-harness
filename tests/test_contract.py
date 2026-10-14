@@ -8,17 +8,31 @@ Three frozen things (see docs/INVARIANTS.md "The trace is a VERSIONED wire forma
   2. the recorded-event ENVELOPE shape,
   3. the dataset-exporter RECORD shapes (export_actions / export_sft_turns / export_rl / run_label_bundle),
 plus the public ``__all__`` surface a consumer imports. ADDITIVE change is fine (a new optional
-payload field, a new ``__all__`` entry); removing / renaming / re-typing any of these is a v1 break:
-bump SCHEMA to ``rlm-harness/trace/v2`` with a migration instead of editing this test to be green.
+payload field, a new ``__all__`` entry); removing / renaming / re-typing any of these is a BREAK:
+bump SCHEMA (``v2`` since 1.17.0, so ``v3`` next) with a migration instead of editing this test to
+be green. 1.17.0 is the one release that did it, for one key; see ``trace.SCHEMA``.
 """
+
+import json
 
 import rlm_harness
 from rlm_harness import trace as T
 from rlm_harness.dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
 
 
-def test_schema_id_is_frozen_at_v1():
-    assert T.SCHEMA == "rlm-harness/trace/v1"
+def test_schema_id_is_v2_and_frozen_there():
+    """The format version, which moved ONCE: `v1` from 1.0.0 to 1.16.0, `v2` from 1.17.0.
+
+    The bump is not cosmetic and not a convenience. 1.17.0 removed the `api_rounds` key from a
+    `run_end.payload.usage` call entry, where it shipped in 1.11.0 as an announced field the kit
+    set itself, so v1's additive-only rule covered it; see `trace.SCHEMA` for the mechanism that
+    forced the removal and `docs/CONVENTIONS.md` for why a break here is a `v2` migration rather
+    than a SemVer major. Nothing else in the format changed.
+
+    It does not move again without the same ceremony: a reader keys on this string, so the value
+    is the contract and this assertion is the thing that makes a third version a visible diff.
+    """
+    assert T.SCHEMA == "rlm-harness/trace/v2"
 
 
 def test_the_event_type_SET_is_closed(monkeypatch):
@@ -31,7 +45,7 @@ def test_the_event_type_SET_is_closed(monkeypatch):
     to quote. **A test mentioning a number is not a pin; it has to go red when the number moves.**
 
     So this is deliberately the strict shape `RUN_FACT_KEYS` already uses: a closed set, asserted
-    exactly. `trace/v1` is additive-only, so a NEW event type is a legitimate change rather than a
+    exactly. The format is additive-only, so a NEW event type is a legitimate change rather than a
     defect, and the one-line edit here is the point: every downstream reader has to learn the new
     type, so adding one should cost a visible diff to a contract test rather than passing silently.
     """
@@ -63,12 +77,35 @@ def test_event_type_strings_are_frozen():
           "api_rounds")
 
 
+def test_a_v1_trace_still_reads_because_nothing_validates_the_schema(tmp_path):
+    """The v2 bump must not strand a v1 corpus, and nine consumers have one.
+
+    `SCHEMA` is written at `TraceRecorder.record` and read back nowhere in the kit, which is what
+    makes the bump cheap: `load_events` and `group_by_run` pass a v1 envelope through untouched.
+    That is a property worth pinning rather than assuming, because the obvious "improvement" after
+    a version bump is to start validating the string, and that would break every older file in
+    place. A consumer that validates it should accept both.
+    """
+    path = tmp_path / "v1.jsonl"
+    # Deliberately the OLD version, and deliberately not swept with the rest of the suite.
+    old = {"schema": "rlm-harness/trace/v1", "run_id": "old-run", "step_id": 0, "ts": 1.0,
+           "type": T.EVENT_RUN_START, "payload": {"meta": {}}}
+    path.write_text(json.dumps(old) + "\n", encoding="utf-8")
+
+    events = T.load_events(str(path))
+    assert [e["schema"] for e in events] == ["rlm-harness/trace/v1"], "a v1 trace stopped loading"
+    assert T.group_by_run(events) == {"old-run": events}
+    # ...and filtering by run_id still works on it, which is the one argument `load_events` takes.
+    assert T.load_events(str(path), run_id="old-run") == events
+    assert T.load_events(str(path), run_id="other") == []
+
+
 def test_recorded_event_envelope_shape(tmp_path):
     # every event a recorder emits is exactly this envelope (replay + dataset readers depend on it).
     with T.TraceRecorder(str(tmp_path / "t.jsonl"), run_id="r1", clock=lambda: 1.0) as rec:
         ev = rec.record(T.EVENT_TOOL_CALL, {"tool": "x"})
     assert set(ev) == {"schema", "run_id", "step_id", "ts", "type", "payload"}
-    assert ev["schema"] == "rlm-harness/trace/v1" and ev["run_id"] == "r1"
+    assert ev["schema"] == "rlm-harness/trace/v2" and ev["run_id"] == "r1"
     assert ev["type"] == "tool_call" and ev["payload"] == {"tool": "x"}
     assert isinstance(ev["step_id"], int)
 
@@ -181,7 +218,7 @@ def test_public_surface_includes_the_consumer_contract():
         # reward-free rubric primitives (opaque category)
         "Criterion", "RubricCriteria", "CriterionFact",
         "rubric_to_meta", "rubric_from_meta", "validate_rubric", "criteria_facts",
-        # trace/v1 contract constants. A consumer reads a trace against these, not raw strings
+        # trace contract constants. A consumer reads a trace against these, not raw strings
         "EVENT_RUN_START", "EVENT_MAIN_STEP", "EVENT_SUB_CALL", "EVENT_TOOL_CALL",
         "EVENT_FINAL", "EVENT_RESULT", "EVENT_RUN_END", "EVENT_API_ROUNDS",
     }

@@ -144,7 +144,7 @@ def _api_rounds(usage: dict | None) -> dict[str, list] | None:
     ``TraceRecorder.record_api_rounds``, so it never reaches dspy's ``UsageTracker`` and the
     arithmetic above cannot touch it. What the nesting buys now is that a reader who already
     parsed ``api_rounds["rounds"]`` off the old usage entry parses the new payload unchanged, and
-    that ``trace/v1`` freezes the payload shape either way. The history above is kept because it
+    that the trace format freezes the payload shape either way. The history above is kept because it
     is why the shape is what it is, not because the hazard is still live. ``tests/test_dspy_compat.py``
     still pins the nested-value-survives-a-merge property for any consumer who DOES put structured
     data in a usage entry; no caller in this kit does.

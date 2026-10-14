@@ -196,7 +196,7 @@ def _applied_budgets(sub_lm: Any, config: Any, caps_dropped: bool) -> dict[str, 
         if sub is not None:
             out["sub"] = sub
     # THINKING ceilings, under their OWN key rather than inside `budgets.main`/`.sub`. Those two
-    # are established trace/v1 shapes whose PRESENCE means "this role carried a token cap" -- the
+    # are established trace shapes whose PRESENCE means "this role carried a token cap" -- the
     # guide states that in as many words ("an absent main/sub means no cap was set on that role"),
     # so emitting a `main` that held only a thinking budget would change what an existing reader's
     # `budgets["main"]["cap"]` is allowed to assume. A new optional key is additive; a re-typed one

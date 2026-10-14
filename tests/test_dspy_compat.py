@@ -921,7 +921,8 @@ def test_the_aggregator_survives_a_nested_value_on_this_dspy():
     The kit reads `tracker.usage_data` per call, but since 3.4.0 dspy merges for it in one place:
     `call_result.combine()` folds usage when a single LM call yields several results, and
     `finalize` records the MERGED dict. Nesting is what keeps such an entry readable rather than
-    arithmetic, and trace/v1 freezes the shape regardless: see `claude_agent_lm._api_rounds`.
+    arithmetic, and the trace format freezes the shape regardless: see
+    `claude_agent_lm._api_rounds`.
 
     The kit's contract is therefore narrow and holds on both versions: a dict-nested value REACHES
     the merged result, in either call order, and the merge does not raise. A BARE list is what has

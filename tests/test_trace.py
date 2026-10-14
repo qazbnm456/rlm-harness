@@ -48,7 +48,7 @@ def test_recorder_writes_jsonl_with_monotonic_steps(tmp_path):
     assert types_seen == [EVENT_RUN_START, "sub_call", "tool_call", EVENT_RUN_END]
     assert [e["step_id"] for e in events] == [0, 1, 2, 3]
     assert all(e["run_id"] == "r1" for e in events)
-    assert all(e["schema"] == "rlm-harness/trace/v1" for e in events)
+    assert all(e["schema"] == "rlm-harness/trace/v2" for e in events)
 
 
 def test_on_event_observer_fires_live_for_every_event(tmp_path):
@@ -458,7 +458,7 @@ def test_an_explicitly_recorded_cause_wins_over_the_derivation(tmp_path):
 
 # ---- 1.6.0: the three fields that make a trace measurable ------------------------------
 #
-# All three are ADDITIVE within trace/v1: no new event type, nothing removed or re-typed. They
+# All three are ADDITIVE: no new event type, nothing removed or re-typed. They
 # exist because an analysis of ~400 real traces could not answer three basic questions: which kit
 # wrote this, how long did that tool take, and was a turn's wall-clock the model generating or the
 # sandbox executing.
@@ -475,7 +475,7 @@ def test_run_start_names_the_kit_that_wrote_the_trace(tmp_path):
     start = [json.loads(x) for x in p.read_text().splitlines()][0]
     assert start["type"] == "run_start"
     assert start["payload"]["rlm_harness"] == rlm_harness.__version__
-    assert start["schema"] == "rlm-harness/trace/v1"        # the FORMAT version, unchanged
+    assert start["schema"] == "rlm-harness/trace/v2"        # the FORMAT version, beside the kit's
 
 
 def test_the_version_sits_beside_meta_never_inside_it(tmp_path):
@@ -873,7 +873,9 @@ def test_a_truncated_file_with_this_runs_events_but_no_run_start_emits_nothing(t
     import json
 
     path = tmp_path / "rotated.jsonl"
-    # Hand-built: this run's turns survived the rotation, its run_start did not.
+    # Hand-built: this run's turns survived the rotation, its run_start did not. Left on
+    # `trace/v1` on purpose, so this doubles as proof that the 1.17.0 version bump did not strand
+    # an existing corpus; `tests/test_contract.py` pins that property directly.
     with path.open("w") as fh:
         for turn in range(3):
             fh.write(json.dumps({
