@@ -779,3 +779,43 @@ def test_a_recorder_that_raises_does_not_break_the_call(sdk_returning, monkeypat
     with TraceRecorder(str(tmp_path / "t.jsonl"), run_id="r"):
         response = _complete(rlm_harness.ClaudeAgentLM("sonnet"))
     assert response.usage.input_tokens == 1082, "a broken recorder took the call down with it"
+
+
+def test_dspys_retry_budget_is_live_but_never_multiplies_an_sdk_call(sdk_returning, monkeypatch):
+    """The politeness ladder now rests on dspy's error CLASSIFICATION, and nothing said so.
+
+    `dspy/clients/execution.py` computes `retries = lm.num_retries if call.managed else 0`.
+    `managed` was False for this class until 1.17.0, so dspy's budget was structurally zero; the
+    engine migration flipped it to True and `num_retries` defaults to 3. What keeps a personal
+    subscription from taking 4 SDK calls per LM call is only that the adapter's `RuntimeError` /
+    `TimeoutError` surface as `LMUnexpectedError`, which is absent from dspy's
+    `_RETRYABLE_LM_ERRORS`. That is someone else's table: this makes the dependency visible, so an
+    upstream classification change lands here instead of on a usage window.
+
+    **The control is the first two assertions.** Without them this passes for an LM whose
+    `num_retries` is 0 or which dspy never treated as managed, i.e. for a build where the risk
+    does not exist and the test proves nothing.
+    """
+    sdk = sdk_returning({"input_tokens": 1, "output_tokens": 1})
+    calls = {"n": 0}
+
+    async def failing(*, prompt, options):
+        calls["n"] += 1
+        raise RuntimeError("the sandbox exploded")
+        yield  # pragma: no cover - never reached
+
+    monkeypatch.setattr(sdk, "query", failing)
+    lm = rlm_harness.ClaudeAgentLM("sonnet")
+
+    assert lm.num_retries > 0, "dspy's retry budget is zero, so this test cannot see the hazard"
+    assert hasattr(lm, "_engine_spec"), "not managed, so dspy's budget would be zero anyway"
+
+    import dspy
+
+    with pytest.raises(Exception) as caught:
+        lm(prompt="hi")
+    assert dspy.is_retryable_lm_error(caught.value) is False, (
+        "dspy now calls this adapter's failure retryable, so every failed subscription call is "
+        "about to cost num_retries+1 SDK spawns: cap `num_retries` on the LM, do not relax this"
+    )
+    assert calls["n"] == 1, f"the SDK was spawned {calls['n']} times for one failed call"

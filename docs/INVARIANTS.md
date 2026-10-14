@@ -168,6 +168,21 @@ reason is in the rule.
   `<3.5.0` (see `pyproject.toml`) until then. `intercept_sub_lm`'s wrapper is NOT on the deprecated
   interface and needs no migration: it overrides `__call__`, not `forward`, and the same test
   covers it.
+- **`ClaudeAgentLM`'s politeness ladder rests on dspy's error CLASSIFICATION, and that dependency
+  is a borrowed table.** `dspy/clients/execution.py` computes
+  `retries = lm.num_retries if call.managed else 0`. While the class was unmanaged that budget was
+  structurally zero and the adapter's own single rate-limit retry was the whole ladder. Since
+  1.17.0 it is managed and `num_retries` defaults to 3, so the budget is LIVE; what still keeps a
+  personal subscription from paying four CLI spawns per failed call is only that the adapter's
+  `RuntimeError`/`TimeoutError` surface as `LMUnexpectedError`, which is absent from dspy's
+  `_RETRYABLE_LM_ERRORS` (measured: `is_retryable_lm_error` → `False`, one SDK call for one failed
+  call). Nobody chose that; it is upstream's table.
+  `tests/test_claude_agent_lm.py::test_dspys_retry_budget_is_live_but_never_multiplies_an_sdk_call`
+  makes it visible, with its control inside it (a zero `num_retries` or an unmanaged LM would make
+  the test pass for a build where the hazard does not exist). If it goes red, cap `num_retries` on
+  the LM; do not relax the assertion. The module docstring's "One retry ladder, smallest at each
+  rung" is the promise this holds up, and it is about someone's personal usage window, not a
+  performance knob.
 - **`import rlm_harness` must not import dspy.** `RLMTask` and `configure` are lazy
   re-exports in `__init__.py` (PEP 562). Don't make them eager.
 - **Resolve custom output types via `output_model`.** `RLMTask._build_rlm` passes

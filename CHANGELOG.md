@@ -95,6 +95,13 @@ location has one place to change. No public name moves.
 - Tests for the paths the migration left uncovered: the async engine (the planner's primary route,
   entirely new surface), the rate-limit rung and its negative arm, a non-text part being refused,
   and a recorder that raises mid-call.
+- **The politeness ladder's new dependency is written down and pinned.** dspy computes
+  `retries = lm.num_retries if call.managed else 0`, and `managed` flipped from False to True with
+  the migration, so dspy's budget (default 3) is live where it used to be structurally zero. What
+  keeps a personal subscription from paying four CLI spawns per failed call is only that the
+  adapter's errors surface as `LMUnexpectedError`, which dspy does not list as retryable: upstream's
+  table, not a kit choice. Measured, pinned with its control, and recorded in `docs/INVARIANTS.md`
+  with what to do if it ever goes red (cap `num_retries`, do not relax the assertion).
 - **The guide documents dspy's own subscription providers**, which need no kit code:
   `configure()` takes a pre-built LM verbatim, so `dspy.LM("claude-code:sonnet", engine=LM15Engine(),
   async_engine=AsyncLM15Engine())` goes in through the same seam as any other. The model string
