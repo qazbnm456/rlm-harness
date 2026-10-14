@@ -133,9 +133,12 @@ def test_configure_explicit_main_lm_override_wins_over_a_prefixed_model_string(m
 
 
 def test_configure_lm_kwargs_never_forwarded_into_the_subscription_lm(monkeypatch):
-    # ClaudeAgentLM.__init__ accepts **kwargs and forwards them into dspy.BaseLM without
-    # validating they make sense for this adapter: api_key/base_url/custom_llm_provider must
-    # never reach it (meaningless, or for base_url actively misleading).
+    # `api_key`/`base_url`/`custom_llm_provider` must never reach this adapter: meaningless for a
+    # local CLI, and for `base_url` actively misleading. Since 1.17.0 the LM would also REFUSE
+    # them (dspy raises `ValueError` for a client key on an engine-backed LM), so passing one
+    # would now fail loudly rather than be ignored. That makes this test's subject the ROUTING
+    # layer specifically: `configure()` must not hand them over in the first place, whatever the
+    # LM would do with them.
     monkeypatch.setattr(rt, "_try_instrument", lambda: None)
     stub = _stub_claude_agent_lm(monkeypatch)
     rt.configure(

@@ -142,20 +142,52 @@ def test_the_subscription_lm_does_not_default_to_a_live_cache(fake_sdk, monkeypa
 
 def test_construction_sets_the_trace_label(fake_sdk, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert rlm_harness.ClaudeAgentLM("opus").model == "claude-agent-sdk/opus"
+
+
+def test_the_alias_reaches_the_sdk_rather_than_the_prefixed_trace_label(sdk_returning):
+    """The model the SDK is asked for is the ALIAS, not the trace label. Asserted on what the SDK
+    receives: the LM used to keep a `_alias` copy of its own, and a mutation showed nothing read
+    it, so a test asserting the copy pinned a vestige rather than the call."""
+    sdk = sdk_returning({"input_tokens": 1, "output_tokens": 1})
     lm = rlm_harness.ClaudeAgentLM("opus")
-    assert lm.model == "claude-agent-sdk/opus"
-    assert lm._alias == "opus"
+    _complete(lm)
+    assert lm.model == "claude-agent-sdk/opus", "the trace label lost its prefix"
+    assert sdk.captured_options["model"] == "opus", "the SDK was asked for the prefixed label"
 
 
-def test_the_call_deadline_is_a_constructor_choice_with_a_default(fake_sdk, monkeypatch):
-    """This LM's bound on a model call, and it had NO test at all. It is deliberately not driven
-    by `RLMConfig.request_timeout_s`: that knob is a per-HTTP-request bound which dspy and
-    litellm each retry around, whereas this is END-TO-END for one call and includes time queued
-    behind the module-level semaphore. `configure(main_lm=...)` is the seam for choosing it:
-    see `runtime.configure`, which warns when the knob cannot reach an auto-routed role."""
+def test_the_call_deadline_is_a_constructor_choice_and_it_actually_fires(sdk_returning, monkeypatch):
+    """This LM's bound on a model call, DRIVEN rather than read off an attribute.
+
+    It is deliberately not `RLMConfig.request_timeout_s`: that knob is a per-HTTP-request bound
+    which dspy and litellm each retry around, whereas this is END-TO-END for one call and includes
+    time queued behind the module-level semaphore. `configure(main_lm=...)` is the seam for
+    choosing it: see `runtime.configure`, which warns when the knob cannot reach an auto-routed
+    role.
+
+    The predecessor asserted `lm._timeout_s`, a copy the LM kept and nothing used. This hangs the
+    fake SDK and demands the deadline fire, which also covers the cancel-on-timeout path that no
+    test reached before.
+    """
+    import asyncio
+
+    sdk = sdk_returning({"input_tokens": 1, "output_tokens": 1})
+
+    async def hanging(*, prompt, options):
+        await asyncio.sleep(30)
+        yield None  # pragma: no cover - the deadline fires first
+
+    monkeypatch.setattr(sdk, "query", hanging)
+    with pytest.raises(TimeoutError, match="timed out after 0.2s"):
+        _complete(rlm_harness.ClaudeAgentLM("opus", timeout_s=0.2))
+
+
+def test_the_call_deadline_defaults_to_ten_minutes(fake_sdk, monkeypatch):
+    """The DEFAULT, which cannot be driven in a test (it would take ten minutes), so it is read
+    off the object that uses it rather than a copy: `_call` is what `complete` reads."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    assert rlm_harness.ClaudeAgentLM("opus")._timeout_s == 600.0
-    assert rlm_harness.ClaudeAgentLM("opus", timeout_s=45.0)._timeout_s == 45.0
+    assert rlm_harness.ClaudeAgentLM("opus")._call._timeout_s == 600.0
+    assert rlm_harness.ClaudeAgentLM("opus", timeout_s=45.0)._call._timeout_s == 45.0
 
 
 def test_construction_refuses_a_leftover_api_key(fake_sdk, monkeypatch):
@@ -219,8 +251,10 @@ def test_a_bool_is_not_a_token_count():
 # The three tests above pin the arithmetic of a pure helper. They do NOT pin that `_acomplete`
 # calls it: restoring the original `prompt_tokens = usage.get("input_tokens", 0)` at the call
 # site, with the helper left intact but unused, leaves every one of them green. These drive the
-# real coroutine end to end through `forward()`: the bridge loop, the semaphore, `_query_once`
-# and the litellm mapping: against a fake SDK, so the defect's own location is covered.
+# real coroutine end to end through the ENGINE (`lm.engine.complete(request)`): the bridge loop,
+# the semaphore, `_query_once` and the `lm15.Response` mapping, against a fake SDK, so the
+# defect's own location is covered. It read `forward()` and "the litellm mapping" until 1.17.0
+# migrated the class off both.
 
 
 def _complete(lm, prompt="hi", *, response_format=None):
@@ -267,9 +301,13 @@ def sdk_returning(monkeypatch):
                 self.result = text
                 self.structured_output = None
 
+        captured: dict = {}
+
         class ClaudeAgentOptions:
             def __init__(self, **kwargs):
                 self.kwargs = kwargs
+                captured.clear()
+                captured.update(kwargs)
 
         async def query(*, prompt, options):
             yield ResultMessage()
@@ -278,6 +316,7 @@ def sdk_returning(monkeypatch):
         mod.ClaudeAgentOptions = ClaudeAgentOptions
         mod.ResultMessage = ResultMessage
         mod.query = query
+        mod.captured_options = captured     # what the adapter actually passed, per call
         monkeypatch.setitem(sys.modules, "claude_agent_sdk", mod)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         return mod
@@ -584,3 +623,159 @@ def test_a_rejected_breakdown_is_logged_and_an_absent_one_is_not(sdk_returning, 
         assert len(caplog.records) == expected, f"wrong DEBUG count for {reported}"
 
 
+
+
+# --- what the adapter PASSES to the SDK, which nothing used to assert ------------------------
+#
+# The fixture's own note says a renamed kwarg stays green here, because `ClaudeAgentOptions`
+# swallows anything. That understated the gap: no test asserted any VALUE either, so mutating
+# `tools=[]` to a real toolset, or `setting_sources=[]` to the user's own settings, left the whole
+# suite green -- and those two are the guarantee the module docstring and `docs/INVARIANTS.md`
+# rest on ("rlm-harness's sandbox stays the only place code runs").
+
+
+def test_a_completion_grants_the_sdk_no_tools_and_leaks_no_settings(sdk_returning):
+    """The pure-completion guarantee, asserted on the VALUES the SDK receives.
+
+    `tools=[]` empties the toolset (`allowed_tools` would merely auto-approve) and
+    `setting_sources=[]` keeps the user's CLAUDE.md, settings and MCP servers out of a planner
+    call. Both are load-bearing claims made in prose elsewhere; this is what makes them pins.
+    """
+    sdk = sdk_returning({"input_tokens": 1, "output_tokens": 1})
+    _complete(rlm_harness.ClaudeAgentLM("sonnet"))
+    assert sdk.captured_options["tools"] == [], "the SDK was handed a toolset"
+    assert sdk.captured_options["setting_sources"] == [], "the user's settings could leak in"
+    assert sdk.captured_options["env"] == {"CLAUDE_CODE_MAX_RETRIES": "2"}, "the CLI retry ladder moved"
+    assert sdk.captured_options["model"] == "sonnet"
+
+
+def test_a_structured_call_reaches_the_sdks_own_output_format(sdk_returning):
+    """Structured output, end to end, in the shape the ENGINE receives rather than the one the
+    adapter produces.
+
+    1.17.0's migration broke this and nothing caught it: `_translate_response_format` read only a
+    pydantic CLASS, which is what the kit's adapter injects, while dspy canonicalises that to a
+    dict before the engine sees it. Every structured call silently got `output_format=None` and
+    `max_turns=1`, which also made the SDK's validation round unreachable. The `response_format`
+    knob on `_complete` existed for this test and was unused until it did.
+    """
+    sdk = sdk_returning({"input_tokens": 1, "output_tokens": 1})
+    canonical = {"type": "json_schema", "name": "DSPyProgramOutputs", "strict": True,
+                 "schema": {"type": "object", "properties": {"headline": {"type": "string"}}}}
+    _complete(rlm_harness.ClaudeAgentLM("sonnet"), response_format=canonical)
+    assert sdk.captured_options["output_format"] == {
+        "type": "json_schema",
+        "schema": {"type": "object", "properties": {"headline": {"type": "string"}}},
+    }, "the schema did not reach the SDK"
+    # dspy's own `name`/`strict` are not forwarded: they were never sent, and this is not the
+    # place to guess what the SDK does with an unknown key.
+    assert "name" not in sdk.captured_options["output_format"]
+    # ...and the structured path gets the headroom its comment describes, which `max_turns=1`
+    # silently removed.
+    assert sdk.captured_options["max_turns"] == 8
+
+
+def test_a_plain_completion_asks_for_no_output_format_and_one_turn(sdk_returning):
+    """The other arm: without this the test above passes for a build that sets `max_turns=8`
+    unconditionally, and the one-turn plain completion is half the politeness policy."""
+    sdk = sdk_returning({"input_tokens": 1, "output_tokens": 1})
+    _complete(rlm_harness.ClaudeAgentLM("sonnet"))
+    assert sdk.captured_options["output_format"] is None
+    assert sdk.captured_options["max_turns"] == 1
+
+
+@pytest.mark.parametrize("response_format", [
+    pytest.param({"type": "json_object"}, id="json-object-fallback"),
+    pytest.param({"type": "json_schema", "schema": {}}, id="empty-schema"),
+])
+def test_a_response_format_with_no_usable_schema_asks_for_none(sdk_returning, response_format):
+    """A stock adapter's `{"type": "json_object"}` has no SDK equivalent and must not become a
+    schema-validated call with an empty schema. Two shapes, one outcome.
+
+    A `json_schema` with NO `schema` key is deliberately not among them: `lm15.Config` refuses it
+    outright (`response_format json_schema requires a 'schema' object`), so it cannot reach the
+    engine and a kit-side guard for it would be unreachable code with a test to match.
+    """
+    sdk = sdk_returning({"input_tokens": 1, "output_tokens": 1})
+    _complete(rlm_harness.ClaudeAgentLM("sonnet"), response_format=response_format)
+    assert sdk.captured_options["output_format"] is None
+    assert sdk.captured_options["max_turns"] == 1
+
+
+# --- paths the new tests did not reach, each of which a mutation would have survived ----------
+
+
+def test_the_async_engine_is_wired_and_not_just_constructed(sdk_returning):
+    """The planner seat, i.e. the PRIMARY RLM route, and entirely new surface in 1.17.0.
+
+    `dspy.LM` takes a sync `engine=` and an async `async_engine=`; the sync one alone would leave
+    every `aforward` call going somewhere else. Coverage showed `acomplete` and
+    `_AsyncClaudeAgentEngine.complete` unreached by any test, so nothing distinguished "wired" from
+    "constructed".
+    """
+    import asyncio
+
+    sdk_returning({"input_tokens": 1, "output_tokens": 1}, text="async ok")
+    lm = rlm_harness.ClaudeAgentLM("sonnet")
+    assert asyncio.run(lm.acall(prompt="hi")) == ["async ok"]
+
+
+@pytest.mark.parametrize(("text", "sdk_calls"), [
+    pytest.param("429 rate limit exceeded", 2, id="rate-limited-retries"),
+    pytest.param("failed to generate the delimiter", 1, id="ordinary-error-does-not"),
+])
+def test_the_rate_limit_rung_fires_for_a_rate_limit_shape_only(sdk_returning, monkeypatch, text, sdk_calls):
+    """The politeness ladder's own rung: one retry after a backoff, for a rate-limit-SHAPED error
+    only. `_RATE_LIMIT_RE` is phrase-level precisely so ordinary error text ("failed to generate
+    the delimiter") does not buy a sleep and a second call, and neither arm had a test."""
+    import rlm_harness.claude_agent_lm as cal
+
+    monkeypatch.setattr(cal, "_BACKOFF_S", 0.0)   # the ladder, not the wait, is under test
+    sdk = sdk_returning({"input_tokens": 1, "output_tokens": 1})
+    calls = {"n": 0}
+
+    async def query(*, prompt, options):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError(text)
+        yield sdk.ResultMessage()
+
+    monkeypatch.setattr(sdk, "query", query)
+    if sdk_calls == 1:
+        with pytest.raises(RuntimeError, match="delimiter"):
+            _complete(rlm_harness.ClaudeAgentLM("sonnet"))
+    else:
+        _complete(rlm_harness.ClaudeAgentLM("sonnet"))
+    assert calls["n"] == sdk_calls
+
+
+def test_a_non_text_part_is_refused_rather_than_stringified(sdk_returning):
+    """The SDK takes ONE text prompt, so a non-text part has nowhere to go. The predecessor path
+    ran `str(content)` over whatever it was handed, which sent a content array's repr to the model
+    as if it were the prompt: a loud refusal names the part, a repr looks like a bad answer."""
+    import dspy
+
+    sdk_returning({"input_tokens": 1, "output_tokens": 1})
+    T = dspy.lm15
+    request = T.Request(
+        model="claude-agent-sdk/sonnet",
+        messages=[T.Message(role="user", parts=[T.BinaryPart(data="AA==", media_type="image/png")])],
+        config=T.Config(),
+    )
+    with pytest.raises(TypeError, match="cannot send a .* part"):
+        rlm_harness.ClaudeAgentLM("sonnet").engine.complete(request)
+
+
+def test_a_recorder_that_raises_does_not_break_the_call(sdk_returning, monkeypatch, tmp_path):
+    """Observability never breaks a run. The breakdown is recorded mid-call now, so a recorder
+    that throws sits directly in the completion path."""
+    from rlm_harness.trace import TraceRecorder
+
+    sdk_returning(_usage_with_rounds([_ROUND]))
+    monkeypatch.setattr(
+        TraceRecorder, "record_api_rounds",
+        lambda self, model, rounds: (_ for _ in ()).throw(RuntimeError("trace is broken")),
+    )
+    with TraceRecorder(str(tmp_path / "t.jsonl"), run_id="r"):
+        response = _complete(rlm_harness.ClaudeAgentLM("sonnet"))
+    assert response.usage.input_tokens == 1082, "a broken recorder took the call down with it"

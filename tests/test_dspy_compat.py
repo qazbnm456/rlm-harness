@@ -972,10 +972,11 @@ def test_the_aggregator_survives_a_nested_value_on_this_dspy():
 def test_lm_cache_is_live_rules_OUT_an_unmanaged_lm_that_reads_cache_True():
     """`lm.cache` is the wrong reader, and it misreads in the direction that matters.
 
-    `ClaudeAgentLM` inherits `cache=True` from `dspy.BaseLM` while carrying no `_engine_spec`, so
-    dspy treats it as unmanaged and never consults the cache. A trace field built on the raw
-    attribute therefore reported a LIVE cache for the one LM that structurally cannot have one, which
-    is what 1.15.0 shipped and 1.15.1 fixes.
+    An LM that carries no `_engine_spec` inherits `cache=True` from `dspy.BaseLM` while dspy
+    treats it as unmanaged and never consults the cache, so a trace field built on the raw
+    attribute reported a LIVE cache for an LM that structurally cannot have one: what 1.15.0
+    shipped and 1.15.1 fixes. `ClaudeAgentLM` was the motivating case and stopped being one in
+    1.17.0, when it became engine-backed; the body below is generic for that reason.
 
     Asserted against the REAL classes, and asymmetrically, because that is the contract: False is
     definitive, True only means dspy's further narrowing has not been reproduced here.
@@ -1102,3 +1103,74 @@ def test_a_mixed_args_error_keeps_its_readable_arguments_unquoted():
     ns = {"json": json, "sys": types.SimpleNamespace(last_exc=ValueError("bad key", slice(1, 2)))}
     exec(_dspy_compat._RUNNER_ERROR_ARGS_SAFE, ns)  # noqa: S102 - our own constant
     assert json.loads(ns["last_exception_args"]()) == ["bad key", "slice(1, 2, None)"]
+
+
+def test_the_kits_own_LMs_are_off_the_interface_dspy_removes_in_3_5():
+    """The instrument for `docs/INVARIANTS.md`'s "stay free of that DeprecationWarning".
+
+    dspy 3.4 deprecates implementing a custom LM through `forward()`/`aforward()` and schedules
+    removal for 3.5. Until 1.17.0 `ClaudeAgentLM` was on that interface, on an exemption the
+    warning itself dated; the migration resolved it, and this is what keeps it resolved. A future
+    edit reintroducing `forward()` would otherwise pass CI green, because nothing runs the suite
+    under `-W error::DeprecationWarning`.
+
+    **The control is the first half, and without it this test is worthless.** A filter that caught
+    nothing, or an upstream that stopped warning, would make the second half pass for an LM that
+    IS on the dead interface. So a `forward()`-style subclass is driven first and must raise.
+    """
+    import warnings
+
+    import litellm
+
+    class _Legacy(dspy.BaseLM):
+        def forward(self, prompt=None, messages=None, **kwargs):
+            return litellm.ModelResponse(
+                model=self.model,
+                choices=[{"message": {"role": "assistant", "content": "x"}}],
+            )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        with pytest.raises(DeprecationWarning, match="forward"):
+            _Legacy(model="legacy/x")("hi")
+
+        # `intercept_sub_lm`'s wrapper: NOT on the interface (it overrides `__call__`), which is
+        # why 1.17.0 migrated only the subscription LM.
+        from dspy.utils.dummies import DummyLM
+
+        from rlm_harness import intercept_sub_lm
+
+        wrapped = intercept_sub_lm(DummyLM([{"answer": "hi"}], adapter=dspy.JSONAdapter()))
+        wrapped("hi")
+
+        # `ClaudeAgentLM`, through a fake SDK: an engine, so nothing to warn about.
+        import os
+        import sys
+        import types
+
+        mod = types.ModuleType("claude_agent_sdk")
+
+        class _Result:
+            usage = {"input_tokens": 1, "output_tokens": 1}
+            total_cost_usd = None
+            is_error = False
+            subtype = "success"
+            result = "ok"
+            structured_output = None
+
+        async def _query(*, prompt, options):
+            yield _Result()
+
+        mod.ClaudeAgentOptions = lambda **kwargs: types.SimpleNamespace(kwargs=kwargs)
+        mod.ResultMessage = _Result
+        mod.query = _query
+        sys.modules["claude_agent_sdk"] = mod
+        had_key = os.environ.pop("ANTHROPIC_API_KEY", None)
+        try:
+            import rlm_harness
+
+            rlm_harness.ClaudeAgentLM("sonnet")("hi")
+        finally:
+            sys.modules.pop("claude_agent_sdk", None)
+            if had_key is not None:
+                os.environ["ANTHROPIC_API_KEY"] = had_key

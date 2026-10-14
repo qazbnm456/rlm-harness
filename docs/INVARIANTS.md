@@ -158,12 +158,16 @@ reason is in the rule.
   litellm; `tests/test_dspy_compat.py` pins that, replacing the pin that used to assert the
   ABSENCE of `_engine_spec`.
 
-  Run the suite under `-W error::DeprecationWarning` when touching an LM: it passes today, and a
-  positive control (a `forward()`-style `BaseLM` subclass under the same flag) is what makes that
-  pass a measurement rather than an inert flag. `dspy-latest.yml` remains the instrument that goes
-  red when 3.5 ships; the cap still cannot pass `<3.5.0` (see `pyproject.toml`) until then.
-  `intercept_sub_lm`'s wrapper is NOT on the deprecated interface and needs no migration: it
-  overrides `__call__`, not `forward`, and raises no warning under that flag (measured).
+  The instrument is a TEST, not a habit:
+  `tests/test_dspy_compat.py::test_the_kits_own_LMs_are_off_the_interface_dspy_removes_in_3_5`
+  drives a `forward()`-style subclass first and demands it raise, THEN demands the kit's own LMs
+  raise nothing. Without that control the second half would pass for an LM that is on the dead
+  interface, and relying on remembering to pass `-W error::DeprecationWarning` is not an
+  instrument: nothing in CI passes it, so a future edit reintroducing `forward()` would be green.
+  `dspy-latest.yml` remains what goes red when 3.5 actually ships; the cap still cannot pass
+  `<3.5.0` (see `pyproject.toml`) until then. `intercept_sub_lm`'s wrapper is NOT on the deprecated
+  interface and needs no migration: it overrides `__call__`, not `forward`, and the same test
+  covers it.
 - **`import rlm_harness` must not import dspy.** `RLMTask` and `configure` are lazy
   re-exports in `__init__.py` (PEP 562). Don't make them eager.
 - **Resolve custom output types via `output_model`.** `RLMTask._build_rlm` passes
@@ -345,7 +349,7 @@ reason is in the rule.
   Third-party skills are usable but their text becomes LM context: treat untrusted skills as
   a prompt-injection surface. See the guide (`rlm_harness/README.md`) "Skills (progressive disclosure)".
 - **The trace is a VERSIONED wire format: additive-only within v1.** `SCHEMA =
-  "rlm-harness/trace/v1"` + the seven `EVENT_*` type strings + the `{schema, run_id, step_id, ts, type,
+  "rlm-harness/trace/v1"` + the eight `EVENT_*` type strings + the `{schema, run_id, step_id, ts, type,
   payload}` envelope + the dataset-exporter record shapes are a CONTRACT that offline readers build
   on (replay, the `export_*` exporters, AND every consumer's report renderer / dataset / re-render).
   Within v1 you MAY add an optional payload field; you may NOT remove, rename, or re-type an existing

@@ -69,12 +69,13 @@ _BACKOFF_S = 30.0
 # ("failed to generate", "delimiter") and turn a non-retryable error into a 30s sleep + retry.
 _RATE_LIMIT_RE = re.compile(r"rate.?limit|usage limit|overloaded|429|529")
 
-#: The SDK's own name for the per-iteration breakdown, and the key this kit files it under. They
-#: differ on purpose: `iterations` collides head-on with `run_end.payload.budgets.iterations`,
-#: which is the RLM TURN CAP -- an unrelated thing entirely. Two fields of that name in one
-#: `run_end` payload is a misreading waiting to happen, so the key is ours; the LIST is verbatim.
+#: The SDK's own name for the per-iteration breakdown. The kit does not reuse it: `iterations`
+#: collides head-on with `run_end.payload.budgets.iterations`, the RLM TURN CAP, an unrelated
+#: thing entirely, and two fields of that name in one payload is a misreading waiting to happen.
+#: The kit's name for it is `trace.EVENT_API_ROUNDS`, which is the single source of truth for the
+#: literal; a second copy lived here until 1.17.0 moved the breakdown out of the usage entry and
+#: left it with no reader. The LIST inside is verbatim either way.
 _SDK_ROUNDS_KEY = "iterations"
-_ROUNDS_KEY = "api_rounds"
 
 
 def _api_rounds(usage: dict | None) -> dict[str, list] | None:
@@ -135,15 +136,15 @@ def _api_rounds(usage: dict | None) -> dict[str, list] | None:
     3.4.0 addition is gated behind ``_is_summable`` and a non-summable value silently KEEPS THE
     FIRST and drops every later one: no crash, and no second round either.
 
-    **What the nesting BUYS is version-scoped, and on the only dspy this kit now supports it is
-    forward-compat rather than survival.** On 3.3.1 it bought a lot: no crash on the mixed shape,
-    and call ORDER preserved where a bare list reversed it. On 3.4.0, measured across all four
-    combinations, a nested value and a bare one lose the later rounds identically, because the
-    recursion descends into the dict and then meets the inner LIST, which is not summable either.
-    So the live reasons to keep it are that trace/v1 freezes the payload shape, and that a dict is
-    the form the merge can descend into at all if dspy's arithmetic changes again.
-    ``tests/test_dspy_compat.py`` pins the narrow property the kit depends on, a nested value
-    reaching the merged result without raising, rather than either version's arithmetic.
+    **Since 1.17.0 that merge is no longer on the path, and the nesting is kept for a different
+    reason.** The breakdown is its own trace event (``trace.EVENT_API_ROUNDS``), recorded by
+    ``TraceRecorder.record_api_rounds``, so it never reaches dspy's ``UsageTracker`` and the
+    arithmetic above cannot touch it. What the nesting buys now is that a reader who already
+    parsed ``api_rounds["rounds"]`` off the old usage entry parses the new payload unchanged, and
+    that ``trace/v1`` freezes the payload shape either way. The history above is kept because it
+    is why the shape is what it is, not because the hazard is still live. ``tests/test_dspy_compat.py``
+    still pins the nested-value-survives-a-merge property for any consumer who DOES put structured
+    data in a usage entry; no caller in this kit does.
 
     **Why non-empty.** ``all(...)`` over an empty list is ``True``, so a guard that only checked
     "list of dicts" would CARRY ``[]``. That is not a corner case: the CLI seeds its usage
@@ -182,10 +183,10 @@ def _token_count(usage: dict | None, key: str) -> int:
     would otherwise be summed as 1. Every field of ``result.usage`` goes through here; before this
     release BOTH reads were a bare ``.get(..., 0)``, so a ``None`` in either one reached the
     ``prompt_tokens + completion_tokens`` below and raised ``TypeError``, failing the whole LM call
-    over a missing count. (``result.total_cost_usd`` is read raw further down -- it is not part of
-    the usage dict, and it is stashed on ``_hidden_params``, off this response's usage path
-    entirely -- dspy is what reads it back. litellm reads that key only in its proxy, which is
-    not in play here.)
+    over a missing count. (``result.total_cost_usd`` is read raw further down: it is not part of
+    the usage dict and travels in the response's ``provider_data``, off this function's path
+    entirely. dspy reads a cost off ``_hidden_params["response_cost"]``, which only a litellm
+    response carries, so since 1.17.0 nothing upstream reads it back.)
     """
     value = (usage or {}).get(key)
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
@@ -282,9 +283,13 @@ _BRIDGE_LOCK = threading.Lock()
 
 
 def _bridge() -> _Bridge:
-    # Module-level, NOT instance state: `BaseLM.copy()` deepcopies the LM, and a thread/loop/
-    # semaphore held on the instance would break it. All ClaudeAgentLM instances (main + sub
-    # seat) share one loop and one politeness cap.
+    # Module-level, NOT instance state. A copied LM is the reason: `copy_lm(lm, rollout_id=…)` is
+    # the documented way to get a variant, and dspy's `copy` is `copy_module.copy(self)`, a
+    # SHALLOW runtime copy by its own docstring, so a thread/loop/semaphore held on the instance
+    # would be shared by reference between the original and every variant with no owner. (This
+    # comment said "deepcopies" until 1.17.0, which was wrong and argued the right conclusion from
+    # the wrong direction.) All ClaudeAgentLM instances (main + sub seat) share one loop and one
+    # politeness cap.
     global _BRIDGE
     with _BRIDGE_LOCK:
         if _BRIDGE is None:
@@ -355,12 +360,30 @@ def _request_to_prompts(request: Any) -> tuple[str | None, str]:
 def _translate_response_format(response_format: Any) -> dict[str, Any] | None:
     """Translate dspy's `response_format` into the SDK's native `output_format`.
 
-    The kit's default `json` adapter (`_LenientJSONAdapter`) injects a pydantic model CLASS:
-    exactly what the SDK's schema-validated structured output wants. A dict form (stock
-    adapters' `{"type": "json_object"}` fallback) has no SDK equivalent and is dropped: the
-    prompt already demands JSON and the parse side (`json_repair`) is tolerant.
+    **Two shapes arrive, and which one depends on how far dspy has already got.** The kit's
+    default `json` adapter (`_LenientJSONAdapter`) injects a pydantic model CLASS, but on the
+    engine path dspy canonicalises that into `{"type": "json_schema", "name": ..., "strict": ...,
+    "schema": {...}}` before the engine ever sees it, because `lm15.Config.response_format` only
+    accepts a JSON object and raises `TypeError` on a class. So the DICT is the live case here and
+    the class branch is reached only by a caller assembling a `Request` by hand.
+
+    Reading only the class was a real regression: 1.17.0's engine migration left this function
+    expecting what the ADAPTER produces rather than what the ENGINE receives, so every structured
+    call silently got `output_format=None` and `max_turns=1`, which also made the SDK's own
+    validation round unreachable. The dict is re-emitted as the two keys the SDK's `output_format`
+    took before, rather than forwarded whole: `name`/`strict` are dspy's own, were never sent, and
+    this is not the place to start guessing what the SDK does with an unknown key.
+
+    A dict with no usable schema (stock adapters' `{"type": "json_object"}` fallback) is still
+    dropped: it has no SDK equivalent, the prompt already demands JSON, and the parse side
+    (`json_repair`) is tolerant.
     """
     if response_format is None:
+        return None
+    if isinstance(response_format, dict):
+        schema_obj = response_format.get("schema")
+        if isinstance(schema_obj, dict) and schema_obj:
+            return {"type": "json_schema", "schema": schema_obj}
         return None
     schema = getattr(response_format, "model_json_schema", None)
     if callable(schema):
@@ -567,11 +590,19 @@ class _AsyncClaudeAgentEngine:
 class ClaudeAgentLM(dspy.LM):
     """A dspy LM whose completions run through the Claude Agent SDK on a subscription login.
 
-    Satisfies both rlm-harness seats: the planner calls `aforward(messages=...)` through the
-    adapter, the sub-LM seat calls `forward(prompt)` synchronously from `llm_query[_batched]`
-    worker threads: both funnel into one coroutine on the shared bridge loop. Works under
-    `intercept_sub_lm` unchanged. Unknown lm_kwargs (temperature, max_tokens, ...) are
-    tolerated and ignored: the SDK exposes no sampling controls.
+    Satisfies both rlm-harness seats: the planner arrives on the ASYNC engine through the
+    adapter, the sub-LM seat on the SYNC one from `llm_query[_batched]` worker threads: both
+    funnel into one coroutine on the shared bridge loop. Works under
+    `intercept_sub_lm` unchanged. Sampling lm_kwargs (temperature, max_tokens, ...) are tolerated
+    and ignored: the SDK exposes no sampling controls.
+
+    **Since 1.17.0 a CONNECTION kwarg is refused rather than ignored**, and that is dspy's doing
+    rather than a kit choice: `dspy.LM` raises `ValueError` for `api_key`, `api_base`, `base_url`,
+    `timeout`, `headers` and the rest of its client keys when the LM has a custom engine, because
+    they configure a connection dspy no longer owns. A construction that used to succeed and do
+    nothing now fails loudly, which is the better direction for keys that could only ever have
+    been a mistake here: this LM talks to a local CLI, not an endpoint. Use `timeout_s=` for the
+    call deadline.
 
     **Ignored, but since 1.10.0 no longer invisible.** `_dspy_compat.applied_lm_budget` reads
     `lm.kwargs`, so a `max_tokens=` passed here is staged into the trace's `budgets.main`, or
@@ -585,9 +616,10 @@ class ClaudeAgentLM(dspy.LM):
     is recorded for the role, which is what the auto-routed path does.
 
     Token usage is recorded per CALL, and with `output_format` set a call can span more than one
-    API request. `_api_rounds` carries the provider's per-sampling-iteration breakdown into the
-    trace beside it, so a reader can get the context size unconditionally, rather than only on
-    the calls where the totals happen to coincide with it.
+    API request. `_api_rounds` reads the provider's per-sampling-iteration breakdown and
+    `TraceRecorder.record_api_rounds` files it as its OWN event (`trace.EVENT_API_ROUNDS`, since
+    1.17.0; it was a key on the usage entry before), so a reader can get the context size
+    unconditionally rather than only on the calls where the totals coincide with it.
 
     `model` is an alias (`"opus"` / `"sonnet"` / `"haiku"`) or a full Claude model id; the
     trace label becomes `claude-agent-sdk/<model>`.
@@ -625,6 +657,8 @@ class ClaudeAgentLM(dspy.LM):
             async_engine=_AsyncClaudeAgentEngine(call),
             **kwargs,
         )
-        self._alias = model
-        self._timeout_s = timeout_s
-        self._cwd = cwd
+        # The alias, deadline and cwd live on `_call`, which is what uses them. They were also
+        # copied onto the LM until a mutation showed the copies were vestigial: nothing in the kit
+        # read them, so changing the values the CALL uses left the suite green while two tests
+        # went on asserting the copies. The tests now drive the deadline instead.
+        self._call = call

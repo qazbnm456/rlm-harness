@@ -848,8 +848,11 @@ while the prompt still offered it.
 ## Subscription logins: this kit's adapter, and dspy's own providers
 
 `ClaudeAgentLM` runs a Claude Pro/Max subscription through the official **Claude Agent SDK**, which
-spawns the `claude` CLI per call. Anthropic's support article covers that path explicitly ("You can
-still use the Claude Agent SDK, `claude -p`, and third-party apps with your subscription limits").
+spawns the `claude` CLI per call. Anthropic's support article covers that path explicitly: "You can
+still use the Claude Agent SDK, `claude -p`, and third-party apps with your subscription limits"
+([support.claude.com, "Use the Claude Agent SDK with your Claude plan"][claude-plan-sdk], read
+2026-10-14; the same page's 2026-06-15 update says the previously-announced changes to Agent SDK
+usage are PAUSED, so read it for the current state rather than trusting this quote's date).
 
 dspy ships its own subscription providers, and the kit needs no code for them: `configure()` takes a
 pre-built LM verbatim, so they go in through the same seam as any other.
@@ -864,21 +867,40 @@ configure(RLMConfig.from_env(), main_lm=lm, sub_lm=lm)
 The model string takes `provider:model` with a COLON; a slash is read as a litellm prefix and
 refused. Registered providers include `claude-code:` (the local `claude` CLI login),
 `openai-codex:` (the local `codex` CLI login) and `xai:` (which lm15 logs in itself, by device
-code, since xAI ships no CLI credential file). Verified from here: all three construct and route,
+code; its own module docstring gives the reason as xAI shipping no CLI credential file
+convention, which is lm15's claim rather than one checked here). Verified from here: all three construct and route,
 and the kit's own readers (`applied_lm_budget`, `lm_cache_is_live`, `copy_lm`) work on the result.
 
-**`claude-code:` does not work on macOS with a Keychain login.** lm15 reads the credential only
-from `~/.claude/.credentials.json` and has no Keychain path (checked across the whole dspy tree),
-while Claude Code on macOS stores it in the Keychain and falls back to that file only when the
-Keychain refuses the write. No setting forces file storage while the Keychain works. Copying the
-Keychain entry into the file is a community workaround this guide does not recommend: it is
-undocumented, the CLI can overwrite it, and the `CLAUDE_CODE_OAUTH_TOKEN` variant has been reported
-to delete the Keychain credential outright. On macOS, `ClaudeAgentLM` is the path that works,
+**`claude-code:` does not work on macOS with a Keychain login.** Two halves, settled differently.
+
+The lm15 half is executable from here: it reads the credential only from
+`~/.claude/.credentials.json` (`dspy/_vendor/lm15/auth.py`) and has no Keychain path. Settle it with
+`grep -rin 'keychain\|find-generic-password\|SecItem' "$(python -c 'import dspy,os;print(os.path.dirname(dspy.__file__))')"`,
+which returns nothing.
+
+Where the credential actually is, is two commands away on any macOS machine, and on the machine
+this was written on they answered: `ls ~/.claude/.credentials.json` → absent, and
+`security find-generic-password -s "Claude Code-credentials"` → present. So lm15 looks in the one
+place the credential is not.
+
+The rest is Claude Code's own documented behaviour and not settleable from here: its
+authentication docs say macOS credentials go to the Keychain and that it falls back to that file
+when the Keychain refuses the write ([code.claude.com/docs/en/authentication][cc-auth]), and an
+open issue asks for an opt-in file store, reporting that no setting forces one while the Keychain
+works ([anthropics/claude-code#96310][cc-96310]). Copying the Keychain entry into the file is a
+community workaround this guide does not recommend: it is undocumented, the CLI can overwrite it,
+and a `CLAUDE_CODE_OAUTH_TOKEN` variant is reported to delete the Keychain credential on exit
+([anthropics/claude-code#37512][cc-37512]). On macOS, `ClaudeAgentLM` is the path that works,
 because the CLI reads the Keychain itself.
+
+[claude-plan-sdk]: https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan
+[cc-auth]: https://code.claude.com/docs/en/authentication
+[cc-96310]: https://github.com/anthropics/claude-code/issues/96310
+[cc-37512]: https://github.com/anthropics/claude-code/issues/37512
 
 `openai-codex:` and `xai:` are capability this kit has no adapter for, and they read files rather
 than the Keychain, so they are expected to work where `claude-code:` does not. That expectation is
-NOT verified from this repo. Settle it with:
+NOT verified from this repo, for either of them. Settle the codex one with:
 
 ```bash
 codex login   # then:
@@ -886,7 +908,8 @@ python -c "import dspy; from dspy.clients.engines import AsyncLM15Engine, LM15En
 print(dspy.LM('openai-codex:gpt-5', engine=LM15Engine(), async_engine=AsyncLM15Engine(), cache=False)('say OK'))"
 ```
 
-A failure naming a credential file means routing worked and only the login is missing.
+A failure naming a credential file means routing worked and only the login is missing. `xai:` has
+no equivalent one-liner here because its device-code flow is interactive.
 
 ## Timeouts: what bounds what
 
@@ -1652,7 +1675,7 @@ Five things to know:
   equality that happens to hold, never assert one that does not.) What the totals cannot say is WHICH call they were, so read a missing
   `api_rounds` as "the provider reported no breakdown", never as "no context number here". Three
   things to know, each a way this will otherwise be misread:
-  - **It is NOT a decomposition of the entry's `prompt_tokens`.** The two do not cover the same
+  - **It is NOT a decomposition of the call's `prompt_tokens`.** The two do not cover the same
     span. A call's token fields accumulate across every API request it made, while `api_rounds`
     holds only the LAST request's iterations, so on a call that took more than one request, the
     totals span all of them and the rounds do not. Independently: a `compaction` entry's tokens

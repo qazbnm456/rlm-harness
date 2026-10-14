@@ -157,8 +157,10 @@ def _applied_dspy_settings(sub_lm: Any) -> dict[str, Any]:
         if lm is None:
             continue
         # `_dspy_compat.lm_cache_is_live`, not `lm.cache`: an unmanaged LM carries `cache=True` and
-        # never consults the cache, so the raw attribute records a live cache for the one LM that
-        # cannot have one. False there is definitive; True means "not ruled out".
+        # never consults the cache, so the raw attribute records a live cache for an LM that cannot
+        # have one. `ClaudeAgentLM` was that LM when 1.15.1 measured this; since 1.17.0 it is
+        # engine-backed and a consumer's own duck-typed or legacy LM is the live case. False there
+        # is definitive; True means "not ruled out".
         with contextlib.suppress(Exception):
             cache[role] = _dspy_compat.lm_cache_is_live(lm)
     if cache:

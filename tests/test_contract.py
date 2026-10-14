@@ -4,7 +4,7 @@ UI, a future RL trainer) fails HERE, in rlm-harness's own suite, instead of in t
 clue why.
 
 Three frozen things (see docs/INVARIANTS.md "The trace is a VERSIONED wire format"):
-  1. the trace SCHEMA + the seven EVENT_* type strings,
+  1. the trace SCHEMA + the eight EVENT_* type strings,
   2. the recorded-event ENVELOPE shape,
   3. the dataset-exporter RECORD shapes (export_actions / export_sft_turns / export_rl / run_label_bundle),
 plus the public ``__all__`` surface a consumer imports. ADDITIVE change is fine (a new optional
@@ -25,7 +25,7 @@ def test_the_event_type_SET_is_closed(monkeypatch):
     """The COUNT is pinned, not just each value, and this test has to FAIL when one is added.
 
     `test_event_type_strings_are_frozen` below names all eight constants and asserts their values,
-    which catches a rename or a re-spelling and catches NOTHING about an eighth arriving: adding
+    which catches a rename or a re-spelling and catches NOTHING about a NINTH arriving: adding
     `EVENT_FOO = "foo"` to `trace.py` passed the whole suite, measured. That gap mattered because
     three documents counted "seven" and one of them cited this file as the reason the number was safe
     to quote. **A test mentioning a number is not a pin; it has to go red when the number moves.**

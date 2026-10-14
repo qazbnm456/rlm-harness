@@ -56,9 +56,45 @@ location has one place to change. No public name moves.
 - `docs/INVARIANTS.md`'s `ClaudeAgentLM` entry was written as an exemption dated by the
   DeprecationWarning dspy emitted for it. The exemption is resolved rather than renewed, and the
   entry now says what the engine shape owes instead.
+- **A connection kwarg on the constructor now raises instead of being ignored.** `dspy.LM` refuses
+  `api_key`, `api_base`, `base_url`, `timeout`, `headers` and its other client keys when the LM
+  carries a custom engine, because they configure a connection dspy no longer owns. Sampling
+  kwargs (`temperature`, `max_tokens`) are still tolerated and still ignored. A construction that
+  used to succeed and do nothing now fails loudly, which is the right direction for keys that
+  could only have been a mistake on an LM that talks to a local CLI; use `timeout_s=` for the call
+  deadline.
+- Three vestigial attributes are gone from the LM (`_alias`, `_timeout_s`, `_cwd`). The values the
+  call uses live on its `_ClaudeAgentCall`, nothing in the kit read the copies, and a mutation
+  showed two tests were pinning them: changing what the CALL used left the suite green while the
+  deadline test went on asserting a copy. The deadline is now driven against a hanging SDK.
+
+### Fixed
+
+- **Structured output reaches the SDK again.** The engine migration above broke it on its way in
+  and an independent review caught it before release. `_translate_response_format` read only a
+  pydantic model CLASS, which is what the kit's `_LenientJSONAdapter` injects, but on the engine
+  path dspy canonicalises that into a dict (`type`, `name`, `strict`, `schema`) before the engine
+  sees it, because `lm15.Config.response_format` only accepts a JSON object. So every structured call silently got `output_format=None` and `max_turns=1`, which also
+  made the SDK's own validation round unreachable. The dict is now read and re-emitted as the two
+  keys the SDK's `output_format` took before; `name`/`strict` are dspy's own and were never sent.
+  It survived because nothing in the suite mentioned `output_format`: the `response_format` knob
+  on the new test helper existed for exactly this test and went unused until it did.
 
 ### Added
 
+- **What the adapter passes the SDK is pinned now.** `tools=[]` and `setting_sources=[]` are the
+  pure-completion guarantee the module docstring and `docs/INVARIANTS.md` both rest on, and no
+  test asserted either value: mutating them to a real toolset and to the user's own settings left
+  the whole suite green. Measured, then fixed. The same gap hid `max_turns` and the CLI's retry
+  cap.
+- **A test is the instrument for "the kit's LMs are off the interface dspy removes in 3.5"**, with
+  its control inside it: a `forward()`-style subclass is driven first and must raise, then the
+  kit's own LMs must not. `docs/INVARIANTS.md` claimed a control that lived only in a scratch file,
+  and nothing in CI passed `-W error::DeprecationWarning`, so a future edit reintroducing
+  `forward()` would have been green.
+- Tests for the paths the migration left uncovered: the async engine (the planner's primary route,
+  entirely new surface), the rate-limit rung and its negative arm, a non-text part being refused,
+  and a recorder that raises mid-call.
 - **The guide documents dspy's own subscription providers**, which need no kit code:
   `configure()` takes a pre-built LM verbatim, so `dspy.LM("claude-code:sonnet", engine=LM15Engine(),
   async_engine=AsyncLM15Engine())` goes in through the same seam as any other. The model string
