@@ -336,8 +336,10 @@ class RLMConfig:
     # ``managed``), so switching either off prevents the replay, and the per-LM one is the narrower
     # change. It reaches only the LMs ``configure()`` BUILDS: an injected ``main_lm``/``sub_lm`` is
     # used verbatim, as every other injected-LM rule here says, so pass ``dspy.LM(…, cache=False)``
-    # yourself if you build one. The one injected LM that needs nothing is ``ClaudeAgentLM``, which
-    # carries no ``_engine_spec`` and is therefore unmanaged, so it never consults the cache at all.
+    # yourself if you build one. ``ClaudeAgentLM`` also needs nothing, but for a different reason
+    # since 1.17.0: it is engine-backed and therefore MANAGED, so it defaults ``cache=False`` in its
+    # own constructor rather than being inert. Before that it carried no ``_engine_spec`` and dspy
+    # skipped the cache for it whatever the flag said.
     disable_history: bool = True
     lm_cache: bool = False
 

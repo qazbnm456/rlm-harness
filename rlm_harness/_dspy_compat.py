@@ -538,9 +538,13 @@ def copy_lm(lm: Any, **updates: Any) -> Any:
 
     **Never stamp ``_engine_spec`` on to satisfy it.** In 3.4.0 its ABSENCE is how
     ``dspy.clients.execution.prepare`` recognises a legacy ``forward``/``aforward`` LM
-    (``managed = hasattr(lm, "_engine_spec")``), so adding one to ``ClaudeAgentLM`` would route its
-    calls through litellm instead of its own ``forward``. Ask the object that HAS the state to copy
-    itself instead.
+    (``managed = hasattr(lm, "_engine_spec")``), so stamping one on a legacy LM routes its calls
+    through litellm instead of its own ``forward``. Ask the object that HAS the state to copy
+    itself instead. ``ClaudeAgentLM`` was this rule's motivating case until 1.17.0, when it became
+    an engine-backed ``dspy.LM`` and acquired an ``_engine_spec`` legitimately; the rule stands for
+    every other duck-typed base, and the risk it guards moved rather than went away, since a copy
+    that LOSES its engine is the same silent reroute from the other side (pinned in
+    ``tests/test_dspy_compat.py``).
 
     **The probe is on the TYPE, called unbound.** An instance ``getattr`` is exactly what a
     ``unittest.mock`` double manufactures for any name, and a mock sub-LM is a base the kit
@@ -801,16 +805,18 @@ def applied_thinking_budget(lm: Any) -> dict[str, Any] | None:
 def lm_cache_is_live(lm: Any) -> bool:
     """Is dspy's response cache actually reachable for ``lm``? A dspy fact, so it lives here.
 
-    ``lm.cache`` alone is the wrong reader and misreads in the direction that matters.
-    ``ClaudeAgentLM`` carries ``cache=True`` inherited from ``dspy.BaseLM`` while never consulting
-    the cache at all, so a trace field built on the raw attribute reports a live cache for the one
-    LM that structurally cannot have one.
+    ``lm.cache`` alone is the wrong reader and misreads in the direction that matters. A legacy
+    ``forward``/``aforward`` LM carries ``cache=True`` inherited from ``dspy.BaseLM`` while never
+    consulting the cache at all, so a trace field built on the raw attribute reports a live cache
+    for an LM that structurally cannot have one. ``ClaudeAgentLM`` was that LM when 1.15.1 measured
+    this; since 1.17.0 it is engine-backed and managed, and it answers ``False`` here for the
+    ordinary reason instead (``__init__`` defaults ``cache=False``). A consumer's own duck-typed or
+    legacy LM is still the live case, which is why the gate stays.
 
     dspy 3.4.0 gates it in ``clients/execution.py``:
     ``use_cache = kwargs.get("cache", lm.cache) if managed and getattr(lm, "_cache_responses", True)
-    else False``, where ``managed`` starts as ``hasattr(lm, "_engine_spec")``. That absence is the
-    same property ``docs/INVARIANTS.md`` pins for ``ClaudeAgentLM``: it is how dspy recognises a
-    legacy ``forward``/``aforward`` LM, which is why the class must never be given one.
+    else False``, where ``managed`` starts as ``hasattr(lm, "_engine_spec")``: how dspy recognises a
+    legacy LM, and why one must never simply be given the attribute (see :func:`copy_lm`).
 
     **The answer is asymmetric and callers must treat it that way.** ``False`` is definitive: an
     unmanaged LM, or one with ``cache=False``, cannot be served from cache. ``True`` means "not ruled

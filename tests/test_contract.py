@@ -24,7 +24,7 @@ def test_schema_id_is_frozen_at_v1():
 def test_the_event_type_SET_is_closed(monkeypatch):
     """The COUNT is pinned, not just each value, and this test has to FAIL when one is added.
 
-    `test_event_type_strings_are_frozen` below names all seven constants and asserts their values,
+    `test_event_type_strings_are_frozen` below names all eight constants and asserts their values,
     which catches a rename or a re-spelling and catches NOTHING about an eighth arriving: adding
     `EVENT_FOO = "foo"` to `trace.py` passed the whole suite, measured. That gap mattered because
     three documents counted "seven" and one of them cited this file as the reason the number was safe
@@ -44,6 +44,7 @@ def test_the_event_type_SET_is_closed(monkeypatch):
         "EVENT_FINAL",
         "EVENT_RESULT",
         "EVENT_RUN_END",
+        "EVENT_API_ROUNDS",
     }
 
 
@@ -57,7 +58,9 @@ def test_event_type_strings_are_frozen():
         T.EVENT_FINAL,
         T.EVENT_RESULT,
         T.EVENT_RUN_END,
-    ) == ("run_start", "main_step", "sub_call", "tool_call", "final", "result", "run_end")
+        T.EVENT_API_ROUNDS,
+    ) == ("run_start", "main_step", "sub_call", "tool_call", "final", "result", "run_end",
+          "api_rounds")
 
 
 def test_recorded_event_envelope_shape(tmp_path):

@@ -32,7 +32,7 @@ pitch, the quickstart, and installation: start at the
 | `_toolname.py` | REPL-safety rules for a tool's NAME and SIGNATURE. Mostly private, but `is_valid_tool_name` / `sanitize_tool_name` / `unique_tool_names` / `signature_from_json_schema` are public: a consumer building its own tools (e.g. from `McpCatalog`'s raw names) needs the same derivation the kit uses. |
 | `_dspy_compat.py` | Private. Every cross-version dspy difference (kwarg renames, the interpreter seam, the recoverable/terminal error split) resolved by introspection in ONE place. |
 | `rubric.py` | Reward-free rubric primitives: the `Criterion`/`RubricCriteria`/`CriterionFact` types, `rubric_to_meta`/`rubric_from_meta`, `validate_rubric`, and a pure `criteria_facts(criteria, facts, lens)`. `category` is an OPAQUE caller-defined label, the kit imposes no taxonomy. See "Building a consumer". |
-| `claude_agent_lm.py` | `ClaudeAgentLM`: run rlm-harness on a Claude Pro/Max subscription: a `dspy.BaseLM` over the official Claude Agent SDK. `configure()` now auto-routes a `SUBSCRIPTION_PREFIX`-carrying (`"claude-agent-sdk/"`) `main_model`/`sub_model` string onto it, no explicit `main_lm=`/`sub_lm=` wiring needed unless you're overriding it. Opt-in `rlm-harness[subscription]`; pure completions (no tools), lazily exported so `import rlm_harness` stays dspy/SDK-free. |
+| `claude_agent_lm.py` | `ClaudeAgentLM`: run rlm-harness on a Claude Pro/Max subscription: a `dspy.LM` over the official Claude Agent SDK. `configure()` now auto-routes a `SUBSCRIPTION_PREFIX`-carrying (`"claude-agent-sdk/"`) `main_model`/`sub_model` string onto it, no explicit `main_lm=`/`sub_lm=` wiring needed unless you're overriding it. Opt-in `rlm-harness[subscription]`; pure completions (no tools), lazily exported so `import rlm_harness` stays dspy/SDK-free. |
 | `examples/mini_run.py` | Minimal end-to-end live run: config + a tiny `RLMTask` through a real `dspy.RLM`, with the trajectory recorded and summarised. |
 | `examples/claude_agent_lm.py` | Runnable demo of `ClaudeAgentLM`: a tiny `RLMTask` through a real `dspy.RLM` on a subscription login. |
 
@@ -801,9 +801,10 @@ after a "fresh attempt" completed in seconds having made no model call.
 to the global store: `clients/execution.py` computes `use_cache` as false unless the LM is `managed`,
 so switching either one off prevents the replay and the per-LM one is the narrower change. It reaches
 only the LMs `configure()` BUILDS. An injected `main_lm`/`sub_lm` is used verbatim, as every other
-injected-LM rule here says, so pass `dspy.LM(…, cache=False)` yourself if you build one. `ClaudeAgentLM`
-needs nothing: it carries no `_engine_spec`, so dspy treats it as unmanaged and it never consults the
-cache at all.
+injected-LM rule here says, so pass `dspy.LM(…, cache=False)` yourself if you build one.
+`ClaudeAgentLM` needs nothing either, though for a different reason since 1.17.0: it is engine-backed
+and therefore MANAGED, so dspy would consult a cache for it, and its own constructor defaults
+`cache=False` to keep a subscription call touching none. Pass `cache=True` if you want one.
 
 **Opting back in, and the one thing to know first.** `RLM_DISABLE_HISTORY=0` restores dspy's history
 and `RLM_LM_CACHE=1` restores the cache. The history one is a PROCESS-wide dspy setting, so a
@@ -843,6 +844,49 @@ yourself via `RLMTask(interpreter=...)`, which bypasses `build_interpreter` enti
 
 A turn-timeout restart replays the shim install, because a fresh sandbox would otherwise lose it
 while the prompt still offered it.
+
+## Subscription logins: this kit's adapter, and dspy's own providers
+
+`ClaudeAgentLM` runs a Claude Pro/Max subscription through the official **Claude Agent SDK**, which
+spawns the `claude` CLI per call. Anthropic's support article covers that path explicitly ("You can
+still use the Claude Agent SDK, `claude -p`, and third-party apps with your subscription limits").
+
+dspy ships its own subscription providers, and the kit needs no code for them: `configure()` takes a
+pre-built LM verbatim, so they go in through the same seam as any other.
+
+```python
+from dspy.clients.engines import AsyncLM15Engine, LM15Engine
+
+lm = dspy.LM("claude-code:sonnet", engine=LM15Engine(), async_engine=AsyncLM15Engine(), cache=False)
+configure(RLMConfig.from_env(), main_lm=lm, sub_lm=lm)
+```
+
+The model string takes `provider:model` with a COLON; a slash is read as a litellm prefix and
+refused. Registered providers include `claude-code:` (the local `claude` CLI login),
+`openai-codex:` (the local `codex` CLI login) and `xai:` (which lm15 logs in itself, by device
+code, since xAI ships no CLI credential file). Verified from here: all three construct and route,
+and the kit's own readers (`applied_lm_budget`, `lm_cache_is_live`, `copy_lm`) work on the result.
+
+**`claude-code:` does not work on macOS with a Keychain login.** lm15 reads the credential only
+from `~/.claude/.credentials.json` and has no Keychain path (checked across the whole dspy tree),
+while Claude Code on macOS stores it in the Keychain and falls back to that file only when the
+Keychain refuses the write. No setting forces file storage while the Keychain works. Copying the
+Keychain entry into the file is a community workaround this guide does not recommend: it is
+undocumented, the CLI can overwrite it, and the `CLAUDE_CODE_OAUTH_TOKEN` variant has been reported
+to delete the Keychain credential outright. On macOS, `ClaudeAgentLM` is the path that works,
+because the CLI reads the Keychain itself.
+
+`openai-codex:` and `xai:` are capability this kit has no adapter for, and they read files rather
+than the Keychain, so they are expected to work where `claude-code:` does not. That expectation is
+NOT verified from this repo. Settle it with:
+
+```bash
+codex login   # then:
+python -c "import dspy; from dspy.clients.engines import AsyncLM15Engine, LM15Engine; \
+print(dspy.LM('openai-codex:gpt-5', engine=LM15Engine(), async_engine=AsyncLM15Engine(), cache=False)('say OK'))"
+```
+
+A failure naming a credential file means routing worked and only the login is missing.
 
 ## Timeouts: what bounds what
 
@@ -1583,11 +1627,21 @@ Five things to know:
   no tracker is installed, so a `dspy.Module` YOU call from inside a kit run returns `None` there
   while the kit's scope is open. The numbers are not lost. They are in the tracker, and in the
   trace, but that one accessor stops answering.
-- **A call entry may carry `api_rounds`, and it answers a question the token fields cannot.** One
-  LM call can make more than one API request, and each request can run several *sampling
-  iterations* server-side. `api_rounds: {"rounds": [ ... ]}` is the provider's own per-iteration
-  breakdown, carried verbatim when it reports one and absent when it does not: one fact with one
-  meaning. Its purpose is the CONTEXT WINDOW SIZE: the provider's documentation says to calculate
+- **An `api_rounds` EVENT answers a question the token fields cannot.** One LM call can make more
+  than one API request, and each request can run several *sampling iterations* server-side. The
+  event's payload is `{"model": ..., "rounds": [ ... ]}`: the provider's own per-iteration
+  breakdown, recorded verbatim when a call reports one and absent when it does not, one fact with
+  one meaning. Only `ClaudeAgentLM` produces it.
+
+  **It moved in 1.17.0**, from `run_end.payload.usage[...]["api_rounds"]` to its own event, and the
+  move was forced rather than chosen. An engine-backed LM's usage reaches dspy's tracker through
+  `usage_dict`, which rebuilds a fixed key set off the typed `lm15.Usage` and passes nothing else
+  through, so the breakdown could no longer ride along (measured: present on the old `forward()`
+  path, absent on the engine path). Nor could the kit put it back beside the right entry
+  afterwards, because a tracker entry carries no per-call identity and only POSITION could match
+  it, which is unsound once dspy owns retries and `llm_query_batched` fans calls across threads.
+  The payload keeps the `rounds` nesting so a reader that already parsed `api_rounds["rounds"]`
+  parses it unchanged. Its purpose is the CONTEXT WINDOW SIZE: the provider's documentation says to calculate
   it "from the last `message` entry". **The totals give you that too, but only conditionally.**
   When a call made one API request running one SAMPLING ITERATION, the top-level fields and that
   single entry are the same numbers and `prompt_tokens` already IS the context size. ("One
@@ -1611,13 +1665,13 @@ Five things to know:
     ~200k context can report a few thousand tokens. Filtering by `type` is the whole difference
     between a context reading and a wrong one, and it matters exactly in the long-context regime
     where you would reach for this field.
-  - **Read it from the per-call entries, never through `dspy.track_usage()`'s
-    `get_total_tokens()`.** That aggregator MERGES a model's calls into one, so what comes back is
-    every call's rounds in one flat list with the per-CALL boundaries gone: the token totals stay
-    correct, the rounds stop meaning anything. This matters more than it sounds: with `dspy.configure(track_usage=True)`, dspy calls
-    that aggregator ITSELF from `dspy.Module.__call__`, so the merge happens whether or not you
-    ask. A kit run is not affected (it installs its tracker before dspy would auto-total, and the
-    trace is written from the per-call entries either way).
+  - **Order by `step_id`, and take the LAST event.** That ordering is the reason this is an event:
+    the question the field exists for is what the latest breakdown says, and `step_id` answers it
+    without correlating anything. The hazard its predecessor carried is gone with the move: a
+    reader who went through `dspy.track_usage()`'s `get_total_tokens()` used to get every call's
+    rounds merged into one flat list with the per-CALL boundaries lost, and dspy performs that
+    merge ITSELF from `dspy.Module.__call__` under `dspy.configure(track_usage=True)`. The
+    breakdown no longer passes through that aggregator at all, so there is nothing left to merge.
 
   A nested `*_details` / `cache_creation` object inside a round is a DECOMPOSITION of a field
   already counted, never an addition: add up every integer in a round and you count the cached

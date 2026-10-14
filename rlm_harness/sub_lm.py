@@ -166,9 +166,9 @@ def intercept_sub_lm(
             empty copies of their own. That makes every inherited `dspy.LM` method which reads
             state `LM.__init__` sets a landmine, and dspy 3.4.0 armed one: its new `LM.copy` reads
             `self._engine_spec`, which falls through to `__getattr__` and raises for any base that
-            is not itself a `dspy.LM` -- `ClaudeAgentLM` (a `dspy.BaseLM`) and every duck-typed
-            double. Do not answer that by giving the wrapper an `_engine_spec`; see
-            `_dspy_compat.copy_lm` for why that would silently reroute a subscription LM.
+            is not itself a `dspy.LM`: every duck-typed double, and `ClaudeAgentLM` too until
+            1.17.0 made it one. Do not answer that by giving the wrapper an `_engine_spec`; see
+            `_dspy_compat.copy_lm` for why stamping one on a legacy LM reroutes it.
 
             It also repairs what the inherited version got wrong on EVERY version:
             `copy(rollout_id=1)` updated the WRAPPER's decorative `kwargs` while `_base`, the

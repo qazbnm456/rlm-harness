@@ -42,6 +42,17 @@ EVENT_TOOL_CALL = "tool_call"
 EVENT_FINAL = "final"
 EVENT_RESULT = "result"
 EVENT_RUN_END = "run_end"
+#: One LM call's provider-reported per-iteration breakdown, recorded LIVE. Additive in v1 (1.17.0).
+#: It carries what `run_end.payload.usage[...]["api_rounds"]` carried until 1.16.0, and the move was
+#: forced rather than chosen: an engine-based LM's usage reaches dspy's tracker through
+#: `dspy.clients.call_result.usage_dict`, which REBUILDS a fixed key set off the typed `lm15.Usage`
+#: and passes nothing else through, so the breakdown could not ride along any more (measured on
+#: dspy 3.4.1: present on the legacy `forward()` path, absent on the engine path). Nor could the kit
+#: put it back beside the right entry afterwards: a tracker entry carries no per-call identity, so
+#: only position could match it, and position is unsound once dspy owns retries and
+#: `llm_query_batched` fans calls across threads. As its own event it needs no correlation, and
+#: `step_id` answers the question the field exists for ("the LAST breakdown") on its own.
+EVENT_API_ROUNDS = "api_rounds"
 
 _active: ContextVar[TraceRecorder | None] = ContextVar("rlm_harness_recorder", default=None)
 
@@ -617,6 +628,25 @@ class TraceRecorder:
         usage, which is the one number this exists to capture.
         """
         self._usage = list(usage)
+
+    def record_api_rounds(self, model: Any, rounds: dict) -> dict | None:
+        """Record ONE LM call's provider-reported per-iteration breakdown, as it happens.
+
+        ``rounds`` is the already-wrapped ``{"rounds": [...]}`` shape, kept verbatim and kept
+        NESTED even though nothing merges these events: the nesting was load-bearing against
+        dspy's ``UsageTracker`` until 1.16.0, and keeping it means a reader that already parsed
+        ``api_rounds["rounds"]`` out of the usage entry parses this payload unchanged. Entries stay
+        in the provider's own vocabulary; see ``claude_agent_lm._api_rounds`` for what one is and,
+        more importantly, for what it is NOT (not a decomposition of the call's token totals).
+
+        Returns the event, or ``None`` when there is nothing to record. Recorded live rather than
+        staged, so the stream's own ``step_id`` orders the breakdowns: that ordering is the whole
+        reason this is an event (see :data:`EVENT_API_ROUNDS`), since the question it answers is
+        "what did the LAST one say".
+        """
+        if not rounds:
+            return None
+        return self.record(EVENT_API_ROUNDS, {"model": str(model), **rounds})
 
     def note_main_step(self, reasoning: Any, ts: float | None = None) -> None:
         """Buffer that a ROOT planner turn was parsed LIVE at ``ts`` (default: now).

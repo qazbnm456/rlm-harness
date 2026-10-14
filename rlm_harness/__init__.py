@@ -59,6 +59,7 @@ from .serving import HarnessPointer, bundle_artifact, parse_artifact_bundle, ser
 from .skills import discover_skills, load_skills_as_tools, render_skills_manifest
 from .sub_lm import SubLMValidationError, intercept_sub_lm, model_as_tool
 from .trace import (
+    EVENT_API_ROUNDS,
     EVENT_FINAL,
     EVENT_MAIN_STEP,
     EVENT_RESULT,
@@ -109,6 +110,7 @@ __all__ = [
     "EVENT_FINAL",
     "EVENT_RESULT",
     "EVENT_RUN_END",
+    "EVENT_API_ROUNDS",
     # replay + dataset
     "load_timeline",
     "reconstruct",
@@ -163,7 +165,7 @@ __all__ = [
     "run_in_subprocess",
 ]
 
-__version__ = "1.16.0"
+__version__ = "1.17.0"
 
 
 def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import

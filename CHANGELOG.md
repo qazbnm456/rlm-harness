@@ -4,6 +4,75 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.17.0] - 2026-10-14
+
+`ClaudeAgentLM` moves off the dspy interface that 3.5 removes. `api_rounds` moves with it, from a
+usage key to its own trace event: additive in `trace/v1`, and a reader that followed the old
+location has one place to change. No public name moves.
+
+### Changed
+
+- **`ClaudeAgentLM` is an engine now, not a `forward()`/`aforward()` subclass.** dspy 3.4
+  deprecates implementing a custom LM that way and schedules removal for 3.5, in its own words:
+  "Implement an engine with `complete(Request) -> Response` and pass it to `dspy.LM(engine=...)`
+  instead." The class is a `dspy.LM` holding a sync and an async engine over the same SDK call. The
+  suite now runs clean under `-W error::DeprecationWarning`, checked against a positive control (a
+  `forward()`-style LM under the same flag still raises), because a flag that silently does nothing
+  would make that pass meaningless.
+
+  Two consequences, each with its own pin. An engine-backed LM is **managed**, so dspy would
+  consult a cache for it where an unmanaged one's `cache=True` was inert; the constructor now
+  defaults `cache=False` so a subscription call keeps touching none, since an injected LM keeps its
+  own flag and the kit's default could not reach it. And `copy_lm`'s `rollout_id` variant must keep
+  its engine, or the copy would call litellm: that replaces the pin which used to assert the
+  ABSENCE of `_engine_spec`.
+
+  `intercept_sub_lm` needed no migration. It overrides `__call__`, not `forward`, and raises no
+  deprecation under that flag: the earlier reading of it as a second legacy implementation was
+  wrong.
+- **`api_rounds` is its own trace event** (`EVENT_API_ROUNDS`, new in `__all__`), recorded live,
+  with the payload `{"model": ..., "rounds": [...]}`. It was a key on a `run_end.payload.usage`
+  call entry until 1.16.0. The move was forced: an engine-backed LM's usage reaches dspy's tracker
+  through `usage_dict`, which rebuilds a fixed key set off the typed `lm15.Usage` and passes
+  nothing else through, so the breakdown could not ride along any more (measured both ways on dspy
+  3.4.1: present on the legacy path, absent on the engine path). Putting it back beside the right
+  entry afterwards was not available either, because a tracker entry carries no per-call identity:
+  only position could match it, and position is unsound once dspy owns retries and
+  `llm_query_batched` fans calls across threads.
+
+  As its own event it needs no correlation, and `step_id` answers the question the field exists for
+  on its own: take the last one. The `rounds` nesting is kept, so a reader that already parsed
+  `api_rounds["rounds"]` parses the payload unchanged. One hazard disappears with the move: the
+  breakdown no longer passes through `dspy.track_usage()`'s aggregator, which used to merge every
+  call's rounds into one flat list with the per-call boundaries lost.
+- **"Absent usage is not zero" is kept by a different construction.** `lm15.Response.usage` is a
+  required field, so omitting the attribute is no longer available: absence is an all-`None`
+  `lm15.Usage`, which `usage_dict` reduces to `{}` before the tracker sees it. Both arms are pinned
+  now, since a construction that reported absence for everything would have satisfied the old test:
+  an unreported usage records nothing, and a genuine zero-token call still records zeroes.
+- **The SDK's own cost figure rides in `provider_data`.** dspy reads a cost off
+  `_hidden_params["response_cost"]`, which only a litellm response carries, so the number no longer
+  reaches `CallResult.cost`. It stays on the response, which is all its previous home amounted to.
+- `docs/INVARIANTS.md`'s `ClaudeAgentLM` entry was written as an exemption dated by the
+  DeprecationWarning dspy emitted for it. The exemption is resolved rather than renewed, and the
+  entry now says what the engine shape owes instead.
+
+### Added
+
+- **The guide documents dspy's own subscription providers**, which need no kit code:
+  `configure()` takes a pre-built LM verbatim, so `dspy.LM("claude-code:sonnet", engine=LM15Engine(),
+  async_engine=AsyncLM15Engine())` goes in through the same seam as any other. The model string
+  takes `provider:model` with a colon; a slash is read as a litellm prefix and refused. All three of
+  `claude-code:`, `openai-codex:` and `xai:` construct and route from here, and the kit's
+  `applied_lm_budget` / `lm_cache_is_live` / `copy_lm` all work on the result.
+
+  **`claude-code:` does not work on macOS with a Keychain login**, and the section says so: lm15
+  reads the credential only from `~/.claude/.credentials.json` and has no Keychain path, while
+  Claude Code on macOS stores it in the Keychain and writes that file only when the Keychain refuses.
+  `ClaudeAgentLM` is the macOS path, because the CLI reads the Keychain itself. `openai-codex:` and
+  `xai:` read files instead, so they are expected to work where `claude-code:` does not; that
+  expectation is not verified from this repo and the settling command is written beside it.
+
 ## [1.16.0] - 2026-10-14
 
 dspy 3.4.1 support, and the cap goes back to `<3.5.0`. One new public config field

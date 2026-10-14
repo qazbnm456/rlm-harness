@@ -1,7 +1,9 @@
 """Run rlm-harness on a Claude Pro/Max SUBSCRIPTION via the official Claude Agent SDK.
 
-`ClaudeAgentLM` is a `dspy.BaseLM` adapter over `claude-agent-sdk`, injected through the
-kit's existing public seam `configure(main_lm=..., sub_lm=...)`. The kit itself is
+`ClaudeAgentLM` is a `dspy.LM` over `claude-agent-sdk`, injected through the kit's existing public
+seam `configure(main_lm=..., sub_lm=...)`. Since 1.17.0 the SDK call is an ENGINE
+(`complete(Request) -> Response`, passed as `dspy.LM(engine=...)`), not a `forward`/`aforward`
+subclass: dspy deprecated that interface in 3.4 and schedules its removal for 3.5. The kit itself is
 unchanged. Each LM call is one stateless `query()` through the Claude Code CLI on YOUR OWN
 subscription login: the officially sanctioned path for individual subscribers, as opposed
 to the blocked OAuth-token-against-the-API routes. Every call is a pure completion: no
@@ -33,8 +35,10 @@ Politeness policy (this adapter is for ORDINARY, INDIVIDUAL use of your own acco
   - Do NOT point this at batch RL-rollout generation or eval sweeps: that is not "ordinary,
     individual usage"; use the API for scale. Expect ~2-5s CLI-spawn overhead per call.
 
-Trade-offs vs. a plain `dspy.LM`: no temperature/top_p/n controls (the SDK exposes none), no
-dspy-side caching, and no prompt caching across planner turns. Structured output IS supported:
+Trade-offs vs. a plain `dspy.LM`: no temperature/top_p/n controls (the SDK exposes none), and no
+prompt caching across planner turns. dspy-side caching is now REACHABLE (an engine-backed LM is
+managed) and deliberately off: the constructor defaults `cache=False`, so a subscription call keeps
+touching no cache unless you ask for one. Structured output IS supported:
 the kit's default `json` adapter puts a pydantic class in `response_format`, which this adapter
 translates to the SDK's native schema-validated `output_format`.
 """
@@ -48,10 +52,12 @@ import logging
 import os
 import re
 import threading
+import uuid
 from typing import TYPE_CHECKING, Any
 
 import dspy
-import litellm
+
+from .trace import current_recorder
 
 if TYPE_CHECKING:  # annotations only, never imported at runtime (the SDK is an optional extra)
     from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
@@ -310,6 +316,42 @@ def _split_messages(
     return ("\n\n".join(str(m.get("content", "")) for m in system) or None, user_prompt)
 
 
+def _message_text(message: Any) -> str:
+    """The text of one ``lm15.Message``, refusing a part the SDK cannot be handed.
+
+    The SDK takes ONE string prompt, so a non-text part (an image, a binary attachment) has
+    nowhere to go. It raises rather than dropping: the legacy path ran ``str(content)`` over
+    whatever it was handed, which turned a content ARRAY into its repr and sent that to the model
+    as if it were the prompt. A loud refusal names the part; a repr looks like a bad answer.
+    """
+    texts: list[str] = []
+    for part in message.parts:
+        text = getattr(part, "text", None)
+        if text is None:
+            raise TypeError(
+                f"ClaudeAgentLM cannot send a {type(part).__name__} part: the Claude Agent SDK "
+                f"takes one text prompt per call. Use a plain dspy.LM for multimodal input."
+            )
+        texts.append(str(text))
+    return "".join(texts)
+
+
+def _request_to_prompts(request: Any) -> tuple[str | None, str]:
+    """Map an ``lm15.Request`` onto the SDK's ``(system_prompt, prompt)`` pair.
+
+    lm15 carries the system prompt in its OWN field rather than as a ``role="system"`` entry, so
+    this is the engine-path twin of :func:`_split_messages` and reuses its flatten for the rest.
+    Measured on dspy 3.4.0 and 3.4.1: the sub-LM seat arrives as ``system=None`` plus one ``user``
+    message, and the planner seat as ``system=<str>`` plus one ``user`` message. A ``role="system"``
+    message is still folded in, because a consumer's own adapter may put one there and dropping it
+    would silently lose the instruction.
+    """
+    messages = [{"role": m.role, "content": _message_text(m)} for m in (request.messages or ())]
+    folded, user_prompt = _split_messages(None, messages)
+    system = "\n\n".join(s for s in (request.system, folded) if s)
+    return (system or None, user_prompt)
+
+
 def _translate_response_format(response_format: Any) -> dict[str, Any] | None:
     """Translate dspy's `response_format` into the SDK's native `output_format`.
 
@@ -330,7 +372,199 @@ def _looks_rate_limited(text: str) -> bool:
     return _RATE_LIMIT_RE.search(text.lower()) is not None
 
 
-class ClaudeAgentLM(dspy.BaseLM):
+class _ClaudeAgentCall:
+    """One SDK call, as both engines need it: ``Request`` in, ``lm15.Response`` out.
+
+    Split out of :class:`ClaudeAgentLM` by the engine migration rather than for tidiness: dspy
+    takes a SYNC ``engine=`` and an ASYNC ``async_engine=``, and BOTH protocol methods are named
+    ``complete``, so one object cannot be both. This holds the body; the two classes below are the
+    protocol surfaces, and the LM holds them.
+    """
+
+    def __init__(self, *, model: str, alias: str, timeout_s: float, cwd: str | None) -> None:
+        self._model = model
+        self._alias = alias
+        # End-to-end deadline per call, INCLUDING time queued behind the semaphore.
+        self._timeout_s = timeout_s
+        self._cwd = cwd
+
+    def complete(self, request: Any) -> Any:
+        """``Engine.complete``: one SDK call, synchronously. Used by the sub-LM seat, which
+        ``llm_query``/``llm_query_batched`` drive from worker threads."""
+        future = asyncio.run_coroutine_threadsafe(self._acomplete(request), _bridge().loop)
+        try:
+            return future.result(self._timeout_s)
+        except concurrent.futures.TimeoutError:
+            # Mirror mcp.py: don't leave the coroutine running on the shared loop.
+            future.cancel()
+            raise TimeoutError(f"claude-agent-sdk call timed out after {self._timeout_s}s") from None
+
+    async def acomplete(self, request: Any) -> Any:
+        """``AsyncEngine.complete``'s body: the planner seat, which arrives through ``aforward``."""
+        future = asyncio.run_coroutine_threadsafe(self._acomplete(request), _bridge().loop)
+        # wait_for cancels the wrapped future on timeout, propagating to the bridge-loop task:
+        # the async twin of complete's cancel-on-timeout.
+        return await asyncio.wait_for(asyncio.wrap_future(future), self._timeout_s)
+
+    # -- runs ON the bridge loop --------------------------------------------
+
+    async def _acomplete(self, request: Any) -> Any:
+        sdk = _require_claude_agent_sdk()
+        system_prompt, user_prompt = _request_to_prompts(request)
+        output_format = _translate_response_format(getattr(request.config, "response_format", None))
+        options = sdk.ClaudeAgentOptions(
+            model=self._alias,
+            system_prompt=system_prompt,
+            # A PURE completion: `tools=[]` empties the toolset (`allowed_tools` would merely
+            # auto-approve, not restrict) and `setting_sources=[]` so the user's CLAUDE.md /
+            # settings / MCP servers never leak into RLM planner calls. max_turns caps the agent
+            # loop: 1 for a plain completion (the sub-LM seat), a generous 8 when output_format is
+            # set: the SDK's structured-output step spends turns BEYOND the model's own answer (a
+            # reformat/validation round), and a complex RLM planner call exhausted a tight cap of 2
+            # in a live run. tools=[] keeps the headroom from ballooning: with no tools each turn is
+            # just the model, so a clean structured output still returns in 1-2 turns; the cap only
+            # absorbs the tail.
+            tools=[],
+            max_turns=8 if output_format else 1,
+            output_format=output_format,
+            setting_sources=[],
+            env={"CLAUDE_CODE_MAX_RETRIES": "2"},
+            cwd=self._cwd,
+        )
+        async with _bridge().semaphore:
+            try:
+                result, text = await self._query_once(user_prompt, options)
+            except Exception as exc:
+                if not _looks_rate_limited(str(exc)):
+                    raise
+                await asyncio.sleep(_BACKOFF_S)
+                result, text = await self._query_once(user_prompt, options)
+        usage = result.usage or {}
+        # An unreported usage stays ABSENT rather than becoming three zeroes, and the mechanism
+        # changed with the engine migration while the GUARANTEE did not. `lm15.Response.usage` is
+        # a required field, so there is no "omit the attribute" state the way litellm had: an
+        # all-`None` `lm15.Usage` is what expresses absence, because `usage_dict` drops every
+        # `None` field and then returns `{}`, and `UsageTracker.add_usage` skips an empty entry.
+        # Measured on dspy 3.4.1: an all-`None` Usage produces NO tracker entry, while a genuine
+        # `Usage(0, 0, 0)` produces one holding zeroes. That is the kit's published promise
+        # ("Usage may be absent, and absent is not zero"), kept by a different construction.
+        #
+        # The guarantee is at the RESPONSE level, not the field level: a usage dict that is
+        # present but carries no number this kit recognises (`{"input_tokens": None}`, or a dict
+        # of nothing but metadata) still reports zeroes, since `_token_count` reads those as 0 and
+        # zero is then what the SDK told us as far as we could tell.
+        lm15 = dspy.lm15
+        if usage:
+            prompt_tokens = _prompt_tokens_from_sdk_usage(usage)
+            completion_tokens = _token_count(usage, "output_tokens")
+            reported_usage = lm15.Usage(
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+            )
+        else:
+            reported_usage = lm15.Usage()
+        # The rounds no longer ride alongside the totals, because they cannot: `usage_dict`
+        # rebuilds a fixed key set off the typed Usage and passes nothing else through (measured).
+        # They go to the trace as their own event instead, where `step_id` orders them; see
+        # `trace.EVENT_API_ROUNDS`. Still never a decomposition of the totals above, and still
+        # never derived from them: see `_api_rounds`.
+        rounds = _api_rounds(usage)
+        if rounds is not None:
+            recorder = current_recorder()
+            if recorder is not None:
+                try:
+                    recorder.record_api_rounds(self._model, rounds)
+                except Exception:   # observability never breaks a run
+                    logger.debug("could not record api_rounds", exc_info=True)
+        provider_data: dict[str, Any] | None = None
+        if result.total_cost_usd is not None:
+            # Cosmetic: the SDK's OWN cost figure for the call, NOT derived from the tokens
+            # above. On a subscription nothing bills it and no rlm-harness budget reads it; it
+            # just keeps `lm.history` honest.
+            #
+            # DO NOT reconcile this against the token counts above -- they cover different
+            # things. On the live call this was measured from (n=1, so read it as "this happens"
+            # rather than "this always happens"), `result.model_usage` showed the Agent SDK
+            # routing a second model alongside the requested one -- a haiku, ~1.7k input tokens --
+            # and `total_cost_usd` was the SUM across BOTH, 0.014149 spanning sonnet + haiku,
+            # while `result.usage` reported the requested model alone. `usage` is an untyped
+            # passthrough from the CLI, so that last half is not verifiable from the SDK's types;
+            # what is certain is that the two fields answered different questions on that call,
+            # and anyone dividing one by the other concludes the numbers are broken.
+            #
+            # The side model's tokens are deliberately NOT folded into the per-call usage above.
+            # A trace describes what the POLICY did, and the SDK routing a helper model is
+            # infrastructure the planner never chose -- counting it would attribute work to the
+            # policy that the policy did not do, and a trainer reads this as the trajectory. If
+            # it ever needs to be data, give it its OWN optional field rather than mixing scopes
+            # into a per-call count.
+            #
+            # It rides in `provider_data` now that the response is an `lm15.Response`. dspy reads
+            # a cost off `_hidden_params["response_cost"]`, which only a litellm response has, so
+            # the number no longer reaches `CallResult.cost`: it stays ON the response, which is
+            # all the previous home amounted to ("keeps `lm.history` honest", and history has been
+            # off by default since 1.15.0).
+            provider_data = {"total_cost_usd": result.total_cost_usd}
+        return lm15.Response(
+            # `lm15.Response` refuses an empty id, so there has to be one. The SDK's session id
+            # when it reports one, a fresh uuid otherwise: read through `getattr`, because the
+            # SDK's `ResultMessage` field set is not something this kit can pin, and a generated
+            # id is honest where a borrowed one would be invented. Nothing correlates on it
+            # either way, since `api_rounds` events carry their own `step_id` (see
+            # `trace.EVENT_API_ROUNDS`).
+            id=str(getattr(result, "session_id", "") or "") or uuid.uuid4().hex,
+            model=self._model,
+            message=lm15.Message(role="assistant", parts=[lm15.TextPart(text=text)]),
+            finish_reason="stop",
+            usage=reported_usage,
+            provider_data=provider_data,
+        )
+
+    async def _query_once(
+        self, user_prompt: str, options: ClaudeAgentOptions
+    ) -> tuple[ResultMessage, str]:
+        sdk = _require_claude_agent_sdk()
+        result: ResultMessage | None = None
+        async for message in sdk.query(prompt=user_prompt, options=options):
+            if isinstance(message, sdk.ResultMessage):
+                result = message
+        if result is None:
+            raise RuntimeError("claude-agent-sdk produced no ResultMessage")
+        if result.is_error or result.subtype != "success":
+            raise RuntimeError(f"claude-agent-sdk error ({result.subtype}): {result.result!r}")
+        if result.structured_output is not None:
+            text = json.dumps(result.structured_output)
+        else:
+            text = result.result or ""
+        if not text:
+            # Never hand dspy empty text. It would become a bare "empty or null response"
+            # AdapterParseError with less context than this.
+            raise RuntimeError("claude-agent-sdk returned an empty result")
+        return result, text
+
+
+class _ClaudeAgentEngine:
+    """``dspy.clients.engines.Engine``: the sync surface over :class:`_ClaudeAgentCall`."""
+
+    def __init__(self, call: _ClaudeAgentCall) -> None:
+        self._call = call
+
+    def complete(self, request: Any) -> Any:
+        return self._call.complete(request)
+
+
+class _AsyncClaudeAgentEngine:
+    """``dspy.clients.engines.AsyncEngine``: the async surface over :class:`_ClaudeAgentCall`."""
+
+    def __init__(self, call: _ClaudeAgentCall) -> None:
+        self._call = call
+
+    async def complete(self, request: Any) -> Any:
+        return await self._call.acomplete(request)
+
+
+class ClaudeAgentLM(dspy.LM):
     """A dspy LM whose completions run through the Claude Agent SDK on a subscription login.
 
     Satisfies both rlm-harness seats: the planner calls `aforward(messages=...)` through the
@@ -376,146 +610,21 @@ class ClaudeAgentLM(dspy.BaseLM):
                 "subscription OAuth, so this run would bill API credit. Unset it (or pass "
                 "allow_api_key=True if that is genuinely what you want)."
             )
-        super().__init__(model=f"{SUBSCRIPTION_PREFIX}{model}", **kwargs)
+        full_model = f"{SUBSCRIPTION_PREFIX}{model}"
+        call = _ClaudeAgentCall(model=full_model, alias=model, timeout_s=timeout_s, cwd=cwd)
+        # `cache=False` unless the caller says otherwise, and that default is load-bearing.
+        # `dspy.LM` defaults it to True, and an engine-backed LM is "managed", so dspy WOULD now
+        # consult its cache for a subscription call that never touched one before 1.17.0. The kit's
+        # own `RLMConfig.lm_cache` is off by default, but an LM handed in through
+        # `configure(main_lm=...)` keeps its own flag (1.15.1), so the default has to live here or
+        # a consumer building this class directly would silently gain caching on upgrade.
+        kwargs.setdefault("cache", False)
+        super().__init__(
+            model=full_model,
+            engine=_ClaudeAgentEngine(call),
+            async_engine=_AsyncClaudeAgentEngine(call),
+            **kwargs,
+        )
         self._alias = model
-        # End-to-end deadline per call, INCLUDING time queued behind the semaphore.
         self._timeout_s = timeout_s
         self._cwd = cwd
-
-    def forward(self, prompt=None, messages=None, **kwargs):
-        future = asyncio.run_coroutine_threadsafe(
-            self._acomplete(prompt, messages, kwargs), _bridge().loop
-        )
-        try:
-            return future.result(self._timeout_s)
-        except concurrent.futures.TimeoutError:
-            # Mirror mcp.py: don't leave the coroutine running on the shared loop.
-            future.cancel()
-            raise TimeoutError(f"claude-agent-sdk call timed out after {self._timeout_s}s") from None
-
-    async def aforward(self, prompt=None, messages=None, **kwargs):
-        future = asyncio.run_coroutine_threadsafe(
-            self._acomplete(prompt, messages, kwargs), _bridge().loop
-        )
-        # wait_for cancels the wrapped future on timeout, propagating to the bridge-loop task:
-        # the async twin of forward's cancel-on-timeout.
-        return await asyncio.wait_for(asyncio.wrap_future(future), self._timeout_s)
-
-    # -- runs ON the bridge loop --------------------------------------------
-
-    async def _acomplete(
-        self, prompt: str | None, messages: list[dict[str, Any]] | None, kwargs: dict[str, Any]
-    ) -> litellm.ModelResponse:
-        sdk = _require_claude_agent_sdk()
-        system_prompt, user_prompt = _split_messages(prompt, messages)
-        output_format = _translate_response_format(kwargs.get("response_format"))
-        options = sdk.ClaudeAgentOptions(
-            model=self._alias,
-            system_prompt=system_prompt,
-            # A PURE completion: `tools=[]` empties the toolset (`allowed_tools` would merely
-            # auto-approve, not restrict) and `setting_sources=[]` so the user's CLAUDE.md /
-            # settings / MCP servers never leak into RLM planner calls. max_turns caps the agent
-            # loop: 1 for a plain completion (the sub-LM seat), a generous 8 when output_format is
-            # set: the SDK's structured-output step spends turns BEYOND the model's own answer (a
-            # reformat/validation round), and a complex RLM planner call exhausted a tight cap of 2
-            # in a live run. tools=[] keeps the headroom from ballooning: with no tools each turn is
-            # just the model, so a clean structured output still returns in 1-2 turns; the cap only
-            # absorbs the tail.
-            tools=[],
-            max_turns=8 if output_format else 1,
-            output_format=output_format,
-            setting_sources=[],
-            env={"CLAUDE_CODE_MAX_RETRIES": "2"},
-            cwd=self._cwd,
-        )
-        async with _bridge().semaphore:
-            try:
-                result, text = await self._query_once(user_prompt, options)
-            except Exception as exc:
-                if not _looks_rate_limited(str(exc)):
-                    raise
-                await asyncio.sleep(_BACKOFF_S)
-                result, text = await self._query_once(user_prompt, options)
-        usage = result.usage or {}
-        # An unreported usage stays ABSENT rather than becoming three zeroes. litellm
-        # materialises a `Usage(0, 0, 0)` when handed `usage={}`, but leaves the attribute OFF
-        # entirely when the kwarg is omitted. Both dspy reads then report absence rather than a
-        # count: the legacy one (`dict(getattr(response, "usage", {}) or {})`) yields `{}` and
-        # `UsageTracker.add_usage` skips an empty entry, and the typed one under
-        # `dspy.context(experimental=True)` (`usage_from_response`) yields `None`. So omitting is
-        # what keeps "the SDK reported nothing" distinguishable from "this call used zero tokens"
-        # -- the guide's own published promise ("Usage may be absent, and absent is not zero"),
-        # which this adapter was quietly breaking on every call that reported none.
-        #
-        # The guarantee is at the RESPONSE level, not the field level: a usage dict that is
-        # present but carries no number this kit recognises (`{"input_tokens": None}`, or a dict
-        # of nothing but metadata) still reports zeroes. Not because litellm rejects a `None` --
-        # it accepts one and coerces it to 0 -- but because the only two states the
-        # `ModelResponse` CONSTRUCTOR can express are "no attribute" and "a `Usage` object", and
-        # a `Usage` holds numbers.
-        # There is no "present but unreadable" to hand downstream. Absent means absent; zero
-        # still means "zero as far as we could tell".
-        reported: dict[str, Any] = {}
-        if usage:
-            prompt_tokens = _prompt_tokens_from_sdk_usage(usage)
-            completion_tokens = _token_count(usage, "output_tokens")
-            reported["usage"] = {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-            }
-            # The rounds ride ALONGSIDE these totals, never instead of them, and neither is
-            # derived from the other -- they do not even cover the same span. See `_api_rounds`.
-            rounds = _api_rounds(usage)
-            if rounds is not None:
-                reported["usage"][_ROUNDS_KEY] = rounds
-        response = litellm.ModelResponse(
-            model=self.model,
-            choices=[{"message": {"role": "assistant", "content": text}}],
-            **reported,
-        )
-        if result.total_cost_usd is not None:
-            # Cosmetic: the SDK's OWN cost figure for the call, NOT derived from the tokens
-            # above. On a subscription nothing bills it and no rlm-harness budget reads it; it
-            # just keeps `lm.history` honest.
-            #
-            # DO NOT reconcile this against the token counts above -- they cover different
-            # things. On the live call this was measured from (n=1, so read it as "this happens"
-            # rather than "this always happens"), `result.model_usage` showed the Agent SDK
-            # routing a second model alongside the requested one -- a haiku, ~1.7k input tokens --
-            # and `total_cost_usd` was the SUM across BOTH, 0.014149 spanning sonnet + haiku,
-            # while `result.usage` reported the requested model alone. `usage` is an untyped
-            # passthrough from the CLI, so that last half is not verifiable from the SDK's types;
-            # what is certain is that the two fields answered different questions on that call,
-            # and anyone dividing one by the other concludes the numbers are broken.
-            #
-            # The side model's tokens are deliberately NOT folded into the per-call usage above.
-            # A trace describes what the POLICY did, and the SDK routing a helper model is
-            # infrastructure the planner never chose -- counting it would attribute work to the
-            # policy that the policy did not do, and a trainer reads this as the trajectory. If
-            # it ever needs to be data, give it its OWN optional field rather than mixing scopes
-            # into a per-call count.
-            response._hidden_params["response_cost"] = result.total_cost_usd
-        return response
-
-    async def _query_once(
-        self, user_prompt: str, options: ClaudeAgentOptions
-    ) -> tuple[ResultMessage, str]:
-        sdk = _require_claude_agent_sdk()
-        result: ResultMessage | None = None
-        async for message in sdk.query(prompt=user_prompt, options=options):
-            if isinstance(message, sdk.ResultMessage):
-                result = message
-        if result is None:
-            raise RuntimeError("claude-agent-sdk produced no ResultMessage")
-        if result.is_error or result.subtype != "success":
-            raise RuntimeError(f"claude-agent-sdk error ({result.subtype}): {result.result!r}")
-        if result.structured_output is not None:
-            text = json.dumps(result.structured_output)
-        else:
-            text = result.result or ""
-        if not text:
-            # Never hand dspy empty text. It would become a bare "empty or null response"
-            # AdapterParseError with less context than this.
-            raise RuntimeError("claude-agent-sdk returned an empty result")
-        return result, text

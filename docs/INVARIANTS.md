@@ -144,14 +144,26 @@ reason is in the rule.
   additionally keeps its `claude-agent-sdk` import out of module top: deferred to instance
   construction, so `rlm_harness.ClaudeAgentLM` is gettable without the extra, like `mcp_tools`.
 
-  **`ClaudeAgentLM` subclasses `dspy.BaseLM` and implements `forward`/`aforward`, and that interface
-  has an announced EXPIRY.** dspy 3.4 deprecates it in favour of an engine with
-  `complete(Request) -> Response` passed as `dspy.LM(engine=...)`, and says removal is scheduled for
-  3.5, which is why the cap can never pass `<3.5.0` (it is tighter still today, see `pyproject.toml`). The suite emits that
-  DeprecationWarning today; it is expected, not noise. `BaseLM.__call__` is the handle for
-  re-checking what the subclass still owes when the floor moves, and `dspy-latest.yml` is the
-  instrument that goes red when 3.5 ships. Do NOT silence the warning: it is the only thing that
-  dates the exemption.
+  **`ClaudeAgentLM` is an ENGINE, not a `forward()` subclass, and the suite must stay free of that
+  DeprecationWarning.** It was a `dspy.BaseLM` implementing `forward`/`aforward` until 1.17.0, on a
+  documented exemption dated by the warning dspy emitted for it. dspy 3.4 deprecated that interface
+  in favour of an engine with `complete(Request) -> Response` passed as `dspy.LM(engine=...)` and
+  scheduled removal for 3.5, so the exemption was resolved rather than renewed: the class is now a
+  `dspy.LM` holding `_ClaudeAgentEngine` / `_AsyncClaudeAgentEngine`.
+
+  Two things that go with it, each with its own pin. The LM is **managed** now, so dspy WOULD
+  consult a cache for it: `__init__` defaults `cache=False` so a subscription call keeps touching
+  none, because an injected LM keeps its own flag (1.15.1) and the kit's own default could not
+  reach it. And a **copy must keep its engine**, or `copy_lm`'s `rollout_id` variant silently calls
+  litellm; `tests/test_dspy_compat.py` pins that, replacing the pin that used to assert the
+  ABSENCE of `_engine_spec`.
+
+  Run the suite under `-W error::DeprecationWarning` when touching an LM: it passes today, and a
+  positive control (a `forward()`-style `BaseLM` subclass under the same flag) is what makes that
+  pass a measurement rather than an inert flag. `dspy-latest.yml` remains the instrument that goes
+  red when 3.5 ships; the cap still cannot pass `<3.5.0` (see `pyproject.toml`) until then.
+  `intercept_sub_lm`'s wrapper is NOT on the deprecated interface and needs no migration: it
+  overrides `__call__`, not `forward`, and raises no warning under that flag (measured).
 - **`import rlm_harness` must not import dspy.** `RLMTask` and `configure` are lazy
   re-exports in `__init__.py` (PEP 562). Don't make them eager.
 - **Resolve custom output types via `output_model`.** `RLMTask._build_rlm` passes

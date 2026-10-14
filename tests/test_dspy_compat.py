@@ -504,21 +504,44 @@ def test_copy_lm_delegates_to_dspys_own_copy_for_a_real_LM():
     assert lm.kwargs.get("rollout_id") is None, "the original was mutated"
 
 
-def test_claude_agent_lm_keeps_NO_engine_spec_so_dspy_still_calls_its_own_forward():
-    """In dspy 3.4.0 the ABSENCE of `_engine_spec` is how `dspy.clients.execution.prepare`
-    recognises a legacy `forward`/`aforward` LM (`managed = hasattr(lm, "_engine_spec")`). Stamping
-    one on to satisfy `LM.copy` would silently reroute a subscription LM through litellm instead of
-    its own `forward`, with nothing going red. This is the pin for that."""
+def test_a_copied_subscription_lm_still_routes_through_its_own_engine():
+    """`copy_lm` must not quietly hand a subscription variant to litellm.
+
+    This replaces a pin whose premise 1.17.0 inverted. Until then `ClaudeAgentLM` was a legacy
+    `BaseLM` and the pin was that it took `BaseLM.copy` rather than `LM.copy`, because `LM.copy`
+    reads `self._engine_spec` and stamping one on to satisfy it would have rerouted every
+    subscription call through litellm. The class is now an engine-backed `dspy.LM`, so there is
+    nothing to stamp, and the risk moved rather than vanished: `copy_lm` is used for a
+    `rollout_id` variant, and a copy that lost its engine is exactly the silent reroute the old
+    test was built against. `_dspy_compat.copy_lm`'s docstring carries the history.
+    """
+    import os
+    import sys
+    import types
+
     import rlm_harness
 
-    cls = rlm_harness.ClaudeAgentLM          # gettable without the subscription extra installed
-    # The INHERITANCE mechanism is what is pinnable here: `ClaudeAgentLM` is a `BaseLM`, not an
-    # `LM`, so it takes `BaseLM.copy`, which reads no private state. A `dir()` check for
-    # `_engine_spec` would be decorative: `"_engine_spec" in dir(dspy.LM)` is FALSE while an
-    # INSTANCE of `dspy.LM` has one, because `LM.__init__` sets it per instance, so the assertion
-    # would pass for the very class that carries the attribute. The instance-level pin lives in
-    # `tests/test_claude_agent_lm.py`, where the SDK stub needed to build one already exists.
-    assert cls.copy is dspy.BaseLM.copy and cls.copy is not dspy.LM.copy
+    mod = types.ModuleType("claude_agent_sdk")
+    mod.ClaudeAgentOptions = object
+    mod.ResultMessage = object
+    mod.query = lambda **kwargs: None
+    sys.modules["claude_agent_sdk"] = mod
+    had_key = os.environ.pop("ANTHROPIC_API_KEY", None)
+    try:
+        from rlm_harness.claude_agent_lm import _AsyncClaudeAgentEngine, _ClaudeAgentEngine
+
+        lm = rlm_harness.ClaudeAgentLM("sonnet")
+        dup = _dspy_compat.copy_lm(lm, rollout_id=1)
+        assert type(dup) is type(lm)
+        assert isinstance(dup.engine, _ClaudeAgentEngine), "a copied LM would call litellm"
+        assert isinstance(dup._async_engine_spec, _AsyncClaudeAgentEngine)
+        assert dup.kwargs.get("rollout_id") == 1, "the variant lost what it was copied for"
+        # And the cache default survives the copy: see `claude_agent_lm`'s `setdefault("cache")`.
+        assert _dspy_compat.lm_cache_is_live(dup) is False
+    finally:
+        sys.modules.pop("claude_agent_sdk", None)
+        if had_key is not None:
+            os.environ["ANTHROPIC_API_KEY"] = had_key
 
 
 def test_copy_lm_merges_updates_into_kwargs_when_the_base_has_no_copy():
