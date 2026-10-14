@@ -166,6 +166,25 @@ cannot see.
   real and read off real files; the DELTA between them was invented by putting an extra's pin and a
   runtime constant in one sentence. A version bound is worth nothing without the file it came from.
   Don't run a live run in CI; it costs money. `examples/` show it.
+- **An example is the first thing a user runs, and nothing in CI runs one.** `examples/` is six
+  files, no workflow touches any of them, and **1.17.0 reached PyPI before a single one had been
+  run against it**: the engine migration's only end-to-end evidence was a throwaway probe in a
+  review, which is not evidence any later change can re-check. A broken example does not fail a
+  suite, it just makes the kit look broken to someone on their first ten minutes. So at release
+  time do both halves, because they cost completely different things.
+
+  The CHEAP half costs nothing and catches the likely rot, an example naming a symbol that moved:
+  load every file in `examples/` without calling `main()` (they are all `__main__`-guarded), so an
+  import error or an `ImportError` on a renamed public name surfaces. All six load clean on 1.17.0,
+  measured. The EXPENSIVE half needs credentials and spends real money or subscription usage, so it
+  is a judgement call per release rather than a rule: run at least ONE live example whenever the
+  release touched the LM boundary, the sandbox, or the trace format. 1.17.0 is the worked case, and
+  it is also the warning: `examples/claude_agent_lm.py` on a real Pro/Max login returned a validated
+  `Summary` through a real pyodide sandbox and wrote a `trace/v2` stream with one `api_rounds`
+  event, and that run is the ONLY time the engine-backed adapter has ever spoken to the real CLI.
+  Every other check of it drives a fake `claude_agent_sdk` module whose `ClaudeAgentOptions(**kwargs)`
+  swallows any keyword, so an upstream rename stays green. `mini_run.py` is the no-subscription
+  equivalent (any litellm model through `RLM_*` env).
 - **`tests/test_sandbox_real_deno.py` is the one file that drives a REAL Deno sandbox, and it
   skips without `deno` on PATH, which includes CI.** Every other sandbox test monkeypatches
   `PythonInterpreter.execute`, and a fake `execute` can neither exit nor end a dspy session, which

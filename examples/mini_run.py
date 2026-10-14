@@ -1,4 +1,4 @@
-"""Minimal real end-to-end RLM run: verifies the forward() path with a live model.
+"""Minimal real end-to-end RLM run: verifies the aforward() path with a live model.
 
 Self-contained: configures from RLM_* env, runs one tiny task through a real
 dspy.RLM (real Deno sandbox + real model), records the trajectory, and prints
