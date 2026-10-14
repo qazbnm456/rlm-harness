@@ -52,6 +52,19 @@ EVENT_RUN_END = "run_end"
 #: only position could match it, and position is unsound once dspy owns retries and
 #: `llm_query_batched` fans calls across threads. As its own event it needs no correlation, and
 #: `step_id` answers the question the field exists for ("the LAST breakdown") on its own.
+#:
+#: **The old location is gone, and THAT half is a removal, not an addition.** The key shipped in
+#: 1.11.0 and the kit owned it (it set `api_rounds` on its own usage object), so v1's additive-only
+#: rule covered it and "additive in v1" describes only the new event. The removal is taken INSIDE
+#: v1 on purpose: bumping `SCHEMA` to v2 would break every reader of every event to announce the
+#: loss of one optional sub-field, which costs the same consumers the rule exists to protect more
+#: than the removal does. A reader that used the key takes the last `api_rounds` event instead; its
+#: `rounds` payload is identical to what the key held, which is why the nesting was kept.
+#:
+#: **Ordering caveat.** The breakdown is recorded DURING the call, so its `step_id` precedes the
+#: `main_step` or `sub_call` for that same call rather than following it. "Take the last one" is
+#: unaffected, which is the question this answers; attaching a breakdown to one specific call by
+#: adjacency is not available, and was not available from the usage entry either.
 EVENT_API_ROUNDS = "api_rounds"
 
 _active: ContextVar[TraceRecorder | None] = ContextVar("rlm_harness_recorder", default=None)

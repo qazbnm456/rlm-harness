@@ -183,7 +183,7 @@ def test_public_surface_includes_the_consumer_contract():
         "rubric_to_meta", "rubric_from_meta", "validate_rubric", "criteria_facts",
         # trace/v1 contract constants. A consumer reads a trace against these, not raw strings
         "EVENT_RUN_START", "EVENT_MAIN_STEP", "EVENT_SUB_CALL", "EVENT_TOOL_CALL",
-        "EVENT_FINAL", "EVENT_RESULT", "EVENT_RUN_END",
+        "EVENT_FINAL", "EVENT_RESULT", "EVENT_RUN_END", "EVENT_API_ROUNDS",
     }
     assert must_export <= set(rlm_harness.__all__)
     # ...and each is actually REACHABLE. `__all__` membership alone would pass for a name with

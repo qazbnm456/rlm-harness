@@ -854,6 +854,12 @@ still use the Claude Agent SDK, `claude -p`, and third-party apps with your subs
 2026-10-14; the same page's 2026-06-15 update says the previously-announced changes to Agent SDK
 usage are PAUSED, so read it for the current state rather than trusting this quote's date).
 
+One kwarg is a cost multiplier here. `n=k` asks dspy for k candidates, dspy runs one engine call
+per candidate, and each of those is a separate `claude` CLI spawn charged to your own usage window:
+measured, `n=3` was one spawn until 1.16.0 and is three since 1.17.0. The constructor warns when
+`n` is above 1. `temperature`, `top_p` and `max_tokens` are tolerated and ignored as the docstring
+says, because the SDK exposes no sampling controls.
+
 dspy ships its own subscription providers, and the kit needs no code for them: `configure()` takes a
 pre-built LM verbatim, so they go in through the same seam as any other.
 
@@ -1664,7 +1670,11 @@ Five things to know:
   afterwards, because a tracker entry carries no per-call identity and only POSITION could match
   it, which is unsound once dspy owns retries and `llm_query_batched` fans calls across threads.
   The payload keeps the `rounds` nesting so a reader that already parsed `api_rounds["rounds"]`
-  parses it unchanged. Its purpose is the CONTEXT WINDOW SIZE: the provider's documentation says to calculate
+  parses it unchanged. The old key is GONE rather than deprecated: a reader still looking at
+  `run_end.payload.usage[...]["api_rounds"]` finds nothing, not a stale value. That half is a
+  removal inside `trace/v1`, taken because upstream left no way to keep the key, and `SCHEMA` stays
+  `v1` because a bump would break every reader of every event to announce the loss of one optional
+  sub-field. `docs/INVARIANTS.md` records it beside the additive-only rule. The field's purpose is the CONTEXT WINDOW SIZE: the provider's documentation says to calculate
   it "from the last `message` entry". **The totals give you that too, but only conditionally.**
   When a call made one API request running one SAMPLING ITERATION, the top-level fields and that
   single entry are the same numbers and `prompt_tokens` already IS the context size. ("One
@@ -1695,6 +1705,11 @@ Five things to know:
     rounds merged into one flat list with the per-CALL boundaries lost, and dspy performs that
     merge ITSELF from `dspy.Module.__call__` under `dspy.configure(track_usage=True)`. The
     breakdown no longer passes through that aggregator at all, so there is nothing left to merge.
+
+    The event is recorded mid-call, so its `step_id` comes BEFORE the `main_step` or `sub_call`
+    for that same call, not after. Taking the last breakdown is unaffected, which is the question
+    this answers. Correlating a breakdown to one specific call is not available: by adjacency you
+    would attach each one to the call that follows it, and nothing would say so.
 
   A nested `*_details` / `cache_creation` object inside a round is a DECOMPOSITION of a field
   already counted, never an addition: add up every integer in a round and you count the cached

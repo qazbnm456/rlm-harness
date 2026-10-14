@@ -7,8 +7,9 @@ All notable changes to `rlm-harness`. Format loosely follows
 ## [1.17.0] - 2026-10-14
 
 `ClaudeAgentLM` moves off the dspy interface that 3.5 removes. `api_rounds` moves with it, from a
-usage key to its own trace event: additive in `trace/v1`, and a reader that followed the old
-location has one place to change. No public name moves.
+usage key to its own trace event: the event is additive in `trace/v1`, the old key is gone, and a
+reader that followed it has one place to change. No public name moves. `n` changes meaning: it
+now costs one CLI call per candidate.
 
 ### Changed
 
@@ -45,6 +46,18 @@ location has one place to change. No public name moves.
   `api_rounds["rounds"]` parses the payload unchanged. One hazard disappears with the move: the
   breakdown no longer passes through `dspy.track_usage()`'s aggregator, which used to merge every
   call's rounds into one flat list with the per-call boundaries lost.
+
+  **Only the new event is additive. The old key's removal is not**, and this entry called the
+  whole change additive. The key shipped in 1.11.0 and the kit set it itself, so `trace/v1`'s
+  additive-only rule covered it. `SCHEMA` stays `v1` regardless: a bump would break every reader
+  of every event to announce the loss of one optional sub-field, which hurts the readers that rule
+  protects more than the removal does. `docs/INVARIANTS.md` now records it beside the rule, with
+  the migration and with what made this one acceptable.
+
+  One caveat comes with the new location: the event is recorded mid-call, so its `step_id` precedes
+  the `main_step` or `sub_call` for that same call rather than following it. Taking the last
+  breakdown is unaffected, which is the question the field answers. Correlation by adjacency is
+  not available, and a reader that tries it gets no error.
 - **"Absent usage is not zero" is kept by a different construction.** `lm15.Response.usage` is a
   required field, so omitting the attribute is no longer available: absence is an all-`None`
   `lm15.Usage`, which `usage_dict` reduces to `{}` before the tracker sees it. Both arms are pinned
@@ -63,6 +76,16 @@ location has one place to change. No public name moves.
   used to succeed and do nothing now fails loudly, which is the right direction for keys that
   could only have been a mistake on an LM that talks to a local CLI; use `timeout_s=` for the call
   deadline.
+- **`n` is a CLI-spawn multiplier now, where it used to be ignored.** dspy's `execute` runs one
+  engine call per candidate once the request is canonical (`count = call.n`); an unmanaged LM took
+  its hardcoded `n=1` branch instead and the kwarg reached `forward()` only to be dropped.
+  Measured across the migration: `n=3` was ONE SDK spawn on 1.16.0 and is three here. So a
+  consumer who carried `n=2` over from a litellm config, on the belief this adapter ignores
+  sampling kwargs, doubles their subscription calls on upgrade. The constructor warns above 1 and
+  names the cost. It does not refuse: asking for k candidates and getting k is dspy's contract,
+  so the warning is there for the `n` nobody meant to ask for. `temperature`, `top_p` and
+  `max_tokens` are still tolerated and still ignored; the two docstrings that said the same of
+  `n` were wrong.
 - Three vestigial attributes are gone from the LM (`_alias`, `_timeout_s`, `_cwd`). The values the
   call uses live on its `_ClaudeAgentCall`, nothing in the kit read the copies, and a mutation
   showed two tests were pinning them: changing what the CALL used left the suite green while the
@@ -78,23 +101,43 @@ location has one place to change. No public name moves.
   made the SDK's own validation round unreachable. The dict is now read and re-emitted as the two
   keys the SDK's `output_format` took before; `name`/`strict` are dspy's own and were never sent.
   It survived because nothing in the suite mentioned `output_format`: the `response_format` knob
-  on the new test helper existed for exactly this test and went unused until it did.
+  on the new test helper existed for exactly this test and went unused until it did. The canonical
+  shape is now derived from the installed dspy in `tests/test_dspy_compat.py` instead of from a
+  literal, so a repeat goes red there, next to the dspy fact, rather than in a consumer's
+  structured output.
+
+- **A planner-seat timeout names itself.** The async engine let `asyncio.wait_for`'s own
+  `TimeoutError` through, and that one carries no text, so a hung CLI on the planner seat arrived
+  naming neither the adapter nor the number while the sub-LM seat named both. Both seats raise the
+  same message now.
 
 ### Added
 
 - **What the adapter passes the SDK is pinned now.** `tools=[]` and `setting_sources=[]` are the
   pure-completion guarantee the module docstring and `docs/INVARIANTS.md` both rest on, and no
   test asserted either value: mutating them to a real toolset and to the user's own settings left
-  the whole suite green. Measured, then fixed. The same gap hid `max_turns` and the CLI's retry
-  cap.
+  the whole suite green. Measured, then fixed. The same gap hid `max_turns`, the CLI's retry cap,
+  the system prompt and `cwd`. All eight options the adapter passes are asserted now, the system
+  prompt included: dropping the task's own instructions from every planner request left the whole
+  suite green too, which is the one of the eight a live run would have been slowest to show.
 - **A test is the instrument for "the kit's LMs are off the interface dspy removes in 3.5"**, with
   its control inside it: a `forward()`-style subclass is driven first and must raise, then the
   kit's own LMs must not. `docs/INVARIANTS.md` claimed a control that lived only in a scratch file,
   and nothing in CI passed `-W error::DeprecationWarning`, so a future edit reintroducing
-  `forward()` would have been green.
+  `forward()` would have been green. **Both directions are driven**, because dspy decides "legacy"
+  per direction (`method = "aforward" if asynchronous else "forward"`): a sync-only version of this
+  test left `aforward` free to come back with the suite green and dspy warning, guarding the
+  sub-LM seat and missing the planner seat.
 - Tests for the paths the migration left uncovered: the async engine (the planner's primary route,
-  entirely new surface), the rate-limit rung and its negative arm, a non-text part being refused,
-  and a recorder that raises mid-call.
+  entirely new surface), that it does not block the loop it was awaited on and that its deadline
+  fires there too, the SDK's structured ANSWER (the return half of the fix below, which the test
+  fixture had hardcoded to `None`), the rate-limit rung and its negative arm, a non-text part
+  being refused, and a recorder that raises mid-call. Each pin is mutation-verified: it goes red
+  when the behaviour it names changes, which is not true of a test merely because it passes.
+- `EVENT_API_ROUNDS` joins `tests/test_contract.py`'s `must_export` set. The assertion there is a
+  SUBSET check, so a new `__all__` entry passes on its own and only membership in `must_export`
+  makes a later removal go red: the new constant was exported but unguarded, and deleting it from
+  `__all__` left the suite green.
 - **The politeness ladder's new dependency is written down and pinned.** dspy computes
   `retries = lm.num_retries if call.managed else 0`, and `managed` flipped from False to True with
   the migration, so dspy's budget (default 3) is live where it used to be structurally zero. What

@@ -56,8 +56,13 @@ reason is in the rule.
   dropped once during this feature's own design revision and only caught by a second adversarial
   review pass; keep it isolated and commented so it cannot be dropped silently again.
 - **Every dspy API difference is resolved in `_dspy_compat.py`: one place, by introspection.**
-  The kit declares a FLOOR **and, since 1.14.0, a CAP** on dspy (`>=3.4.0,<3.4.1` since 1.15.2, `<3.5.0` in 1.14.0 and 1.15.0-1.15.1, see `pyproject.toml` for why 3.4.1 is excluded; the floor was
-  `>=3.3.1` since 1.5.0 and `>=3.3.0` since 1.2.0). Consumers pin the KIT, so a consumer's fresh
+  The kit declares a FLOOR **and, since 1.14.0, a CAP** on dspy (`>=3.4.0,<3.5.0`; 1.15.2
+  tightened the cap to `<3.4.1` and 1.16.0 lifted it back once 3.4.1 was supported, see
+  `pyproject.toml` for the two conditions that lifting had to meet; the floor was `>=3.3.1` since
+  1.5.0 and `>=3.3.0` since 1.2.0). This sentence said `<3.4.1` and sent the reader to
+  `pyproject.toml` "for why 3.4.1 is excluded" until 1.17.0, nine lines from the sibling sentence
+  1.17.0 did sweep: 1.15.2 wrote it and 1.16.0 lifted the cap without coming back here, so the
+  authority document stated two different caps at once. Consumers pin the KIT, so a consumer's fresh
   install used to pick up whatever dspy was current, and the kit had to survive dspy's renames
   without them noticing. **That premise is retired**: it was tested twice and broke a consumer both
   times (3.3.0 renamed three things, CHANGELOG 1.0.1; 3.4.0 deleted the interpreter seam), because
@@ -161,7 +166,12 @@ reason is in the rule.
   The instrument is a TEST, not a habit:
   `tests/test_dspy_compat.py::test_the_kits_own_LMs_are_off_the_interface_dspy_removes_in_3_5`
   drives a `forward()`-style subclass first and demands it raise, THEN demands the kit's own LMs
-  raise nothing. Without that control the second half would pass for an LM that is on the dead
+  raise nothing. **Both DIRECTIONS, because dspy decides "legacy" per direction:**
+  `dspy/clients/execution.py` computes `method = "aforward" if asynchronous else "forward"` and
+  asks whether the LM overrides that one. The first version of this test drove only the sync
+  `__call__`, which left `aforward` free to come back on `ClaudeAgentLM` with the suite green and
+  dspy warning: it guarded the sub-LM seat and missed the planner seat, which is the primary RLM
+  route. Without that control the second half would pass for an LM that is on the dead
   interface, and relying on remembering to pass `-W error::DeprecationWarning` is not an
   instrument: nothing in CI passes it, so a future edit reintroducing `forward()` would be green.
   `dspy-latest.yml` remains what goes red when 3.5 actually ships; the cap still cannot pass
@@ -183,6 +193,16 @@ reason is in the rule.
   the LM; do not relax the assertion. The module docstring's "One retry ladder, smallest at each
   rung" is the promise this holds up, and it is about someone's personal usage window, not a
   performance knob.
+
+  **`n` is the second thing that became dspy's to multiply, and the first sweep missed it.**
+  `execute` runs `count = call.n` engine calls once the request is canonical, where an unmanaged
+  LM took its hardcoded `n=1` branch and dropped the kwarg inside `forward()`. Measured across the
+  migration: `n=3` was ONE CLI spawn on 1.16.0 and is three now. The constructor warns above 1
+  rather than refusing, because a caller asking for k candidates correctly gets k; the warning is
+  for an `n` carried over from a litellm config on the belief this adapter ignores it, which is
+  what the docstrings said. When reading this invariant for a NEW dspy behaviour, enumerate what
+  `managed` turns on rather than checking the one knob that prompted the question: retries and `n`
+  arrived together and only one was noticed.
 - **`import rlm_harness` must not import dspy.** `RLMTask` and `configure` are lazy
   re-exports in `__init__.py` (PEP 562). Don't make them eager.
 - **Resolve custom output types via `output_model`.** `RLMTask._build_rlm` passes
@@ -370,6 +390,19 @@ reason is in the rule.
   Within v1 you MAY add an optional payload field; you may NOT remove, rename, or re-type an existing
   event type, envelope key, or established payload field: that silently breaks every downstream
   reader without a test failure here. A breaking change bumps `SCHEMA` to `v2` with a migration.
+
+  **One removal has been taken inside v1, and it is recorded here so it reads as a decision rather
+  than an oversight.** 1.17.0 removed `api_rounds` from the `run_end.payload.usage` call entries,
+  where it had shipped in 1.11.0 as a key the kit set itself. It was forced: an engine-backed LM's
+  usage reaches dspy's tracker through `usage_dict`, which rebuilds a fixed key set off the typed
+  `lm15.Usage`, and a tracker entry carries no per-call identity to re-attach it by (measured both
+  ways). `SCHEMA` deliberately stayed `v1`: a `v2` bump breaks every reader of every event to
+  announce the loss of one optional sub-field, which costs the consumers this rule protects more
+  than the removal does. The migration is one line, `EVENT_API_ROUNDS`, whose payload keeps the
+  same `rounds` nesting. Do NOT read this as a precedent for the next removal: what made it
+  acceptable is that upstream left no way to keep the field, and the replacement landed in the
+  same release. `tests/test_contract.py` pins no usage-entry shape, which is why nothing went red,
+  and that remains true: the entry's keys are dspy's.
   `tests/test_contract.py` pins all of this: if it goes red you are about to break a consumer, not
   the test. **The SCHEMA string itself is frozen from 1.0.0 too**: it read `rlm-kit/trace/v1` until
   the pre-publication rename to `rlm-harness` (CHANGELOG 1.0.0), which moved the vendor tag while

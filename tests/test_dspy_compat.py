@@ -1117,7 +1117,15 @@ def test_the_kits_own_LMs_are_off_the_interface_dspy_removes_in_3_5():
     **The control is the first half, and without it this test is worthless.** A filter that caught
     nothing, or an upstream that stopped warning, would make the second half pass for an LM that
     IS on the dead interface. So a `forward()`-style subclass is driven first and must raise.
+
+    **Both DIRECTIONS are driven, because dspy decides "legacy" per direction.**
+    `dspy/clients/execution.py` computes `method = "aforward" if asynchronous else "forward"` and
+    then asks whether the LM overrides THAT one. A version of this test that drove only `__call__`
+    stayed green while `aforward` was added back to `ClaudeAgentLM` and dspy warned: it guarded
+    the sub-LM seat and missed the planner seat, which is the primary RLM route. Each arm gets
+    both.
     """
+    import asyncio
     import warnings
 
     import litellm
@@ -1133,6 +1141,10 @@ def test_the_kits_own_LMs_are_off_the_interface_dspy_removes_in_3_5():
         warnings.simplefilter("error", DeprecationWarning)
         with pytest.raises(DeprecationWarning, match="forward"):
             _Legacy(model="legacy/x")("hi")
+        # ...and the same control on the ASYNC route, which is the one the planner takes. Without
+        # it the async half below passes for an upstream that only warns synchronously.
+        with pytest.raises(DeprecationWarning, match="forward"):
+            asyncio.run(_Legacy(model="legacy/x").acall("hi"))
 
         # `intercept_sub_lm`'s wrapper: NOT on the interface (it overrides `__call__`), which is
         # why 1.17.0 migrated only the subscription LM.
@@ -1169,8 +1181,68 @@ def test_the_kits_own_LMs_are_off_the_interface_dspy_removes_in_3_5():
         try:
             import rlm_harness
 
-            rlm_harness.ClaudeAgentLM("sonnet")("hi")
+            lm = rlm_harness.ClaudeAgentLM("sonnet")
+            lm("hi")                              # the sub-LM seat: dspy reads `forward`
+            asyncio.run(lm.acall(prompt="hi"))    # the planner seat: dspy reads `aforward`
         finally:
             sys.modules.pop("claude_agent_sdk", None)
             if had_key is not None:
                 os.environ["ANTHROPIC_API_KEY"] = had_key
+
+
+def test_dspy_canonicalises_a_response_format_class_into_the_flat_shape_the_adapter_reads():
+    """`ClaudeAgentLM._translate_response_format` reads `response_format["schema"]`, which is a
+    DSPY fact, and it was pinned only by a hand-written literal in the adapter's own tests.
+
+    That literal asserts what the author believed dspy produces. dspy builds the nested OpenAI
+    form (`{"type": "json_schema", "json_schema": {...}}`) in `execution.py:_canonical` and only
+    `request_from_openai_chat` flattens it into `Config.response_format`; if that flattening ever
+    moves, the adapter's reader returns `None` again, `output_format` is dropped and `max_turns`
+    falls back to 1. That IS the 1.17.0 regression, and the test that caught it would stay green
+    through a repeat, because it asserts the belief rather than dspy.
+
+    So this derives the shape from the installed dspy and hands it to the kit's reader. It belongs
+    here for the same reason every other case in this file does: the next upstream rename goes red
+    HERE, next to the fact, rather than in a downstream consumer's structured output.
+    """
+    import dspy
+    from pydantic import BaseModel
+
+    from rlm_harness.claude_agent_lm import _translate_response_format
+
+    class _Out(BaseModel):
+        headline: str
+
+    T = dspy.lm15
+    captured: dict = {}
+
+    class _Capture:
+        """The smallest thing `dspy.LM(engine=...)` accepts: this test is about what dspy puts in
+        the Request, so the SDK (and `ClaudeAgentLM` itself) are not needed to see it."""
+
+        def complete(self, request):
+            captured["request"] = request
+            return T.Response(
+                id="canonical", model=request.model,
+                message=T.Message(role="assistant", parts=[T.TextPart(text="{}")]),
+                finish_reason="stop", usage=T.Usage(),
+            )
+
+    dspy.LM("capture/x", engine=_Capture(), cache=False)(prompt="hi", response_format=_Out)
+    response_format = captured["request"].config.response_format
+
+    assert isinstance(response_format, dict), (
+        "dspy stopped canonicalising a pydantic class: the adapter's dict branch is now dead and "
+        "its class branch is live, which is the opposite of what its docstring says"
+    )
+    assert response_format["type"] == "json_schema"
+    assert "schema" in response_format, (
+        "the schema is no longer at a FLAT `schema` key, so `_translate_response_format` is about "
+        "to return None and every structured subscription call loses its output_format"
+    )
+    # ...and the kit's reader actually finds it there, which is the half a shape assertion alone
+    # would leave unproven.
+    assert _translate_response_format(response_format) == {
+        "type": "json_schema", "schema": response_format["schema"],
+    }
+    assert response_format["schema"]["properties"]["headline"]["type"] == "string"

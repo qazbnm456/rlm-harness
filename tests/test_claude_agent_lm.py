@@ -18,8 +18,8 @@ import rlm_harness
 from rlm_harness.claude_agent_lm import (
     _looks_rate_limited,
     _require_claude_agent_sdk,
-    _split_messages,
     _translate_response_format,
+    _user_prompt,
 )
 
 
@@ -30,25 +30,32 @@ def test_lazy_export_without_the_sdk():
     assert rlm_harness.ClaudeAgentLM.__name__ == "ClaudeAgentLM"
 
 
-def test_split_messages_bare_prompt():
-    assert _split_messages("hello", None) == (None, "hello")
+def test_user_prompt_single_message_is_passed_through_whole():
+    # The live shape on both seats: dspy.RLM packs one user message per call.
+    assert _user_prompt([{"role": "user", "content": "U"}]) == "U"
 
 
-def test_split_messages_system_plus_single_user():
-    system, user = _split_messages(
-        None, [{"role": "system", "content": "S"}, {"role": "user", "content": "U"}]
-    )
-    assert system == "S"
-    assert user == "U"
-
-
-def test_split_messages_multi_turn_flatten():
-    system, user = _split_messages(
-        None, [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
-    )
-    assert system is None
+def test_user_prompt_multi_turn_flatten():
+    user = _user_prompt([{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}])
     assert "User: a" in user and "Assistant: b" in user
     assert user.rstrip().endswith("Assistant:")
+
+
+def test_lm15_refuses_a_system_role_message_which_is_why_nothing_folds_one_in():
+    """The pin under `_request_to_prompts`'s "nothing can be there".
+
+    1.17.0 shipped a join that picked up a `role="system"` MESSAGE as well as `Request.system`,
+    documented as defending a consumer adapter that puts one there. It cannot: lm15 refuses that
+    role when the `Message` is constructed, so no request reaching this engine can hold one and
+    the branch was unreachable. Asserted against the INSTALLED dspy rather than restated in
+    prose, so the fold comes back the day lm15 allows the role instead of staying absent on a
+    belief about 3.4.
+    """
+    import dspy
+
+    T = dspy.lm15
+    with pytest.raises(ValueError, match="unsupported role: system"):
+        T.Message(role="system", parts=[T.TextPart(text="S")])
 
 
 def test_translate_response_format_pydantic_class():
@@ -257,7 +264,7 @@ def test_a_bool_is_not_a_token_count():
 # migrated the class off both.
 
 
-def _complete(lm, prompt="hi", *, response_format=None):
+def _complete(lm, prompt="hi", *, response_format=None, system=None):
     """Drive the LM's own engine with a real `lm15.Request`, returning the `lm15.Response`.
 
     `lm.engine` is dspy's public accessor for what was passed as `engine=`. Driving it is the
@@ -272,6 +279,10 @@ def _complete(lm, prompt="hi", *, response_format=None):
     request = T.Request(
         model=lm.model,
         messages=[T.Message(role="user", parts=[T.TextPart(text=prompt)])],
+        # lm15 carries the system prompt in its OWN field, not as a `role="system"` message, so
+        # the planner seat is only reachable through this: measured, the planner arrives as
+        # `system=<str>` and the sub-LM seat as `system=None`.
+        system=system,
         config=T.Config(response_format=response_format),
     )
     return lm.engine.complete(request)
@@ -291,7 +302,7 @@ def sdk_returning(monkeypatch):
     `None` in one of their values is a case worth testing at all.
     """
 
-    def build(usage, *, total_cost_usd=None, text="ok"):
+    def build(usage, *, total_cost_usd=None, text="ok", structured_output=None):
         class ResultMessage:
             def __init__(self):
                 self.usage = usage
@@ -299,7 +310,11 @@ def sdk_returning(monkeypatch):
                 self.is_error = False
                 self.subtype = "success"
                 self.result = text
-                self.structured_output = None
+                # Was hardcoded `None`, which left the SDK's structured RETURN path unreached by
+                # the whole suite while the release's headline fix was the structured REQUEST
+                # path. Driving `output_format` without ever having the SDK answer it is half
+                # the feature.
+                self.structured_output = structured_output
 
         captured: dict = {}
 
@@ -566,8 +581,38 @@ def test_mixed_presence_keeps_its_order_through_the_event_stream(sdk_returning, 
     events = [e for e in load_events(path) if e["type"] == EVENT_API_ROUNDS]
     assert len(events) == 1, "presence was lost: only the middle call reported a breakdown"
     assert events[0]["payload"]["rounds"] == [_ROUND]
-    steps = [e["step_id"] for e in load_events(path)]
-    assert steps == sorted(steps), "step_id stopped ordering the stream"
+    # `assert steps == sorted(steps)` stood here and was near-vacuous: `TraceRecorder.record`
+    # hands out `step_id` monotonically, so nothing on this path could make it red. The ordering
+    # that CAN break is the one against the call's own event, pinned in the test below.
+
+
+def test_a_breakdown_is_recorded_BEFORE_the_call_it_describes(sdk_returning, tmp_path):
+    """The ordering caveat `EVENT_API_ROUNDS` documents, measured and pinned rather than asserted
+    in prose.
+
+    The breakdown is recorded mid-call and the call's own `sub_call` (or `main_step`) only once
+    the call returns, so the breakdown's `step_id` is LOWER than its call's. "Take the last
+    breakdown" is unaffected, which is the question the field exists for. What is not available is
+    correlating one breakdown to one call by adjacency: a reader assuming the breakdown FOLLOWS
+    its call attaches every one to the wrong call, and gets no error doing it.
+    """
+    from rlm_harness.sub_lm import _ensure_sub_call_recording
+    from rlm_harness.trace import (
+        EVENT_API_ROUNDS,
+        EVENT_SUB_CALL,
+        TraceRecorder,
+        load_events,
+    )
+
+    sdk_returning(_usage_with_rounds([_ROUND]))
+    path = str(tmp_path / "order.jsonl")
+    with TraceRecorder(path, run_id="r"):
+        _ensure_sub_call_recording(rlm_harness.ClaudeAgentLM("sonnet"))(prompt="hi")
+    paired = [e for e in load_events(path) if e["type"] in (EVENT_API_ROUNDS, EVENT_SUB_CALL)]
+    assert [e["type"] for e in paired] == [EVENT_API_ROUNDS, EVENT_SUB_CALL], (
+        "the documented order of a breakdown and its own call changed"
+    )
+    assert paired[0]["step_id"] < paired[1]["step_id"]
 
 
 def test_a_multi_entry_breakdown_rides_through_in_order_and_unfiltered(sdk_returning, tmp_path):
@@ -649,6 +694,38 @@ def test_a_completion_grants_the_sdk_no_tools_and_leaks_no_settings(sdk_returnin
     assert sdk.captured_options["model"] == "sonnet"
 
 
+def test_the_system_prompt_reaches_the_sdk_and_an_absent_one_stays_absent(sdk_returning):
+    """The task's own instructions, i.e. what the planner seat is FOR, and nothing asserted the
+    value arrived.
+
+    lm15 moved the system prompt into `Request.system`, which is the whole reason
+    `_request_to_prompts` exists; dropping it from that function left the entire suite green while
+    the model stopped being told what task it was on. The fixture's docstring counts eight options
+    the adapter passes and six were pinned, so this is the sweep of the other two (`cwd` below).
+    """
+    sdk = sdk_returning({"input_tokens": 1, "output_tokens": 1})
+    lm = rlm_harness.ClaudeAgentLM("sonnet")
+    _complete(lm, system="PLANNER RULES")
+    assert sdk.captured_options["system_prompt"] == "PLANNER RULES", (
+        "the task instructions never reached the model"
+    )
+    # The measured sub-LM shape. `None` must stay `None`: an empty string is a system prompt the
+    # SDK would be asked to honour, and the seats differ only in this field.
+    _complete(lm)
+    assert sdk.captured_options["system_prompt"] is None
+
+
+def test_the_cwd_reaches_the_sdk_and_defaults_to_not_choosing_one(sdk_returning):
+    """`cwd=` is the constructor's only passthrough to the SDK and was the other unasserted
+    option. The default matters more than the value: a pure completion has no business picking a
+    working directory, and `tools=[]` is what makes that safe rather than this."""
+    sdk = sdk_returning({"input_tokens": 1, "output_tokens": 1})
+    _complete(rlm_harness.ClaudeAgentLM("sonnet", cwd="/somewhere/else"))
+    assert sdk.captured_options["cwd"] == "/somewhere/else"
+    _complete(rlm_harness.ClaudeAgentLM("sonnet"))
+    assert sdk.captured_options["cwd"] is None
+
+
 def test_a_structured_call_reaches_the_sdks_own_output_format(sdk_returning):
     """Structured output, end to end, in the shape the ENGINE receives rather than the one the
     adapter produces.
@@ -673,6 +750,42 @@ def test_a_structured_call_reaches_the_sdks_own_output_format(sdk_returning):
     # ...and the structured path gets the headroom its comment describes, which `max_turns=1`
     # silently removed.
     assert sdk.captured_options["max_turns"] == 8
+
+
+def test_the_sdks_structured_answer_is_what_reaches_dspy_not_the_prose_beside_it(sdk_returning):
+    """The other half of the release's headline fix, and the half no test reached.
+
+    `output_format` makes the SDK return a validated object in `structured_output`, alongside a
+    `result` string that is the agent's own prose. The adapter must send the OBJECT: the kit's
+    adapter parses this text as JSON, so handing it the prose is an `AdapterParseError` on every
+    structured call. The fixture hardcoded `structured_output = None`, so the whole suite drove
+    the request side of structured output and never the answer: coverage showed this line
+    unreached, and replacing it with `result or ""` left the suite green.
+    """
+    sdk_returning({"input_tokens": 1, "output_tokens": 1},
+                  text="Sure! Here is the JSON you asked for.",
+                  structured_output={"headline": "ok"})
+    response = _complete(rlm_harness.ClaudeAgentLM("sonnet"))
+    assert response.message.parts[0].text == '{"headline": "ok"}', (
+        "the agent's prose reached dspy instead of the SDK's validated object"
+    )
+
+
+def test_prose_is_still_what_reaches_dspy_when_there_is_no_structured_answer(sdk_returning):
+    """The control arm: without it the test above also passes for an adapter that sends
+    `structured_output` and nothing else, which would make every PLAIN completion empty."""
+    sdk_returning({"input_tokens": 1, "output_tokens": 1}, text="plain prose")
+    response = _complete(rlm_harness.ClaudeAgentLM("sonnet"))
+    assert response.message.parts[0].text == "plain prose"
+
+
+def test_an_empty_sdk_answer_is_refused_rather_than_handed_on(sdk_returning):
+    """A completion with neither a structured answer nor prose. dspy would turn the empty string
+    into a bare "empty or null response" `AdapterParseError` two frames away from the cause, so
+    the adapter refuses it where the cause is still visible."""
+    sdk_returning({"input_tokens": 1, "output_tokens": 1}, text="")
+    with pytest.raises(RuntimeError, match="empty result"):
+        _complete(rlm_harness.ClaudeAgentLM("sonnet"))
 
 
 def test_a_plain_completion_asks_for_no_output_format_and_one_turn(sdk_returning):
@@ -718,6 +831,79 @@ def test_the_async_engine_is_wired_and_not_just_constructed(sdk_returning):
     sdk_returning({"input_tokens": 1, "output_tokens": 1}, text="async ok")
     lm = rlm_harness.ClaudeAgentLM("sonnet")
     assert asyncio.run(lm.acall(prompt="hi")) == ["async ok"]
+
+
+def test_the_async_seat_does_not_block_the_loop_it_was_awaited_on(sdk_returning, monkeypatch):
+    """WHY there are two engine bodies at all, which the wiring test above cannot see.
+
+    The planner's `aforward` runs on a loop that `repl.execute` blocks, so the SDK coroutine has
+    to run on the bridge loop and be AWAITED, not waited for. Rewiring the async engine to the
+    sync body returns the same text and left the whole suite green, while in production it
+    serialises the planner loop.
+
+    Deterministic rather than timing-based: the SDK call will not finish until the caller's loop
+    runs another task WHILE that call is in flight, so a blocking body reaches its own deadline
+    instead. The first version of this test let the gate open before the call started, and the
+    blocking mutation passed it.
+    """
+    import asyncio
+    import threading
+
+    sdk = sdk_returning({"input_tokens": 1, "output_tokens": 1}, text="async ok")
+    in_flight = threading.Event()
+    may_answer = threading.Event()
+
+    async def gated(*, prompt, options):
+        # Runs on the BRIDGE loop. Announces itself, then waits for the caller's loop to make
+        # progress, in a thread so the bridge loop is not itself wedged.
+        in_flight.set()
+        await asyncio.get_running_loop().run_in_executor(None, may_answer.wait, 10.0)
+        yield sdk.ResultMessage()
+
+    monkeypatch.setattr(sdk, "query", gated)
+
+    async def main():
+        lm = rlm_harness.ClaudeAgentLM("sonnet", timeout_s=2.0)
+
+        async def unblock():
+            # Polls on the CALLER's loop, so it can only get here if that loop is still turning
+            # with the SDK call outstanding. A blocking engine body never lets this run.
+            while not in_flight.is_set():
+                await asyncio.sleep(0.001)
+            may_answer.set()
+
+        answer, _ = await asyncio.gather(lm.acall(prompt="hi"), unblock())
+        return answer
+
+    assert asyncio.run(main()) == ["async ok"], "the planner seat blocked its own event loop"
+
+
+def test_the_call_deadline_fires_on_the_async_seat_too(sdk_returning, monkeypatch):
+    """The deadline test above drives the SYNC engine, so `wait_for`'s timeout on the async seat
+    was unpinned: dropping it to `None` left the suite green, i.e. a hung CLI would hang the
+    planner forever. Both seats also raise the SAME message now; asyncio's own TimeoutError
+    carries no text, so this one used to arrive naming nothing."""
+    import asyncio
+
+    sdk = sdk_returning({"input_tokens": 1, "output_tokens": 1})
+
+    async def hanging(*, prompt, options):
+        await asyncio.sleep(30)
+        yield None  # pragma: no cover - the deadline fires first
+
+    import dspy
+
+    monkeypatch.setattr(sdk, "query", hanging)
+    lm = rlm_harness.ClaudeAgentLM("sonnet", timeout_s=0.2)
+    # Driven through `acall`, the real planner route, rather than the engine: `dspy.LM` publishes
+    # no `async_engine` accessor and reaching for the private one would assert on a dspy internal.
+    # So the deadline is observed where a consumer observes it, through dspy's error boundary,
+    # which wraps it because the LM is managed. The MESSAGE surviving that wrap is the assertion.
+    with pytest.raises(Exception, match="timed out after 0.2s") as caught:
+        asyncio.run(lm.acall(prompt="hi"))
+    # And it must stay non-retryable on this seat too, or one hung CLI costs `num_retries + 1`
+    # subscription calls instead of one (see the retry-budget test for the sync seat).
+    assert dspy.is_retryable_lm_error(caught.value) is False
 
 
 @pytest.mark.parametrize(("text", "sdk_calls"), [
@@ -819,3 +1005,47 @@ def test_dspys_retry_budget_is_live_but_never_multiplies_an_sdk_call(sdk_returni
         "about to cost num_retries+1 SDK spawns: cap `num_retries` on the LM, do not relax this"
     )
     assert calls["n"] == 1, f"the SDK was spawned {calls['n']} times for one failed call"
+
+
+def test_n_above_one_spawns_one_cli_call_per_candidate_and_warns(sdk_returning, monkeypatch, caplog):
+    """`n` is the one sampling kwarg this adapter does not ignore, and that changed in 1.17.0.
+
+    dspy's `execute` runs one ENGINE call per candidate once the request is canonical
+    (`count = call.n`), where an unmanaged LM took its hardcoded `n=1` branch and `n` reached
+    `forward()` only to be dropped. Measured across the migration: `n=3` was ONE SDK spawn on
+    1.16.0 and is three now. Nothing said so, in the docstring or the release notes, so a
+    consumer carrying `n=2` over from a litellm config doubled their subscription calls silently.
+
+    Pinned rather than described, because the number is the hazard: the docstrings quote it.
+    """
+    sdk = sdk_returning({"input_tokens": 1, "output_tokens": 1})
+    calls = {"n": 0}
+
+    async def counting(*, prompt, options):
+        calls["n"] += 1
+        yield sdk.ResultMessage()
+
+    monkeypatch.setattr(sdk, "query", counting)
+    with caplog.at_level("WARNING", logger="rlm_harness.claude_agent_lm"):
+        lm = rlm_harness.ClaudeAgentLM("sonnet", n=3)
+    warning = "\n".join(r.getMessage() for r in caplog.records)
+    assert "3 subscription calls" in warning, f"the cost was not named: {warning!r}"
+
+    assert len(lm(prompt="hi")) == 3, "dspy stopped asking for a candidate per n"
+    assert calls["n"] == 3, f"n=3 cost {calls['n']} CLI spawns, so the warning is now wrong"
+
+    # The control. Without it this passes for a build where EVERY call spawns three, which is the
+    # same hazard with none of the asking.
+    calls["n"] = 0
+    assert len(rlm_harness.ClaudeAgentLM("sonnet")(prompt="hi")) == 1
+    assert calls["n"] == 1, "a plain call stopped being one SDK spawn"
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"n": 1}], ids=["absent", "explicit-one"])
+def test_no_warning_when_n_cannot_cost_anything(fake_sdk, monkeypatch, caplog, kwargs):
+    """Noise is how a real warning gets ignored: the same reason `runtime.configure` keeps its
+    timeout warning off the roles that consume the knob fully."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with caplog.at_level("WARNING", logger="rlm_harness.claude_agent_lm"):
+        rlm_harness.ClaudeAgentLM("sonnet", **kwargs)
+    assert not [r for r in caplog.records if "subscription calls" in r.getMessage()]

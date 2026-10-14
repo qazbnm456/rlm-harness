@@ -35,8 +35,11 @@ Politeness policy (this adapter is for ORDINARY, INDIVIDUAL use of your own acco
   - Do NOT point this at batch RL-rollout generation or eval sweeps: that is not "ordinary,
     individual usage"; use the API for scale. Expect ~2-5s CLI-spawn overhead per call.
 
-Trade-offs vs. a plain `dspy.LM`: no temperature/top_p/n controls (the SDK exposes none), and no
-prompt caching across planner turns. dspy-side caching is now REACHABLE (an engine-backed LM is
+Trade-offs vs. a plain `dspy.LM`: the SDK exposes no sampling controls, so `temperature` and
+`top_p` are tolerated and ignored, and there is no prompt caching across planner turns. `n` is the
+one that is NOT ignored any more: since 1.17.0 dspy runs one engine call per candidate, so `n=k`
+means k CLI spawns charged to one subscription (measured: `n=3` was 1 spawn on 1.16.0 and is 3
+now). The constructor warns above 1. dspy-side caching is now REACHABLE (an engine-backed LM is
 managed) and deliberately off: the constructor defaults `cache=False`, so a subscription call keeps
 touching no cache unless you ask for one. Structured output IS supported:
 the kit's default `json` adapter puts a pydantic class in `response_format`, which this adapter
@@ -297,28 +300,23 @@ def _bridge() -> _Bridge:
         return _BRIDGE
 
 
-def _split_messages(
-    prompt: str | None, messages: list[dict[str, Any]] | None
-) -> tuple[str | None, str]:
-    """Map dspy's stateless message list onto the SDK's (system_prompt, prompt) pair.
+def _user_prompt(messages: list[dict[str, Any]]) -> str:
+    """Flatten dspy's stateless message list into the ONE string the SDK takes.
 
-    dspy.RLM sends system + ONE packed user message per call; the sub-LM seat sends a bare
-    prompt. The multi-message flatten is a defensive general case for a consumer's own
-    `Predict` with demos/history.
+    dspy.RLM sends a system prompt plus one packed user message per call, and the sub-LM seat
+    sends a bare prompt, so the single-message case is the live one. The multi-message flatten is
+    a defensive general case for a consumer's own `Predict` with demos or history.
+
+    There is no system partition here any more: this is reached only from
+    :func:`_request_to_prompts`, and lm15 cannot carry a system-role MESSAGE at all
+    (`lm15.Message.__post_init__` raises `unsupported role: system`), so splitting one out would
+    be unreachable code. The system prompt arrives in `Request.system` instead.
     """
-    if messages is None:
-        return None, prompt or ""
-    system: list[str] = []
-    rest: list[dict[str, Any]] = []
-    for message in messages:
-        (system if message.get("role") == "system" else rest).append(message)
-    if len(rest) == 1:
-        user_prompt = str(rest[0].get("content", ""))
-    else:
-        parts = [f"{m.get('role', 'user').capitalize()}: {m.get('content', '')}" for m in rest]
-        parts.append("Assistant:")
-        user_prompt = "\n\n".join(parts)
-    return ("\n\n".join(str(m.get("content", "")) for m in system) or None, user_prompt)
+    if len(messages) == 1:
+        return str(messages[0].get("content", ""))
+    parts = [f"{m.get('role', 'user').capitalize()}: {m.get('content', '')}" for m in messages]
+    parts.append("Assistant:")
+    return "\n\n".join(parts)
 
 
 def _message_text(message: Any) -> str:
@@ -345,16 +343,20 @@ def _request_to_prompts(request: Any) -> tuple[str | None, str]:
     """Map an ``lm15.Request`` onto the SDK's ``(system_prompt, prompt)`` pair.
 
     lm15 carries the system prompt in its OWN field rather than as a ``role="system"`` entry, so
-    this is the engine-path twin of :func:`_split_messages` and reuses its flatten for the rest.
+    this replaces the legacy path's message split and keeps only the user-side flatten.
     Measured on dspy 3.4.0 and 3.4.1: the sub-LM seat arrives as ``system=None`` plus one ``user``
-    message, and the planner seat as ``system=<str>`` plus one ``user`` message. A ``role="system"``
-    message is still folded in, because a consumer's own adapter may put one there and dropping it
-    would silently lose the instruction.
+    message, and the planner seat as ``system=<str>`` plus one ``user`` message.
+
+    **Nothing is folded in from the messages, because nothing can be there.** This function was
+    written with a join that also picked up a ``role="system"`` message, on the reasoning that a
+    consumer's own adapter might put one there; lm15 refuses that role when the ``Message`` is
+    CONSTRUCTED (`unsupported role: system`), so no request reaching this engine can hold one and
+    the join was unreachable code arguing for itself. Same rule as the `json_schema`-without-a-
+    `schema` case: a shape upstream refuses gets no kit-side guard. The test pins lm15's refusal,
+    so this comes back the day that changes.
     """
     messages = [{"role": m.role, "content": _message_text(m)} for m in (request.messages or ())]
-    folded, user_prompt = _split_messages(None, messages)
-    system = "\n\n".join(s for s in (request.system, folded) if s)
-    return (system or None, user_prompt)
+    return (request.system or None, _user_prompt(messages))
 
 
 def _translate_response_format(response_format: Any) -> dict[str, Any] | None:
@@ -425,9 +427,17 @@ class _ClaudeAgentCall:
     async def acomplete(self, request: Any) -> Any:
         """``AsyncEngine.complete``'s body: the planner seat, which arrives through ``aforward``."""
         future = asyncio.run_coroutine_threadsafe(self._acomplete(request), _bridge().loop)
-        # wait_for cancels the wrapped future on timeout, propagating to the bridge-loop task:
-        # the async twin of complete's cancel-on-timeout.
-        return await asyncio.wait_for(asyncio.wrap_future(future), self._timeout_s)
+        try:
+            # wait_for cancels the wrapped future on timeout, propagating to the bridge-loop task:
+            # the async twin of complete's cancel-on-timeout.
+            return await asyncio.wait_for(asyncio.wrap_future(future), self._timeout_s)
+        except TimeoutError:
+            # Same message as the sync seat. asyncio's own TimeoutError carries no text, so a
+            # planner deadline used to surface as a bare `TimeoutError` with nothing naming the
+            # adapter, the seat or the number, while the sub-LM seat named all three.
+            raise TimeoutError(
+                f"claude-agent-sdk call timed out after {self._timeout_s}s"
+            ) from None
 
     # -- runs ON the bridge loop --------------------------------------------
 
@@ -593,8 +603,16 @@ class ClaudeAgentLM(dspy.LM):
     Satisfies both rlm-harness seats: the planner arrives on the ASYNC engine through the
     adapter, the sub-LM seat on the SYNC one from `llm_query[_batched]` worker threads: both
     funnel into one coroutine on the shared bridge loop. Works under
-    `intercept_sub_lm` unchanged. Sampling lm_kwargs (temperature, max_tokens, ...) are tolerated
-    and ignored: the SDK exposes no sampling controls.
+    `intercept_sub_lm` unchanged. Sampling lm_kwargs (temperature, top_p, max_tokens, ...) are
+    tolerated and ignored: the SDK exposes no sampling controls.
+
+    **`n` is the exception, and it changed meaning in 1.17.0.** dspy's `execute` runs one ENGINE
+    call per candidate (`count = call.n` once the request is canonical), where an unmanaged LM took
+    its hardcoded `n=1` branch and `n` reached `forward()` only to be dropped. So `n=k` is now k
+    separate CLI spawns against one personal subscription: measured, `n=3` was 1 spawn on 1.16.0
+    and is 3 here. The constructor WARNS above 1 rather than refusing, because a caller asking for
+    k candidates now correctly gets k and that is dspy's contract; the warning is for the other
+    case, an `n` carried over from a litellm config on the belief that this adapter ignores it.
 
     **Since 1.17.0 a CONNECTION kwarg is refused rather than ignored**, and that is dspy's doing
     rather than a kit choice: `dspy.LM` raises `ValueError` for `api_key`, `api_base`, `base_url`,
@@ -641,6 +659,18 @@ class ClaudeAgentLM(dspy.LM):
                 "ANTHROPIC_API_KEY is set: the Claude Code CLI silently prefers it over your "
                 "subscription OAuth, so this run would bill API credit. Unset it (or pass "
                 "allow_api_key=True if that is genuinely what you want)."
+            )
+        # `n` is the one sampling kwarg that is NOT ignored since the engine migration: dspy
+        # spawns one SDK call per candidate. Warn rather than refuse (see the class docstring),
+        # and warn HERE because the engine is handed one request at a time and never sees `n`.
+        # The int/bool shape mirrors dspy's own check, which rejects everything else later.
+        n = kwargs.get("n")
+        if isinstance(n, int) and not isinstance(n, bool) and n > 1:
+            logger.warning(
+                "ClaudeAgentLM(n=%d): each candidate is a separate Claude Code CLI call, so this "
+                "costs %d subscription calls per LM call. It was ignored (and one call) until "
+                "1.16.0. Pass n=1, or omit it, unless you mean to sample %d times.",
+                n, n, n,
             )
         full_model = f"{SUBSCRIPTION_PREFIX}{model}"
         call = _ClaudeAgentCall(model=full_model, alias=model, timeout_s=timeout_s, cwd=cwd)
