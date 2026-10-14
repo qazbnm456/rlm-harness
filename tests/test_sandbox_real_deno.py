@@ -140,3 +140,34 @@ def test_a_cancel_stays_terminal(interp):
     with pytest.raises(SandboxCancelled):
         i.execute("while True: pass")
     assert i._session_ended is True
+
+
+def test_a_turn_timeout_does_not_silently_strip_the_sandbox_dspy_facade(interp):
+    """A restart must bring back `import dspy`, because the PROMPT still offers it.
+
+    From dspy 3.4.1 `RLM` installs a sandbox `dspy` shim with one `execute` before the turn loop
+    and appends a paragraph telling the model it may build sub-agents with it. A turn timeout
+    resets the session: the fresh Deno re-mounts files and re-registers tools, because those are
+    things dspy redoes per session, but the shim was an `execute` and dspy never runs it again.
+    Measured before the fix: the next cell's `import dspy` raised, so the model spent its
+    remaining turns following an instruction the runtime had silently stopped honouring.
+
+    Installed through dspy's own `FacadeInvocation`, not a hand-written shim, so this asserts the
+    replay against what dspy actually does.
+    """
+    facade = pytest.importorskip("dspy.primitives.facade", reason="dspy has no sandbox facade")
+    import dspy
+
+    i = interp(turn_timeout_s=3)
+    invocation = facade.FacadeInvocation({}, dspy.PythonInterpreter, None, lm=None, reserve=lambda n=1: None)
+    invocation.install(i)
+    assert i.execute("import dspy; print(type(dspy).__name__)").strip() == "module"
+
+    from dspy.primitives.code_interpreter import CodeExecutionError
+
+    with pytest.raises(CodeExecutionError, match="per-turn"):
+        i.execute("while True: pass")
+
+    # The session really did restart (the control: without it the assertion below is vacuous).
+    assert i.execute("print('leftover' in globals())").strip() == "False"
+    assert i.execute("import dspy; print(type(dspy).__name__)").strip() == "module"

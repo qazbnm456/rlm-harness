@@ -38,8 +38,8 @@ pitch, the quickstart, and installation: start at the
 
 ## RLM as Harness Engineering (sub-LM hook + tracing)
 
-`dspy.RLM` exposes no hook to intercept a sub-LLM response, and (as of dspy 3.4.0) no
-multi-sub-model or depth>1 recursion. The clean lever is to **wrap a `dspy.LM`**:
+`dspy.RLM` exposes no hook to intercept a sub-LLM response, and no multi-sub-model seat. The clean
+lever is to **wrap a `dspy.LM`**:
 
 ```python
 from rlm_harness import intercept_sub_lm, model_as_tool, get_sub_lm, TraceRecorder, RLMConfig, configure
@@ -84,8 +84,16 @@ JSONL is the dataset's source of truth.
 > view. `llm_query_batched` fans calls across threads: `TraceRecorder.record` is
 > lock-guarded so concurrent `sub_call`s can't corrupt the JSONL.
 
-> Depth is **1** by design here (main LM + one intercepted sub-LM layer). True
-> depth>1 recursion is unsupported upstream and out of scope.
+> Depth is **1** by design here (main LM + one intercepted sub-LM layer). The wrapper does not
+> recurse, and the interception it adds is per-response, not per-trajectory.
+
+Since dspy 3.4.1, model code CAN reach a nested `dspy.RLM` through the sandbox dspy facade, so
+"unsupported upstream" is no longer the reason depth stays 1 here. The reason is now a measured
+property: a nested RLM built in the sandbox records as ONE `sub_call` carrying only its final
+answer, so the inner run's turns, code and REPL output are absent from the trace entirely. When a
+child's trajectory is the point, use `make_harness_tool`, which gives the child its own rollout and
+the parent a pointer to it; see "Delegate to another harness". `RLMConfig.sandbox_sub_agents`
+decides whether the facade is available at all.
 
 ### Sub-LM tracing is automatic (1.7.0)
 
@@ -807,6 +815,34 @@ nothing back until it opts in. A per-role passthrough still wins over the cache 
 `{"disable_history": bool, "cache": {"main": bool, "sub": bool}}`, read back off `dspy.settings` and
 off the LMs rather than echoed from config, because an injected LM keeps its own `cache` and a
 non-kit caller that configured dspy first keeps its own `disable_history`. Additive within trace/v1.
+
+## Sandbox sub-agents (`RLMConfig.sandbox_sub_agents`, `RLM_SANDBOX_SUB_AGENTS`, default on)
+
+From dspy 3.4.1, `dspy.RLM` installs a `dspy` shim inside the sandbox and appends a paragraph to
+every action prompt telling the model it may use it. Model code can then write `import dspy` and
+build `Predict`, `ChainOfThought`, `ReAct`, `ReActV2`, `CodeAct`, `ProgramOfThought` or a nested
+`RLM`. Those run on the HOST: they call this run's `sub_lm`, they charge `max_llm_calls`, and they
+can be handed the task's own tools BY NAME (never a tool that was not injected, and never a
+function authored inside the sandbox).
+
+The default is on because that is what the installed dspy does; turning it off is the kit
+overriding dspy, not a kit default. Two things to know before leaving it on:
+
+- **Who drives your tools changes.** The answer stops being "the root LM" and becomes "the root LM,
+  plus any sub-agent its code builds". If the sandbox is your security boundary, that is the
+  sentence to re-read.
+- **A nested `RLM` is invisible in the trace.** Measured: one `sub_call` carrying only the final
+  answer, no `main_step` for the inner turns, no child run id. When a child's trajectory matters,
+  `make_harness_tool` is the seam that keeps it.
+
+`RLMConfig(sandbox_sub_agents=False)` refuses the shim install. The refusal goes through dspy's own
+degradation path, so dspy drops its two host tools, logs that sub-agents are unavailable, and leaves
+the sub-agent paragraph OUT of the prompt: the model is never offered a capability it does not have.
+It applies to every interpreter kind the kit builds, and has no effect on an interpreter you supply
+yourself via `RLMTask(interpreter=...)`, which bypasses `build_interpreter` entirely.
+
+A turn-timeout restart replays the shim install, because a fresh sandbox would otherwise lose it
+while the prompt still offered it.
 
 ## Timeouts: what bounds what
 
@@ -1864,7 +1900,7 @@ All via env (`RLMConfig.from_env()`): `RLM_MAIN_MODEL` (or `AI_MODEL_NAME`),
 `RLM_MAX_TOKENS`, `RLM_MAX_OUTPUT_CHARS`, `RLM_ALLOW_INSECURE_SANDBOX`,
 `RLM_MAX_ITERATIONS`, `RLM_MAX_LLM_CALLS`, `RLM_MAX_RETRIES`, `RLM_SANDBOX_TURN_TIMEOUT`,
 `RLM_REQUEST_TIMEOUT`, `RLM_MAIN_LM_KWARGS`, `RLM_SUB_LM_KWARGS`, `RLM_DISABLE_HISTORY`,
-`RLM_LM_CACHE`, `RLM_OBSERVE`.
+`RLM_LM_CACHE`, `RLM_SANDBOX_SUB_AGENTS`, `RLM_OBSERVE`.
 
 (`RLM_REQUEST_TIMEOUT` is this kit's own name. litellm separately reads a bare `REQUEST_TIMEOUT`
 for its global default: setting that one moves litellm, not this.)

@@ -356,6 +356,7 @@ class RLMTask:
                 container=self._config.container,
                 turn_timeout_s=self._config.sandbox_turn_timeout_s,
                 cancel_event=self._cancel_event,
+                sandbox_sub_agents=self._config.sandbox_sub_agents,
             )
 
         # BUILD ONE EAGERLY EVEN THOUGH DSPY WILL CALL THE FACTORY ITSELF. Two reasons, both

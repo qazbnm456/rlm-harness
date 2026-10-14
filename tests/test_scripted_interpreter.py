@@ -99,3 +99,47 @@ def test_dict_step_submits_without_a_tool(tmp_path):
     with TraceRecorder(str(tmp_path / "t.jsonl"), run_id="r"):
         result = asyncio.run(task.arun(q="hi"))
     assert result.x == 9
+
+
+def test_dspys_own_setup_executions_consume_no_step_and_stay_out_of_calls(tmp_path):
+    """`.calls` is the MODEL's turns, on every dspy, and a script's length is its turn count.
+
+    Drives the real `aforward` loop rather than calling `execute` by hand, because the thing
+    under test is whether DSPY's own pre-loop execution is accounted separately: dspy 3.4.1 added
+    one (`RLM._setup_facade` installing the sandbox `dspy` shim) and it silently ate step 0 of
+    every script written against 3.4.0. A hand-rolled `execute(SHIM_SETUP, ...)` call would assert
+    the kit against its own idea of what dspy does; this asserts it against what dspy DOES.
+
+    The facade count is asserted against dspy's CAPABILITY, not a version number, so this stays a
+    measurement on a dspy that renames the module or backports the behaviour.
+    """
+    _configure([{"reasoning": "submit", "code": "SUBMIT(answer={'x': 3})"}])
+
+    class T(RLMTask):
+        signature = "q: str -> answer: _Out"
+        output_field = "answer"
+        output_model = _Out
+
+    si = ScriptedInterpreter([submit({"answer": {"x": 3}})])
+    with TraceRecorder(str(tmp_path / "t.jsonl"), run_id="r"):
+        result = asyncio.run(T(interpreter=si).arun(q="hi"))
+
+    # A ONE-step script must finalize on its one step: this is the assertion that went red.
+    assert result.x == 3
+    # `.calls` holds the model's code and nothing else. A consumer reads `.calls[0]`.
+    assert si.calls == ["SUBMIT(answer={'x': 3})"]
+
+    try:
+        import dspy.primitives.facade  # noqa: F401
+    except ImportError:
+        installs_a_facade = False
+    else:
+        installs_a_facade = True
+    if installs_a_facade:
+        assert si.facade_installs == 1, (
+            "dspy exposes its sandbox facade but installed none on this double: either the "
+            "install stopped happening or `is_facade_install` stopped recognising it, and the "
+            "step accounting above is now green for the wrong reason"
+        )
+    else:
+        assert si.facade_installs == 0

@@ -4,6 +4,71 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.16.0] - 2026-10-14
+
+dspy 3.4.1 support, and the cap goes back to `<3.5.0`. One new public config field
+(`RLMConfig.sandbox_sub_agents`), so a minor bump; `trace/v1` is unchanged.
+
+### Fixed
+
+- **A `ScriptedInterpreter` script is no longer one step short on dspy 3.4.1.** From 3.4.1 `RLM`
+  runs one extra `interpreter.execute` before the turn loop, installing a `dspy` shim in the
+  sandbox. That consumed step 0 of every script, so a one-step script never reached its SUBMIT, the
+  scripted LM ran out of turns, and the symptom surfaced two frames away as `AdapterParseError:
+  Expected to find output fields [reasoning, code]`. dspy's own setup executions now consume no step
+  and stay out of `.calls`, which consumers read as the model's turns; they are counted in the new
+  `ScriptedInterpreter.facade_installs` instead. Two kit tests failed this way, and
+  `rlm_harness.testing` is a published seam, so every consumer's offline suite would have failed
+  the same way on the day it resolved 3.4.1.
+- **A turn-timeout restart no longer silently strips the sandbox `dspy` shim.** The restart spawns a
+  fresh Deno that re-mounts files and re-registers tools, but the shim was an `execute`, not a tool
+  registration, so dspy never ran it again while the action prompt still told the model it may
+  `import dspy`. Measured before the fix: `import dspy` in model code failed after a restart, and
+  the model spent its remaining turns on a capability the runtime had silently lost. The kit now
+  replays the exact install dspy ran, without naming the shim's source or its host token: both are
+  private to dspy.
+- **`sanitize_tool_name` / `unique_tool_names` / `assert_repl_safe` no longer pass a tool name dspy
+  will refuse.** dspy 3.4.1 reserves `dspy` and every `_dspy`/`__dspy` prefix for its sandbox
+  facade, and states that half of the rule as a predicate rather than as members of the attribute
+  the kit unioned, so a union of sets under-rejected. Measured on 3.4.1: `sanitize_tool_name("dspy")`
+  returned `"dspy"` unchanged and `RLM(...)` then raised `ValueError: Tool name 'dspy' conflicts
+  with built-in sandbox function`, which aborts registration for every tool on the task. `SUBMIT`
+  was renamed correctly throughout, so the machinery was intact and only the rule was incomplete.
+  Signature input fields are checked the same way, because dspy applies the same predicate to both.
+
+### Added
+
+- **`RLMConfig.sandbox_sub_agents`** (`RLM_SANDBOX_SUB_AGENTS`, default on). On, model code may
+  `import dspy` and build `Predict` / `ChainOfThought` / `ReAct` / `ReActV2` / `CodeAct` /
+  `ProgramOfThought` / `RLM` sub-agents. They run on the HOST, call the run's `sub_lm`, charge
+  `max_llm_calls`, and may be handed the task's own tools by name, never one that was not injected.
+  The default is on because that is what the installed dspy does. Off refuses the shim install
+  through dspy's own degradation path, so dspy drops its two host tools, logs that sub-agents are
+  unavailable, and leaves the sub-agent paragraph out of the prompt: the model is never offered a
+  capability it does not have. It has no effect on an interpreter supplied via
+  `RLMTask(interpreter=...)`, which bypasses `build_interpreter`.
+- Worth knowing before leaving it on: a nested `dspy.RLM` built this way records as ONE `sub_call`
+  carrying only its final answer. Measured: no `main_step` for the inner turns, no child run id. The
+  inner trajectory is not in the trace at all. When a child's trajectory is the point,
+  `make_harness_tool` is the seam that keeps it, since the child owns its own rollout and the parent
+  records a pointer to it.
+
+### Changed
+
+- **dspy's cap returns to `dspy>=3.4.0,<3.5.0`**, the bound 1.14.0 set, now that both conditions
+  1.15.2's cap comment named are met and pinned by tests that go red without the fix. A cap
+  tightened to a patch left `dspy-latest.yml` permanently red, and a permanently red detector is a
+  deleted detector.
+- **`docs/VERIFY.md` no longer says a red `newest deps` means the kit is broken for every fresh
+  install.** That was written when dspy was uncapped. With a cap declared, a fresh install resolves a
+  dspy the kit is tested on, so a red says something else and still urgent: a dspy exists that the
+  kit does not support yet. That is the floor-bump signal, and never a flake. The page also records
+  what to do when a red cannot be fixed in the release it appears in: tighten the cap AND write what
+  would lift it, so a later reader can tell a held position from a forgotten one.
+- **The guide's "depth stays 1 because depth>1 is unsupported upstream" is replaced.** Since 3.4.1
+  model code can reach a nested RLM, so the reason is now the measured trace property above rather
+  than an upstream gap.
+
 ## [1.15.2] - 2026-10-13
 
 Two ways a pyodide/deno sandbox died for good when the model could have recovered, and a tighter

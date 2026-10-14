@@ -474,3 +474,82 @@ def test_the_caller_owned_view_protects_the_double_and_forwards_writes():
     assert real._tools_registered is False
     view.tools.update({"t": lambda: None})
     assert "t" in real.tools, "the tool table was written to the wrapper, not the interpreter"
+
+
+# ---- sandbox_sub_agents: refusing dspy's in-sandbox `dspy` facade ---------------------------
+
+
+def test_the_sub_agent_view_only_wraps_when_the_knob_is_off():
+    """The default must not change the object every run uses: the view is opt-in, not a default."""
+    from rlm_harness.sandbox import _NoSubAgentInterpreter, build_interpreter
+
+    assert not isinstance(build_interpreter("mock"), _NoSubAgentInterpreter)
+    assert isinstance(build_interpreter("mock", sandbox_sub_agents=False), _NoSubAgentInterpreter)
+
+
+def test_the_sub_agent_view_still_satisfies_dspys_interpreter_protocol():
+    """A dynamic-only proxy passes on 3.11 and FAILS on 3.12+: see `_CallerOwnedInterpreter`.
+
+    Swept with `getattr_static`, not `isinstance`, because an `isinstance` assertion would itself
+    be green on the 3.11 floor and could not stop the regression coming back.
+    """
+    import inspect
+
+    pytest.importorskip("dspy")
+    from dspy.primitives.code_interpreter import CodeInterpreter
+
+    from rlm_harness.sandbox import build_interpreter
+
+    view = build_interpreter("mock", sandbox_sub_agents=False)
+    for name in ("tools", "start", "execute", "shutdown"):
+        assert inspect.getattr_static(view, name, None) is not None, name
+    assert isinstance(view, CodeInterpreter)
+
+
+def test_turning_sub_agents_off_takes_the_offer_out_of_the_prompt_too():
+    """Refusing the shim must also stop dspy ADVERTISING sub-agents, or the model chases a
+    capability it does not have.
+
+    This asserts dspy's own degradation rather than the kit's intent: `RLM._setup_facade` catches
+    the refusal, returns no sub-agent guidance, and the paragraph never reaches the action prompt.
+    Read off the LM's history, so it is the text the model actually received.
+    """
+    pytest.importorskip("dspy")
+    import asyncio
+
+    import dspy
+    from pydantic import BaseModel
+
+    import rlm_harness.runtime as rt
+    from rlm_harness import RLMConfig, RLMTask
+    from rlm_harness.testing import scripted_lm
+
+    class _Out(BaseModel):
+        x: int
+
+    class T(RLMTask):
+        signature = "q: str -> answer: _Out"
+        output_field = "answer"
+        output_model = _Out
+
+    def run(sub_agents: bool) -> str:
+        # `mock` never SUBMITs (its execute returns ""), so the loop runs to its one-iteration
+        # cap and dspy forces an extract: one planner turn, then the SIGNATURE's output field.
+        lm = scripted_lm([{"reasoning": "go", "code": "print(1)"}, {"answer": {"x": 1}}])
+        rt.configure(
+            RLMConfig(main_model="x", sub_model="x", interpreter="mock", observe=False,
+                      disable_history=False, sandbox_sub_agents=sub_agents, max_iterations=1),
+            main_lm=lm, sub_lm=lm,
+        )
+        asyncio.run(T().arun(q="hi"))
+        return "".join(
+            str(m.get("content", "")) for m in lm.history[0]["messages"]
+        )
+
+    offered = run(True)
+    withheld = run(False)
+    if not hasattr(dspy, "__version__") or "import dspy" not in offered:
+        pytest.skip("this dspy does not offer sandbox sub-agents in the action prompt")
+    assert "import dspy" not in withheld, (
+        "sub-agents were refused but the prompt still tells the model to `import dspy`"
+    )

@@ -260,6 +260,21 @@ class RLMConfig:
     # unnecessary one. See `sandbox.py`'s `_build_sandboxed_interpreter` for the mechanism.
     sandbox_turn_timeout_s: float | None = None
 
+    # May model code inside the sandbox build dspy sub-agents? Default ON, matching the installed
+    # dspy: from 3.4.1 `RLM` installs a `dspy` shim in the sandbox and tells the model about it, so
+    # OFF is the kit overriding dspy, not the kit's own default. What ON grants: sandboxed code may
+    # construct `Predict`/`ChainOfThought`/`ReAct`/`ReActV2`/`CodeAct`/`ProgramOfThought`/`RLM`,
+    # which run on the HOST, call this run's `sub_lm`, charge `max_llm_calls`, and may be handed the
+    # task's own tools BY NAME (never a tool that was not injected).
+    #
+    # Turn it OFF when the sandbox is the security boundary and "which model drives my tools" must
+    # stay answerable: ON means the answer is "the root LM, plus any sub-agent its code builds".
+    # Also worth knowing before leaving it on: a nested `dspy.RLM` built this way records as ONE
+    # `sub_call` with only its final answer, so the inner run's turns are not in the trace at all
+    # (measured). When a child's trajectory is the point, `make_harness_tool` is the seam that
+    # keeps it: the child owns its own rollout and the parent records a pointer to it.
+    sandbox_sub_agents: bool = True
+
     # Wall-clock cap on ONE model HTTP request ATTEMPT, passed to ``dspy.LM(timeout=...)``.
     # ``None`` (the default) sends nothing, which is NOT the same as no cap: the provider SDK
     # applies its own. Measured on dspy 3.4.0 + openai 2.41.0: ``DEFAULT_TIMEOUT`` is
@@ -484,6 +499,7 @@ class RLMConfig:
             adapter=os.getenv("RLM_ADAPTER", "json"),
             max_tokens=int(_mt) if _mt and _mt.strip() else _DEFAULT_MAX_TOKENS,
             allow_insecure_sandbox=_env_bool("RLM_ALLOW_INSECURE_SANDBOX", False),
+            sandbox_sub_agents=_env_bool("RLM_SANDBOX_SUB_AGENTS", True),
             max_iterations=_env_int("RLM_MAX_ITERATIONS", 10),
             max_llm_calls=_env_int("RLM_MAX_LLM_CALLS", 30),
             max_output_chars=_env_int("RLM_MAX_OUTPUT_CHARS", 10_000),

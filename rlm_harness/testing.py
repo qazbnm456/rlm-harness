@@ -28,7 +28,7 @@ import inspect
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from ._dspy_compat import reserved_result_names, reserved_tool_names
+from ._dspy_compat import is_facade_install, is_reserved_tool_name, reserved_result_names, reserved_tool_names
 from ._toolname import is_valid_tool_name
 
 # A step is one execute() worth of behaviour. It is one of:
@@ -91,10 +91,11 @@ def assert_repl_safe(tool: Any) -> None:
             f"`unique_tool_names` for a whole set) and keep the raw name for the wire/trace "
             f"identity."
         )
-    if label in reserved_tool_names():
+    if is_reserved_tool_name(label):
         raise AssertionError(
             f"REPL tool name {label!r} is reserved by dspy's sandbox "
-            f"({sorted(reserved_tool_names())}): registering it would shadow a built-in."
+            f"({sorted(reserved_tool_names())}, plus `dspy` and any `_dspy`/`__dspy` prefix for "
+            f"the sandbox dspy facade): registering it would shadow a built-in."
         )
 
     seen_default = False
@@ -235,11 +236,13 @@ def assert_task_repl_safe(task: Any) -> None:
         return
     inputs, outputs = _signature_field_names(signature)
 
-    reserved = reserved_tool_names()
-    if bad := sorted(set(inputs) & reserved):
+    # dspy's own `_validate_namespace` applies the SAME predicate to input fields as to tool
+    # names (3.4.1 widened both at once), so this must ask the predicate rather than intersect
+    # the listable set, or an input field named `dspy` passes here and dies at `RLM(...)`.
+    if bad := sorted(name for name in inputs if is_reserved_tool_name(name)):
         raise AssertionError(
             f"signature input field(s) {bad} collide with dspy's built-in sandbox functions "
-            f"({sorted(reserved)})."
+            f"({sorted(reserved_tool_names())}, plus `dspy` and any `_dspy`/`__dspy` prefix)."
         )
     if bad := sorted(set(inputs) & set(names)):
         raise AssertionError(
@@ -256,7 +259,10 @@ def assert_task_repl_safe(task: Any) -> None:
 class ScriptedInterpreter:
     """A scripted ``dspy`` ``CodeInterpreter`` double for offline forward-path tests.
 
-    Build it with a list of STEPS (see ``Step``); one step is consumed per ``execute()`` call, in order.
+    Build it with a list of STEPS (see ``Step``); one step is consumed per MODEL TURN, in order.
+    dspy's own setup executions (from 3.4.1, installing its sandbox ``dspy`` facade) consume none
+    and are counted in ``.facade_installs`` instead, so a script's length is the number of turns
+    it scripts on every dspy.
     When the script is exhausted it returns ``""`` forever (a non-terminal no-op) so a loop that never
     reaches a SUBMIT step runs to its iteration cap: useful for budget-exhaustion tests.
 
@@ -282,6 +288,10 @@ class ScriptedInterpreter:
         self.tools: dict[str, Callable[..., Any]] = {}
         self.steps: list[Step] = list(steps)
         self.calls: list[str] = []
+        #: How many times dspy installed its sandbox ``dspy`` facade on this double: 1 per
+        #: forward pass from dspy 3.4.1, 0 before it. Neither consumes a step nor lands in
+        #: ``.calls``; see ``execute``.
+        self.facade_installs = 0
         self._i = 0
 
     def start(self) -> None:
@@ -289,6 +299,17 @@ class ScriptedInterpreter:
         protocol requires it (see the class docstring), not because the double needs it."""
 
     def execute(self, code: str, variables: dict | None = None) -> Any:
+        if is_facade_install(variables):
+            # dspy's OWN setup, not a model turn: consume no step and stay out of `.calls`.
+            # From dspy 3.4.1 `RLM._setup_facade` runs one extra `execute()` before the turn
+            # loop to install its sandbox `dspy` shim, which ate the first step of every script
+            # written against 3.4.0 and surfaced as `AdapterParseError: Expected to find output
+            # fields [reasoning, code]` once the scripted LM ran out of turns: two frames from
+            # the cause. Keeping it out of `.calls` is the half that protects consumers, whose
+            # assertions read `.calls[0]` as the first thing the MODEL ran; `.facade_installs`
+            # is where a test that cares about the shim looks instead.
+            self.facade_installs += 1
+            return ""
         self.calls.append(code)
         step: Step = self.steps[self._i] if self._i < len(self.steps) else ""
         self._i += 1

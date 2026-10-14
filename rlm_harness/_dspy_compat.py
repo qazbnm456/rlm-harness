@@ -190,6 +190,17 @@ _RESERVED_FALLBACK = frozenset({"llm_query", "llm_query_batched", "SUBMIT", "pri
 #: is one entry here. Same probing shape as `_BUDGET_ALIASES` above.
 _RESERVED_ATTRS = ("_RESERVED_SANDBOX_NAMES",)
 
+#: Names the SANDBOX DSPY FACADE owns, which :func:`reserved_tool_names` structurally cannot
+#: carry: dspy 3.4.1 states half its rule as a PREDICATE over prefixes
+#: (``facade.is_reserved_sandbox_name``) rather than as a member of the set that attribute holds,
+#: so a union of sets silently under-rejects. Measured on 3.4.1: a tool named ``dspy`` passed
+#: ``sanitize_tool_name`` and ``assert_repl_safe`` unchanged and then died at ``RLM(...)`` with
+#: ``ValueError: Tool name 'dspy' conflicts with built-in sandbox function``: the precise
+#: direction :func:`reserved_tool_names` documents as the expensive one. Mirrored here rather
+#: than only asked of dspy so the rule survives the predicate being renamed or moved.
+_FACADE_RESERVED_EXACT = frozenset({"dspy"})
+_FACADE_RESERVED_PREFIXES = ("_dspy", "__dspy")
+
 
 @lru_cache(maxsize=1)
 def reserved_tool_names() -> frozenset[str]:
@@ -216,6 +227,81 @@ def reserved_tool_names() -> frozenset[str]:
     except Exception:  # pragma: no cover - defensive: never let this raise
         pass
     return frozenset(names)
+
+
+@lru_cache(maxsize=1)
+def _dspy_reserved_predicate() -> Any:
+    """dspy's own "does the sandbox own this name" callable, or ``None`` on a dspy without one."""
+    try:
+        from dspy.primitives.facade import is_reserved_sandbox_name
+
+        return is_reserved_sandbox_name
+    except Exception:
+        return None
+
+
+def is_reserved_tool_name(name: object) -> bool:
+    """True if the installed dspy would refuse ``name`` as a tool name because it owns it.
+
+    **The set from :func:`reserved_tool_names` is no longer the whole rule**, which is why this
+    exists beside it rather than inside it. dspy 3.4.1 added a sandbox ``dspy`` facade and states
+    the names it owns as a PREDICATE over prefixes, not as entries in the attribute
+    ``reserved_tool_names`` unions. Keeping that function set-valued and adding a predicate was
+    deliberate: a set-like object whose ``in`` accepted more than its iteration yields would be a
+    container that lies, and ``testing.py`` prints ``sorted(reserved_tool_names())`` at a human.
+
+    Asks dspy first, then applies the kit's own mirror of the rule, so the answer is still right
+    on a dspy that renames or relocates the predicate. **Over-rejecting is the cheap direction**
+    (the kit renames a tool nobody minded) and under-rejecting resurfaces as a ``ValueError`` from
+    ``RLM(...)`` in a consumer's rollout: the same asymmetry :func:`reserved_tool_names` argues,
+    reached here by a different mechanism.
+    """
+    if not isinstance(name, str):
+        return False
+    if name in reserved_tool_names():
+        return True
+    predicate = _dspy_reserved_predicate()
+    if predicate is not None:
+        try:
+            if predicate(name):
+                return True
+        except Exception:  # pragma: no cover - defensive: a private seam may change shape
+            pass
+    return name in _FACADE_RESERVED_EXACT or name.startswith(_FACADE_RESERVED_PREFIXES)
+
+
+@lru_cache(maxsize=1)
+def _facade_host_token_var() -> str:
+    """The variable name dspy passes when it installs its sandbox ``dspy`` facade."""
+    try:
+        from dspy.primitives.facade import HOST_TOKEN_VAR
+
+        return str(HOST_TOKEN_VAR)
+    except Exception:
+        return "__dspy_host_token"
+
+
+def is_facade_install(variables: Any) -> bool:
+    """True when this ``execute()`` is dspy installing its sandbox facade, not a model turn.
+
+    dspy 3.4.1's ``RLM._setup_facade`` runs one extra ``interpreter.execute(SHIM_SETUP,
+    variables={HOST_TOKEN_VAR: ...})`` BEFORE the turn loop, so an interpreter that counts
+    executions is one short from the moment it is installed. That is not hypothetical: it
+    silently ate the first step of every :class:`rlm_harness.testing.ScriptedInterpreter`
+    script, and the symptom surfaced two frames away as ``AdapterParseError: Expected to find
+    output fields [reasoning, code]`` from a scripted LM that had simply run out of turns.
+
+    Detected off the VARIABLES rather than the code text: the token variable is a marker dspy
+    passes on purpose, while the shim body is a docstring-and-defs blob that any rewrite changes.
+    The fallback scans for the ``__dspy`` prefix dspy reserves sandbox-wide (see
+    :func:`is_reserved_tool_name`), so a renamed token is still recognised; a model turn cannot
+    collide with it, because dspy refuses to bind any name with that prefix.
+    """
+    if not isinstance(variables, dict) or not variables:
+        return False
+    if _facade_host_token_var() in variables:
+        return True
+    return any(isinstance(k, str) and k.startswith("__dspy") for k in variables)
 
 
 #: Output-field names dspy's RLM owns on its own Prediction. Hardcoded floor for

@@ -1,6 +1,6 @@
 [project]
 name = "rlm-harness"
-version = "1.15.2"
+version = "1.16.0"
 description = "A clean, reusable harness for building tasks on DSPy Recursive Language Models (RLMs)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -54,14 +54,16 @@ dependencies = [
     # installs and tests the newest dspy and still goes red the day 3.5.0 ships, which is exactly
     # when the next floor bump is due.
     #
-    # TIGHTER STILL since 1.15.2: `<3.4.1`, because 3.4.1 is a patch release that changes what a
-    # run does. It installs a sandbox "dspy facade" with an extra `execute` before the first
-    # turn, appends a sub-agent paragraph to every RLM prompt, and charges sub-agent LM calls to
-    # `max_llm_calls`. The extra `execute` shifts every `ScriptedInterpreter` script by one step
-    # (two kit tests fail on 3.4.1, measured), and a turn-timeout restart does not reinstall the
-    # facade while the prompt still offers it. Lift this to `<3.5.0` with the release that
-    # handles both, not before.
-    "dspy>=3.4.0,<3.4.1",
+    # 1.15.2 tightened this to `<3.4.1` and 1.16.0 lifts it back, having met the two conditions
+    # that comment set. 3.4.1 is a patch release that changes what a run does: it installs a
+    # sandbox "dspy facade" with an extra `execute` before the first turn, appends a sub-agent
+    # paragraph to every RLM prompt, and charges sub-agent LM calls to `max_llm_calls`. Both
+    # blockers are handled and pinned by tests that go red without the fix: the extra `execute`
+    # no longer consumes a `ScriptedInterpreter` step, and a turn-timeout restart replays the
+    # facade install (measured: `import dspy` in model code failed after a restart before this,
+    # while the prompt still offered sub-agents). `RLMConfig.sandbox_sub_agents` turns the
+    # capability off for a consumer who wants the sandbox boundary unchanged.
+    "dspy>=3.4.0,<3.5.0",
     # 2.11 is dspy 3.4.0's own floor. Declaring less would be a floor the kit cannot run on.
     "pydantic>=2.11.0",
 ]

@@ -72,11 +72,20 @@ def is_valid_tool_name(name: object) -> bool:
     return isinstance(name, str) and name.isidentifier() and not keyword.iskeyword(name)
 
 
-def _reserved() -> frozenset[str]:
-    """dspy's reserved sandbox names, resolved lazily (keeps this module dspy-free)."""
-    from ._dspy_compat import reserved_tool_names
+def _is_reserved(name: str) -> bool:
+    """Would the installed dspy refuse ``name`` because the sandbox owns it?
 
-    return reserved_tool_names()
+    A PREDICATE, not membership in a set, because since dspy 3.4.1 the rule is not a set: its
+    sandbox ``dspy`` facade owns ``dspy`` plus every ``_dspy``/``__dspy`` prefix. Before this,
+    ``sanitize_tool_name("dspy")`` returned ``"dspy"`` unchanged and ``RLM(...)`` then refused
+    the whole tool registration, which is the failure mode this module exists to prevent (and
+    the module docstring's "one bad name takes every other tool down with it").
+
+    Resolved lazily, like the set it replaced, so this module stays dspy-free at import.
+    """
+    from ._dspy_compat import is_reserved_tool_name
+
+    return is_reserved_tool_name(name)
 
 
 def sanitize_tool_name(raw: str, *, taken: Iterable[str] = ()) -> str:
@@ -93,7 +102,7 @@ def sanitize_tool_name(raw: str, *, taken: Iterable[str] = ()) -> str:
     claimed = set(taken)
     text = raw if isinstance(raw, str) else str(raw)
 
-    if is_valid_tool_name(text) and text not in _reserved() and text not in claimed:
+    if is_valid_tool_name(text) and not _is_reserved(text) and text not in claimed:
         return text
 
     # Per CHARACTER, using isidentifier() rather than a character class: a char is kept
@@ -108,7 +117,7 @@ def sanitize_tool_name(raw: str, *, taken: Iterable[str] = ()) -> str:
     # rewriting a valid name is the one thing this function must never do.
     if not cleaned.strip("_"):
         cleaned = _STEM + cleaned.lstrip("_")
-    if keyword.iskeyword(cleaned) or cleaned in _reserved():
+    if keyword.iskeyword(cleaned) or _is_reserved(cleaned):
         cleaned += "_"
 
     if cleaned not in claimed:
@@ -144,10 +153,9 @@ def unique_tool_names(
     server advertising the same name twice is its own bug, not something to disambiguate.
     """
     ordered = list(dict.fromkeys(raws))
-    reserved = _reserved()
     already = set(taken)
     claimed: set[str] = {
-        r for r in ordered if is_valid_tool_name(r) and r not in reserved and r not in already
+        r for r in ordered if is_valid_tool_name(r) and not _is_reserved(r) and r not in already
     }
     mapping: dict[str, str] = {}
     for raw in ordered:

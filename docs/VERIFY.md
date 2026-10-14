@@ -102,8 +102,17 @@ cannot see.
   hardcoded floor goes stale, and "fail if resolved == locked" false-alarms right after every lock
   bump. `--with "dspy==<exact>"` is what overrides the lock: a bare `--with dspy` (and
   `--isolated --with dspy`) resolve back to the LOCKED version and would make the job decorative.
-  **When it goes red, the kit is broken for every fresh install: a release blocker, not a flake.**
-  But do NOT read green as "a fresh install works": the overlay upgrades ONLY dspy (plus whatever
+  **What a red means depends on the cap, and the cap is the whole point.** Written when dspy was
+  uncapped, this said a red means "the kit is broken for every fresh install: a release blocker".
+  With `dspy<3.5.0` declared, a fresh install resolves a dspy the kit is tested on, so a red here
+  says something different and still urgent: **a dspy exists that the kit does not support yet.**
+  That is the floor-bump signal, not a broken release, and it is never a flake. It read as a
+  blocker once in the wrong direction: 1.15.2 answered a red by tightening the cap to `<3.4.1`,
+  which protected installs but left this job permanently red, and a permanently red detector is a
+  deleted detector. If a red cannot be fixed in the release it appears in, tighten the cap AND say
+  in the comment what would lift it, so the next reader can tell a held position from a forgotten
+  one. Read the cap in `pyproject.toml` before reading this job's colour.
+  Do NOT read green as "a fresh install works" either: the overlay upgrades ONLY dspy (plus whatever
   transitive it forces), so everything else stays locked and a break from, say, the newest
   `pydantic` is invisible to it. Reproduce locally with
   `uv run --group dev --extra mcp --extra grep --extra gitignore --with "dspy==<newest>" python -m pytest -q`. It leaves
