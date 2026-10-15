@@ -322,8 +322,20 @@ re-run will not reproduce the baseline:
 | turns on the three whose turn count moved | 10, 8, 6 | 4, 5, 3 |
 | instruction length | | shorter by about two fifths |
 
-**The holdout is the result.** A gain on the optimizer's own set proves nothing, because that is
-the set it was allowed to fit.
+**The holdout is the result, and the PAIRED holdout is what makes the number mean anything.** A
+gain on the optimizer's own set proves nothing, because that is the set it was allowed to fit. And
+the absolute figures above do not reproduce: re-running the same artifact over the same six
+questions in a later session scored 0.575 and 0.596 on two arms, against the 0.733 recorded here.
+Session-to-session drift of about 0.14 is the same order as the +0.221 the compile earned, so
+before and after have to be measured in one session or the delta is not a delta. Budget for that:
+it doubles the rollouts and it is the difference between a result and a number.
+
+**That re-run also answers whether a compiled artifact survives save, load and run.** The two arms
+were the same text through `compiled_instructions` and the same text assigned straight onto the
+predictors, with the LM cache off: the gap was 0.021 with the prompts byte-identical by
+construction, which is noise and not a seam. The byte comparison is what actually settles it,
+though, and it is free: load the artifact and diff every predictor's instructions against what the
+optimizer wrote. A score comparison at six examples cannot tell a damaged seam from a bad day.
 
 **Then read the artifact, because the score cannot tell you this.** Four of the ten trainset
 questions have their answers written into the optimized instruction, in sentences of the form
