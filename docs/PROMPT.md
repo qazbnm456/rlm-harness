@@ -260,7 +260,7 @@ changes.
 the slice belonging to one predictor, reflects on it, and proposes a replacement instruction.
 Mutation is wholesale: the candidate's string replaces the predictor's instructions outright.
 
-Five facts worth having before you plan a run.
+Six facts worth having before you plan a run.
 
 **An `RLM` has exactly two optimizable predictors**, `generate_action` (the REPL planner) and
 `extract`. There is no finer seam: GEPA rewrites the whole flat string from the table at the top of
@@ -303,16 +303,24 @@ the gate that refuses to spend at the ceiling, and put correctness above the gra
 beside it: an instruction that reaches a wrong answer faster must score zero, or that is what you
 will get.
 
+**Do not aim a metric at `fence_refused_turns`.** `metrics.py` records why that counter is not
+prompt-fixable, and a consumer already spent two prompt generations suppressing content its own
+output needed.
+
+### What one compiled run did
+
 **Compiled against that metric, GEPA improved a held-out set and wrote the trainset's answers into
-the instruction at the same time.** Measured on dspy 3.4.0, a 60-call budget, a 10-example
-trainset and 6 held-out questions the optimizer never saw:
+the instruction at the same time.** Measured on dspy 3.4.0, against the tool descriptions as
+they stood before 1.18.0 rewrote them, with a 60-call budget, a 10-example trainset and 6
+held-out questions the optimizer never saw. The same task builds a shorter instruction now, so a
+re-run will not reproduce the baseline:
 
 | | before | after |
 |---|---|---|
 | held-out mean | 0.513 | **0.733** |
 | held-out examples improved | | 4 of 6, none worse |
-| turns on the three that moved | 10, 8, 6 | 4, 5, 3 |
-| instruction length | 5518 | 3331 |
+| turns on the three whose turn count moved | 10, 8, 6 | 4, 5, 3 |
+| instruction length | | shorter by about two fifths |
 
 **The holdout is the result.** A gain on the optimizer's own set proves nothing, because that is
 the set it was allowed to fit.
@@ -339,27 +347,80 @@ the loss worth naming: the only way to see it was to compare capabilities before
 default and sends tool trajectories to the reflection LM as structured content rather than
 flattened placeholders. Upstream's own note is that "optimization results can differ from 3.4.0
 even with the same seed", so the figures above are a measurement of 3.4.0's proposer and say
-nothing about 3.4.1's in either direction. Relatedly, do not aim a metric at
-`fence_refused_turns`: `metrics.py` records why that counter is not prompt-fixable, and a consumer
-already spent two prompt generations suppressing content its own output needed.
+nothing about 3.4.1's in either direction. What settles the default, rather than the class merely
+existing, is where GEPA builds one when the caller passes none:
+
+```bash
+uv run --no-project --with "dspy==3.4.1" python -c \
+  "import inspect; from dspy.teleprompt.gepa import gepa_utils as g; \
+   print('InstructionProposer()' in inspect.getsource(g))"
+```
 
 **The return path is `RLMTask(compiled_instructions=...)`.** Point it at what
-`optimize.save_program` wrote and the run uses the optimizer's text. Only the TEXT is taken: the
-program is still built by `_build_rlm`, so the sandbox guard, the per-pass interpreter factory,
-tool timing and description normalisation all still apply. Handing the kit a whole compiled
-program instead would route every one of those around it.
+`optimize.save_program` wrote and the run uses the optimizer's text, for whichever predictors the
+artifact changed. Only the TEXT is taken, and the kit reads the state file rather than calling
+`rlm.load`: dspy's loader restores the whole predictor, so a state file would otherwise be able to
+put few-shot demos the kit never built in front of the model and swap the planner's model and
+sampling parameters out from under `RLMConfig`. The program is still built by `_build_rlm`, so the
+sandbox guard, the per-pass interpreter factory, tool timing and description normalisation all
+still apply. Handing the kit a whole compiled program instead would route every one of those
+around it.
 
-**Two states are refused rather than warned about.** dspy persists the whole flat string, tool
-documentation included, so a state compiled against an older kit reinstates that kit's tool
-descriptions: past 1.18.0 that means the markup and the ten-space gaps come back, and on any
-upgrade it means the model is told about tools as they used to be. A description is an
-instruction, and a stale one states behaviour the code no longer has. A load that changes nothing
-is refused too, because a silent no-op runs the shipped instructions while the caller believes
-otherwise. Recompile against the version you are running.
+**Expect the artifact to replace the tool documentation, not to sit beside it.** The string GEPA
+rewrites ends with dspy's rendered tool block, so after a load the model knows about your tools
+only through whatever the optimizer wrote about them. In the run above that is one sentence giving
+both signatures, which is the optimizer doing its job. It is also why an artifact cannot be
+reused across a change to your tools: what the model would be told is the optimizer's account of
+how they used to work, with nothing left to correct it.
 
-**The run says so in its own trace.** A `compiled_instructions` event records where the text came
-from and how long each side was, because every later reading of that trace is otherwise on a false
-premise about what the model was shown.
+**So the artifact has to record what it was compiled against, and it cannot be recovered by
+reading it.** Paraphrase defeats every substring check, which is the same trap as the guardrail
+check above. Pass the task to `save_program(program, path, task=task)` and it writes a record of
+every model-facing owner of that string: the signature, each tool's model-facing docstring, the
+output model's JSON schema, and what the sandbox tells the model its REPL can do.
+`compiled_instructions` compares them on the way back in and a mismatch names what moved.
+
+**Those four are compared because the share table at the top of this file says they move.** A
+reworded `Field(description=...)` moves the output contract while the signature string stays
+identical, and the schema block was 36.9% of one measured task's instruction. The exception is a
+model pydantic cannot render at all, `arbitrary_types_allowed` over a field with no schema being
+the case: the record falls back to the model's name, so a change inside it is invisible rather
+than refused. Raising there would break a task that builds and runs today. An artifact compiled
+under one sandbox describes that sandbox: run it under another and the model is told this REPL can
+do what the other one could.
+
+**Two more owners are recorded and NOT compared**, because refusing on them would reject work that
+is still right. The task's own `instructions`, since a typo fix should not invalidate an artifact.
+And the budget caps, of which `max_llm_calls` is the one dspy interpolates, as "You have max N
+sub-LLM calls": an operator raising it must not invalidate an artifact either, though an artifact
+compiled at fifty and run under five tells the model a budget the kit will cut off. The load
+reports both differences into the trace rather than refusing. If you GENERATE that prose, a
+skills manifest being the case this kit ships, the instructions field is the one to read: delete a
+skill and the artifact still advertises it to the model, and `read_skill` only reports the mistake
+after the model tries.
+
+**The remaining owner is dspy's own protocol text**, which is identical across every dspy the
+declared bound allows, so comparing it would catch nothing. The event records which dspy compiled
+the artifact, which is how you check that premise instead of assuming it.
+
+**Any disagreement is a refusal, not a warning.** `compiled_instructions` refuses a state with no
+record at all, one whose record disagrees on any of those four, one holding an empty instruction,
+since an empty prompt is not a prompt, one that names none of this build's predictors, which is
+what saving the module that wraps the RLM produces rather than the RLM itself, and a load that
+changes nothing, because a silent no-op runs the shipped instructions while the caller believes
+otherwise. Each refusal names what moved and the call that fixes it.
+
+**`compiled_instructions=""` runs what the build ships**, the way `tools=[]` means no tools. A
+subclass that declares an artifact needs that route back to the baseline, because comparing the
+two is how you decide whether to keep the artifact at all.
+
+**The run says so in its own trace.** A `compiled_instructions` event records the source path,
+the kit and dspy versions that compiled it, whether the task's instructions moved and which caps
+did, which checked keys went uncompared because either side did not carry them, and which
+predictors were replaced with both lengths for each. Every later reading of that trace is
+otherwise on a false premise about what the model was shown, and a record written before a key
+existed says nothing about whether that thing moved, which is not the same answer as
+"unchanged".
 
 ## Checking these numbers yourself
 

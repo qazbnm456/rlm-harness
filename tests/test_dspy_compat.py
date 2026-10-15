@@ -1247,3 +1247,40 @@ def test_dspy_canonicalises_a_response_format_class_into_the_flat_shape_the_adap
         "type": "json_schema", "schema": response_format["schema"],
     }
     assert response_format["schema"]["properties"]["headline"]["type"] == "string"
+
+
+def test_the_interpreter_factory_the_kit_supplies_is_the_one_it_can_read_back():
+    """`interpreter_kwargs` WRITES `execution_instructions` onto the factory and
+    `execution_instructions_of` reads it back off the built program. Two different accesses to a
+    private dspy attribute, and a dspy that kept the constructor keyword while storing the factory
+    somewhere else would make the reader answer `""` on both sides, which is a fingerprint key
+    silently absent rather than a loud failure. `docs/INVARIANTS.md` names this file for exactly
+    that: the next rename goes red here.
+    """
+    import rlm_harness
+    from rlm_harness import _dspy_compat
+    from rlm_harness.testing import ScriptedInterpreter
+
+    class _T(rlm_harness.RLMTask):
+        signature = "q: str -> a: str"
+        output_field = "a"
+        instructions = "Answer."
+
+    rlm_harness.configure(rlm_harness.RLMConfig(
+        main_model="openai/x", sub_model="openai/x", api_key="k", interpreter="mock",
+        max_retries=1,
+    ))
+    rlm = _T(interpreter=ScriptedInterpreter([]))._build_rlm()
+
+    read_back = _dspy_compat.execution_instructions_of(rlm)
+    assert read_back, (
+        "the kit can no longer read back the execution instructions it wrote onto dspy's "
+        "interpreter factory, so `RLMTask.compiled_fingerprint` would omit the sandbox key and "
+        "every compiled artifact would load without that check. Update "
+        "rlm_harness._dspy_compat._INTERPRETER_FACTORY_ALIASES."
+    )
+    assert read_back == ScriptedInterpreter([]).execution_instructions
+    assert read_back in rlm.generate_action.signature.instructions, (
+        "dspy no longer renders the factory's execution_instructions into the action prompt, so "
+        "fingerprinting it guards text the model never sees"
+    )

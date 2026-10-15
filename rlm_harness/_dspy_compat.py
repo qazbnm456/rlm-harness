@@ -149,6 +149,25 @@ def interpreter_kwargs(factory: Any, *, execution_instructions: str = "") -> dic
     return {name: factory}
 
 
+def execution_instructions_of(program: Any) -> str:
+    """Read back what :func:`interpreter_kwargs` wrote onto the program's interpreter factory.
+
+    The attribute dspy keeps the factory under is private and has had several names, which is
+    exactly the difference this module exists to absorb: the same alias list that found the
+    parameter name finds it again here. Returns ``""`` when the installed dspy does not render
+    execution instructions at all, so a caller cannot tell "not rendered" from "empty" and does
+    not need to.
+
+    The text matters to a caller because it is prompt: it is what the model is told its REPL can
+    do, and an optimized instruction that replaces the whole string carries a copy of it.
+    """
+    for alias in _INTERPRETER_FACTORY_ALIASES:
+        factory = getattr(program, f"_{alias}", None) or getattr(program, alias, None)
+        if factory is not None:
+            return str(getattr(factory, "execution_instructions", "") or "")
+    return ""
+
+
 def rlm_budget_kwargs(
     *, max_iterations: int, max_llm_calls: int, max_output_chars: int
 ) -> dict[str, int]:

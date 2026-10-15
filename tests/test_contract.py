@@ -4,7 +4,7 @@ UI, a future RL trainer) fails HERE, in rlm-harness's own suite, instead of in t
 clue why.
 
 Three frozen things (see docs/INVARIANTS.md "The trace is a VERSIONED wire format"):
-  1. the trace SCHEMA + the eight EVENT_* type strings,
+  1. the trace SCHEMA + every EVENT_* type string (a CLOSED set, asserted below),
   2. the recorded-event ENVELOPE shape,
   3. the dataset-exporter RECORD shapes (export_actions / export_sft_turns / export_rl / run_label_bundle),
 plus the public ``__all__`` surface a consumer imports. ADDITIVE change is fine (a new optional
@@ -65,6 +65,26 @@ def test_the_event_type_SET_is_closed(monkeypatch):
     }
 
 
+def test_RLMTask_declaration_fields_are_frozen():
+    """`docs/CONVENTIONS.md` calls these part of the frozen surface and names this file as the
+    pin. It was not one: a consumer subclasses `RLMTask` and sets these by name, so renaming or
+    dropping one is a downstream break that nothing here would have caught.
+
+    A new field is additive and passes, the same way a new `__all__` entry does.
+    """
+    from rlm_harness import RLMTask
+
+    for field in ("signature", "output_field", "output_model", "instructions",
+                  "compiled_instructions", "tools"):
+        assert hasattr(RLMTask, field), f"RLMTask.{field} is part of the frozen surface"
+    # The constructor keywords a consumer passes, same contract.
+    import inspect
+
+    params = set(inspect.signature(RLMTask.__init__).parameters)
+    assert {"config", "sub_lm", "max_retries", "interpreter", "cancel_event", "tools",
+            "compiled_instructions"} <= params, params
+
+
 def test_event_type_strings_are_frozen():
     # downstream readers key on these literal STRINGS, not the constant names, so pin the values.
     assert (
@@ -76,8 +96,9 @@ def test_event_type_strings_are_frozen():
         T.EVENT_RESULT,
         T.EVENT_RUN_END,
         T.EVENT_API_ROUNDS,
+        T.EVENT_COMPILED_INSTRUCTIONS,
     ) == ("run_start", "main_step", "sub_call", "tool_call", "final", "result", "run_end",
-          "api_rounds")
+          "api_rounds", "compiled_instructions")
 
 
 def test_a_v1_trace_still_reads_because_nothing_validates_the_schema(tmp_path):

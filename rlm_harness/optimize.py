@@ -119,12 +119,71 @@ def compile_task(
     )
 
 
-def save_program(program: Any, path: str) -> None:
-    """Persist a compiled dspy program to ``path`` (JSON state)."""
+FINGERPRINT_KEY = "rlm_harness"
+"""Top-level key a fingerprinted state carries, beside dspy's own per-predictor blocks.
+
+dspy's loader looks each predictor up by name and ignores keys it does not know, so the extra
+block costs ``load_program`` nothing.
+"""
+
+
+def save_program(program: Any, path: str, task: Any | None = None) -> None:
+    """Persist a compiled dspy program to ``path`` (JSON state).
+
+    Pass ``task`` (the :class:`~rlm_harness.task.RLMTask` that was compiled) to record WHAT the
+    program was compiled against: the signature, each tool's name and model-facing docstring, the
+    output model's JSON schema, and what the sandbox tells the model its REPL can do, which are
+    the four `compiled_instructions` compares, plus the task's own instructions and the budget
+    caps, which it records and reports rather than refusing on. The record describes the TASK you
+    pass, not the program you save.
+    :meth:`~rlm_harness.task.RLMTask.compiled_fingerprint` is the whole block, including the
+    fields recorded for a reader rather than compared.
+    :attr:`~rlm_harness.task.RLMTask.compiled_instructions` requires that block and refuses a
+    state without it, because nothing recoverable from the state itself answers the question it
+    has to ask.
+
+    ``program`` is the RLM itself, not a module wrapping it: dspy prefixes each predictor with the
+    attribute it hangs off, so a wrapper's state names predictors the task's own build does not
+    have, and the sandbox description can only be read off the object that carries the interpreter
+    factory.
+
+    The reason it cannot is worth knowing before deciding to omit ``task``. An optimizer rewrites
+    an instruction WHOLESALE, and the string it rewrites contains dspy's rendered tool
+    documentation, so the artifact holds the optimizer's own paraphrase of the tools as they were
+    and no trace of which tools those were. Loading it into a build whose tools have moved hands
+    the model a description of behaviour the code no longer has, and no amount of reading the
+    artifact detects it.
+    """
+    if task is not None and not str(path).endswith(".json"):
+        # Checked BEFORE the save: raising after it leaves a fingerprint-less file on disk under
+        # the name the caller is about to reuse, and `compiled_instructions` would refuse that.
+        raise ValueError(
+            f"save_program(..., task=...) writes its fingerprint into the JSON state, so {path!r} "
+            "must end with .json. Drop `task=` to save without one, and know that "
+            "`compiled_instructions` will then refuse the file."
+        )
     program.save(path)
+    if task is None:
+        return
+
+    import json
+
+    with open(path, encoding="utf-8") as fh:
+        state = json.load(fh)
+    # `program=`, so the record includes what the model was told its REPL can do. Without it
+    # the key is absent on the saved side and the key-wise check skips it, which is a gate
+    # that passes every test written against an injected key and protects no real save.
+    state[FINGERPRINT_KEY] = task.compiled_fingerprint(program=program)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, indent=2)
 
 
 def load_program(program: Any, path: str) -> Any:
-    """Load saved state into ``program`` and return it."""
+    """Load saved state into ``program`` and return it.
+
+    The whole state, as dspy restores it: instructions, demos, and any per-predictor LM the file
+    carries. :attr:`~rlm_harness.task.RLMTask.compiled_instructions` is the narrower door that
+    takes the instruction text only.
+    """
     program.load(path)
     return program

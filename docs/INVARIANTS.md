@@ -394,14 +394,11 @@ reason is in the rule.
   So a saturated metric is a property of the metric and not of the task, and the gate that refuses
   to spend a budget at the ceiling is what makes the difference visible.
 
-  **Compiled against that metric, GEPA raised a held-out set from 0.513 to 0.733 and wrote four of
-  the ten trainset answers into the instruction at the same time** (dspy 3.4.0; `docs/PROMPT.md`
-  has the table). Both halves of that sentence came from the same run, and only one of them is in
-  the score. **A number says whether to keep the artifact; only reading the artifact says what you
-  are keeping.** Diff a compiled instruction against a freshly built one before shipping it, and
-  do not check for deleted guardrails by matching their words: a literal check called five of
-  seven deleted, including a SUBMIT contract the optimized text states in its own words, because a
-  substring matcher on rewritten text can only ever say "gone".
+  **A number says whether to keep a compiled artifact; only reading the artifact says what you
+  are keeping.** One GEPA run did two things at once: it raised a held-out set, and it wrote four
+  of the ten trainset answers into the instruction. The score shows the first and is blind to the
+  second. `docs/PROMPT.md` has the run, the table, and the substring check that called five of
+  seven guardrails deleted when only one of them was.
 - **A fresh `threading.Thread` starts with an empty `contextvars.Context`: contextvars are NOT
   inherited into it.** `tools/_async.py`'s `run_isolated` (a bridging primitive for a consumer's own
   in-process harness-delegation transport: see `tools/harness.py`'s `pointer_to_invocation` and
@@ -525,9 +522,10 @@ reason is in the rule.
   `tests/test_skills.py::test_read_skill_returns_the_file_and_nothing_else` asserts as an
   equality: no bundled script runs and no linked file is expanded, because the sandbox is the
   only place code runs. What no test can gate: a third-party skill is usable, but its text
-  becomes LM context, so treat an untrusted skill as a prompt-injection surface. See the guide (`rlm_harness/README.md`) "Skills (progressive disclosure)".
+  becomes LM context, so treat an untrusted skill as a prompt-injection surface. See the guide
+  (`rlm_harness/README.md`) "Skills (progressive disclosure)".
 - **The trace is a VERSIONED wire format: additive-only within a version.** `SCHEMA =
-  "rlm-harness/trace/v2"` + the eight `EVENT_*` type strings + the `{schema, run_id, step_id, ts, type,
+  "rlm-harness/trace/v2"` + every `EVENT_*` type string + the `{schema, run_id, step_id, ts, type,
   payload}` envelope + the dataset-exporter record shapes are a CONTRACT that offline readers build
   on (replay, the `export_*` exporters, AND every consumer's report renderer / dataset / re-render).
   Within a version you MAY add an optional payload field; you may NOT remove, rename, or re-type an

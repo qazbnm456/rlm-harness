@@ -366,12 +366,26 @@ names is not caught, which is true of three of the kit's own tools today, each r
 with `RLM_UPDATE_DESCRIPTION_BASELINE=1` and commit the regenerated baseline JSON, which is
 generated and not edited by hand.
 
-**Running an optimizer's instructions.** `RLMTask(compiled_instructions=<path to what
-`optimize.save_program` wrote>)` runs the optimized text. Only the text is taken, so your tools,
-your interpreter and the sandbox guard are still the ones this task builds. A state compiled
-against different tool documentation is refused rather than silently reinstating the descriptions
-of whatever version compiled it, and the run records a `compiled_instructions` event so a reader
-of the trace knows the prompt was not the shipped one.
+**Running an optimizer's instructions.** `RLMTask(compiled_instructions=…)` takes the path
+`optimize.save_program` wrote and runs the optimized text. Only the text is taken, read out of the
+state file rather than loaded by dspy, so no demos and no other model arrive with it and your
+tools, your interpreter and the sandbox guard are still the ones this task builds. While an
+artifact is in use it REPLACES the rendered tool documentation rather than sitting beside it, so
+what the model is told about your tools is whatever the optimizer wrote about them.
+
+Save with `save_program(program, path, task=task)`, passing the RLM itself rather than a module
+wrapping it: that records what the text was compiled against, and a state whose record disagrees
+is refused rather than quietly describing your tools as they used to work. Four things are
+compared, the signature, each tool's model-facing docstring, the output model's schema and the
+sandbox's own description, so a kit upgrade that leaves all four alone is not a disagreement. Your
+task's own instructions and the budget caps are recorded and not compared, because a typo fix
+and a raised cap should not invalidate an artifact. The run records a `compiled_instructions`
+event naming the source, the versions that compiled it, what moved without refusing, which checks
+were skipped because one side could not supply them, and which predictors it replaced, so a
+reader of the trace knows the prompt was not the shipped one.
+
+`compiled_instructions=""` runs what the build ships, which is the A/B you need to decide whether
+to keep an artifact.
 
 **[`docs/PROMPT.md`](../docs/PROMPT.md) is the full picture**: the five owners of that one string
 and their measured shares, which parts of dspy's REPL protocol you cannot replace, the one seam

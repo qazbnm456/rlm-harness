@@ -14,33 +14,83 @@ run path. That gap is what `docs/PROMPT.md` recorded as open work in 1.18.0.
 ### Added
 
 - **`RLMTask(compiled_instructions=…)`**, also settable as a class field, pointing at what
-  `optimize.save_program` wrote. The run then uses the optimizer's text.
+  `optimize.save_program` wrote. The run then uses the optimizer's text, for whichever predictors
+  the artifact changed: dspy's GEPA selects components round-robin by default, so a winning
+  candidate that improved only `extract` is an ordinary outcome rather than a corner case.
 
-  **Only the TEXT is taken.** The program is still built by `_build_rlm`, so the sandbox guard,
-  the per-pass interpreter factory, tool timing and description normalisation all still apply.
-  Accepting a caller's whole program instead would route every one of those around the kit, which
-  is the hole `RLMTask(interpreter=…)` is careful not to open.
+  **Only the TEXT is taken, and the kit reads the state file rather than calling `rlm.load`.**
+  dspy's loader restores the whole predictor, so a state file would otherwise be able to put
+  few-shot demos the kit never built in front of the model and replace the planner's model and
+  sampling parameters, overriding `RLMConfig`. The program itself is still built by `_build_rlm`,
+  so the sandbox guard, the per-pass interpreter factory, tool timing and description
+  normalisation all still apply. Accepting a caller's whole program would route every one of those
+  around the kit, which is the hole `RLMTask(interpreter=…)` is careful not to open.
 
-  **Two states are refused rather than warned about.** dspy persists the whole flat string with
-  the rendered tool documentation inside it, so a state compiled against an older kit reinstates
-  that kit's tool descriptions: past 1.18.0 that brings back the markup and the mid-sentence gaps,
-  and on any upgrade it tells the model about tools as they used to be. A description is an
-  instruction, and a stale one states behaviour the code no longer has, so a log line is not an
-  answer. A load that changes nothing is refused too: a silent no-op runs the shipped instructions
-  while the caller believes otherwise, which is worse than either outcome alone.
+  **An artifact has to say what it was compiled against, and one that disagrees is refused rather
+  than warned about.** An optimizer rewrites an instruction wholesale, and the string it rewrites
+  ends with dspy's rendered tool documentation, so what comes back is the optimizer's own account
+  of the tools as they were with nothing to say which tools those were. Loading that into a build
+  whose tools have moved tells the model about behaviour the code no longer has, and reading the
+  artifact cannot detect it, because paraphrase defeats every substring check.
 
-- **`EVENT_COMPILED_INSTRUCTIONS`**, recorded when a run uses loaded text, carrying where it came
-  from and how long each side was. Every later reading of that trace is otherwise on a false
-  premise about what the model was shown, and nothing else in the file would say so. Additive
-  within `trace/v2`, and `tests/test_contract.py`'s closed event set made adding it cost a visible
-  diff, which is what that test is for.
+  **The question is therefore answered at save time.** `save_program(program, path, task=…)`
+  records what the text was compiled against and `compiled_instructions` compares it, naming which
+  part moved. Four parts are compared, chosen off the share table in `docs/PROMPT.md` because that
+  is what measures which of them move: the signature, each tool's model-facing docstring, the
+  output model's JSON schema, and what the sandbox tells the model its REPL can do. A reworded
+  `Field(description=…)` moves the output contract with the signature string untouched, and that
+  schema block was 36.9% of one measured task's instruction.
+
+  **The task's own instructions and the budget caps are recorded and NOT compared**, because
+  refusing on either would reject work that is still right: a typo fix, or an operator raising a
+  cap. The load reports both differences into the trace instead, naming WHICH caps moved, since
+  only `max_llm_calls` of them reaches the string. It reports any key that went uncompared too:
+  a record written before a key existed says nothing about whether that thing moved, and neither
+  does a build that cannot produce one.
+
+  **Every disagreement is a refusal**, each naming what moved and the call that fixes it: a state
+  with no record at all, one whose record disagrees, one holding an empty instruction, since an
+  empty prompt is not a prompt, one that names none of this build's predictors, which is what
+  saving the module that wraps the RLM produces, and a load that changes no predictor at all,
+  because a silent no-op runs the shipped instructions while the caller believes otherwise.
+
+  `compiled_instructions=""` means "run what this build ships", the way `tools=[]` means "no
+  tools", so a subclass that declares an artifact can still be A/B'd against the baseline. That
+  comparison is how anyone decides whether to keep an artifact.
+
+- **`EVENT_COMPILED_INSTRUCTIONS`**, recorded when a run uses loaded text. It names the source,
+  the kit and dspy versions that compiled it, whether the task's instructions moved and which
+  caps did, which checked keys went uncompared because either side did not carry them, and which
+  predictors it replaced with both lengths for each. Every later reading of that trace is
+  otherwise on a false premise about what the model was shown, and nothing else in the file would
+  say so. Additive within `trace/v2`, and `tests/test_contract.py`'s closed event set made adding
+  it cost a visible diff, which is what that test is for.
+
+- **`tests/test_skills.py` gates the KNOWLEDGE-only rule.** `docs/INVARIANTS.md` has always said
+  `read_skill` executes nothing and expands nothing, and a mutation pass over that file found it
+  the one mechanically-violable rule with no test behind it: making `read_skill` run a subprocess
+  and append its output left the whole suite green. The rule is now an equality against the file's
+  own text, which an exec or a link expansion fails by appending. The invariant keeps only the
+  half no test can reach, that an untrusted skill's text becomes model context and is therefore a
+  prompt-injection surface.
+
+### Fixed
+
+- **A `TypeError` from the compiled-instructions load no longer reads as dspy rejecting the budget
+  kwargs.** The load ran inside that `try`, so the exception this path raises when the installed
+  dspy exposes no instruction seam was caught by the budget handler, which logged a warning naming
+  the wrong cause and flagged the configured budget caps as dropped when dspy had accepted
+  them. The flag's only reader is a budget note written during a run, which this path never
+  reaches, so what was wrong was the diagnosis a reader would act on.
 
 ### Changed
 
 - **`docs/PROMPT.md` carries what the first compiled run actually did**, measured on dspy 3.4.0
   with a 60-call budget, a ten-example trainset and six held-out questions the optimizer never
-  saw. The held-out mean went 0.513 to 0.733, four of six improved and none got worse, and the
-  instruction shrank by about two fifths.
+  saw, against the tool descriptions as they stood before 1.18.0 rewrote them: the same task
+  builds a shorter instruction now, so re-running will not reproduce the baseline. The held-out
+  mean went 0.513 to 0.733, four of six improved and none got worse, and the instruction shrank
+  by about two fifths.
 
   Reading the artifact says the rest, and the score cannot: four of the ten trainset questions
   have their answers written into the optimized instruction and none of the six held-out ones

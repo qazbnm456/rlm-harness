@@ -31,12 +31,27 @@ from . import _dspy_compat
 from ._retry import run_with_retry
 from ._toolname import with_model_facing_description
 from .config import RLMConfig
+from .optimize import FINGERPRINT_KEY as _FINGERPRINT_KEY
 from .runtime import get_config, get_sub_lm
 from .sandbox import SandboxCancelled, build_interpreter, caller_owned
 from .sub_lm import _ensure_sub_call_recording, bind_recorder_to_sub_lm
 from .trace import EVENT_COMPILED_INSTRUCTIONS, _ensure_tool_timing, current_recorder
 
 logger = logging.getLogger(__name__)
+
+
+def _dig(obj: Any, *keys: str) -> Any:
+    """Walk nested mappings, answering ``None`` the moment the shape is not one.
+
+    For reading JSON nobody validated: a chain of ``.get`` raises ``AttributeError`` on the first
+    value that is a string where a dict was assumed, and this one is reading dspy's own metadata
+    block from a file a caller supplied.
+    """
+    for key in keys:
+        if not isinstance(obj, dict):
+            return None
+        obj = obj.get(key)
+    return obj
 
 try:
     from dspy.utils.callback import BaseCallback
@@ -246,12 +261,19 @@ class RLMTask:
     instructions: ClassVar[str] = ""
     #: Path to a dspy program state file, as :func:`rlm_harness.optimize.save_program` writes,
     #: whose OPTIMIZED TEXT this task should run with. ``None`` (the default) ships the
-    #: instructions this version of the kit builds.
+    #: instructions this version of the kit builds, and ``""`` says so explicitly, which is how a
+    #: subclass that declares an artifact gets back to the baseline to compare against.
     #:
-    #: Only the TEXT is taken. The program is still built by :meth:`_build_rlm`, so the sandbox
-    #: guard, the per-pass interpreter factory, tool timing and description normalisation all
-    #: still apply: accepting a caller's whole program instead would route every one of those
-    #: around the kit, which is the same hole ``RLMTask(interpreter=…)`` is careful not to open.
+    #: Only the TEXT is taken, read out of the state file rather than loaded by dspy. The program
+    #: is still built by :meth:`_build_rlm`, so the sandbox guard, the per-pass interpreter
+    #: factory, tool timing and description normalisation all still apply: accepting a caller's
+    #: whole program instead would route every one of those around the kit, which is the same hole
+    #: ``RLMTask(interpreter=…)`` is careful not to open.
+    #:
+    #: The state must carry the fingerprint :func:`rlm_harness.optimize.save_program` writes when
+    #: it is given the task, and one compiled against a different signature or different tool
+    #: documentation is refused. See :meth:`_apply_compiled_instructions` for why that cannot be
+    #: decided by reading the artifact.
     compiled_instructions: ClassVar[str | None] = None
 
     #: Tools (plain callables) the RLM may invoke inside the REPL.
@@ -404,10 +426,7 @@ class RLMTask:
         # model reads about a tool: the block was 63.6% of one real task's instruction string.
         kwargs: dict[str, Any] = {
             "sub_lm": self._sub_lm,
-            "tools": [
-                with_model_facing_description(_ensure_tool_timing(t))
-                for t in self.resolved_tools
-            ],
+            "tools": self._model_facing_tools(),
         }
 
         # THE SEAM. dspy >= 3.4.0 supplies the interpreter ONLY through this factory, which it
@@ -456,10 +475,17 @@ class RLMTask:
             max_llm_calls=self._config.max_llm_calls,
             max_output_chars=self._config.max_output_chars,
         )
+        # The compiled-instructions load is OUTSIDE this `try`. It raises `TypeError` of its own
+        # when the installed dspy exposes no instruction seam, and inside the try that TypeError
+        # read as "dspy rejected the budget kwargs": the handler logged a warning naming the wrong
+        # cause and flagged caps as dropped that dspy had accepted. The flag went nowhere, because
+        # it is read after this method returns and this path raises instead, so what was wrong was
+        # the diagnosis a reader acts on. An exception type that means "the installed dspy is
+        # wrong" must not sit inside a handler for a different instance of the same type.
         try:
-            return self._apply_compiled_instructions(dspy.RLM(signature, **kwargs, **budget))
+            rlm = dspy.RLM(signature, **kwargs, **budget)
         except TypeError:
-            # Recorded, not just logged: this path drops all three iteration caps to dspy's own
+            # Recorded, not just logged: this path drops all three budget caps to dspy's own
             # defaults, so a trace carrying the CONFIGURED values here would be a fiction. A log
             # line rotates; the trace is what outlives the run.
             self._budget_caps_dropped = True
@@ -470,70 +496,353 @@ class RLMTask:
                 "rlm_harness._dspy_compat._BUDGET_ALIASES.",
                 sorted(budget),
             )
-            return self._apply_compiled_instructions(dspy.RLM(signature, **kwargs))
+            rlm = dspy.RLM(signature, **kwargs)
+        return self._apply_compiled_instructions(rlm)
 
-    _TOOL_BLOCK = "\nAdditional tools available"
+    def _model_facing_tools(self) -> list[Any]:
+        """The tools as the MODEL gets them: timed, then normalised. The one derivation.
+
+        Both the build and :meth:`compiled_fingerprint` need this list, and a fingerprint taken
+        over anything else would be over text the model never reads.
+        """
+        return [with_model_facing_description(_ensure_tool_timing(t)) for t in self.resolved_tools]
+
+    #: The fingerprint keys an artifact is REFUSED over. The rest of the block is recorded for a
+    #: reader and deliberately not compared, which each one's entry in
+    #: :meth:`compiled_fingerprint` explains. Compared key-wise and only where both sides carry
+    #: the key, so adding one in a later release does not retroactively refuse today's artifacts.
+    _CHECKED_FINGERPRINT_KEYS: ClassVar[tuple[str, ...]] = (
+        "signature", "tools", "output_schema", "execution_instructions",
+    )
+
+    def compiled_fingerprint(self, program: Any) -> dict[str, Any]:
+        """What a compiled artifact of THIS task was compiled against.
+
+        :func:`rlm_harness.optimize.save_program` writes this into the state file and
+        :attr:`compiled_instructions` checks it on the way back in. Everything is in cleartext
+        rather than hashed, so a refusal can name what moved instead of reporting that something
+        did.
+
+        **The content set is the model-facing OWNERS of the string an optimizer replaces**, which
+        is the whole of ``generate_action.signature.instructions``. `docs/PROMPT.md` measures
+        those owners on real tasks, and leaving one out is a staleness this cannot see:
+
+        - ``signature`` and ``tools`` (every tool's name and its model-facing docstring, taken
+          over the same timed-and-normalised list the build hands dspy).
+        - ``output_schema``, the output model's JSON schema. It is interpolated into the prompt,
+          measured at 36.9% of one real task's instruction, and a reworded ``Field(description=…)``
+          moves the model's output contract while the signature string stays identical.
+        - ``execution_instructions``, what the model is told its REPL can do, read off the built
+          ``program`` because reading it is the only way and building an interpreter to find out
+          would start a container. An artifact compiled under one sandbox otherwise describes that
+          sandbox to a run under another.
+
+        ``program`` is REQUIRED for that reason. It defaulted to ``None`` for one round, and since
+        the load skips a key the record does not carry, the shortest call wrote the record that
+        skipped the sandbox check. A caller writing the record by hand has just compiled a
+        program, so asking for it costs nothing.
+
+        **Four things are recorded and NOT compared.** The kit version, because refusing on a
+        version bump alone would reject an artifact that is still exactly right. The task's dotted
+        name, which is for the refusal message. The task's own ``instructions``: a typo fix there
+        should not invalidate every artifact, and a caller who GENERATES that prose, a skills
+        manifest being the case the kit itself ships, is the one for whom the difference matters.
+        And ``budget``: an operator raising a cap must not invalidate an artifact, but an artifact
+        compiled at fifty sub-LM calls and run under five tells the model a budget the kit will cut
+        off. All three caps are recorded and only ``max_llm_calls`` reaches the string, as "You
+        have max N sub-LLM calls", which is why the trace reports WHICH cap moved rather than that
+        one did.
+
+        Both of the last two are reported into the trace instead of refusing, because the one
+        thing that must not happen is a difference nobody can see.
+
+        **One owner of the string is in neither list**: dspy's own fixed protocol text, which is
+        identical across every dspy the declared bound allows, and the event records the dspy
+        version that compiled the artifact so a reader can check that premise rather than assume
+        it.
+        """
+        # Imported here, not at module scope: `__version__` lives in the package `__init__`,
+        # which imports this module lazily to keep `import rlm_harness` dspy-free.
+        from . import __version__
+
+        fp: dict[str, Any] = {
+            "kit": __version__,
+            "task": f"{type(self).__module__}.{type(self).__qualname__}",
+            "signature": self.signature,
+            "instructions": self.instructions,
+            "tools": {t.__name__: (t.__doc__ or "") for t in self._model_facing_tools()},
+            "output_schema": self._output_schema(),
+            # The kit's own names, not the ones the installed dspy accepts: those come out of
+            # `_dspy_compat.rlm_budget_kwargs`, which resolves each cap onto the current spelling,
+            # so a dspy that renames one would read here as a changed budget with all three
+            # numbers identical.
+            "budget": {
+                "max_iterations": self._config.max_iterations,
+                "max_llm_calls": self._config.max_llm_calls,
+                "max_output_chars": self._config.max_output_chars,
+            },
+        }
+        # Recorded only when the read actually yields the text. An object that carries no
+        # interpreter factory, a MODULE WRAPPING the RLM being the one a caller reaches for, reads
+        # as "" -- and writing that down as the sandbox description would record an absence as a
+        # measurement, then refuse the artifact for a sandbox that changed from nothing to
+        # something. The key-wise check skips what is absent, so such a state is refused by the
+        # predictor-name check instead, which is the mistake that was actually made.
+        execution = _dspy_compat.execution_instructions_of(program)
+        if execution:
+            fp["execution_instructions"] = execution
+        return fp
+
+    def _output_schema(self) -> Any:
+        """The output model's JSON schema, or a stable marker when pydantic cannot render it.
+
+        ``arbitrary_types_allowed`` with a field pydantic has no schema for raises
+        ``PydanticInvalidForJsonSchema``, and such a task builds and RUNS today: raising here
+        would mean setting `compiled_instructions` breaks a working task, with a pydantic internal
+        that names neither the task nor the field nor the declaration field that reached for it.
+        The marker compares equal to itself and never to ``None``, so the pair is still checked;
+        what is lost is noticing a change INSIDE an unrenderable model, which is stated here
+        rather than left as an absent assertion.
+        """
+        if self.output_model is None:
+            return None
+        try:
+            return self.output_model.model_json_schema()
+        # Broad on purpose: pydantic raises several types here and all of them mean the same
+        # thing, that this model has no JSON schema to compare.
+        except Exception:
+            return {"unrenderable": self.output_model.__name__}
+
 
     def _apply_compiled_instructions(self, rlm: Any) -> Any:
-        """Load an optimizer's TEXT over the instructions of a program the kit just built.
+        """Apply an optimizer's instruction TEXT to a program the kit just built.
 
-        dspy's ``save``/``load`` persist ``generate_action.signature.instructions``, which is the
-        whole flat string INCLUDING the rendered tool documentation (measured: 5143 chars for a
-        two-tool task, tool block included). So a state compiled against an older kit carries that
-        kit's tool descriptions, and loading it silently reinstates them: on an upgrade past
-        1.18.0 that means the markup and the ten-space gaps come back, and on any upgrade it means
-        the model is told about tools as they used to be.
+        Only the text, and the kit reads it out of the state file itself rather than calling
+        ``rlm.load``. dspy's loader restores the whole predictor: demos, the saved signature's
+        field prefixes and descriptions, and any per-predictor ``lm``. So a state file could put
+        few-shot examples the kit never built in front of the model and swap the planner's model
+        and sampling parameters out from under :class:`~rlm_harness.config.RLMConfig`. "Only the
+        TEXT is taken" has to be what the code does, not what the docstring says.
 
-        **That is refused rather than warned about.** The whole point of `docs/PROMPT.md` is that
-        a description is an instruction, and reinstating a stale one is handing the model a
-        statement the code no longer honours. A warning in a log is not a thing a model reads.
+        **A state without a fingerprint is refused.** An optimizer rewrites an instruction
+        wholesale, and the string it rewrites ends with dspy's rendered tool documentation, so the
+        artifact carries the optimizer's paraphrase of the tools as they were and nothing that
+        says which tools those were. Loading it into a build whose tools have moved tells the
+        model about behaviour the code no longer has, and the artifact cannot be read to detect
+        it: paraphrase defeats every substring check, which is the same trap that made a
+        guardrail audit report five deletions when one had happened. The answer is to record the
+        question's answer at save time, which :func:`rlm_harness.optimize.save_program` does when
+        it is given the task.
 
-        The check is the current build's tool block: if the loaded text does not contain it, the
-        compiled state predates these tools. A task with no tools has no block and nothing to
-        check, which is stated here rather than left as an absent assertion.
+        **A load that changes no predictor is refused**, because a silent no-op runs the shipped
+        instructions while the caller believes otherwise. A load that changes ONE of them is
+        fine: dspy's GEPA selects components round-robin by default, so a winning candidate that
+        improved only ``extract`` is an ordinary outcome, not a corner case.
         """
-        path = self._compiled_override or self.compiled_instructions
+        # `is not None`, so `compiled_instructions=""` is a deliberate "run the shipped prompt",
+        # the way `tools=[]` is a deliberate "no tools". A subclass that declares the field needs
+        # a kwarg route back to the baseline: that A/B is how anyone decides to keep an artifact.
+        path = (
+            self._compiled_override
+            if self._compiled_override is not None
+            else self.compiled_instructions
+        )
         if not path:
             return rlm
 
-        planner = getattr(rlm, "generate_action", None)
-        shipped = getattr(getattr(planner, "signature", None), "instructions", None)
-        if not isinstance(shipped, str):
+        state = self._read_compiled_state(path)
+        mine = self._check_compiled_fingerprint(path, state, rlm)
+
+        predictors = dict(rlm.named_predictors())
+        if not any(
+            isinstance(getattr(getattr(p, "signature", None), "instructions", None), str)
+            for p in predictors.values()
+        ):
             # TypeError, not ValueError: the argument is fine and the INSTALLED dspy is not what
             # this path needs. Same reading as the budget-kwargs TypeError above.
             raise TypeError(
-                "compiled_instructions was given, but this dspy's RLM exposes no "
-                "`generate_action.signature.instructions` to load over. Remove it, or pin a dspy "
-                "whose RLM still has that seam."
+                "compiled_instructions was given, but no predictor of this dspy's RLM exposes a "
+                "`signature.instructions` to apply text to. Remove it, or pin a dspy whose RLM "
+                "still has that seam."
             )
-        i = shipped.find(self._TOOL_BLOCK)
-        block = shipped[i:] if i >= 0 else ""
 
-        rlm.load(path)
-        loaded = planner.signature.instructions
-        if not isinstance(loaded, str) or loaded == shipped:
+        applied: dict[str, dict[str, int]] = {}
+        for name, predictor in predictors.items():
+            saved = state.get(name, {})
+            if not isinstance(saved, dict):
+                continue
+            sig = saved.get("signature")
+            text = sig.get("instructions") if isinstance(sig, dict) else None
+            if not isinstance(text, str):
+                continue
+            if not text.strip():
+                raise ValueError(
+                    f"{path!r} holds an empty instruction for the {name!r} predictor. An empty "
+                    "prompt is not a prompt, and applying it would hand the model nothing while "
+                    "the caller believes it is running an optimized instruction."
+                )
+            shipped = predictor.signature.instructions
+            if text == shipped:
+                continue
+            predictor.signature = predictor.signature.with_instructions(text)
+            applied[name] = {"shipped_chars": len(shipped), "loaded_chars": len(text)}
+
+        if not applied and not (set(predictors) & set(state)):
             raise ValueError(
-                f"loading {path!r} changed nothing: the file is not a saved program for this "
-                "task's signature, or dspy's state layout moved. A silent no-op here would run "
-                "the shipped instructions while the caller believes otherwise."
+                f"{path!r} names none of this build's predictors. It holds "
+                f"{sorted(k for k in state if k != 'metadata' and k != _FINGERPRINT_KEY)} and "
+                f"this program has {sorted(predictors)}, which is what a state saved from a "
+                "MODULE WRAPPING the RLM looks like: dspy prefixes each predictor with the "
+                "attribute it hangs off. Save the RLM itself."
             )
-        if block and block not in loaded:
+        if not applied:
             raise ValueError(
-                f"{path!r} was compiled against different tool documentation, so loading it "
-                "would reinstate the descriptions of whatever kit version compiled it. A tool "
-                "description is an instruction to the model (see docs/PROMPT.md), and a stale one "
-                "states behaviour this code no longer has. Recompile against this version."
+                f"loading {path!r} changed nothing: every predictor's saved instruction is "
+                "already what this build ships. A silent no-op would run the shipped "
+                "instructions while the caller believes otherwise."
             )
 
         recorder = current_recorder()
         if recorder is not None:
+            fp = state[_FINGERPRINT_KEY]
+            # `_dig`, not a chain of `.get`: nothing validates dspy's own `metadata` block, and a
+            # truthy non-dict made a chain crash AFTER the text was applied and ONLY when a
+            # recorder was active, so a traced run died on a file an untraced run accepted.
             recorder.record(EVENT_COMPILED_INSTRUCTIONS, {
                 "source": str(path),
-                "shipped_chars": len(shipped),
-                "loaded_chars": len(loaded),
-                "tool_block_preserved": bool(block),
+                "compiled_by": fp.get("kit"),
+                "compiled_with_dspy": _dig(state, "metadata", "dependency_versions", "dspy"),
+                # NOT refusals (see `compiled_fingerprint`), so they have to be legible here: a
+                # reader asking what the model was shown needs to know the baseline prose or the
+                # budget moved, and a generated instruction such as a skills manifest moves
+                # without anyone editing a string. `None` when the record predates the key, which
+                # is not the same answer as "unchanged".
+                "task_instructions_changed": (
+                    None if "instructions" not in fp else fp["instructions"] != self.instructions
+                ),
+                # The NAMES that moved, not a boolean: only `max_llm_calls` reaches the
+                # replaced string ("You have max N sub-LLM calls"), so a boolean here would fire
+                # for two caps the model is never told about while every other flag beside it
+                # answers "did what the model saw move".
+                "budget_changed": (
+                    None if "budget" not in fp else sorted(
+                        k for k, v in (mine.get("budget") or {}).items()
+                        if (fp["budget"] or {}).get(k) != v
+                    ) if isinstance(fp["budget"], dict) else None
+                ),
+                # Which checked keys were not compared, so a skipped gate is visible rather
+                # than silent. Derived from BOTH sides, because the skip is: a caller-supplied
+                # interpreter double carries no `execution_instructions`, so the build omits the
+                # key and the sandbox gate does not run even though the record carried it.
+                "unchecked": sorted(
+                    k for k in self._CHECKED_FINGERPRINT_KEYS if k not in fp or k not in mine
+                ),
+                "applied": applied,
             })
         return rlm
+
+    @staticmethod
+    def _read_compiled_state(path: str) -> dict:
+        """Read the state file, restating both failures in terms of the field that asked for it.
+
+        A bare ``FileNotFoundError`` or ``JSONDecodeError`` out of a build is a puzzle: nothing in
+        it says which declaration field reached for a file.
+        """
+        import json
+
+        try:
+            with open(path, encoding="utf-8") as fh:
+                state = json.load(fh)
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                f"compiled_instructions={path!r} does not exist. It should be the path "
+                "`rlm_harness.optimize.save_program` wrote."
+            ) from None
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+            # One branch for all three, because the one a reader needs to be told about is the
+            # pickle, and a pickle dies on the utf-8 decode rather than on the JSON parse.
+            raise ValueError(
+                f"compiled_instructions={path!r} is not readable as a dspy JSON state file: "
+                f"{type(exc).__name__}: {exc}. `save_program` writes JSON; a `.pkl` state and a "
+                "directory are both refused here."
+            ) from exc
+        if not isinstance(state, dict):
+            # ValueError, not the TypeError ruff suggests: the kit's split is that a TypeError
+            # means the installed dspy is wrong and a ValueError means the artifact is.
+            raise ValueError(  # noqa: TRY004
+                f"compiled_instructions={path!r} holds {type(state).__name__}, not a dspy state "
+                "object. It should be the path `rlm_harness.optimize.save_program` wrote."
+            )
+        return state
+
+    def _check_compiled_fingerprint(self, path: str, state: dict, program: Any) -> dict[str, Any]:
+        """Refuse an artifact compiled against anything the model would be told differently.
+
+        Compared key-wise over :attr:`_CHECKED_FINGERPRINT_KEYS`, and only where both sides carry
+        the key: a key added in a later release would otherwise retroactively refuse every
+        artifact saved before it, which is a release invalidating work rather than protecting it.
+        """
+        saved = state.get(_FINGERPRINT_KEY)
+        if not isinstance(saved, dict):
+            raise ValueError(  # noqa: TRY004  (the artifact is wrong, not the installed dspy)
+                f"{path!r} carries no record of what it was compiled against, so there is no way "
+                "to tell whether its text describes this task and these tools or an older set. "
+                "Re-save it with `save_program(program, path, task=<the task you compiled>)`, "
+                "which writes that record, and compiled_instructions will accept it."
+            )
+        mine = self.compiled_fingerprint(program=program)
+        for key in self._CHECKED_FINGERPRINT_KEYS:
+            if key not in saved or key not in mine or saved[key] == mine[key]:
+                continue
+            raise ValueError(f"{path!r} {self._fingerprint_mismatch(key, saved, mine)}")
+        return mine
+
+    def _fingerprint_mismatch(self, key: str, saved: dict, mine: dict) -> str:
+        """The sentence a refusal needs: what moved, and why the model would be misled by it."""
+        if key == "signature":
+            return (
+                f"was compiled for the signature {saved['signature']!r} (task "
+                f"{saved.get('task')!r}), and this task's is {mine['signature']!r}. Its text "
+                "describes another task's inputs and outputs, and the tools it was given for "
+                "them. Recompile against this task."
+            )
+        if key == "tools":
+            theirs, ours = saved["tools"], mine["tools"]
+            if not isinstance(theirs, dict):
+                return (
+                    "records its tools as "
+                    f"{type(theirs).__name__}, not an object of name to description, so what it "
+                    "was compiled against cannot be read. Re-save it with `save_program(program, "
+                    "path, task=…)`."
+                )
+            gone = sorted(set(theirs) - set(ours))
+            added = sorted(set(ours) - set(theirs))
+            moved = sorted(n for n in set(theirs) & set(ours) if theirs[n] != ours[n])
+            return (
+                f"was compiled against different tool documentation: removed={gone or '[]'}, "
+                f"added={added or '[]'}, description changed={moved or '[]'}. The artifact holds "
+                "the optimizer's own account of the tools as they were, and it REPLACES the "
+                "rendered documentation rather than sitting beside it, so loading it tells the "
+                "model about behaviour this code no longer has. A tool description is an "
+                "instruction to the model (see docs/PROMPT.md). Recompile against this build."
+            )
+        if key == "output_schema":
+            theirs, ours = saved["output_schema"], mine["output_schema"]
+            keys = sorted(
+                set(theirs or {}) ^ set(ours or {})
+                | {k for k in set(theirs or {}) & set(ours or {}) if theirs[k] != ours[k]}
+            ) if isinstance(theirs, dict) and isinstance(ours, dict) else []
+            where = f" (differing at {keys})" if keys else ""
+            return (
+                f"was compiled against a different output schema{where}, so its text describes an "
+                "output shape this task no longer asks for. A reworded field description counts, "
+                "because the description is what the model reads. Recompile against this build."
+            )
+        return (
+            "was compiled under a sandbox described differently to the model "
+            f"({saved[key]!r} then, {mine[key]!r} now), so its text tells the model this REPL can "
+            "do what the other one could. Recompile under the sandbox you will run."
+        )
 
     async def arun(self, **inputs: Any) -> Any:
         """Run the task asynchronously, returning the validated output.
