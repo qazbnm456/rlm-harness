@@ -4,6 +4,61 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.19.0] - 2026-10-15
+
+**An optimizer's instructions can now re-enter a run.** `dspy.GEPA` rewrites the planner's
+instructions and `optimize.save_program` persists them, but `_build_rlm` rebuilt the signature
+from `self.instructions` every time, so a compiled program had nowhere to go inside the kit's own
+run path. That gap is what `docs/PROMPT.md` recorded as open work in 1.18.0.
+
+### Added
+
+- **`RLMTask(compiled_instructions=…)`**, also settable as a class field, pointing at what
+  `optimize.save_program` wrote. The run then uses the optimizer's text.
+
+  **Only the TEXT is taken.** The program is still built by `_build_rlm`, so the sandbox guard,
+  the per-pass interpreter factory, tool timing and description normalisation all still apply.
+  Accepting a caller's whole program instead would route every one of those around the kit, which
+  is the hole `RLMTask(interpreter=…)` is careful not to open.
+
+  **Two states are refused rather than warned about.** dspy persists the whole flat string with
+  the rendered tool documentation inside it, so a state compiled against an older kit reinstates
+  that kit's tool descriptions: past 1.18.0 that brings back the markup and the mid-sentence gaps,
+  and on any upgrade it tells the model about tools as they used to be. A description is an
+  instruction, and a stale one states behaviour the code no longer has, so a log line is not an
+  answer. A load that changes nothing is refused too: a silent no-op runs the shipped instructions
+  while the caller believes otherwise, which is worse than either outcome alone.
+
+- **`EVENT_COMPILED_INSTRUCTIONS`**, recorded when a run uses loaded text, carrying where it came
+  from and how long each side was. Every later reading of that trace is otherwise on a false
+  premise about what the model was shown, and nothing else in the file would say so. Additive
+  within `trace/v2`, and `tests/test_contract.py`'s closed event set made adding it cost a visible
+  diff, which is what that test is for.
+
+### Changed
+
+- **`docs/PROMPT.md` carries what the first compiled run actually did**, measured on dspy 3.4.0
+  with a 60-call budget, a ten-example trainset and six held-out questions the optimizer never
+  saw. The held-out mean went 0.513 to 0.733, four of six improved and none got worse, and the
+  instruction shrank by about two fifths.
+
+  Reading the artifact says the rest, and the score cannot: four of the ten trainset questions
+  have their answers written into the optimized instruction and none of the six held-out ones
+  does, so the gain is carried by the general strategy it also learned while the instruction
+  ships a crib sheet that can only mislead elsewhere. One capability left without anything
+  noticing: `llm_query` is mentioned zero times after compilation.
+
+  The guardrail check that found that had to be fixed first. Matching each guardrail's shipped
+  phrase called five of seven deleted, including a SUBMIT contract the optimized text states in
+  its own words, because a substring matcher on deliberately rewritten text answers "gone" every
+  time. Matched as capabilities against several wordings, six of seven survive and one is gone.
+
+  The figures carry their dspy version: 3.4.1 makes `InstructionProposer` the default and sends
+  tool trajectories to the reflection LM as structured content rather than flattened
+  placeholders, and upstream says results can differ from 3.4.0 even with the same seed. The
+  declared bound stays `dspy>=3.4.0,<3.5.0`, because nothing here needs 3.4.1: a floor moves when
+  the kit needs something that does not exist below it, which is how 3.3.1 was forced.
+
 ## [1.18.0] - 2026-10-15
 
 **A tool's docstring is prompt text, and this kit had been writing it for Sphinx.** dspy renders

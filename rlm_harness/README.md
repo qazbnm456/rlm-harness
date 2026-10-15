@@ -366,6 +366,13 @@ names is not caught, which is true of three of the kit's own tools today, each r
 with `RLM_UPDATE_DESCRIPTION_BASELINE=1` and commit the regenerated baseline JSON, which is
 generated and not edited by hand.
 
+**Running an optimizer's instructions.** `RLMTask(compiled_instructions=<path to what
+`optimize.save_program` wrote>)` runs the optimized text. Only the text is taken, so your tools,
+your interpreter and the sandbox guard are still the ones this task builds. A state compiled
+against different tool documentation is refused rather than silently reinstating the descriptions
+of whatever version compiled it, and the run records a `compiled_instructions` event so a reader
+of the trace knows the prompt was not the shipped one.
+
 **[`docs/PROMPT.md`](../docs/PROMPT.md) is the full picture**: the five owners of that one string
 and their measured shares, which parts of dspy's REPL protocol you cannot replace, the one seam
 that lets you contradict it, where skills and MCP descriptions land, and what GEPA actually

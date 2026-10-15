@@ -343,11 +343,23 @@ nothing about 3.4.1's in either direction. Relatedly, do not aim a metric at
 `fence_refused_turns`: `metrics.py` records why that counter is not prompt-fixable, and a consumer
 already spent two prompt generations suppressing content its own output needed.
 
-**There is no return path yet.** `RLMTask` takes no compiled program, and `_build_rlm` rebuilds the
-signature from `self.instructions` on every run, so GEPA's output has nowhere to go inside the
-kit's run path today. `optimize.save_program` / `load_program` act on a dspy program the kit's own
-`arun` never uses. Compile and measure if you want the number; wiring the result back is still
-open work.
+**The return path is `RLMTask(compiled_instructions=...)`.** Point it at what
+`optimize.save_program` wrote and the run uses the optimizer's text. Only the TEXT is taken: the
+program is still built by `_build_rlm`, so the sandbox guard, the per-pass interpreter factory,
+tool timing and description normalisation all still apply. Handing the kit a whole compiled
+program instead would route every one of those around it.
+
+**Two states are refused rather than warned about.** dspy persists the whole flat string, tool
+documentation included, so a state compiled against an older kit reinstates that kit's tool
+descriptions: past 1.18.0 that means the markup and the ten-space gaps come back, and on any
+upgrade it means the model is told about tools as they used to be. A description is an
+instruction, and a stale one states behaviour the code no longer has. A load that changes nothing
+is refused too, because a silent no-op runs the shipped instructions while the caller believes
+otherwise. Recompile against the version you are running.
+
+**The run says so in its own trace.** A `compiled_instructions` event records where the text came
+from and how long each side was, because every later reading of that trace is otherwise on a false
+premise about what the model was shown.
 
 ## Checking these numbers yourself
 

@@ -97,7 +97,10 @@ def compile_task(
     through ``dspy.Predict`` + ``JSONAdapter``. Reaching GEPA at all has prerequisites this
     function cannot supply, and ``docs/PROMPT.md`` carries them: one metric call is one FULL
     rollout, ``auto="light"`` on a two-predictor program resolves to 790 of them at a ten-example
-    valset, and there is no path yet for an optimized program to re-enter ``RLMTask.arun``.
+    valset, and an optimized program re-enters a run through
+    ``RLMTask(compiled_instructions=…)``, which takes the TEXT and still builds the program
+    itself. A state compiled against different tool documentation is refused there rather than
+    silently reinstating the descriptions of whatever version compiled it.
 
     THE BLOCKER THIS USED TO CARRY IS GONE as of 1.14.0. It said `optimizer.compile` calls the
     program without a positional interpreter, so dspy would build one from the metadata CARRIER

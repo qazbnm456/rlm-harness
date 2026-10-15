@@ -53,6 +53,10 @@ SCHEMA = "rlm-harness/trace/v2"
 # Event types written to the stream.
 EVENT_RUN_START = "run_start"
 EVENT_MAIN_STEP = "main_step"
+#: An optimizer's text was loaded over the shipped instructions for this run (1.19.0). Recorded
+#: because every later reading of the trace is otherwise on a false premise: the prompt the model
+#: saw was not the one this version of the kit ships, and nothing else in the file would say so.
+EVENT_COMPILED_INSTRUCTIONS = "compiled_instructions"
 EVENT_SUB_CALL = "sub_call"
 EVENT_TOOL_CALL = "tool_call"
 EVENT_FINAL = "final"

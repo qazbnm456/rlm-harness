@@ -34,7 +34,7 @@ from .config import RLMConfig
 from .runtime import get_config, get_sub_lm
 from .sandbox import SandboxCancelled, build_interpreter, caller_owned
 from .sub_lm import _ensure_sub_call_recording, bind_recorder_to_sub_lm
-from .trace import _ensure_tool_timing, current_recorder
+from .trace import EVENT_COMPILED_INSTRUCTIONS, _ensure_tool_timing, current_recorder
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +244,16 @@ class RLMTask:
     output_model: ClassVar[type[BaseModel] | None] = None
     #: Natural-language instructions attached to the signature.
     instructions: ClassVar[str] = ""
+    #: Path to a dspy program state file, as :func:`rlm_harness.optimize.save_program` writes,
+    #: whose OPTIMIZED TEXT this task should run with. ``None`` (the default) ships the
+    #: instructions this version of the kit builds.
+    #:
+    #: Only the TEXT is taken. The program is still built by :meth:`_build_rlm`, so the sandbox
+    #: guard, the per-pass interpreter factory, tool timing and description normalisation all
+    #: still apply: accepting a caller's whole program instead would route every one of those
+    #: around the kit, which is the same hole ``RLMTask(interpreter=…)`` is careful not to open.
+    compiled_instructions: ClassVar[str | None] = None
+
     #: Tools (plain callables) the RLM may invoke inside the REPL.
     #: NOT a ``ClassVar``: since 1.1.0 an instance may carry its own tool list (declare it in the
     #: class body, set ``self.tools`` in a subclass ``__init__``, or pass ``tools=``, see below).
@@ -265,6 +275,7 @@ class RLMTask:
         interpreter: Any | None = None,
         cancel_event: threading.Event | None = None,
         tools: Sequence[Callable[..., Any]] | None = None,
+        compiled_instructions: str | None = None,
     ) -> None:
         if not self.signature:
             raise ValueError(f"{type(self).__name__} must define `signature`")
@@ -306,6 +317,9 @@ class RLMTask:
         self._tools_override: Sequence[Callable[..., Any]] | None = (
             None if tools is None else list(tools)
         )
+        #: Same order-independence as `tools=`: the explicit kwarg wins over the class field,
+        #: resolved at build time rather than written onto the class here.
+        self._compiled_override = compiled_instructions
 
     @property
     def resolved_tools(self) -> Sequence[Callable[..., Any]]:
@@ -443,7 +457,7 @@ class RLMTask:
             max_output_chars=self._config.max_output_chars,
         )
         try:
-            return dspy.RLM(signature, **kwargs, **budget)
+            return self._apply_compiled_instructions(dspy.RLM(signature, **kwargs, **budget))
         except TypeError:
             # Recorded, not just logged: this path drops all three iteration caps to dspy's own
             # defaults, so a trace carrying the CONFIGURED values here would be a fiction. A log
@@ -456,7 +470,70 @@ class RLMTask:
                 "rlm_harness._dspy_compat._BUDGET_ALIASES.",
                 sorted(budget),
             )
-            return dspy.RLM(signature, **kwargs)
+            return self._apply_compiled_instructions(dspy.RLM(signature, **kwargs))
+
+    _TOOL_BLOCK = "\nAdditional tools available"
+
+    def _apply_compiled_instructions(self, rlm: Any) -> Any:
+        """Load an optimizer's TEXT over the instructions of a program the kit just built.
+
+        dspy's ``save``/``load`` persist ``generate_action.signature.instructions``, which is the
+        whole flat string INCLUDING the rendered tool documentation (measured: 5143 chars for a
+        two-tool task, tool block included). So a state compiled against an older kit carries that
+        kit's tool descriptions, and loading it silently reinstates them: on an upgrade past
+        1.18.0 that means the markup and the ten-space gaps come back, and on any upgrade it means
+        the model is told about tools as they used to be.
+
+        **That is refused rather than warned about.** The whole point of `docs/PROMPT.md` is that
+        a description is an instruction, and reinstating a stale one is handing the model a
+        statement the code no longer honours. A warning in a log is not a thing a model reads.
+
+        The check is the current build's tool block: if the loaded text does not contain it, the
+        compiled state predates these tools. A task with no tools has no block and nothing to
+        check, which is stated here rather than left as an absent assertion.
+        """
+        path = self._compiled_override or self.compiled_instructions
+        if not path:
+            return rlm
+
+        planner = getattr(rlm, "generate_action", None)
+        shipped = getattr(getattr(planner, "signature", None), "instructions", None)
+        if not isinstance(shipped, str):
+            # TypeError, not ValueError: the argument is fine and the INSTALLED dspy is not what
+            # this path needs. Same reading as the budget-kwargs TypeError above.
+            raise TypeError(
+                "compiled_instructions was given, but this dspy's RLM exposes no "
+                "`generate_action.signature.instructions` to load over. Remove it, or pin a dspy "
+                "whose RLM still has that seam."
+            )
+        i = shipped.find(self._TOOL_BLOCK)
+        block = shipped[i:] if i >= 0 else ""
+
+        rlm.load(path)
+        loaded = planner.signature.instructions
+        if not isinstance(loaded, str) or loaded == shipped:
+            raise ValueError(
+                f"loading {path!r} changed nothing: the file is not a saved program for this "
+                "task's signature, or dspy's state layout moved. A silent no-op here would run "
+                "the shipped instructions while the caller believes otherwise."
+            )
+        if block and block not in loaded:
+            raise ValueError(
+                f"{path!r} was compiled against different tool documentation, so loading it "
+                "would reinstate the descriptions of whatever kit version compiled it. A tool "
+                "description is an instruction to the model (see docs/PROMPT.md), and a stale one "
+                "states behaviour this code no longer has. Recompile against this version."
+            )
+
+        recorder = current_recorder()
+        if recorder is not None:
+            recorder.record(EVENT_COMPILED_INSTRUCTIONS, {
+                "source": str(path),
+                "shipped_chars": len(shipped),
+                "loaded_chars": len(loaded),
+                "tool_block_preserved": bool(block),
+            })
+        return rlm
 
     async def arun(self, **inputs: Any) -> Any:
         """Run the task asynchronously, returning the validated output.

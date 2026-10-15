@@ -53,6 +53,9 @@ def test_the_event_type_SET_is_closed(monkeypatch):
     assert declared == {
         "EVENT_RUN_START",
         "EVENT_MAIN_STEP",
+        # 1.19.0: an optimizer's text was loaded over the shipped instructions for this run, so
+        # every later reading of the trace is otherwise on a false premise about the prompt.
+        "EVENT_COMPILED_INSTRUCTIONS",
         "EVENT_SUB_CALL",
         "EVENT_TOOL_CALL",
         "EVENT_FINAL",

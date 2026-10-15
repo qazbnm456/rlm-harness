@@ -60,6 +60,7 @@ from .skills import discover_skills, load_skills_as_tools, render_skills_manifes
 from .sub_lm import SubLMValidationError, intercept_sub_lm, model_as_tool
 from .trace import (
     EVENT_API_ROUNDS,
+    EVENT_COMPILED_INSTRUCTIONS,
     EVENT_FINAL,
     EVENT_MAIN_STEP,
     EVENT_RESULT,
@@ -104,6 +105,7 @@ __all__ = [
     "group_by_run",
     # trace contract constants: read a trace without hardcoding the wire strings
     "EVENT_RUN_START",
+    "EVENT_COMPILED_INSTRUCTIONS",
     "EVENT_MAIN_STEP",
     "EVENT_SUB_CALL",
     "EVENT_TOOL_CALL",
@@ -165,7 +167,7 @@ __all__ = [
     "run_in_subprocess",
 ]
 
-__version__ = "1.18.0"
+__version__ = "1.19.0"
 
 
 def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import
