@@ -392,8 +392,16 @@ reason is in the rule.
   hard GATE scoring zero and turn count as the gradient, the same ten examples score a mean of
   0.700 with a spread from 0.30 to 1.00, and a held-out set the optimizer never sees scores 0.513.
   So a saturated metric is a property of the metric and not of the task, and the gate that refuses
-  to spend a budget at the ceiling is what makes the difference visible. Whether an optimizer then
-  improves anything is a separate question and is not claimed here.
+  to spend a budget at the ceiling is what makes the difference visible.
+
+  **Compiled against that metric, GEPA raised a held-out set from 0.513 to 0.733 and wrote four of
+  the ten trainset answers into the instruction at the same time** (dspy 3.4.0; `docs/PROMPT.md`
+  has the table). Both halves of that sentence came from the same run, and only one of them is in
+  the score. **A number says whether to keep the artifact; only reading the artifact says what you
+  are keeping.** Diff a compiled instruction against a freshly built one before shipping it, and
+  do not check for deleted guardrails by matching their words: a literal check called five of
+  seven deleted, including a SUBMIT contract the optimized text states in its own words, because a
+  substring matcher on rewritten text can only ever say "gone".
 - **A fresh `threading.Thread` starts with an empty `contextvars.Context`: contextvars are NOT
   inherited into it.** `tools/_async.py`'s `run_isolated` (a bridging primitive for a consumer's own
   in-process harness-delegation transport: see `tools/harness.py`'s `pointer_to_invocation` and

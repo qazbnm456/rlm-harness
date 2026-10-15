@@ -301,7 +301,45 @@ count as the gradient, and the same ten examples give a mean of **0.700** spread
 1.00, with a held-out set at 0.513. So measure your baseline before you buy an optimizer run, keep
 the gate that refuses to spend at the ceiling, and put correctness above the gradient rather than
 beside it: an instruction that reaches a wrong answer faster must score zero, or that is what you
-will get. Relatedly, do not aim a metric at
+will get.
+
+**Compiled against that metric, GEPA improved a held-out set and wrote the trainset's answers into
+the instruction at the same time.** Measured on dspy 3.4.0, a 60-call budget, a 10-example
+trainset and 6 held-out questions the optimizer never saw:
+
+| | before | after |
+|---|---|---|
+| held-out mean | 0.513 | **0.733** |
+| held-out examples improved | | 4 of 6, none worse |
+| turns on the three that moved | 10, 8, 6 | 4, 5, 3 |
+| instruction length | 5518 | 3331 |
+
+**The holdout is the result.** A gain on the optimizer's own set proves nothing, because that is
+the set it was allowed to fit.
+
+**Then read the artifact, because the score cannot tell you this.** Four of the ten trainset
+questions have their answers written into the optimized instruction, in sentences of the form
+*"For a question asking where the schema string is written into each event, cite the assignment in
+`record()`."* None of the six held-out questions does. So the gain is carried by the general half
+it also learned, grep narrowly first and cite the implementation rather than a helper, while the
+instruction ships a crib sheet for the trainset that can only mislead on anything else.
+
+**Do not check for a deleted guardrail by matching its words.** A literal check over the shipped
+phrases reported five of seven capabilities as deleted, including the SUBMIT contract, while the
+optimized text says ``SUBMIT`; submit only the finished citation object``. A substring matcher
+applied to text that was deliberately rewritten answers "gone" for every rewrite, which is the one
+answer it can always give. Match a CAPABILITY against several wordings instead, or read the diff.
+
+**Corrected, six of the seven survive and exactly one is really gone: the sub-LM.** `llm_query` is
+mentioned zero times in the optimized instruction, so the model is no longer told it has one. This
+task never needed it and no part of the score would have moved if it had, which is what makes it
+the loss worth naming: the only way to see it was to compare capabilities before and after.
+
+**And the measurement carries its dspy version**, because 3.4.1 makes `InstructionProposer` the
+default and sends tool trajectories to the reflection LM as structured content rather than
+flattened placeholders. Upstream's own note is that "optimization results can differ from 3.4.0
+even with the same seed", so the figures above are a measurement of 3.4.0's proposer and say
+nothing about 3.4.1's in either direction. Relatedly, do not aim a metric at
 `fence_refused_turns`: `metrics.py` records why that counter is not prompt-fixable, and a consumer
 already spent two prompt generations suppressing content its own output needed.
 
