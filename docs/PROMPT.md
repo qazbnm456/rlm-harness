@@ -427,12 +427,14 @@ subclass that declares an artifact needs that route back to the baseline, becaus
 two is how you decide whether to keep the artifact at all.
 
 **The run says so in its own trace.** A `compiled_instructions` event records the source path,
-the kit and dspy versions that compiled it, whether the task's instructions moved and which caps
-did, which checked keys went uncompared because either side did not carry them, and which
-predictors were replaced with both lengths for each. Every later reading of that trace is
-otherwise on a false premise about what the model was shown, and a record written before a key
-existed says nothing about whether that thing moved, which is not the same answer as
-"unchanged".
+the kit and dspy versions that compiled it and the dspy running now, whether the task's
+instructions moved and which caps did, which caps only one side recorded, which checked keys went
+uncompared because either side did not carry them, which predictors the file named and this build
+does not have, and which predictors were replaced with both lengths for each.
+
+Every later reading of that trace is otherwise on a false premise about what the model was shown,
+and a record written before a key existed says nothing about whether that thing moved, which is
+not the same answer as "unchanged".
 
 ## Checking these numbers yourself
 

@@ -624,3 +624,76 @@ def test_a_checked_key_THIS_BUILD_cannot_produce_is_reported_unchecked(tmp_path)
     assert payload["unchecked"] == ["execution_instructions"], (
         "the sandbox gate did not run and the trace did not say so"
     )
+
+
+def test_a_cap_only_one_side_records_is_unknown_rather_than_moved(tmp_path):
+    """The one-sided derivation this module got wrong twice, now caught per cap.
+
+    A cap the record lacks has not moved; it is unrecorded, and saying "moved" would be a false
+    premise in the one event whose purpose is that a reader is otherwise on one. Unreachable with
+    an artifact 1.19.0 writes, because both sides came from the same three-key literal, and live
+    the moment a release adds or drops a cap.
+    """
+    path = _compile_like_an_optimizer(tmp_path, lambda s: WHOLESALE)
+    state = json.loads(path.read_text())
+    del state[optimize.FINGERPRINT_KEY]["budget"]["max_iterations"]
+    state[optimize.FINGERPRINT_KEY]["budget"]["max_something_1_21_0_dropped"] = 7
+    path.write_text(json.dumps(state))
+    trace = tmp_path / "t.jsonl"
+    with TraceRecorder(str(trace), run_id="r"):
+        _task(tmp_path, compiled_instructions=str(path))._build_rlm()
+    payload = next(e for e in load_events(str(trace))
+                   if e["type"] == EVENT_COMPILED_INSTRUCTIONS)["payload"]
+    assert payload["budget_changed"] == [], "a cap one side lacks was reported as moved"
+    assert payload["budget_unrecorded"] == ["max_iterations", "max_something_1_21_0_dropped"]
+
+
+def test_the_trace_names_a_predictor_the_file_carried_and_this_build_lacks(tmp_path):
+    """Absence from `applied` had three causes a reader could not separate: no text for that
+    predictor, identical text, or a key this build does not have. The all-miss case is already a
+    refusal, so what was invisible is the PARTIAL overlap."""
+    path = _compile_like_an_optimizer(tmp_path, lambda s: WHOLESALE)
+    state = json.loads(path.read_text())
+    state["finaliser"] = {"signature": {"instructions": "text for a predictor that is not here"}}
+    path.write_text(json.dumps(state))
+    trace = tmp_path / "t.jsonl"
+    with TraceRecorder(str(trace), run_id="r"):
+        _task(tmp_path, compiled_instructions=str(path))._build_rlm()
+    payload = next(e for e in load_events(str(trace))
+                   if e["type"] == EVENT_COMPILED_INSTRUCTIONS)["payload"]
+    assert payload["unused_predictors"] == ["finaliser"]
+    assert list(payload["applied"]) == ["generate_action"]
+
+
+def test_the_trace_records_the_dspy_that_is_running_not_only_the_one_that_compiled(tmp_path):
+    """`trace.py` is dspy-free by invariant and cannot read it; this module already imports dspy.
+    Without it the premise "the running dspy renders the same protocol text" is checked by
+    inferring from the declared bound rather than by reading the trace."""
+    path = _compile_like_an_optimizer(tmp_path, lambda s: WHOLESALE)
+    trace = tmp_path / "t.jsonl"
+    with TraceRecorder(str(trace), run_id="r"):
+        _task(tmp_path, compiled_instructions=str(path))._build_rlm()
+    payload = next(e for e in load_events(str(trace))
+                   if e["type"] == EVENT_COMPILED_INSTRUCTIONS)["payload"]
+    assert payload["running_dspy"] == dspy.__version__
+    assert payload["compiled_with_dspy"] == dspy.__version__, (
+        "this state was saved by this dspy, so the two should agree here; they differ exactly "
+        "when an artifact outlives the dspy that compiled it, which is the case worth seeing"
+    )
+
+
+def test_a_budget_record_of_the_wrong_shape_answers_unknown_not_unchanged(tmp_path):
+    """`None`, not `[]`. A record whose `budget` is not a mapping cannot be compared, and an empty
+    list says "nothing moved", which is a measurement this run did not make. Same distinction as
+    `task_instructions_changed` returning None for an absent key."""
+    path = _compile_like_an_optimizer(tmp_path, lambda s: WHOLESALE)
+    state = json.loads(path.read_text())
+    state[optimize.FINGERPRINT_KEY]["budget"] = "max_llm_calls=50"
+    path.write_text(json.dumps(state))
+    trace = tmp_path / "t.jsonl"
+    with TraceRecorder(str(trace), run_id="r"):
+        _task(tmp_path, compiled_instructions=str(path))._build_rlm()
+    payload = next(e for e in load_events(str(trace))
+                   if e["type"] == EVENT_COMPILED_INSTRUCTIONS)["payload"]
+    assert payload["budget_changed"] is None, "an uncomparable budget read as nothing moved"
+    assert payload["budget_unrecorded"] is None

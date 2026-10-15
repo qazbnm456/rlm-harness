@@ -40,6 +40,22 @@ from .trace import EVENT_COMPILED_INSTRUCTIONS, _ensure_tool_timing, current_rec
 logger = logging.getLogger(__name__)
 
 
+def _both_sides(theirs: Any, ours: Any) -> tuple[list[str] | None, list[str] | None]:
+    """Split two mappings into (keys that MOVED, keys only one side has).
+
+    A key one side lacks has not changed, it is unknown, and reporting it as changed is the
+    one-sided derivation this module has now got wrong twice. ``(None, None)`` when either side is
+    not a mapping, because then neither question has an answer.
+    """
+    if not isinstance(theirs, dict) or not isinstance(ours, dict):
+        return None, None
+    both = set(theirs) & set(ours)
+    return (
+        sorted(k for k in both if theirs[k] != ours[k]),
+        sorted(set(theirs) ^ set(ours)),
+    )
+
+
 def _dig(obj: Any, *keys: str) -> Any:
     """Walk nested mappings, answering ``None`` the moment the shape is not one.
 
@@ -705,6 +721,7 @@ class RLMTask:
         recorder = current_recorder()
         if recorder is not None:
             fp = state[_FINGERPRINT_KEY]
+            caps_moved, caps_unknown = _both_sides(fp.get("budget"), mine.get("budget"))
             # `_dig`, not a chain of `.get`: nothing validates dspy's own `metadata` block, and a
             # truthy non-dict made a chain crash AFTER the text was applied and ONLY when a
             # recorder was active, so a traced run died on a file an untraced run accepted.
@@ -723,13 +740,11 @@ class RLMTask:
                 # The NAMES that moved, not a boolean: only `max_llm_calls` reaches the
                 # replaced string ("You have max N sub-LLM calls"), so a boolean here would fire
                 # for two caps the model is never told about while every other flag beside it
-                # answers "did what the model saw move".
-                "budget_changed": (
-                    None if "budget" not in fp else sorted(
-                        k for k, v in (mine.get("budget") or {}).items()
-                        if (fp["budget"] or {}).get(k) != v
-                    ) if isinstance(fp["budget"], dict) else None
-                ),
+                # answers "did what the model saw move". Compared per cap and only where BOTH
+                # sides carry it, the same rule as `unchecked`: a cap one side lacks has not
+                # moved, it is unknown, and `budget_unrecorded` is where that belongs.
+                "budget_changed": caps_moved,
+                "budget_unrecorded": caps_unknown,
                 # Which checked keys were not compared, so a skipped gate is visible rather
                 # than silent. Derived from BOTH sides, because the skip is: a caller-supplied
                 # interpreter double carries no `execution_instructions`, so the build omits the
@@ -738,6 +753,17 @@ class RLMTask:
                     k for k in self._CHECKED_FINGERPRINT_KEYS if k not in fp or k not in mine
                 ),
                 "applied": applied,
+                # Absence from `applied` has three causes a reader cannot separate: the file had
+                # no text for that predictor, the text was identical, or the file names a
+                # predictor this build does not have. This separates the third.
+                "unused_predictors": sorted(
+                    k for k in state
+                    if k not in predictors and k not in ("metadata", _FINGERPRINT_KEY)
+                ),
+                # The compile-time dspy is read off the file above; this is the one running now.
+                # `trace.py` is dspy-free by invariant and cannot add it, but this module already
+                # imports dspy, so the premise is readable rather than inferred from the bound.
+                "running_dspy": getattr(dspy, "__version__", None),
             })
         return rlm
 

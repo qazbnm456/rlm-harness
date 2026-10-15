@@ -4,6 +4,37 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.20.0] - 2026-10-15
+
+**Three fields in the `compiled_instructions` event answered a question next to the one they were
+named for.** All three were found by review on 1.19.0, filed rather than fixed because none is
+reachable with an artifact that release can write, and each becomes live the moment something
+moves: a later kit adding or dropping a cap, a dspy renaming a predictor, an artifact outliving
+the dspy that compiled it. The event exists because a later reader is otherwise on a false premise
+about what the model was shown, so a field that answers the wrong question is the one defect it
+cannot absorb.
+
+### Added
+
+- **`budget_unrecorded`**, and `budget_changed` is now compared per cap and only where both sides
+  carry it. A cap the record lacks has not moved, it is unknown, and reporting it as moved was the
+  one-sided derivation this path had already got wrong once in `unchecked`. An uncomparable record
+  answers `None` rather than an empty list, which is the same absent-versus-measured distinction
+  `task_instructions_changed` makes.
+
+- **`unused_predictors`**, naming the state's predictor keys this build does not have. Absence
+  from `applied` had three causes a reader could not separate: the file carried no text for that
+  predictor, the text was identical, or the file names a predictor that is not here. The all-miss
+  case was already its own refusal, so what was invisible is the partial overlap.
+
+- **`running_dspy`**, beside the `compiled_with_dspy` read off the file. The claim that an
+  artifact's copy of dspy's protocol text still matches was checkable only by inferring from the
+  declared bound. `trace.py` is dspy-free by invariant and cannot read a version; `task.py`
+  already imports dspy, so the event is where it belongs.
+
+Additive within `trace/v2`. No public name, declaration field or refusal changes, so 1.19.0 code
+runs unchanged.
+
 ## [1.19.0] - 2026-10-15
 
 **An optimizer's instructions can now re-enter a run.** `dspy.GEPA` rewrites the planner's
@@ -61,7 +92,8 @@ run path. That gap is what `docs/PROMPT.md` recorded as open work in 1.18.0.
 - **`EVENT_COMPILED_INSTRUCTIONS`**, recorded when a run uses loaded text. It names the source,
   the kit and dspy versions that compiled it, whether the task's instructions moved and which
   caps did, which checked keys went uncompared because either side did not carry them, and which
-  predictors it replaced with both lengths for each. Every later reading of that trace is
+  predictors it replaced with both lengths for each. 1.20.0 adds three more fields; see its entry
+  above for what each one answers. Every later reading of that trace is
   otherwise on a false premise about what the model was shown, and nothing else in the file would
   say so. Additive within `trace/v2`, and `tests/test_contract.py`'s closed event set made adding
   it cost a visible diff, which is what that test is for.
