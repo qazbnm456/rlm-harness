@@ -185,6 +185,14 @@ cannot see.
   Every other check of it drives a fake `claude_agent_sdk` module whose `ClaudeAgentOptions(**kwargs)`
   swallows any keyword, so an upstream rename stays green. `mini_run.py` is the no-subscription
   equivalent (any litellm model through `RLM_*` env).
+- **The release notes and the tag message are human-facing documents, and they are the only ones
+  that cannot be quietly corrected later.** Draft the body to a file, run the punctuation gate on
+  it the way any doc is gated, and pass it with `gh release create --notes-file`. One line per
+  paragraph: a release body is rendered Markdown, so hard-wrapping it at a column adds noise and
+  nothing else. No running account of how the change was made, and no figure that measures
+  something the release itself can edit, because a character count in a published release goes
+  stale the moment someone edits a docstring and nobody re-reads it to fix that. The tag message
+  is the bare version; the release title is a sentence.
 - **`tests/test_sandbox_real_deno.py` is the one file that drives a REAL Deno sandbox, and it
   skips without `deno` on PATH, which includes CI.** Every other sandbox test monkeypatches
   `PythonInterpreter.execute`, and a fake `execute` can neither exit nor end a dspy session, which
