@@ -110,8 +110,9 @@ def make_command_tool(
     def run_command(command: Command) -> dict | str:
         """Run a local command via an isolated runner. Returns a
         ``{"exit_code", "stdout", "stderr"}`` dict: e.g. ``run_command("ls")["stdout"]``,
-        or a short error/refusal string. Execution isolation is the caller's runner; this
-        tool does not sandbox."""
+        or a string on failure. A refusal starts with "Refused:", and a runner that itself
+        failed gives a "Command error for ..." string naming the command before the colon.
+        Execution isolation is the caller's runner; this tool does not sandbox."""
         if guard is not None:
             reason = guard(command)
             if reason is not None:                     # any string (even "") refuses; None allows

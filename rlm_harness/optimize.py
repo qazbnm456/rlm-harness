@@ -86,6 +86,19 @@ def compile_task(
         compiled = optimizer.compile(program, trainset=list(trainset))
         return CompileResult(program=compiled)
 
+    **``gepa_kwargs`` MUST carry ``reflection_lm``**, which has no default::
+
+        compile_task(task, trainset, metric, reflection_lm=dspy.LM("openai/gpt-4.1-mini"))
+
+    Without it dspy 3.4.0 and 3.4.1 both raise ``AssertionError: GEPA requires a reflection
+    language model, or custom instruction proposer to be provided``, which is a failure the body
+    above cannot prevent and nothing here used to mention. It must be a
+    ``dspy.LM`` that can return JSON, which 3.4.1 requires because its default proposer went
+    through ``dspy.Predict`` + ``JSONAdapter``. Reaching GEPA at all has prerequisites this
+    function cannot supply, and ``docs/PROMPT.md`` carries them: one metric call is one FULL
+    rollout, ``auto="light"`` on a two-predictor program resolves to 790 of them at a ten-example
+    valset, and there is no path yet for an optimized program to re-enter ``RLMTask.arun``.
+
     THE BLOCKER THIS USED TO CARRY IS GONE as of 1.14.0. It said `optimizer.compile` calls the
     program without a positional interpreter, so dspy would build one from the metadata CARRIER
     `_build_rlm` passed, which raised when invoked. dspy 3.4.0 deleted the positional seam, so the

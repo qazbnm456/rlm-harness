@@ -4,6 +4,242 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.18.0] - 2026-10-15
+
+**A tool's docstring is prompt text, and this kit had been writing it for Sphinx.** dspy renders
+every tool's `__doc__` into the system message. On a two-tool kit task the rendered tool-doc block
+was about two thirds of the whole instruction string.
+
+Of the fourteen tools the kit ships, three had no model-facing docstring at all, so dspy rendered
+the literal words `No description`. Of the eleven that had one, eight carried Sphinx markup and
+ten arrived with a mid-sentence gap. Two of them carried thousands of characters of design
+rationale.
+
+One normalisation at the build seam, with no new config, plus a description for each of the three
+that had none and a rewrite of the two that were wrong, takes that task's instruction string down
+by about a third. No public name, trace field or declaration field
+changes. `docs/PROMPT.md` is new, and is what to read before writing anything a model will read.
+
+### Fixed
+
+- **Sphinx markup and collapsed indentation no longer reach the model.** dspy takes
+  `dspy.Tool.desc` from a tool's `__doc__`, renders one line per tool, appends the block to
+  `generate_action.signature.instructions`, and the adapter puts that string in the SYSTEM
+  message. Because dspy flattens with `.replace("\n", "  ")`, a docstring's own 8-space
+  indentation became a ten-space gap mid-sentence, and inline literals passed through verbatim,
+  so the model read
+
+      Read lines ``start_line``..``end_line`` (1-indexed, inclusive; ``end_line=None`` means
+                "to the end of the file") of a file at ``path``
+
+  Normalisation happens once, at `RLMTask._build_rlm`, for the same reason `_ensure_tool_timing`
+  does: a rule that depends on every author remembering is missing for someone, and a consumer
+  whose tools delegate to these factories has no seam of its own.
+
+  Whitespace collapses BEFORE the markup substitutions, which is what lets them see a literal or
+  a role the author wrapped across two source lines. Both patterns exclude newlines deliberately,
+  so running them first left `` ``very long\n    literal name`` `` untouched in the prompt: a
+  defect a consumer hits and the kit's own docstrings happen not to.
+
+  The seam rewrites only objects the kit owns, a `functools.wraps` wrapper marked `__rlm_timed__`
+  or a pydantic copy of a `dspy.Tool`, never a caller's function. It therefore does NOT reach a
+  `functools.partial`, a callable instance, a coroutine function, a `staticmethod` object or an
+  `lru_cache`-wrapped callable: the shapes the timing seam skips too. `docs/PROMPT.md` says so,
+  because "normalises every tool" would be a promise the code does not keep.
+
+- **Three tools were offered to the model with no description at all.** `web_search`,
+  `call_model` and `call_harness` each had their documentation on the FACTORY, which never reaches
+  the prompt, and nothing on the closure that does. All three now carry one. `web_search`'s states
+  its result cap, substituted from `max_results` at build time rather than written as a number a
+  caller can change out from under it, and clamped at 1 because `normalise_search_results` appends
+  before checking the cap, so a `max_results` of 0 still returns one result.
+
+- **`verify_quote` and `grep_files` were 81% of the kit's whole model-facing text.** 6936 and 3816
+  characters, 52.2% and 28.7% of the 13280 across all fourteen tools, every character re-sent in
+  the system message on every turn of every run. The developer halves moved to the module
+  docstring and the factory docstring respectively, neither of which a model ever reads.
+
+- **Facts a caller acts on were wrong in the shortened descriptions, and are now copied from the
+  code rather than from memory.** The worst of them is the one the old text had singled out as
+  caller-critical: a coordinate-verified `verify_quote` MATCH returns neither a character offset
+  nor a snippet, and the rewrite said the opposite.
+
+  `grep_files` named an `"Invalid regex: ..."` sentinel the code never emits (it is
+  `Invalid regex '<pattern>': <reason> at position N`), and described `max_results` as capping
+  matching lines when it caps output ROWS, which in two of the three modes means whole files. Its
+  no-match answer, a `"No matches for ..."` string rather than an empty one, was undocumented in
+  both the old text and the new.
+
+  `verify_quote` also named its refusal condition as digits and punctuation when the rule is
+  digits and WHITESPACE, so a punctuation-only quote is searched like any other text, and it
+  documented one refusal where the code has two with different messages. And it had lost the only
+  documentation of `normalize_whitespace` and `snippet_chars`: dspy renders both into the REPL
+  proxy signature, so the model can set them, and `normalize_whitespace=False` silently disables
+  the coordinate path.
+
+- **Two validators and a runner were telling the model to call them without saying how to read the
+  answer.** `schema_validator` returns `"Validation successful."` or `"Validation failed: ..."` and
+  its description quoted neither, while instructing the model to pass its JSON there before
+  emitting a final answer. `run_command`'s error path returns `"Command error for '<cmd>': ..."`
+  and its refusal `"Refused: ..."`, and the description named only "a short error/refusal string".
+  Both now name their prefixes and both are checked against real calls.
+
+- **A clamp must not rewrite the action.** The fix above for `grep_files`' model-controlled
+  arguments normalised them in place, before `record_tool_call`, so a turn in which the model
+  wrote `glob=None` was recorded as `glob="*"`. `docs/INVARIANTS.md` makes the JSONL trace the
+  source of truth for replay and RL datasets, where a `tool_call`'s `args` IS the action, so that
+  row taught a dataset an action the model never took. Worse, the call used to raise, so the
+  regression traded a loud failure for a quiet falsehood. The normalisation now happens in locals
+  and the raw arguments are what the trace records, which is the same line
+  `docs/INVARIANTS.md` already draws for a tool's NAME.
+
+### Changed
+
+- **A two-tool task's instruction string is about a third smaller**, and the kit's share of it
+  goes from roughly two thirds to under a half, counting the tool-doc block plus the interpreter's
+  `execution_instructions` fragment and NOT the task's own instructions, which are the consumer's.
+  This is text every consumer sends on every turn, so the saving multiplies by turn count.
+
+  **Correctness cost characters back, and roughly a quarter of the catalogue is that cost.** Five
+  descriptions had to be rewritten against the code: `verify_quote`, `grep_files`, `web_search`,
+  `run_command` and `schema_validator`. An earlier pass reported a bigger cut from the shorter,
+  wronger text. The trade is the right way round, because a shorter instruction that misstates a
+  return value is worse than a longer one.
+
+  **Figures in this entry are ratios on purpose, and the absolute ones are gone.** The exact
+  per-tool lengths live in `tests/tool_description_baseline.json`, where a test compares them to
+  the code on every run. A character count in prose measures something a release can edit, and
+  the precise version of this paragraph went stale three times in one review: once silently,
+  because a description grew by less than its own allowance, and once after a rounding pass that
+  rounded the stale value instead of re-deriving it.
+
+
+- **`docs/INVARIANTS.md` gains the rule and the measurement discipline behind it.** A tool's
+  docstring is prompt text; the inner closure's is for the model and the factory's is for the
+  developer; a bare public function handed over directly has no factory to hide behind, so its
+  developer half goes in the module docstring; and when a tool needs more than its baseline to be
+  USED correctly, the surplus is developer-facing by definition.
+
+  A second entry records the discipline the whole change came out of. Nothing had ever printed the
+  system message, which is why this went unnoticed. A GEPA study on this repo then scored its own
+  trainset at a mean of 1.000 on the shipped instructions, so no gradient existed, while cost
+  varied 3.3x in turns and 13.5x in wall clock across those same perfect runs: a metric at its
+  ceiling and a metric that works look identical from the score alone.
+
+### Added
+
+- **[`docs/PROMPT.md`](docs/PROMPT.md), read before writing anything a model will read.** The one
+  flat string and its owners, measured across five real consumer tasks: their `instructions`
+  34.8-47.7%, dspy's fixed 1780 characters 17.0-35.8%, text interpolated from their own signature
+  9.4-39.1%, tool descriptions 0-31.8%.
+
+  It also covers which parts of dspy's REPL protocol cannot be replaced, which single fragment can
+  and where it actually lands (index 288 of 1865, which is 538 characters BEFORE the first of the
+  six rules, so it is the weaker of the two seams for contradicting one), three reproduced
+  conflicts between that protocol and a consumer's own instructions, where skills manifests and
+  MCP server descriptions arrive, and what GEPA rewrites and costs.
+
+  **On what upstream does and does not say**, because the first draft of this got it wrong: dspy's
+  RLM guide states the central fact in one sentence, that task instructions, output-field
+  descriptions and tool docs are formatted into the action prompt and are the surface an optimizer
+  tunes, and its API page adds that adapters place that string in the system prompt. Nobody here
+  had read it. What upstream never states is the mechanism, that the text comes from a tool's
+  `__doc__`, and no release note has mentioned any of it.
+
+- **`tests/test_tool_descriptions.py` is the pin.** The count is deliberately not stated: it has
+  gone stale twice in this entry alone, and a number nothing checks is the defect this whole
+  release is about. Every tool the kit ships is built from
+  an exhaustive table, deliberately not an exemption list, because an exemption list is what a
+  future contributor adds themselves to; a new or renamed factory fails a MEMBERSHIP assertion
+  rather than a count, which a rename satisfies.
+
+  Three shipped producers come from no factory at all and so escaped the first version of this
+  file: `list_skills` and `read_skill` from `load_skills_as_tools`, and the sub-LM tool
+  `model_as_tool` builds, which the model sees as `query_<model name>`. Measured then: deleting
+  `list_skills`'s docstring, and making the sub-LM tool's description optional, each left the whole
+  suite green, so `No description` was still reachable in a prompt on the release claiming to fix
+  it. They now have their own end-to-end assertion that the seam reaches them through a real
+  built task.
+
+  Also asserted: that normalisation is WIRED into a built task rather than merely correct, that a
+  caller's own object is never mutated, that a sentence's content survives the transform, and that
+  `web_search`'s stated cap equals the cap the build enforces at four different values.
+
+- **Three more promises the code did not keep, two of them written by this release.**
+  `web_search`'s new description quoted a `"Search error: ..."` prefix while the code returns
+  `"Search error for '<query>': ..."`: the same defect as `grep_files`' `Invalid regex`, in the
+  same module, found only because the sweep that was supposed to catch that class was itself
+  checked for coverage. `grep_files` promised a string and never raising, and
+  `grep_files(glob=None)` raised `TypeError`; it also answered `max_results <= 0` with the
+  `"No matches for ..."` sentinel over a corpus that does match, which is a lie about the corpus
+  rather than an empty result. Both arguments are model-controlled, so both are now clamped to
+  what the description promises.
+
+  **And the half that was missing: a description is held to the behaviour it describes.** The repo
+  already asserted the real sentinel strings in one place and quoted them as prompt text in
+  another, with nothing joining the two, so reverting any of the corrections above left the whole
+  suite green. Every sentinel a description names is now checked in both directions against a real
+  call; a quoted EXAMPLE is checked as a prefix of the real return; the two `verify_quote` MATCH
+  shapes are checked to carry what the description says they carry; and the one number in that
+  description is substituted from `_DEFAULT_SNIPPET_CHARS` rather than written out, which is the
+  release's own rule applied to a module constant instead of a factory argument.
+
+  **The sweep's own coverage is asserted too**, because a hand-built table drifts from the
+  catalogue in silence and this one did: it covered four of the fourteen tools and one of
+  `web_search`'s two sentinels, which is how `"Search error: ..."` sat in a prompt with four tests
+  named "every sentinel" around it. Every catalogue tool is now either in the table or in a
+  `_NO_SENTINEL` set that argues why it quotes none. `tests/test_repl_safety.py` had already
+  solved this for the name rules; this is the same shape.
+
+  Tool-level coverage was not enough either, since one row satisfied it while a second sentinel on
+  the same tool escaped. So the sentinels a description quotes are now ENUMERATED from the
+  rendered text by shape and each one is required to have a row, which means a new sentinel
+  arrives already needing one. On its first run that test found a real gap: `run_command`'s
+  description names `Refused:` and nothing exercised the guard that produces it.
+
+  **Two limits are written down with it, because the claim is narrower than it reads.** The loop
+  has three sides and two are asserted: quoted-in-a-description to returned-by-the-code, and
+  in-a-row to named-in-the-description. The third, returned-by-the-code to
+  quoted-in-a-description, is not, which is why three tools are EXEMPTED rather than covered while
+  returning a sentinel their descriptions never name; each exemption now names the string it is
+  blind to and a test keeps that naming true. And the enumeration reads QUOTED spans, so a prefix
+  a description states without quoting is invisible whatever its shape, which no widening of the
+  form list can reach. The open follow-up is to enumerate from the code instead, where the set of
+  returned literals is closed: an `ast` walk over `tools/*.py` would have caught the defect that
+  shipped from the other side, and it finds around ten returned prefixes that no description
+  names at all, three of them success messages.
+
+  The sentinels are found by reading each description rather than from a list, which went through
+  three versions before it covered the forms this kit actually uses: a list of literals missed
+  everything off the list, a colon-anchored regex missed every sentinel whose variable part comes
+  before the colon (four of the catalogue's), and a marker-or-period rule missed a bare
+  capitalised word (two more) while letting the gate be disarmed by the same edit it policed.
+  Those forms are now listed as data in a test, and the limit is written down where it is read:
+  the enumeration reads prose, so a sentinel in a form it does not recognise is invisible, and
+  the way out is for a factory to declare its sentinels rather than for the test to parse them.
+
+  The exemption control is a SHAPE rather than a list of literals, which its first version was:
+  five of its seven patterns required a leading double quote, so a sentinel written in the kit's
+  own `` ``literal`` `` style was invisible to it, as was any prefix the code returns that the
+  list did not happen to name. An exemption list is what a future contributor adds themselves to,
+  and that applies to a detector as much as to a table.
+
+- **`tests/tool_description_baseline.json`, the size gate, and deliberately not a cap.** Length is
+  the half that comes back, because markup is visible and length is not. Not a cap, for two
+  reasons: an aggregate cap measures a task that never ships, since the table builds all fourteen
+  tools where a real task hands the model two to four, and a per-tool cap is a number someone has
+  to guess for every tool that does not exist yet, arguable only by editing it upward.
+
+  The gate is whatever the repo ships today, per tool, checked in. Growth past a tolerance (the
+  larger of 200 characters and 25%) fails by name and prints both numbers. Making a description
+  longer on purpose stays allowed and costs one line in a reviewed diff.
+  `RLM_UPDATE_DESCRIPTION_BASELINE=1` regenerates the file, probed for exactly `"1"` rather than
+  truthiness so that `=0` means off, applied once per session before any gate reads the file, and
+  reported as a per-tool list of what it absorbed: a regeneration that says only "rewritten" turns
+  the one loud gate into a silent one. A third test fails when the recorded numbers drift more
+  than one allowance above reality, since a baseline above what the code ships cannot catch a
+  regression and looks exactly like a passing gate.
+
 ## [1.17.0] - 2026-10-14
 
 **The trace wire format is `rlm-harness/trace/v2`.** One key moved: `api_rounds` left the

@@ -61,9 +61,18 @@ or an upstream behaviour, read the two-kinds-of-claim bullet in [`docs/VERIFY.md
 It has its own moment because the moment it applies is writing a sentence, which is not a moment that
 makes anyone open another file.
 
+**Read [`docs/PROMPT.md`](docs/PROMPT.md) before writing anything a model will read**: a task's
+`instructions`, a tool's docstring, a skills manifest, an MCP tool description, or a metric for an
+optimizer that rewrites all of them. Its own moment is writing a sentence, like the
+two-kinds-of-claim rule above, and the thing it corrects is a belief rather than a line of code:
+that your task instructions are the system prompt, and that a docstring is documentation. Both are
+false, and dspy's own RLM guide contradicts both in one sentence that nobody here had read. What
+no upstream page states is the MECHANISM: that the text comes from a tool's `__doc__`. That gap is
+one line of code wide and it was enough.
+
 **Keep the public surface vendor-neutral.** Source, docs, and commit messages refer to downstream
-consumers generically. A `.githooks/` check enforces this on commit; enable it in a fresh clone with
-`git config core.hooksPath .githooks`.
+consumers generically. A `.githooks/` check enforces this on commit; enable it in a fresh clone
+with `git config core.hooksPath .githooks`.
 
 ## Before compacting
 

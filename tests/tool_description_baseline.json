@@ -1,0 +1,17 @@
+{
+  "_README": "Model-facing description length per tool, in characters, as rendered into the system message. Generated: re-run the suite with RLM_UPDATE_DESCRIPTION_BASELINE=1 after a deliberate change. See tests/test_tool_descriptions.py and docs/INVARIANTS.md, \"A tool's DOCSTRING is prompt text\".",
+  "edit_file": 396,
+  "extract_archive": 486,
+  "fetch_url": 103,
+  "git_clone": 582,
+  "grep_files": 1696,
+  "harness": 372,
+  "json_schema_validator": 86,
+  "model": 376,
+  "read_file": 295,
+  "run_command": 369,
+  "schema_validator": 384,
+  "verify_quote": 1669,
+  "web_search": 336,
+  "write_file": 216
+}

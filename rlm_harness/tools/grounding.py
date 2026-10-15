@@ -33,6 +33,116 @@ no multi-instance collision to solve, matching ``make_schema_validator``/
 ``record_tool_call``: a pure function with no filesystem/network side effect has nothing for a
 host-side audit trail to capture beyond what the RLM's own trajectory already records as this
 function's return value.
+
+## The full design
+
+**This belongs here and not in the function's docstring, because that docstring is PROMPT TEXT.**
+dspy takes `dspy.Tool.desc` from `__doc__` and renders it into the system message of every task
+that hands this function to a model, where this description was 52.2% of the 13280
+characters of model-facing text across the fourteen tools the kit ships: more than the other
+thirteen put together. The function keeps a short description written for the model;
+everything here is for a developer reading the implementation. See docs/PROMPT.md and
+docs/INVARIANTS.md, "A tool's DOCSTRING is prompt text".
+
+Verify that ``quote`` appears in ``source``: the deterministic half of the
+    Grounded-completeness recipe's itemized diff. Returns a ``"MATCH: ..."``/``"MISMATCH: ..."``
+    string (never raises), a deliberately parseable prefix mirroring this kit's existing sentinel
+    strings (``"Refused:"``, ``"Invalid regex:"``): a REPL-side model branches on it directly,
+    and a consumer reusing this function host-side (at assembly/export time) can do the same
+    check against a recorded tool-call's return value with no separate parsing.
+
+    **Matching mechanic: a whitespace-flexible LITERAL search**, not a normalize-then-search
+    (which would lose position info this doesn't need to lose): ``quote`` is split on whitespace
+    runs, each literal chunk is ``re.escape()``d (any metacharacter it contains: ``.``, ``(``,
+    ``$``. Is matched as a literal, never as regex syntax) and each whitespace run becomes
+    ``\\s+`` or ``\\s*`` by junction (when ``normalize_whitespace=True``, the default: see
+    ``_whitespace_joiner``) or its own escaped self (when ``False``, for a caller that wants
+    byte-exact whitespace too). So the match is whitespace-INSENSITIVE where whitespace is layout
+    and whitespace-REQUIRING between two word characters, which is the only place its absence
+    would change what was written. The resulting pattern runs
+    directly against the ORIGINAL, un-normalized ``source``. A real match has a real ``.start()``
+    offset in ``source``, no position-remapping needed.
+
+    **This needs no ``regex`` package / no timeout budget**, unlike ``make_grep_files_tool``'s
+    ``pattern``: that tool's catastrophic-backtracking risk exists because the model supplies the
+    PATTERN'S STRUCTURE directly. Here, the model supplies ``quote``: literal text, not regex
+    syntax, and every character of it is either escaped or collapsed to a flat, non-nested
+    ``\\s+``/``\\s*``. Neither can ever end up adjacent to the other or nested: the quote is
+    stripped before splitting (so no empty literal sits at either edge) and ``\\s+`` is greedy (so
+    no two whitespace delimiters are adjacent), which means every quantifier is separated by a
+    non-empty escaped literal that cannot itself contain whitespace: disjoint first-sets, no
+    ambiguity. The resulting pattern can never contain nested/adjacent quantifiers or overlapping
+    alternation, the shapes that exhibit catastrophic backtracking, so stdlib ``re`` is provably
+    safe here regardless of what ``quote`` contains.
+
+    **Pass the RAW file text as ``source``, not a line-numbered render.** ``read_file``'s
+    ``line_numbers=True`` and ``edit_file``'s success snippet both prefix a line with
+    ``f"{n:>6}\\t"``, so both are gutter-bearing text easy to copy by accident. A quote carrying a
+    gutter is READ AS A COORDINATE CLAIM since 1.9.0 and verified as one: see
+    :func:`_coordinate_match`. The two remain complementary: numbers so the MODEL can cite a
+    coordinate without counting lines, raw text so the VERIFIER can check the claim.
+
+    **It still does not STRIP the gutter, and that distinction is the whole design.** Removing a
+    leading ``spaces + digits + tab`` and searching the remainder repairs most guttered quotes and
+    accepts a citation naming the WRONG line whenever the remainder appears anywhere else: an
+    invented claim passing verification. Instead the gutter is used: the content must be at exactly
+    the line the gutter names, and that block must occur exactly once. Without the uniqueness half a
+    bare position check is WORSE than searching, because a large share of non-blank lines in a
+    repository recur within their own file: **18.53% measured today**, 4430 of 23903 stripped
+    non-blank lines across this repo's tracked ``*.py``. The 16.84% quoted elsewhere in this repo
+    is the same measurement on an earlier checkout and without the basis recorded, which is why
+    this one states it. The argument does not depend on the exact rate. With it, fabrication is closed by construction rather than by rate.
+
+    A coordinate-verified MATCH says so in its text, because it means something different: the
+    source holds the CONTENT at that line, but the quoted bytes, gutter included, are not a
+    substring of it. A caller re-deriving grounding with ``quote in source`` must branch on that.
+    Pass ``normalize_whitespace=False`` to skip this path entirely; byte-exact mode means no
+    interpretation, and reading a gutter as a coordinate is an interpretation.
+
+    On a LITERAL match the return includes the 1-indexed line number, a character offset, and a
+    ``snippet_chars``-wide window of ``source`` centered on the match, clamped to the string's
+    bounds. **A coordinate-verified match (see** :func:`_coordinate_match` **) returns neither an
+    offset nor a snippet**, because there is no match position to report: the quoted bytes are not
+    in ``source`` at all, only their content is, and the line number IS the answer. The design
+    considered giving it the offset of the content at that line and dropped it -- an offset only a
+    coordinate match ever produces would invite a caller to treat the two returns as one shape,
+    which is the thing the wording of that return exists to prevent. ``snippet_chars`` is unused on
+    that path.
+
+    The literal path's snippet is there to sanity-check that the RIGHT occurrence was found when
+    ``quote`` is generic enough to match more than one place: it reports the FIRST match only, via
+    ``re.search``, a presence check rather than an enumeration; a model wanting every occurrence in
+    a FILE already has ``grep_files``. A coordinate match needs no such check: uniqueness is one of
+    its four conditions, so there is exactly one place it could be.
+
+    On no match, a cheap, bounded fallback tries one "closest line" diagnostic: only when
+    ``quote`` (stripped) is single-line: via ``difflib.get_close_matches`` against
+    ``source.splitlines()``. This is polynomial, not exponential (no catastrophic-blowup risk),
+    but it is NOT as cheap per-line as a single regex match; acceptable only because it runs
+    solely on the rare mismatch path, over one in-memory string. A multi-line ``quote`` or no
+    candidate clearing the similarity cutoff skips the hint entirely rather than forcing a
+    low-quality one.
+
+    **A ``quote`` that asserts no content is refused before any search**, because a match on it
+    would confirm nothing. Two shapes, each with its own message:
+
+    * **Empty or whitespace-only.** It would reduce to the bare pattern ``\\s+``, matching almost
+      any real text. Same reasoning ``edit_file`` applies to an empty ``old_string``.
+    * **Only digits and whitespace**, on every non-blank line, which is what a BLANK line of a
+      line-numbered render is (``"     7\\t"``). It would reduce to that digit and match wherever
+      the digit occurs, reporting a line the citation never claimed.
+
+    The second rule is deliberately blunt, so it also refuses an all-digit quote whose digits ARE
+    in the source (``"8080"``, or a column of numbers from a numeric file). Quote the surrounding
+    text instead, so that a match means something.
+
+    **Leading/trailing whitespace on ``quote`` is stripped before matching**: it's incidental
+    padding, not a claim about what precedes/follows the quoted text in ``source``. Without this,
+    it would turn into a MANDATORY ``\\s+`` at the pattern's own edges, wrongly requiring
+    ``source`` to also have whitespace immediately before/after the quoted content (a real bug
+    caught by direct testing: ``verify_quote("the answer is 42", "  the answer is 42  ")`` would
+    otherwise spuriously ``MISMATCH`` even though the content is an exact match).
+    
 """
 
 from __future__ import annotations
@@ -180,8 +290,8 @@ def _coordinate_match(source: str, quote: str) -> int | None:
     **Together the last two close fabrication by construction, not by luck**: exact content at
     ``n`` plus a block occurring once means ``n`` is the ONLY line that can hold it. Without
     uniqueness a bare position check is WORSE than today -- measured at ~0.15% of random fabricated
-    coordinates verifying, against 0.000% for the shipped function, because 16.84% of non-blank
-    lines here recur in their own file.
+    coordinates verifying, against 0.000% for the shipped function, because a large share of
+    non-blank lines recur in their own file (see the rate's caveat above).
 
     Two parsing details carry their own measurements:
 
@@ -230,101 +340,32 @@ def verify_quote(
     normalize_whitespace: bool = True,
     snippet_chars: int = _DEFAULT_SNIPPET_CHARS,
 ) -> str:
-    """Verify that ``quote`` appears in ``source``: the deterministic half of the
-    Grounded-completeness recipe's itemized diff. Returns a ``"MATCH: ..."``/``"MISMATCH: ..."``
-    string (never raises), a deliberately parseable prefix mirroring this kit's existing sentinel
-    strings (``"Refused:"``, ``"Invalid regex:"``): a REPL-side model branches on it directly,
-    and a consumer reusing this function host-side (at assembly/export time) can do the same
-    check against a recorded tool-call's return value with no separate parsing.
+    """Check whether `quote` really appears in `source`. Pass the RAW file text as `source`, never
+    a line-numbered render.
 
-    **Matching mechanic: a whitespace-flexible LITERAL search**, not a normalize-then-search
-    (which would lose position info this doesn't need to lose): ``quote`` is split on whitespace
-    runs, each literal chunk is ``re.escape()``d (any metacharacter it contains: ``.``, ``(``,
-    ``$``. Is matched as a literal, never as regex syntax) and each whitespace run becomes
-    ``\\s+`` or ``\\s*`` by junction (when ``normalize_whitespace=True``, the default: see
-    ``_whitespace_joiner``) or its own escaped self (when ``False``, for a caller that wants
-    byte-exact whitespace too). So the match is whitespace-INSENSITIVE where whitespace is layout
-    and whitespace-REQUIRING between two word characters, which is the only place its absence
-    would change what was written. The resulting pattern runs
-    directly against the ORIGINAL, un-normalized ``source``. A real match has a real ``.start()``
-    offset in ``source``, no position-remapping needed.
+    Returns a string and never raises. Branch on the prefix, and on WHICH match you got, because
+    the two have different shapes:
 
-    **This needs no ``regex`` package / no timeout budget**, unlike ``make_grep_files_tool``'s
-    ``pattern``: that tool's catastrophic-backtracking risk exists because the model supplies the
-    PATTERN'S STRUCTURE directly. Here, the model supplies ``quote``: literal text, not regex
-    syntax, and every character of it is either escaped or collapsed to a flat, non-nested
-    ``\\s+``/``\\s*``. Neither can ever end up adjacent to the other or nested: the quote is
-    stripped before splitting (so no empty literal sits at either edge) and ``\\s+`` is greedy (so
-    no two whitespace delimiters are adjacent), which means every quantifier is separated by a
-    non-empty escaped literal that cannot itself contain whitespace: disjoint first-sets, no
-    ambiguity. The resulting pattern can never contain nested/adjacent quantifiers or overlapping
-    alternation, the shapes that exhibit catastrophic backtracking, so stdlib ``re`` is provably
-    safe here regardless of what ``quote`` contains.
+    - `MATCH: found at line N (char C). Context: '...'` - the quote was located as text. You get
+      the 1-indexed line, a character offset, and a snippet.
+    - `MATCH: line N verified by line number. ...` - the quote arrived carrying a line-number
+      gutter, so it was read as a claim about WHICH line and checked against that line. There is
+      no character offset and no snippet in this one. Code that parses the message, or that
+      re-checks grounding with `quote in source`, has to handle both.
+    - `MISMATCH: ...` - not found, sometimes naming the closest line and a similarity as a hint.
 
-    **Pass the RAW file text as ``source``, not a line-numbered render.** ``read_file``'s
-    ``line_numbers=True`` and ``edit_file``'s success snippet both prefix a line with
-    ``f"{n:>6}\\t"``, so both are gutter-bearing text easy to copy by accident. A quote carrying a
-    gutter is READ AS A COORDINATE CLAIM since 1.9.0 and verified as one: see
-    :func:`_coordinate_match`. The two remain complementary: numbers so the MODEL can cite a
-    coordinate without counting lines, raw text so the VERIFIER can check the claim.
+    Whitespace is flexible where it is only layout, and required between two word characters, so
+    "foo bar" never matches "foobar". Leading and trailing whitespace on `quote` is ignored.
 
-    **It still does not STRIP the gutter, and that distinction is the whole design.** Removing a
-    leading ``spaces + digits + tab`` and searching the remainder repairs most guttered quotes and
-    accepts a citation naming the WRONG line whenever the remainder appears anywhere else: an
-    invented claim passing verification. Instead the gutter is used: the content must be at exactly
-    the line the gutter names, and that block must occur exactly once. Without the uniqueness half a
-    bare position check is WORSE than searching, because 16.84% of non-blank lines in this repo
-    recur in their own file. With it, fabrication is closed by construction rather than by rate.
+    Two kinds of quote are refused before any search, each with its own message. An empty or
+    whitespace-only one gets `MISMATCH: quote must be non-empty ...`. One of nothing but digits
+    and whitespace gets `MISMATCH: quote carries only digits and whitespace ...`, because that is
+    a blank line in a numbered render and there is no text in it to check. A quote of punctuation
+    is NOT refused and is searched like any other text.
 
-    A coordinate-verified MATCH says so in its text, because it means something different: the
-    source holds the CONTENT at that line, but the quoted bytes, gutter included, are not a
-    substring of it. A caller re-deriving grounding with ``quote in source`` must branch on that.
-    Pass ``normalize_whitespace=False`` to skip this path entirely; byte-exact mode means no
-    interpretation, and reading a gutter as a coordinate is an interpretation.
-
-    On a LITERAL match the return includes the 1-indexed line number, a character offset, and a
-    ``snippet_chars``-wide window of ``source`` centered on the match, clamped to the string's
-    bounds. **A coordinate-verified match (see** :func:`_coordinate_match` **) returns neither an
-    offset nor a snippet**, because there is no match position to report: the quoted bytes are not
-    in ``source`` at all, only their content is, and the line number IS the answer. The design
-    considered giving it the offset of the content at that line and dropped it -- an offset only a
-    coordinate match ever produces would invite a caller to treat the two returns as one shape,
-    which is the thing the wording of that return exists to prevent. ``snippet_chars`` is unused on
-    that path.
-
-    The literal path's snippet is there to sanity-check that the RIGHT occurrence was found when
-    ``quote`` is generic enough to match more than one place: it reports the FIRST match only, via
-    ``re.search``, a presence check rather than an enumeration; a model wanting every occurrence in
-    a FILE already has ``grep_files``. A coordinate match needs no such check: uniqueness is one of
-    its four conditions, so there is exactly one place it could be.
-
-    On no match, a cheap, bounded fallback tries one "closest line" diagnostic: only when
-    ``quote`` (stripped) is single-line: via ``difflib.get_close_matches`` against
-    ``source.splitlines()``. This is polynomial, not exponential (no catastrophic-blowup risk),
-    but it is NOT as cheap per-line as a single regex match; acceptable only because it runs
-    solely on the rare mismatch path, over one in-memory string. A multi-line ``quote`` or no
-    candidate clearing the similarity cutoff skips the hint entirely rather than forcing a
-    low-quality one.
-
-    **A ``quote`` that asserts no content is refused before any search**, because a match on it
-    would confirm nothing. Two shapes, each with its own message:
-
-    * **Empty or whitespace-only.** It would reduce to the bare pattern ``\\s+``, matching almost
-      any real text. Same reasoning ``edit_file`` applies to an empty ``old_string``.
-    * **Only digits and whitespace**, on every non-blank line, which is what a BLANK line of a
-      line-numbered render is (``"     7\\t"``). It would reduce to that digit and match wherever
-      the digit occurs, reporting a line the citation never claimed.
-
-    The second rule is deliberately blunt, so it also refuses an all-digit quote whose digits ARE
-    in the source (``"8080"``, or a column of numbers from a numeric file). Quote the surrounding
-    text instead, so that a match means something.
-
-    **Leading/trailing whitespace on ``quote`` is stripped before matching**: it's incidental
-    padding, not a claim about what precedes/follows the quoted text in ``source``. Without this,
-    it would turn into a MANDATORY ``\\s+`` at the pattern's own edges, wrongly requiring
-    ``source`` to also have whitespace immediately before/after the quoted content (a real bug
-    caught by direct testing: ``verify_quote("the answer is 42", "  the answer is 42  ")`` would
-    otherwise spuriously ``MISMATCH`` even though the content is an exact match).
+    `normalize_whitespace` (default true) turns BOTH behaviours above off when false: the
+    whitespace flexibility and the line-number path, so a guttered quote that matches by default
+    will not match. `snippet_chars` (default {snippet_default}) sizes the `Context:` snippet.
     """
     stripped_quote = quote.strip()
     if not stripped_quote:
@@ -394,3 +435,15 @@ def verify_quote(
             ratio = difflib.SequenceMatcher(None, stripped_quote, close[0]).ratio()
             hint = f" Closest line: {close[0]!r} (~{ratio:.0%} similar)."
     return f"MISMATCH: quote not found in source (even allowing flexible whitespace).{hint}"
+
+
+# The one number in `verify_quote`'s model-facing description is built from the constant rather
+# than written out, for the reason docs/INVARIANTS.md gives: a docstring is PROMPT TEXT, and a
+# number a module constant can change is a wrong instruction waiting to happen. `_DEFAULT_SNIPPET_CHARS`
+# is defined above; this runs at import, once.
+def _fill_verify_quote_doc() -> None:
+    doc = verify_quote.__doc__ or ""
+    verify_quote.__doc__ = doc.replace("{snippet_default}", str(_DEFAULT_SNIPPET_CHARS))
+
+
+_fill_verify_quote_doc()

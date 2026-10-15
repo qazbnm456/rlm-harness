@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from . import _dspy_compat
 from ._retry import run_with_retry
+from ._toolname import with_model_facing_description
 from .config import RLMConfig
 from .runtime import get_config, get_sub_lm
 from .sandbox import SandboxCancelled, build_interpreter, caller_owned
@@ -383,9 +384,16 @@ class RLMTask:
         # reason 1.7.0 made `sub_call` automatic: a field every author must remember is missing for
         # someone -- and a consumer whose tools are pure delegation to our factories has no seam of
         # its own to add one. This covers the consumer's own tools too. See `_ensure_tool_timing`.
+        # `with_model_facing_description` runs AFTER the timing wrapper, and depends on it: a
+        # plain function's normalised docstring is written on the `functools.wraps` wrapper, so
+        # the consumer's own function is never mutated. See `_toolname.py`'s section on what the
+        # model reads about a tool: the block was 63.6% of one real task's instruction string.
         kwargs: dict[str, Any] = {
             "sub_lm": self._sub_lm,
-            "tools": [_ensure_tool_timing(t) for t in self.resolved_tools],
+            "tools": [
+                with_model_facing_description(_ensure_tool_timing(t))
+                for t in self.resolved_tools
+            ],
         }
 
         # THE SEAM. dspy >= 3.4.0 supplies the interpreter ONLY through this factory, which it

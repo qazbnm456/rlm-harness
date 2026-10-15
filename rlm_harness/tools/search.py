@@ -73,6 +73,10 @@ def make_web_search_tool(
     dspy.RLM invokes tools synchronously; an async tool there returns a coroutine that never runs."""
 
     def web_search(query: str) -> list[dict] | str:
+        """Search the web for `query`. Returns a list of up to {cap} results, each a dict with
+        "title", "url" and "snippet". Returns a "Refused: ..." string (never raises) for an empty
+        query, or a short "Search error for ..." string, which names the query before the colon
+        as in `Search error for 'q': TimeoutError: ...`, when the search itself fails."""
         # Both ``ok=False`` paths (empty query, searcher error) return an explanatory string,
         # not ``[]``. An error string is reactable in the REPL where an empty list reads as
         # "searched, found nothing". Symmetric with ``make_fetch_tool``.
@@ -99,4 +103,9 @@ def make_web_search_tool(
                          duration_s=time.perf_counter() - t0, results=results)
         return results
 
+    # The docstring is PROMPT TEXT (see `_toolname.py`), so the cap it states has to be the cap
+    # this build actually enforces, not the default written in the source. `max(1, …)` because
+    # `normalise_search_results` appends before checking the cap, so a `max_results` of 0 or less
+    # still returns one result: a stated "up to 0" would be us misinforming the model.
+    web_search.__doc__ = (web_search.__doc__ or "").replace("{cap}", str(max(1, max_results)))
     return web_search

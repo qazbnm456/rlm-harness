@@ -138,6 +138,11 @@ def make_harness_tool(
     )
 
     def call_harness(source: str) -> HarnessToolResult:
+        """Delegate `source` to a child harness that processes it and returns an artifact, then
+        validate that artifact. Returns a result whose `ok` says whether it passed, with
+        `validated` holding the parsed artifact and `errors` saying why not. Never raises: a dead
+        or slow child sets `endpoint_error`, and repeated invalid artifacts set `circuit_broken`
+        and stop calling the child."""
         held.clear()  # cleared → child_* stays None on endpoint-error / circuit-break (no child ran)
         r = base(source)
         return HarnessToolResult(

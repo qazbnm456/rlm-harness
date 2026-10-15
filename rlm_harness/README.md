@@ -316,6 +316,61 @@ finally:
   can hang asyncio; `connect="lazy"` defers each server's connect to its first `load` (opt-in). The same
   HOST-SIDE execution and prompt-injection notes as `mcp_tools` apply.
 
+## A tool's docstring is prompt text
+
+Before you write a tool, know where its docstring ends up. dspy takes `dspy.Tool.desc` from the
+function's `__doc__` with no opt-in, renders one line per tool, appends the block to
+`generate_action.signature.instructions`, and the adapter puts that string in the **system
+message**. On a kit task with just `read_file` and `grep_files`, the rendered tool-doc block was
+about two thirds of the instruction string, against a few hundred characters of actual input. On
+five real consumer tasks the same block ranges from nothing to about a third; see
+`docs/PROMPT.md` for the spread and for what fills the rest.
+
+A tool docstring is not documentation that happens to be nearby. It is instructions, re-sent on
+every turn of every run.
+
+Three rules, all of them learned the hard way (CHANGELOG 1.18.0):
+
+- **The INNER closure's docstring is the model's; the FACTORY's is yours.** Only the inner one
+  reaches the prompt, which is why a factory can carry version history and measured percentages
+  safely. A bare public function handed over directly, like `verify_quote`, has no factory to hide
+  behind: its developer half goes in the module docstring instead.
+- **Say what a caller needs and stop.** Keep the parameters, the return shape, the sentinel strings
+  a model has to branch on. Drop the rationale.
+- **Never write a number a factory argument can change.** `make_web_search_tool` builds its result
+  cap into the docstring from `max_results`, because a docstring that states the default while the
+  build enforces something else is a wrong instruction, not a stale comment.
+
+You do not have to hand-format any of this. `RLMTask._build_rlm` normalises tool descriptions on
+the way to the model: Sphinx markup becomes plain text and the indentation Python put in your
+docstring stops arriving as a ten-space gap.
+
+It reaches a plain function or a bound method, which is almost everything, and a `dspy.Tool`
+through a copy. It does NOT reach a `functools.partial`, a callable instance, a coroutine
+function, a `staticmethod` object or an `lru_cache` wrapper, because those are the shapes the
+timing seam skips too and there is no kit-owned object to write on. If you wrap an MCP tool
+yourself, wrap it as a function.
+
+What normalisation cannot do is invent a description or shorten one.
+`tests/test_tool_descriptions.py` catches an empty one, and checks each sentinel string a
+description quotes against what the code really returns. It finds those sentinels by reading the
+description rather than from a list, in the forms this kit writes them in, so if you invent a new
+shape of prefix, add it to the forms that test enumerates.
+
+Two limits worth knowing before you rely on it. It reads QUOTED spans, so a prefix your
+description mentions without quoting is invisible to it whatever its shape. And it only checks the
+direction from the description outward: a sentinel your code returns and your description never
+names is not caught, which is true of three of the kit's own tools today, each recorded as such.
+`tests/tool_description_baseline.json` catches one that grew. If you add a tool, add it to
+`_build_every_shipped_tool`'s table in `tests/test_tool_descriptions.py`, then re-run the suite
+with `RLM_UPDATE_DESCRIPTION_BASELINE=1` and commit the regenerated baseline JSON, which is
+generated and not edited by hand.
+
+**[`docs/PROMPT.md`](../docs/PROMPT.md) is the full picture**: the five owners of that one string
+and their measured shares, which parts of dspy's REPL protocol you cannot replace, the one seam
+that lets you contradict it, where skills and MCP descriptions land, and what GEPA actually
+rewrites and costs.
+
 ## Running local commands (an isolated runner)
 
 `make_command_tool(runner)` gives an `RLMTask` a `run_command` tool: the reusable half of

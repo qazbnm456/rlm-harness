@@ -1,4 +1,5 @@
-"""REPL-safety rules for a tool: its NAME and its SIGNATURE, one derivation each.
+"""REPL-safety rules for a tool: its NAME, its SIGNATURE and the DESCRIPTION the model
+reads, one derivation each.
 
 The module is ``_``-prefixed, but **three of its functions are PUBLIC and SemVer-frozen**
 since 1.1.0, re-exported from ``rlm_harness.__all__``: :func:`is_valid_tool_name`,
@@ -54,6 +55,7 @@ from __future__ import annotations
 
 import inspect
 import keyword
+import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -217,3 +219,124 @@ def signature_from_json_schema(schema: Any) -> inspect.Signature:
             for n in ordered
         ]
     )
+
+
+# --- what the model READS about a tool -------------------------------------------------------
+#
+# A tool's docstring is PROMPT TEXT, not developer documentation. dspy reads it automatically
+# (`dspy.Tool.__init__` takes `desc` from `__doc__`), renders one line per tool in
+# `RLM._format_tool_docs`, appends the block to `generate_action.signature.instructions`, and the
+# adapter puts that string in the SYSTEM message. Measured on a two-tool task: 8938-char system
+# message whose instruction string is 7799, of which the rendered tool-doc block is 4957 (63.6%);
+# the user message was 448.
+#
+# Nobody knew that, so the kit's tool docstrings were written for Sphinx. dspy flattens them with
+# `.replace("\n", "  ")`, which turns a docstring's own indentation into runs of ten spaces and
+# passes `` `` `` through verbatim, so the model read:
+#
+#     Read lines ``start_line``..``end_line`` (1-indexed, inclusive; ``end_line=None`` means
+#               "to the end of the file") of a file at ``path``
+#
+# Of the fourteen tools the kit ships, three had no model-facing docstring at all, so dspy
+# rendered the literal string "No description" for them; of the eleven that had one, eight
+# carried Sphinx markup and ten produced markup or a mid-sentence gap.
+#
+# This is normalised once, at `RLMTask._build_rlm`, for the same reason `_ensure_tool_timing` is:
+# a rule that depends on every author remembering is missing for someone, and a consumer whose
+# tools delegate to these factories has no seam of its own. It also covers MCP, where the text
+# belongs to a remote server and no docstring convention can reach it at all.
+
+_RST_ROLE = re.compile(r":[a-zA-Z][a-zA-Z0-9_:+-]*:`(~?)([^`\n]+)`")
+_RST_LITERAL = re.compile(r"``([^`\n]+)``")
+
+
+def _role_target(match: re.Match[str]) -> str:
+    """``:func:`~a.b.c``` renders as ``c`` and ``:func:`a.b``` as ``a.b``: Sphinx's own rule for
+    the tilde, kept because a reader of the prompt should see what a reader of the docs sees.
+
+    Stripped at both ends. Whitespace is collapsed BEFORE this runs, so a target the author
+    wrapped across two source lines arrives with a space in it and the tilde's ``rsplit`` hands
+    back a leading one.
+
+    Measured, against ``test_the_transform_table``: the OUTER strip and the final re-collapse in
+    :func:`model_facing_description` are each independently sufficient, and removing both is the
+    only pair that breaks the behaviour. ``match.group(2).strip()`` is redundant in every
+    combination, kept because it is where the space actually appears and a reader of this function
+    should not have to know about a re-collapse two calls away.
+    """
+    target = match.group(2).strip()
+    tail = target.rsplit(".", 1)[-1] if match.group(1) else target
+    return tail.strip()
+
+
+def model_facing_description(raw: object) -> str:
+    """Render a tool's docstring as the one line the model will actually be shown.
+
+    Three transforms, and the ORDER is load-bearing:
+
+    1. Whitespace collapses to single spaces. This is the fix for the defect that started it:
+       dspy renders the description on ONE line by replacing each newline with two spaces, so a
+       docstring's own 8-space indentation became a 10-space gap mid-sentence. Collapsing cleanly
+       loses nothing dspy's own flattening would have kept, and it makes
+       :func:`inspect.cleandoc` unnecessary ahead of it.
+    2. Sphinx roles become their target. ``:func:`~a.b.c``` is markup for a doc build, and the
+       model is not a doc build.
+    3. Inline literals lose one backtick layer.
+
+    **Collapsing FIRST is what lets 2 and 3 see a construct the author wrapped across two source
+    lines.** Running them before the collapse left ``very long\n    literal name`` untouched in
+    the prompt, a defect a consumer hits and the kit's own docstrings happen not to.
+
+    Both patterns still exclude newlines, but by the time they run there are none left, so that
+    exclusion no longer decides anything and should not be read as a safeguard. It costs one
+    thing, accepted knowingly: two standalone `` `` `` markers on separate lines merge into one
+    literal and each loses a backtick. A docstring using a bare double backtick as a token is
+    rarer than one wrapping a literal, so this is the better side of the trade.
+
+    Returns ``""`` for a missing or non-string docstring, which is the caller's signal to leave
+    the tool alone rather than hand dspy an empty description.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    text = " ".join(raw.split())          # FIRST: see the comment on ordering above
+    text = _RST_ROLE.sub(_role_target, text)
+    text = _RST_LITERAL.sub(r"`\1`", text)
+    return " ".join(text.split())         # again: a substitution can leave a doubled space
+
+
+def with_model_facing_description(tool: Any) -> Any:
+    """Return ``tool`` with its model-facing description normalised, NEVER mutating a caller's
+    object.
+
+    Two shapes, because the description arrives by two different doors:
+
+    * An object carrying an explicit ``desc`` (a ``dspy.Tool``, which is how ``mcp.py`` hands a
+      server's description over) is replaced by a pydantic copy. dspy reads ``desc`` and ignores
+      ``__doc__`` there, so normalising the docstring would do nothing.
+    * A plain function or bound method has already been through
+      :func:`rlm_harness.trace._ensure_tool_timing`, which returns a ``functools.wraps`` wrapper
+      carrying ``__rlm_timed__``. The docstring is set on that wrapper, so the consumer's own
+      function is untouched.
+
+    Anything else, a ``functools.partial``, a callable instance, a coroutine function, is returned
+    unchanged: the timing seam skipped it too, so there is no kit-owned object to write on and the
+    alternative is mutating something the caller owns. The mark is read rather than inferred from
+    ``__wrapped__``, which a consumer's own decorator would also set.
+    """
+    desc = getattr(tool, "desc", None)
+    if isinstance(desc, str):
+        cleaned = model_facing_description(desc)
+        copy = getattr(tool, "model_copy", None)
+        if cleaned and cleaned != desc and callable(copy):
+            return copy(update={"desc": cleaned})
+        return tool
+
+    if not getattr(tool, "__rlm_timed__", False):
+        return tool                       # not our wrapper: nothing here is ours to rewrite
+    cleaned = model_facing_description(getattr(tool, "__doc__", None))
+    if cleaned and cleaned != tool.__doc__:
+        try:
+            tool.__doc__ = cleaned
+        except (AttributeError, TypeError):   # a shape that refuses the assignment
+            pass
+    return tool

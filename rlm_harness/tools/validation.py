@@ -79,7 +79,11 @@ def make_schema_validator(model: type[BaseModel]) -> Callable[[str], str]:
 
     def validate(data_json_str: str) -> str:
         """Validate a JSON string against the expected output schema. Pass your
-        generated JSON here before emitting it as the final answer."""
+        generated JSON here before emitting it as the final answer.
+
+        Returns a string, never raises. It starts with "Validation successful." when the JSON
+        matches the schema, and with "Validation failed:" followed by what was wrong when it does
+        not. Branch on that: a failed validation means the answer is not ready to emit."""
         try:
             model.model_validate_json(data_json_str)
             return "Validation successful. You may now output this JSON string."

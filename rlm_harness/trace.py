@@ -169,6 +169,11 @@ def _ensure_tool_timing(tool: Any) -> Any:
         finally:
             _tool_started.reset(token)
 
+    # An EXPLICIT mark, read by `_toolname.with_model_facing_description` to decide whether the
+    # object it was handed is the kit's to rewrite. Sniffing for `__wrapped__` instead would also
+    # match a tool the CONSUMER had already decorated, and rewriting that one's docstring mutates
+    # an object they own.
+    timed.__rlm_timed__ = True
     return timed
 
 

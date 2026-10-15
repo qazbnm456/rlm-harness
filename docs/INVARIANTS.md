@@ -260,6 +260,140 @@ reason is in the rule.
   reads `dspy.Tool(name=…)` when given, NOT `func.__name__`; sanitizing only `__name__` on a tool
   built with an explicit `name=` is a placebo (`assert_repl_safe` resolves it dspy's way and catches
   exactly that).
+- **A tool's DOCSTRING is prompt text, not documentation.** dspy takes `dspy.Tool.desc` from a
+  tool's `__doc__` with no opt-in, renders one line per tool in `RLM._format_tool_docs`, appends
+  the block to `generate_action.signature.instructions`, and the adapter puts that string in the
+  SYSTEM message. dspy's own RLM guide says so in one sentence; nobody here had read it, and no
+  upstream page states the `__doc__` mechanism. CHANGELOG 1.18.0, and `docs/PROMPT.md` for the
+  whole picture.
+
+  Measured on a two-tool kit task, where "instruction string" means
+  `generate_action.signature.instructions` and "the tool-doc block" means dspy's
+  `Additional tools available` header through the end of it:
+
+  * The block was **about two thirds of the instruction string**, roughly 5000 characters
+    of 7800, inside a system message of about 9000 whose user-message counterpart was a few
+    hundred.
+
+  * Of the **fourteen** tools the kit ships, **three** had no model-facing docstring at all, so
+    dspy rendered the literal words `No description`. Of the eleven that had one, **eight**
+    carried Sphinx markup and **ten** produced a mid-sentence gap or markup, because dspy flattens
+    with `.replace("\n", "  ")` and a docstring's 8-space continuation indent becomes ten spaces.
+
+  * **Two tools were four fifths of everything the kit said to a model**: `verify_quote`
+    around 7000 characters and `grep_files` around 3800, out of some 13000 across all
+    fourteen, re-sent on every turn of every run.
+
+  Normalising at the seam and moving the developer halves out cut that task's instruction
+  string by about a third, and the kit's share of it, the block plus the interpreter's
+  `execution_instructions` fragment and NOT the task's own instructions, from roughly two
+  thirds to under a half. Correctness cost characters back on the way, roughly a quarter of the
+  catalogue, because FIVE descriptions had to be rewritten against the code. **A shorter
+  instruction that misstates a return value is worse than a longer one.**
+
+  **The exact per-tool numbers live in `tests/tool_description_baseline.json`, where a test
+  compares them to the code on every run, and the figures above are rounded on purpose.** A
+  number measuring something a change can edit does not belong in prose: the precise version
+  of this paragraph went stale twice in one review, once silently, because a description grew
+  by less than its own allowance.
+
+  Four rules follow.
+
+  * **Write the INNER closure's docstring for the model and the FACTORY's for the developer.** Only
+    the inner one reaches the prompt, which is why a factory can carry version history and
+    measured percentages safely. A bare public function handed over directly, `verify_quote`, has
+    no factory to hide behind, so its developer half lives in the MODULE docstring.
+
+  * **Never state a number a factory argument can change.** Build it from the argument, as
+    `make_web_search_tool` does, and clamp it where the implementation can exceed it.
+
+  * **Every fact a CALLER acts on survives the cut, and is copied from the code rather than from
+    memory.** Shortening `verify_quote` dropped the one thing its old text had flagged as
+    caller-critical, that a coordinate-verified MATCH returns neither an offset nor a snippet, and
+    replaced it with a sentence saying the opposite. Sentinel strings, refusal conditions and
+    model-settable parameters are the cut's blast radius.
+
+  * **When a tool needs more than its baseline to be USED correctly, the surplus is
+    developer-facing by definition.** Raising the gate is how the system message grows back.
+
+  The normalisation is applied ONCE, at `RLMTask._build_rlm` via `with_model_facing_description`,
+  for the same reason `_ensure_tool_timing` is: a rule every author must remember is missing for
+  someone, a consumer whose tools delegate to these factories has no seam of its own, and MCP's
+  description belongs to a remote server no docstring convention here can reach. Whitespace
+  collapses BEFORE the markup substitutions, which is what lets them see a construct wrapped
+  across two source lines. It rewrites only objects the kit owns, a wrapper marked `__rlm_timed__`
+  or a pydantic copy of a `dspy.Tool`, never a caller's, and it therefore does not reach a
+  `functools.partial`, a callable instance, a coroutine function, a `staticmethod` object or an
+  `lru_cache` wrapper.
+
+  `tests/test_tool_descriptions.py` is the pin. What it asserts:
+
+  * A non-empty, markup-free, gap-free description for every tool the kit ships.
+
+  * That every sentinel string a description quotes is one the code really returns, plus that a
+    quoted EXAMPLE is a prefix of the real return and that the one number in a description comes
+    from the constant it describes. The sentinels are ENUMERATED out of each rendered description
+    rather than listed, so a new one arrives already needing a row, and the sweep's coverage is
+    asserted against the catalogue because a hand-written table drifts from it in silence and did.
+
+  * **The loop has three sides and two are asserted.** Quoted-in-a-description to
+    returned-by-the-code, and in-a-row to named-in-the-description. The third,
+    returned-by-the-code to quoted-in-a-description, is NOT asserted, which is why three tools sit
+    in `_NO_SENTINEL` returning a sentinel their descriptions never name. Those are **exempted,
+    not covered**: each exemption reason names the string it is blind to, and a test keeps that
+    naming true, so the gap is recorded rather than invisible.
+
+  * **The enumeration reads QUOTED SPANS, which bounds it twice over.** Three versions of the rule
+    each missed the form not yet visible in the repo when it was written, and one could be
+    disarmed by the same edit it policed; the forms it now covers are listed as data in
+    `test_every_form_the_kit_writes_a_sentinel_in_is_enumerated`. But the larger blindness is not
+    the form: a sentinel a description states WITHOUT quoting it is invisible whatever its shape,
+    and no widening of the form list reaches that.
+
+    The way out is to enumerate from the CODE, which is a closed set: an `ast` walk over
+    `tools/*.py` collecting the literal head of every returned string needs no prose parsing, and
+    would have caught the defect that shipped from the other side. Measured, it finds around ten
+    returned prefixes that no description names at all, three of them success messages. That is
+    the open follow-up and it is a test rather than a design change. The nearest precedent for
+    `ast` in this kit is `rlm_harness/testing.py`'s mirror of dspy's own signature parsing, which
+    is a shipped helper rather than a verified claim; the scan would be the first of those.
+
+    Its own bound, stated with it: only a return whose head is an inline literal is visible, which
+    is 41 of 137 returns under `tools/` today.
+
+  * That the seam reaches the three producers that come from no factory, asserted end to end on a
+    built task rather than as a property of their docstrings. The SIZE gate covers the fourteen
+    catalogue tools and not those three.
+
+  * That the seam is wired in rather than merely correct, and that a caller's own object is never
+    rewritten.
+
+  * Size, as a checked-in per-tool BASELINE rather than a cap: an aggregate cap measures a task
+    that never ships, and a per-tool cap is a number nobody can guess for a tool that does not
+    exist yet.
+
+  Several assertions carry a control that fails when they stop measuring anything. **The TOOL
+  table is deliberately exhaustive rather than an exemption list**, because an exemption list is
+  what a future contributor adds themselves to; the sentinel sweep's `_NO_SENTINEL` is the one
+  place an exemption is allowed, and it is guarded by a control that reds when an exempted tool
+  grows a sentinel.
+
+- **A prompt-visible string is a measurement target, not a judgement call.** The reason the
+  docstring rule above went unnoticed through every release before this one is that nothing
+  printed the system message. Before claiming a prompt change helps, render the actual string the
+  model receives and diff it; before claiming an optimizer helped, check that the baseline had
+  headroom at all. A GEPA feasibility study on this repo scored its own 10-example trainset at a
+  mean of 1.000 on the shipped instructions: no gradient existed, and a slightly noisier metric
+  would have produced an improvement number that was pure noise. Cost varied 3.3x in turns and
+  13.5x in wall clock across those same perfect-scoring runs, so the headroom was real and the
+  metric was pointed at the wrong axis.
+
+  **That diagnosis has since been measured rather than argued.** Re-pointed, with correctness as a
+  hard GATE scoring zero and turn count as the gradient, the same ten examples score a mean of
+  0.700 with a spread from 0.30 to 1.00, and a held-out set the optimizer never sees scores 0.513.
+  So a saturated metric is a property of the metric and not of the task, and the gate that refuses
+  to spend a budget at the ceiling is what makes the difference visible. Whether an optimizer then
+  improves anything is a separate question and is not claimed here.
 - **A fresh `threading.Thread` starts with an empty `contextvars.Context`: contextvars are NOT
   inherited into it.** `tools/_async.py`'s `run_isolated` (a bridging primitive for a consumer's own
   in-process harness-delegation transport: see `tools/harness.py`'s `pointer_to_invocation` and
@@ -418,14 +552,16 @@ reason is in the rule.
   Re-audit it the same way next time rather than inheriting the conclusion; "no consumer validates
   the version" is a measurement with a date on it, and the first release that asserted it without
   measuring got the cost of a bump backwards.
-- **rlm-harness produces TRAJECTORIES, never reward.** The kit runs the RLM, records the trace, and
-  turns traces into datasets (`export_sft_turns` / `export_rl` / `export_actions`). It does NOT
-  score them: `export_rl` and `export_actions` carry a `reward=` HOOK the downstream trainer fills
-  and pass `reward=None` themselves, and `export_sft_turns` has no such parameter at all, which is
-  the stronger version of the same property rather than a gap in it. Reward composition, credit assignment, and GRPO/SFT are a SEPARATE
-  fine-tuning project: rlm-harness + its consumer are the ROLLOUT stage only. Emit raw labels/metrics;
-  let the trainer score. (A prompt/policy convention that improves rollout QUALITY is in scope:
-  better rollouts ≠ reward.)
+- **rlm-harness produces TRAJECTORIES, never reward.** The kit runs the RLM, records the trace,
+  and turns traces into datasets (`export_sft_turns` / `export_rl` / `export_actions`). It does
+  NOT score them: `export_rl` and `export_actions` carry a `reward=` HOOK the downstream trainer
+  fills and pass `reward=None` themselves, and `export_sft_turns` has no such parameter at all,
+  which is the stronger version of the same property rather than a gap in it. Reward composition,
+  credit assignment, and GRPO/SFT are a SEPARATE fine-tuning project: rlm-harness + its consumer
+  are the ROLLOUT stage only. Emit raw labels/metrics; let the trainer score. (A prompt/policy
+  convention that improves rollout QUALITY is in scope, and so is `dspy.GEPA`, which evolves
+  instruction TEXT against a caller-supplied metric rather than composing reward from a trace;
+  `optimize.py` and `docs/PROMPT.md` cover it: better rollouts ≠ reward.)
 - **The public surface is `__all__`; consumers EXTEND, they don't fork.** `__init__.__all__` + the
   trace schema + `RLMTask`'s declaration fields are the API a consumer builds on; a `_`-prefixed name
   or module internal (`trace._active`, `_retry`) is private and may change without notice. A consumer

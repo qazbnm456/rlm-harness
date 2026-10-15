@@ -135,6 +135,11 @@ def make_model_tool(
     consecutive_invalid = 0
 
     def call_model(spec: str) -> ModelToolResult:
+        """Send `spec` to the configured model and validate what comes back. Returns a result
+        whose `ok` says whether the output passed validation, with `validated` holding the parsed
+        artifact when it did and `errors` saying why when it did not. Never raises: a failed
+        endpoint sets `endpoint_error`, and too many invalid outputs in a row set
+        `circuit_broken` and stop calling the model."""
         nonlocal consecutive_invalid
         if max_consecutive_invalid is not None and consecutive_invalid >= max_consecutive_invalid:
             return ModelToolResult(

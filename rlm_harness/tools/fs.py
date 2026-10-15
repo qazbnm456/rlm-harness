@@ -269,6 +269,72 @@ def make_grep_files_tool(
     timeout-tripping lines blow past this budget by an arbitrary multiple before the check ever
     fires again). Both are factory (operator/deployment) parameters, never model-controlled,
     matching ``make_command_tool``'s factory-level-not-call-level configuration precedent.
+    
+
+    ## The REPL-facing ``grep_files``, in full
+
+    **This belongs here and not in the closure's docstring, because that docstring is PROMPT
+    TEXT**: dspy renders it into the system message, where this description was 28.7% of the
+    13280 characters of model-facing text across the fourteen tools the kit ships, second only to
+    ``verify_quote``'s 52.2%. The closure carries the half a CALLER acts on (the three
+    modes and their output formats, both error strings, what ``max_results`` caps, the
+    context-line conventions, the timeout behaviour); the rationale and implementation notes below
+    are for a developer reading this function. See docs/PROMPT.md.
+
+    Search for a regex ``pattern`` across files matching ``glob`` (an ``fnmatch``-style
+            glob against each file's path, default ``"*"`` = every file).
+
+            ``output_mode`` (default ``"content"``): ``"content"`` returns up to ``max_results``
+            matching lines as ``path:line: text``, one per line: the original, only behavior.
+            ``"files_with_matches"`` returns up to ``max_results`` DISTINCT file paths that had ≥1
+            match, one per line, no line text. ``"count"`` returns up to ``max_results`` ``path: N``
+            lines (N = matching-line count in that file); a file with zero matches is omitted. An
+            unrecognized ``output_mode`` returns an ``"Invalid output_mode ..."`` error string, never
+            raises.
+
+            **Per-file early-break, `"files_with_matches"` only.** That mode only needs to know "did
+            this file have >=1 match": scanning stops the instant one is found, moving on to the next
+            candidate file. `"count"` mode CANNOT do this. It needs the file's exact total match
+            count, so every line is still scanned there. Both `"files_with_matches"`/`"count"`
+            additionally stop opening NEW candidate files once `max_results` qualifying files are
+            already found (an outer-loop break: it never skips a line of a file already being
+            scanned, only avoids starting further ones). One disclosed side effect of the
+            `"files_with_matches"` early-break: `timed_out_lines` (below) then reflects only the lines
+            scanned before that file's first match, not the whole file: an informational trace metric
+            only, never a `max_total_time_s` correctness issue.
+
+            ``max_results`` caps the number of MATCHES found (not total output lines: see
+            ``context_before``/``context_after`` below). In ``"content"`` mode a match is complete the
+            instant it's found, so the cap is checked per line. In ``"files_with_matches"``/``"count"``
+            mode a row (one file's aggregated result) is only complete once that file's entire line
+            loop finishes (or, for `"files_with_matches"`, its early-break fires): checked once per
+            completed file, same "cap on output rows" contract, at the granularity where a row
+            actually becomes final.
+
+            ``ignore_case`` (default ``False``): case-insensitive matching as a first-class flag,
+            rather than something the caller has to bake into the pattern itself.
+
+            ``context_before``/``context_after`` (default ``0``, `"content"` mode only: silently
+            ignored, not an error, in the other two modes, which have no per-line text to attach
+            context to): show that many unchanged lines immediately before/after each match, using
+            grep's own convention. A MATCH keeps the ``path:line: text`` (colon) format; a CONTEXT
+            line uses ``path-line- text`` (hyphen) instead. A ``"--"`` line separates two blocks that
+            don't touch (a numbering gap) within the same file: never at a file boundary, since the
+            path prefix itself already marks that. A line that itself matches is ALWAYS emitted as a
+            match, never as leftover context from an earlier match's ``context_after`` window (a fresh
+            match resets the after-context countdown outright, it never stacks with a still-running
+            one). ``max_results`` counts MATCHES only: context/separator lines are supplementary and
+            uncapped by it, mirroring real `grep -m`. When a match hits the `max_results` cap, its own
+            trailing context may be truncated if the file/budget ends first: an accepted, deliberate
+            simplicity choice, the same one `max_total_time_s` already makes for whatever's in-flight.
+            When both are `0` (the default), behavior, including the traced ``result_count``, is
+            byte-identical to a build of this tool with no context support at all.
+
+            A per-line match that exceeds the configured timeout is skipped (never raises, in any
+            mode, and still eligible as someone else's context line. A timeout means "couldn't
+            confirm a match," not "unfit as context text"); the whole call is additionally bounded by
+            a wall-clock budget, after which it returns whatever partial results it found so far, in
+            whichever mode was requested.
     """
     _validate_tool_name(name)
 
@@ -290,60 +356,52 @@ def make_grep_files_tool(
         context_before: int = 0,
         context_after: int = 0,
     ) -> str:
-        """Search for a regex ``pattern`` across files matching ``glob`` (an ``fnmatch``-style
-        glob against each file's path, default ``"*"`` = every file).
+        """Search for a regex `pattern` across files matching `glob` (an fnmatch-style glob against
+        each file's path, default "*" = every file). Returns a string and never raises.
 
-        ``output_mode`` (default ``"content"``): ``"content"`` returns up to ``max_results``
-        matching lines as ``path:line: text``, one per line: the original, only behavior.
-        ``"files_with_matches"`` returns up to ``max_results`` DISTINCT file paths that had ≥1
-        match, one per line, no line text. ``"count"`` returns up to ``max_results`` ``path: N``
-        lines (N = matching-line count in that file); a file with zero matches is omitted. An
-        unrecognized ``output_mode`` returns an ``"Invalid output_mode ..."`` error string, never
-        raises.
+        `output_mode` (default "content"): "content" returns matching lines as `path:line: text`,
+        one per line. "files_with_matches" returns the distinct paths of files that had at least
+        one match, one per line. "count" returns `path: N` lines, N being that file's
+        matching-line count, omitting files with none. When nothing matches at all, the answer is
+        a "No matches for ..." string rather than an empty one. An unrecognised mode returns an
+        "Invalid output_mode ..." string, and an unparseable pattern an "Invalid regex ..." one
+        that names the pattern before the colon, as in `Invalid regex '[(': unterminated
+        character set at position 2`.
 
-        **Per-file early-break, `"files_with_matches"` only.** That mode only needs to know "did
-        this file have >=1 match": scanning stops the instant one is found, moving on to the next
-        candidate file. `"count"` mode CANNOT do this. It needs the file's exact total match
-        count, so every line is still scanned there. Both `"files_with_matches"`/`"count"`
-        additionally stop opening NEW candidate files once `max_results` qualifying files are
-        already found (an outer-loop break: it never skips a line of a file already being
-        scanned, only avoids starting further ones). One disclosed side effect of the
-        `"files_with_matches"` early-break: `timed_out_lines` (below) then reflects only the lines
-        scanned before that file's first match, not the whole file: an informational trace metric
-        only, never a `max_total_time_s` correctness issue.
+        `max_results` caps the OUTPUT ROWS, not the lines of text: matching lines in "content"
+        mode, and whole files in the other two. It has a floor of 1, so asking for zero rows
+        returns one rather than looking like nothing matched. `ignore_case` (default false) matches
+        case-insensitively without baking it into the pattern.
 
-        ``max_results`` caps the number of MATCHES found (not total output lines: see
-        ``context_before``/``context_after`` below). In ``"content"`` mode a match is complete the
-        instant it's found, so the cap is checked per line. In ``"files_with_matches"``/``"count"``
-        mode a row (one file's aggregated result) is only complete once that file's entire line
-        loop finishes (or, for `"files_with_matches"`, its early-break fires): checked once per
-        completed file, same "cap on output rows" contract, at the granularity where a row
-        actually becomes final.
+        `context_before`/`context_after` (default 0, "content" mode only and silently ignored in
+        the other two) show that many surrounding lines per match, using grep's convention: a
+        match keeps `path:line: text` with colons, a context line uses `path-line- text` with
+        hyphens, and a `--` line separates two blocks that do not touch within one file. Context
+        lines are not counted against `max_results`.
 
-        ``ignore_case`` (default ``False``): case-insensitive matching as a first-class flag,
-        rather than something the caller has to bake into the pattern itself.
-
-        ``context_before``/``context_after`` (default ``0``, `"content"` mode only: silently
-        ignored, not an error, in the other two modes, which have no per-line text to attach
-        context to): show that many unchanged lines immediately before/after each match, using
-        grep's own convention. A MATCH keeps the ``path:line: text`` (colon) format; a CONTEXT
-        line uses ``path-line- text`` (hyphen) instead. A ``"--"`` line separates two blocks that
-        don't touch (a numbering gap) within the same file: never at a file boundary, since the
-        path prefix itself already marks that. A line that itself matches is ALWAYS emitted as a
-        match, never as leftover context from an earlier match's ``context_after`` window (a fresh
-        match resets the after-context countdown outright, it never stacks with a still-running
-        one). ``max_results`` counts MATCHES only: context/separator lines are supplementary and
-        uncapped by it, mirroring real `grep -m`. When a match hits the `max_results` cap, its own
-        trailing context may be truncated if the file/budget ends first: an accepted, deliberate
-        simplicity choice, the same one `max_total_time_s` already makes for whatever's in-flight.
-        When both are `0` (the default), behavior, including the traced ``result_count``, is
-        byte-identical to a build of this tool with no context support at all.
-
-        A per-line match that exceeds the configured timeout is skipped (never raises, in any
-        mode, and still eligible as someone else's context line. A timeout means "couldn't
-        confirm a match," not "unfit as context text"); the whole call is additionally bounded by
-        a wall-clock budget, after which it returns whatever partial results it found so far, in
-        whichever mode was requested."""
+        A line whose match takes too long is skipped rather than failing the call, and the whole
+        call is bounded by a wall-clock budget, after which it returns the partial results it has.
+        """
+        # Two arguments the MODEL controls, normalised into LOCALS because the description above
+        # makes promises about them. `max_results <= 0` otherwise produced the "No matches for ..."
+        # sentinel over a corpus that does match, which is a lie about the corpus rather than an
+        # empty result; a non-integer or `None` raised against a description that says this never
+        # raises; and `glob=None` raised the same way.
+        #
+        # **The RAW arguments are what `record_tool_call` records**, never these. A `tool_call`'s
+        # `args` IS the action in `export_actions` / `export_rl`, so writing the normalised value
+        # there would teach a dataset that the model passed `glob="*"` on a turn where it passed
+        # `None`. docs/INVARIANTS.md draws the same line one level up for a tool's NAME: the trace
+        # name stays raw and only the REPL-facing one is sanitized.
+        try:
+            cap = max(1, int(max_results))
+        except Exception:
+            # Deliberately broad. A narrow tuple has sprung a leak three times: `TypeError` for
+            # `None`, `ValueError` for `"abc"`, and `OverflowError` for `float("inf")`, which is
+            # how a model says "no cap". The description promises never to raise, the argument is
+            # the model's, and an unknown shape should fall back rather than end the turn.
+            cap = _DEFAULT_MAX_RESULTS
+        pattern_glob = glob if isinstance(glob, str) and glob else "*"
         import fnmatch
         from collections import deque
 
@@ -368,10 +426,10 @@ def make_grep_files_tool(
 
         started = time.monotonic()
         hits: list[str] = []
-        # `match_count`, NOT `len(hits)`, is what max_results checks in "content" mode. Once
+        # `match_count`, NOT `len(hits)`, is what cap checks in "content" mode. Once
         # context/"--"-separator rows share `hits` with match rows, len(hits) is emitted-ROW
-        # count, not match count; conflating the two would truncate the scan before max_results
-        # real matches are found, silently contradicting the "max_results counts matches" contract
+        # count, not match count; conflating the two would truncate the scan before cap
+        # real matches are found, silently contradicting the "cap counts matches" contract
         # documented above.
         match_count = 0
         file_matches: list[tuple[str, int]] = []  # (rel_path, match_count), files with >=1 match
@@ -381,14 +439,14 @@ def make_grep_files_tool(
         for rel_path in candidate_paths:
             if budget_exceeded:
                 break
-            if output_mode == "content" and match_count >= max_results:
+            if output_mode == "content" and match_count >= cap:
                 break
             # Outer-loop early-break for the other two modes: stop OPENING further candidate
             # files once enough qualifying ones are already found. Never skips a line of a file
             # already being scanned: only avoids starting new ones.
-            if output_mode != "content" and len(file_matches) >= max_results:
+            if output_mode != "content" and len(file_matches) >= cap:
                 break
-            if not fnmatch.fnmatch(rel_path, glob):
+            if not fnmatch.fnmatch(rel_path, pattern_glob):
                 continue
             resolved = resolve_within_root(root, rel_path)
             if resolved is None:
@@ -449,7 +507,7 @@ def make_grep_files_tool(
                                     pending_after = context_after
                                 else:
                                     hits.append(f"{rel_path}:{lineno}: {line.rstrip(os.linesep)}")
-                                if match_count >= max_results:
+                                if match_count >= cap:
                                     break
                         elif use_context and pending_after > 0 and lineno > last_emitted_lineno:
                             hits.append(f"{rel_path}-{lineno}- {line.rstrip(os.linesep)}")
@@ -464,7 +522,7 @@ def make_grep_files_tool(
                 file_matches.append((rel_path, file_match_count))
 
         if output_mode != "content":
-            file_matches = file_matches[:max_results]
+            file_matches = file_matches[:cap]
             if output_mode == "files_with_matches":
                 hits = [rel_path for rel_path, _ in file_matches]
             else:  # "count"
