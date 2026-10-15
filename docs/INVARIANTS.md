@@ -521,10 +521,11 @@ reason is in the rule.
 - **Skills are KNOWLEDGE-only, progressive disclosure.** `load_skills_as_tools`
   (`skills.py`) gives the LM `list_skills` (name+description) → `read_skill` (full body),
   over `SKILL.md`/`<name>.md` files with `name`/`description` frontmatter: Agent-Skills
-  convention. `read_skill` returns markdown TEXT only; it must NOT execute bundled scripts
-  or expand linked files (don't add silent exec. The sandbox is the only place code runs).
-  Third-party skills are usable but their text becomes LM context: treat untrusted skills as
-  a prompt-injection surface. See the guide (`rlm_harness/README.md`) "Skills (progressive disclosure)".
+  convention. `read_skill` returns the file's text and nothing else, which
+  `tests/test_skills.py::test_read_skill_returns_the_file_and_nothing_else` asserts as an
+  equality: no bundled script runs and no linked file is expanded, because the sandbox is the
+  only place code runs. What no test can gate: a third-party skill is usable, but its text
+  becomes LM context, so treat an untrusted skill as a prompt-injection surface. See the guide (`rlm_harness/README.md`) "Skills (progressive disclosure)".
 - **The trace is a VERSIONED wire format: additive-only within a version.** `SCHEMA =
   "rlm-harness/trace/v2"` + the eight `EVENT_*` type strings + the `{schema, run_id, step_id, ts, type,
   payload}` envelope + the dataset-exporter record shapes are a CONTRACT that offline readers build

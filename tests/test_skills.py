@@ -109,3 +109,64 @@ def test_an_unknown_skill_name_reports_the_available_ones(tmp_path):
 
     assert "No such skill: 'gamma'" in out
     assert "recon, triage" in out
+
+
+# --- KNOWLEDGE-only, with a gate -----------------------------------------------------------------
+#
+# `docs/INVARIANTS.md` says `read_skill` "returns markdown TEXT only; it must NOT execute bundled
+# scripts or expand linked files (don't add silent exec)". A mutation audit of all twenty
+# mechanically-violable invariants found this one alone had no gate: making `read_skill` run a
+# subprocess and append its output left the WHOLE SUITE green. Every other rule in that file went
+# red under a mutation that violated it.
+
+def _skill_dir(tmp_path, body: str):
+    (tmp_path / "s.md").write_text(f"---\nname: s\ndescription: d\n---\n{body}")
+    return tmp_path
+
+
+def test_read_skill_returns_the_file_and_nothing_else(tmp_path):
+    """Byte-for-byte, which is what makes "executes nothing" checkable from the outside.
+
+    Asserted as EQUALITY rather than containment: an exec or an expansion appends, and a
+    containment check passes while the model reads output no file holds.
+    """
+    from rlm_harness import load_skills_as_tools
+
+    body = "# S\n\nRun `echo hello` and see [the other file](other.md).\n"
+    d = _skill_dir(tmp_path, body)
+    (d / "other.md").write_text("LINKED CONTENT THAT MUST NOT APPEAR")
+    read_skill = next(t for t in load_skills_as_tools(str(d), discovery="inject")
+                      if t.__name__ == "read_skill")
+
+    got = read_skill("s")
+    # Equality carries the whole rule. A containment check on the command's own output cannot:
+    # whatever marker `echo` would print is already in the line that asks for it.
+    assert got == (d / "s.md").read_text(), (
+        "read_skill must return the file's text and nothing else: no bundled script runs and no "
+        "linked file is expanded, because the sandbox is the only place code runs"
+    )
+    assert "LINKED CONTENT" not in got, "a linked file was expanded"
+
+
+def test_read_skill_does_not_run_a_subprocess(tmp_path, monkeypatch):
+    """The direct half. The equality check above catches an exec whose output lands in the
+    result; this catches one whose output goes anywhere else."""
+    import subprocess
+
+    from rlm_harness import load_skills_as_tools
+
+    called: list = []
+
+    def _refuse(*a, **k):
+        called.append(a)
+        raise AssertionError("read_skill ran a subprocess")
+
+    monkeypatch.setattr(subprocess, "run", _refuse)
+    monkeypatch.setattr(subprocess, "Popen", _refuse)
+    monkeypatch.setattr(subprocess, "check_output", _refuse)
+
+    d = _skill_dir(tmp_path, "# S\n\nbody\n")
+    read_skill = next(t for t in load_skills_as_tools(str(d), discovery="inject")
+                      if t.__name__ == "read_skill")
+    read_skill("s")
+    assert not called
