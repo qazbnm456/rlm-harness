@@ -58,17 +58,17 @@ wrong question is the one defect it cannot absorb.
   **A metric that RAISES on the trainset is refused before anything is spent.** It is probed
   against the first example with a stub prediction that records whether the metric read it,
   because `dspy.GEPA`'s constructor validates a metric's arity for free but not whether it can
-  score THESE examples, and GEPA's own executor swallows the
-  exception on the trainset side: a metric looking for a field the examples do not carry has
-  every rollout scored `failure_score`, the optimizer gets no gradient, and the whole budget goes
-  before anyone learns why. The recording is what makes the probe safe: a metric that raises
+  score THESE examples, and GEPA's own executor swallows the exception on the trainset side: a
+  metric looking for a field the examples do not carry has every rollout scored `failure_score`,
+  the optimizer gets no gradient, and the whole budget goes before anyone learns why.
   without ever reading the prediction failed on the example and no prediction could have saved
   it, while one that read it first is only reacting to a stub. Judging on the exception type
-  alone refused `pred.answer.strip()`, which is the most common thing a text metric does. A
-  metric that merely returns a flat zero is not caught here either, which is why measuring its
-  spread first is the paragraph above. An unknown `auto` is refused there too, since dspy accepts
-  any string in its constructor and raises `KeyError` from `compile()`, which is after the
-  holdout.
+  alone refused both `pred.answer.strip().lower()` and `.get()` on a structured field, which are
+  the most ordinary things a text metric and a schema'd one do. A metric that merely returns a
+  flat zero is not caught here either, which is why "The metric stays the consumer's" above says
+  to measure its spread before spending a compile on it. An unknown `auto` is refused there too,
+  since dspy accepts any string in its constructor and raises `KeyError` from `compile()`, which
+  is after the holdout.
 
 - **`optimize.trainset_from_traces` builds a trainset out of runs this kit already recorded.**
   The questions people actually asked beat ten someone wrote by hand, and they are already on
@@ -100,10 +100,9 @@ wrong question is the one defect it cannot absorb.
   whether a holdout was passed, and `capabilities_checked` says the same for an empty
   `capabilities_lost`. `predictors` names which ones were read, because every predictor is read
   rather than the planner alone: GEPA moves one component at a time, so an `extract`-only compile
-  would otherwise look pristine with the gold answer verbatim in it.
- The run
-  this comes from put four of ten trainset answers in and none of six held-out ones, and it is
-  the zero that makes the four mean anything.
+  would otherwise look pristine with the gold answer verbatim in it. The run this comes from put
+  four of ten trainset answers in and none of six held-out ones, and it is the zero that makes
+  the four mean anything.
 
   **Capabilities are matched against several wordings, never one phrase.** A literal check over
   the shipped phrases reported five of seven guardrails deleted when one had gone, because a

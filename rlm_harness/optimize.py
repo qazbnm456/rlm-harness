@@ -60,13 +60,16 @@ class _ProbePrediction:
     The recording is the whole point. The pre-flight asks whether a metric can score a trainset
     AT ALL, and the exception type cannot answer that: ``None.strip()`` and ``None.get(...)`` both
     raise ``AttributeError``, exactly as a missing field on the example does, so refusing on the
-    type alone rejected two of five ordinary metric shapes at zero rollouts. A second stub
-    mirroring the example's fields does not close it either, because a metric may read a
-    prediction field the example never had.
+    type alone rejected ``pred.answer.strip().lower()`` and ``.get()`` on a structured field at
+    zero rollouts. A second stub mirroring the example's fields does not close it either, because
+    a metric may read a prediction field the example never had.
 
     What separates them is WHEN: a metric that raises without ever looking at the prediction
     failed on the example, and no prediction could have saved it. One that read the prediction
-    first is reacting to the stub, which says nothing about the trainset.
+    first may be reacting to the stub, or may be failing on the example after touching it; the
+    probe cannot tell, so it stays silent. One-sided on purpose: a false refusal costs a compile
+    nobody got to run, and a miss costs only the budget a metric that cannot score would have
+    burned anyway.
     """
 
     def __init__(self) -> None:
@@ -83,6 +86,14 @@ def _metric_cannot_score(metric: Metric, example: Any) -> bool:
     True only when the metric raised an ``AttributeError`` BEFORE reading the prediction. Returns
     a bool rather than raising, so the caller owns the message; any other exception is the metric
     reacting to a stub and says nothing either way.
+
+    **What it cannot see**, stated because this module grew ``controlled`` and
+    ``capabilities_checked`` in the same release so that an unmade check could not read as a clean
+    result, and a pre-flight passing silently is that one level up: a metric that reads the
+    prediction and only THEN fails on the example, and one whose example-side failure is not an
+    ``AttributeError``. With a holdout, ``_evaluate``'s unguarded metric call surfaces both after
+    exactly one rollout. Without one, they reach GEPA, which is a configuration this module
+    already tells you not to trust: ``delta`` is ``None`` and nothing was measured.
     """
     probe = _ProbePrediction()
     try:
@@ -173,6 +184,9 @@ class CompileResult:
     per_example: dict[str, list[float]] | None = None
     artifact: str | None = None
     instruction_audit: InstructionAudit | None = None
+    #: Whatever your `audit_outputs` returned, per side. On a raise the kit records
+    #: `{"rlm_harness_error": "<Type>: <msg>"}` instead, a reserved key so it cannot collide with
+    #: a field of yours.
     output_audit: dict[str, Any] | None = None
     #: Counts of what THIS function ran. NOT the compile's cost: GEPA's own budget is
     #: `auto_budget(num_preds, num_candidates, valset_size)`, which is 790 metric calls for a
@@ -545,7 +559,7 @@ def compile_task(
     **The metric is probed against the first trainset example before anything is spent**, with a
     stub prediction, so a metric that cannot score this trainset at all is refused at zero
     rollouts rather than after the budget. A metric that merely reads its prediction is not
-    refused; see :func:`_metric_cannot_score` for how the two are told apart.
+    refused: the stub records whether the metric read it, and only a raise that came first counts.
 
     ``reflection_lm`` has no default and is checked here rather than left to dspy, which raises
     ``AssertionError: GEPA requires a reflection language model, or custom instruction proposer to
@@ -557,8 +571,8 @@ def compile_task(
     **A prediction may be ``None``**, for a rollout that failed and was scored rather than
     aborting, so the callable has to tolerate it: ``[p.answer for p in predictions]`` raises on
     one. The kit guards the call so a raise cannot discard the measurement, and reports the
-    failure in the result instead. The
-    kit cannot audit your outputs because it does not know what they mean: on the corpus above,
+    failure in the result instead. The kit cannot audit your outputs because it does not know what
+    they mean: on the corpus above,
     two distinct ways of padding a page both held the quality metric at its ceiling, one of them
     visible only by reading the prose. Whatever the callable returns is carried in the result.
     """
@@ -581,8 +595,8 @@ def compile_task(
     # this validates that it can score THIS trainset: a metric looking for a field the examples do
     # not carry has every rollout scored `failure_score` by GEPA's own executor, which swallows the
     # exception on the trainset side, so the optimizer gets no gradient and the whole budget goes
-    # before anyone learns why. It needs no real prediction, only a stub -- and the stub records whether
-    # the metric read it, for the reason in `_metric_cannot_score`.
+    # before anyone learns why. It needs no real prediction, only a stub -- and the stub
+    # records whether the metric read it, for the reason in `_metric_cannot_score`.
     if _metric_cannot_score(metric, train[0]):
         metric(train[0], _ProbePrediction())   # raise it where the caller can read it
     program = task._build_rlm()
