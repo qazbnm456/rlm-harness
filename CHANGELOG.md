@@ -78,12 +78,13 @@ wrong question is the one defect it cannot absorb.
   trajectories and never reward, and that boundary is the whole shape of the signature.
 
   **The filter is the result's other half, and the default is not conservatism.** A real corpus of
-  161 runs carried 8 that failed before the planner ever returned a prediction, and such a run has
-  ZERO `main_step` events, because the kit records the main trajectory off that prediction and
-  there was none. So it is indistinguishable from a run that finished instantly, and a trainset
-  built without the turn check teaches an optimizer that dying early is cheap. `TrainsetBuild`
-  carries the drop counts by reason, because a build that silently returns 153 of 161 is a
-  corpus-validity question nobody asked.
+  161 runs, the same one counted whole rather than the 153 that finished, carried 8 that failed
+  before the planner ever returned a prediction, and such a run has ZERO `main_step` events,
+  because the kit records the main trajectory off that prediction and there was none. So it is
+  indistinguishable from a run that finished instantly, and a trainset built without the turn
+  check teaches an optimizer that dying early is cheap. `TrainsetBuild` carries the drop counts by
+  reason, because a build that silently returns 153 of 161 is a corpus-validity question nobody
+  asked.
 
   `inputs` takes field names or a callable, because consumers do not agree on where the input
   lives: across five real ones it was `meta.task`, a JSON blob at `meta.event`, and `meta.lead`.
