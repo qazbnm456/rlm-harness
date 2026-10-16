@@ -29,9 +29,52 @@ def test_a_trainset_answer_copied_into_the_instruction_is_found():
     """The failure the whole audit exists for: the score rises because the answers are carried."""
     answer = "the schema string is written in TraceRecorder.record, at the event dict literal"
     audit = optimize.audit_instruction(BASE, BASE + " Hint: " + answer,
-                                       trainset=[_ex("where?", answer)])
+                                       trainset=[_ex("where?", answer)],
+                                       holdout=[_ex("else?", "something entirely different here")])
     assert audit.trainset_answers_in == [0]
+    assert audit.holdout_answers_in == []
     assert audit.memorised is True
+
+
+def test_with_no_holdout_memorised_is_None_because_there_was_no_control():
+    """`bool(hits) and not []` cannot tell "the control ran and stayed clean" from "there was no
+    control": both return the same answer when everything they measure is working, which is this
+    repo's own test for an absent measurement being reported as a real one. The first version of
+    this file asserted `True` here."""
+    answer = "the schema string is written in TraceRecorder.record, at the event dict literal"
+    audit = optimize.audit_instruction(BASE, BASE + " Hint: " + answer,
+                                       trainset=[_ex("where?", answer)])
+    assert audit.trainset_answers_in == [0], "the hit is still reported"
+    assert audit.controlled is False
+    assert audit.memorised is None, "a claim was made with no control behind it"
+
+
+def test_an_extract_only_compile_is_audited_too():
+    """The predictor the audit was blind to, and the one most likely to carry a crib sheet.
+
+    GEPA's default `component_selector="round_robin"` moves one component at a time, and
+    `RLMTask._apply_compiled_instructions` calls an `extract`-only winner "an ordinary outcome,
+    not a corner case" — then applies its text in production. Reading only `generate_action`
+    returned `memorised False` with the gold answer verbatim in `extract`.
+    """
+    answer = "the fingerprint is written by save_program when it is given the task argument"
+    base = {"generate_action": BASE, "extract": "Return only the answer span."}
+    comp = {"generate_action": BASE, "extract": "Return only the answer span. Hint: " + answer}
+    audit = optimize.audit_instruction(base, comp, trainset=[_ex("q", answer)],
+                                       holdout=[_ex("h", "an unrelated held-out gold value here")])
+    assert audit.predictors == ["generate_action", "extract"]
+    assert audit.trainset_answers_in == [0], "an extract-side crib sheet went unseen"
+    assert audit.memorised is True
+
+
+def test_with_no_capability_map_the_empty_list_says_so():
+    """`capabilities_lost == []` is produced by construction when no map was given, and by
+    measurement when one was. A reader cannot tell those apart from the list alone."""
+    unchecked = optimize.audit_instruction(BASE, "Answer. Finish with SUBMIT().")
+    assert unchecked.capabilities_lost == [] and unchecked.capabilities_checked is False
+    checked = optimize.audit_instruction(BASE, "Answer. Finish with SUBMIT().",
+                                         capabilities=SUB_LM)
+    assert checked.capabilities_lost == ["sub-LM"] and checked.capabilities_checked is True
 
 
 def test_the_holdout_is_the_control_that_says_the_matcher_works():
@@ -154,11 +197,15 @@ def test_compile_task_reports_the_audit_without_being_asked(monkeypatch, tmp_pat
     task = _T(interpreter=ScriptedInterpreter([]))
     monkeypatch.setattr(type(task), "_build_rlm", lambda self: built)
     result = optimize.compile_task(task, [_ex("q", answer)], lambda e, p, *a, **k: 1.0,
-                                   reflection_lm=object(), holdout=[_ex("h", "other " * 9)],
+                                   reflection_lm=object(),
+                                   holdout=[_ex("h", "a held-out gold value, entirely unrelated")],
                                    capabilities=SUB_LM)
     assert result.instruction_audit is not None
     assert result.instruction_audit.trainset_answers_in == [0]
     assert result.instruction_audit.memorised is True
+    assert result.instruction_audit.predictors == ["generate_action", "extract"], (
+        "compile_task audited one predictor, so an extract-only compile would read as clean"
+    )
     assert result.instruction_audit.capabilities_kept == ["sub-LM"]
 
 
@@ -189,3 +236,22 @@ def test_a_program_with_no_planner_seam_leaves_the_audit_absent_not_crashed(monk
                                    reflection_lm=object())
     assert result.instruction_audit is None
     assert result.program is not None
+
+
+def test_a_plain_dict_trainset_still_finds_its_answer():
+    """The fallback returned `str(example)`, a repr, which can never appear in an instruction, so
+    a trainset of plain dicts reported no hit while the docstring promised the opposite
+    direction. The rule `verify_quote`'s false negative was kept for: be wrong loudly."""
+    answer = "the fingerprint is written by save_program when it is given the task argument"
+    audit = optimize.audit_instruction(BASE, BASE + " Hint: " + answer,
+                                       trainset=[{"q": "where?", "answer": answer}],
+                                       holdout=[{"q": "x", "answer": "an unrelated gold value"}])
+    assert audit.trainset_answers_in == [0]
+    assert audit.memorised is True
+
+
+def test_an_example_with_no_identifiable_gold_is_skipped_not_matched_on_its_repr():
+    ex = dspy.Example(q="x", answer="a gold value long enough to pass the floor").with_inputs(
+        "q", "answer")
+    audit = optimize.audit_instruction(BASE, BASE + " noise", trainset=[ex], holdout=[ex])
+    assert audit.trainset_answers_in == [] and audit.holdout_answers_in == []

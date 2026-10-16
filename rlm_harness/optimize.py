@@ -7,6 +7,10 @@ one thing it cannot have an opinion about.
 - :func:`compile_task` runs ``dspy.GEPA`` over a task's own program, measures a holdout before and
   after IN ONE PROCESS, and saves the artifact with the fingerprint
   :attr:`~rlm_harness.task.RLMTask.compiled_instructions` needs to accept it back.
+- :func:`audit_instruction` reads a compiled instruction for what the score cannot see: trainset
+  answers copied into it, and capabilities dropped on the way. ``compile_task`` produces it.
+- :func:`trainset_from_traces` builds a trainset out of runs this kit already recorded, with the
+  gold value coming from a callable of yours.
 - :func:`save_program` / :func:`load_program` wrap dspy persistence; ``save_program(..., task=)``
   is what writes that fingerprint.
 - ``exact_field_metric`` and ``schema_valid_metric`` are metric templates, usable where an exact
@@ -21,24 +25,50 @@ work. Measure your metric's spread before spending a compile on it.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel
 
-# A metric scores (example, prediction) -> float in [0, 1].
-Metric = Callable[[Any, Any], float]
+logger = logging.getLogger(__name__)
+
+# A metric scores a rollout. NOTE: this alias is documentation, not a gate -- no type checker runs
+# in CI, so nothing makes a wrong annotation here fail. What does fail is `dspy.GEPA.__init__`,
+# which `compile_task` now constructs before spending anything precisely so that it validates the
+# real arity for free. The shape is dspy's, not a simplification of it: `dspy.GEPA.__init__`
+# does `inspect.signature(metric).bind(None, None, None, None, None)` and raises on failure, while
+# `Evaluate` calls it with two arguments and `bootstrap_trace_data` with three. So the only working
+# signature is `(gold, pred, trace=None, pred_name=None, pred_trace=None)`, or `*args`. A type that
+# said `(example, prediction)` endorsed, through `py.typed`, the one shape guaranteed to fail.
+Metric = Callable[..., float]
 
 
 def exact_field_metric(field: str) -> Metric:
     """Metric: 1.0 when ``prediction.field == example.field``, else 0.0.
 
-    Works with dspy.Example / dspy.Prediction (attribute access) and plain
-    objects, so it is testable without dspy.
+    Works with dspy.Example / dspy.Prediction (attribute access) and plain objects, so it is
+    testable without dspy.
+
+    **A missing field on the EXAMPLE raises rather than scoring zero**, because the two are not
+    the same thing and only one of them is worth paying for. The mistake it catches composes two
+    of this module's own defaults: :func:`trainset_from_traces` stores a non-dict ``label``
+    return at ``example.label``, so ``exact_field_metric("answer")`` over that trainset finds
+    nothing on every example and returns a flat zero. A metric that is identically zero gives
+    GEPA no gradient, which is the failure this module's docstring spends a paragraph warning
+    about, and it would have cost the whole budget to discover. Return a dict from ``label`` to
+    name the field, or name it here.
     """
 
     def metric(example: Any, prediction: Any, *args: Any, **kwargs: Any) -> float:
+        if not hasattr(example, field):
+            raise AttributeError(
+                f"exact_field_metric({field!r}) found no {field!r} on the example, so it would "
+                f"score every rollout 0.0 and give the optimizer no gradient. If the trainset "
+                f"came from `trainset_from_traces`, a non-dict `label` return is stored at "
+                f"`.label`: return {{{field!r}: gold}} instead, or point this metric at `label`."
+            )
         expected = getattr(example, field, None)
         actual = getattr(prediction, field, None)
         return 1.0 if expected is not None and expected == actual else 0.0
@@ -90,18 +120,26 @@ class CompileResult:
     artifact: str | None = None
     instruction_audit: InstructionAudit | None = None
     output_audit: dict[str, Any] | None = None
+    #: Counts of what THIS function ran. NOT the compile's cost: GEPA's own budget is
+    #: `auto_budget(num_preds, num_candidates, valset_size)`, which is 790 metric calls for a
+    #: two-predictor program at `auto="light"` over ten examples, and it is reported by dspy
+    #: rather than here. Naming these `trainset`/`holdout_before` invited reading them as that.
     rollouts: dict[str, int] | None = None
+    #: Held-out rollouts that raised and were scored `failure_score` instead of aborting.
+    failed_rollouts: int = 0
 
 
 @dataclass
 class TrainsetBuild:
     """The examples, and what was dropped getting them.
 
-    The drops are not diagnostics, they are the result's other half. A corpus of 153 real runs
-    carried 8 that never finished, and a failed run has ZERO ``main_step`` events because the kit
-    writes them in one batch after the pass returns. So an unfinished run is indistinguishable
-    from one that finished instantly unless something checks, and a trainset built without that
-    check teaches the optimizer that dying early is cheap.
+    The drops are not diagnostics, they are the result's other half. A corpus of 161 real runs
+    carried 8 that failed before the planner ever returned a prediction, and such a run has ZERO
+    ``main_step`` events: :meth:`RLMTask.arun` records the main trajectory off that prediction, so
+    with none there is nothing to record. It is therefore indistinguishable from a run that
+    finished instantly, and a trainset built without that check teaches the optimizer that dying
+    early is cheap. A run that failed AFTER a prediction, output validation exhausting the retry
+    budget being the common way, does record its turns and does reach the trainset.
     """
 
     examples: list[Any]
@@ -135,8 +173,12 @@ def trainset_from_traces(
     across five real ones it was under ``meta.task``, inside a JSON blob at ``meta.event``, and at
     ``meta.lead``.
 
-    ``require`` is the filter that makes the result a trainset rather than a log. Defaults to a
-    finished run that took at least one turn. Loosen it knowing what you are loosening.
+    ``require`` is the filter that makes the result a trainset rather than a log. Defaults to a run
+    whose file reached its terminal event and that took at least one turn. Note what it does NOT
+    check: ``run_end`` is recorded from a ``finally`` and carries ``ok: false`` on a failure, so
+    its presence means the FILE is complete, never that the run succeeded. In the corpus above all
+    8 failures carry ``run_end``, and the turn check is what caught them. Screen on ``ok`` inside
+    ``label`` if success is what you want.
 
     Every file is read with :func:`rlm_harness.load_events` rather than a hand-rolled parser,
     which is not a style note: ``str.splitlines()`` breaks on eleven separators and a model's
@@ -173,6 +215,12 @@ def trainset_from_traces(
         except Exception:
             _drop("inputs raised")
             continue
+        if not isinstance(got, dict):
+            # Outside the `try` above, so a callable returning a list used to raise
+            # `AttributeError: 'list' object has no attribute 'values'` mid-corpus, after every
+            # file had been read, in a function whose whole posture is drop-not-crash.
+            _drop("inputs not a mapping")
+            continue
         if not got or any(v is None for v in got.values()):
             _drop("inputs missing")
             continue
@@ -186,8 +234,13 @@ def trainset_from_traces(
         if gold is None:
             _drop("label declined")
             continue
-        examples.append(dspy.Example(**got, **gold if isinstance(gold, dict) else {"label": gold})
-                        .with_inputs(*got))
+        fields = gold if isinstance(gold, dict) else {"label": gold}
+        if set(fields) & set(got):
+            # `dspy.Example(**got, **fields)` raised `TypeError: got multiple values for keyword
+            # argument` here, which is the same crash-instead-of-drop as above.
+            _drop("gold collides with an input")
+            continue
+        examples.append(dspy.Example(**got, **fields).with_inputs(*got))
     return TrainsetBuild(examples=examples, dropped=dropped, sources=len(files))
 
 
@@ -230,22 +283,36 @@ class InstructionAudit:
     holdout_answers_in: list[int]
     capabilities_lost: list[str]
     capabilities_kept: list[str]
+    #: Which predictors were read. An audit of one predictor cannot speak for the other, and GEPA
+    #: moves them one at a time.
+    predictors: list[str] = field(default_factory=list)
+    #: False when no holdout was supplied, which makes `memorised` unanswerable rather than clean.
+    controlled: bool = False
+    #: False when no capability map was supplied, which makes `capabilities_lost` empty by
+    #: construction rather than by measurement.
+    capabilities_checked: bool = False
 
     @property
-    def memorised(self) -> bool:
+    def memorised(self) -> bool | None:
         """Did it write trainset answers in that it did NOT write for the holdout?
 
-        The holdout count is the CONTROL, and it is why this is a property rather than a bare
-        trainset count: if holdout answers appear too, the matcher is finding common language
-        rather than answers, and the trainset figure means nothing. A compile that memorises shows
-        trainset hits with none on the holdout.
+        ``None`` when the question cannot be answered: with no holdout there was no control, and
+        ``bool(hits) and not []`` cannot tell "the control ran and stayed clean" from "there was
+        no control". Both return the same number when everything they measure is working, which
+        is this repo's own test for an absent measurement reported as a real one.
+
+        The holdout is the control because a trainset hit alone cannot tell memorisation from a
+        matcher firing on ordinary language. ``False`` when both sides hit: the claim is then
+        unsupported, not disproved.
         """
+        if not self.controlled:
+            return None
         return bool(self.trainset_answers_in) and not self.holdout_answers_in
 
 
 def audit_instruction(
-    baseline: str,
-    compiled: str,
+    baseline: Any,
+    compiled: Any,
     *,
     trainset: Sequence[Any] = (),
     holdout: Sequence[Any] = (),
@@ -277,18 +344,28 @@ def audit_instruction(
     **Length as a ratio**, never a character count, because a count measures something a release
     can edit and goes stale with the next docstring.
     """
-    base_n = _norm(baseline)
-    comp_n = _norm(compiled)
-    get = answer_of or _answer_of
+    # Both sides may be a single string or a {predictor: text} mapping. A mapping is the shape
+    # that matters: GEPA's default `component_selector="round_robin"` moves one component at a
+    # time, so a winning candidate that improved only `extract` is ordinary (the load path says so
+    # itself), and an audit that read the planner alone reported a pristine result for exactly the
+    # artifact it exists to catch, with the gold answer verbatim in `extract`.
+    base_map = baseline if isinstance(baseline, dict) else {"": baseline}
+    comp_map = compiled if isinstance(compiled, dict) else {"": compiled}
+    names = [n for n in comp_map if n in base_map]
+    base_n = _norm(" \n ".join(base_map[n] for n in names))
+    comp_n = _norm(" \n ".join(comp_map[n] for n in names))
+    get = answer_of
 
     def _hits(examples: Sequence[Any]) -> list[int]:
         found = []
         for i, ex in enumerate(examples):
-            answer = _norm(get(ex))
-            if len(answer) < _MIN_ANSWER_CHARS:
-                continue
-            if answer in comp_n and answer not in base_n:
-                found.append(i)
+            for candidate in _candidates(ex, get):
+                answer = _norm(candidate)
+                if len(answer) < _MIN_ANSWER_CHARS:
+                    continue
+                if answer in comp_n and answer not in base_n:
+                    found.append(i)
+                    break
         return found
 
     lost, kept = [], []
@@ -300,12 +377,17 @@ def audit_instruction(
         elif in_base:
             kept.append(name)
 
+    base_chars = sum(len(base_map[n]) for n in names)
+    comp_chars = sum(len(comp_map[n]) for n in names)
     return InstructionAudit(
-        length_ratio=(len(compiled) / len(baseline)) if baseline else float("nan"),
+        length_ratio=(comp_chars / base_chars) if base_chars else float("nan"),
         trainset_answers_in=_hits(trainset),
         holdout_answers_in=_hits(holdout),
         capabilities_lost=sorted(lost),
         capabilities_kept=sorted(kept),
+        predictors=[n for n in names if n],
+        controlled=bool(holdout),
+        capabilities_checked=bool(capabilities),
     )
 
 
@@ -320,19 +402,33 @@ def _norm(text: Any) -> str:
     return " ".join(str(text or "").split()).casefold()
 
 
-def _answer_of(example: Any) -> str:
-    """The gold value of an example, without the caller having to name the field.
+def _candidates(example: Any, answer_of: Callable[[Any], str] | None) -> list[str]:
+    """Every string that could be this example's gold, most specific first.
 
-    A `dspy.Example`'s inputs are declared, so whatever is NOT an input is the label. Falls back
-    to the whole example's text, which over-matches rather than under-matches: this check should
-    be wrong in the direction that reports a hit to look at, never the one that stays silent.
+    A LIST, because an example whose input and output fields are not declared has no single
+    answer, and this check must be wrong in the direction that reports a hit to look at rather
+    than the one that stays silent. The rule is the one ``verify_quote``'s false negative was
+    kept for.
+
+    - ``answer_of`` given: trust it, one candidate.
+    - a `dspy.Example`: the inputs are declared, so the non-input fields joined are the gold.
+    - a plain mapping: each value is a candidate on its own. Joining them was the first version
+      and it under-matched, because the joined string includes the question and never appears in
+      an instruction verbatim; ``str(example)`` was the version before that and was worse still,
+      since a repr can appear in no instruction at all.
+
+    A `dspy.Example` whose every field is an input yields nothing and is skipped: that is a blind
+    spot rather than a false clean, because there is no answer to find.
     """
+    if answer_of is not None:
+        return [answer_of(example)]
     if hasattr(example, "inputs") and hasattr(example, "toDict"):
-        inputs = set(example.inputs().toDict())
-        rest = {k: v for k, v in example.toDict().items() if k not in inputs}
-        if rest:
-            return " ".join(str(v) for v in rest.values())
-    return str(example)
+        declared = set(example.inputs().toDict())
+        rest = [str(v) for k, v in example.toDict().items() if k not in declared]
+        return [" ".join(rest)] if rest else []
+    if isinstance(example, dict):
+        return [str(v) for v in example.values()]
+    return [str(example)]
 
 
 def compile_task(
@@ -342,7 +438,7 @@ def compile_task(
     *,
     reflection_lm: Any = None,
     holdout: Sequence[Any] | None = None,
-    auto: str = "light",
+    auto: str | None = "light",
     save_to: str | None = None,
     audit_outputs: Callable[[Sequence[Any], Sequence[Any]], dict] | None = None,
     capabilities: dict[str, Sequence[str]] | None = None,
@@ -398,30 +494,41 @@ def compile_task(
     program = task._build_rlm()
     # Captured BEFORE the compile, because GEPA mutates the predictor's signature in place on the
     # candidate it returns and there is no second chance to read what the build shipped.
-    baseline_text = _planner_text(program)
+    baseline_text = _instruction_map(program)
+
+    # `auto=None` is the route to `max_metric_calls` / `max_full_evals`: dspy asserts that EXACTLY
+    # one of the three is set, so passing `auto` beside a budget kwarg is refused. Built HERE,
+    # before anything is evaluated, because this constructor validates the metric's arity and the
+    # budget combination for free, with no LM call. It used to be built after the before-evaluation,
+    # which bought the same exception at the price of one full rollout per held-out example.
+    gepa_kwargs = {k: v for k, v in gepa_kwargs.items() if v is not None}
+    if auto is not None and not {"max_metric_calls", "max_full_evals"} & set(gepa_kwargs):
+        gepa_kwargs["auto"] = auto
+    optimizer = dspy.GEPA(metric=metric, reflection_lm=reflection_lm, **gepa_kwargs)
 
     before = _evaluate(program, held, metric) if held else None
     audit_before = audit_outputs(held, before[1]) if (audit_outputs and before) else None
-
-    optimizer = dspy.GEPA(metric=metric, auto=auto, reflection_lm=reflection_lm, **gepa_kwargs)
     compiled = optimizer.compile(program, trainset=train)
 
-    after = _evaluate(compiled, held, metric) if held else None
-    audit_after = audit_outputs(held, after[1]) if (audit_outputs and after) else None
-
-    audit = None
-    compiled_text = _planner_text(compiled)
-    if baseline_text and compiled_text:
-        audit = audit_instruction(baseline_text, compiled_text, trainset=train, holdout=held,
-                                  answer_of=answer_of, capabilities=capabilities)
-
+    # Saved BEFORE the after-evaluation: the artifact is what the compile produced and it is
+    # complete here, so nothing downstream of it should be able to lose it.
     artifact = None
     if save_to:
         save_program(compiled, save_to, task=task)
         artifact = save_to
 
+    after = _evaluate(compiled, held, metric) if held else None
+    audit_after = audit_outputs(held, after[1]) if (audit_outputs and after) else None
+
+    audit = None
+    compiled_text = _instruction_map(compiled)
+    if baseline_text and compiled_text:
+        audit = audit_instruction(baseline_text, compiled_text, trainset=train, holdout=held,
+                                  answer_of=answer_of, capabilities=capabilities)
+
     return CompileResult(
         program=compiled,
+        # Kept for the pre-1.20.0 field name; `holdout_after` is the one to read.
         score=after[0] if after else None,
         holdout_before=before[0] if before else None,
         holdout_after=after[0] if after else None,
@@ -429,41 +536,66 @@ def compile_task(
         per_example=({"before": before[2], "after": after[2]} if (before and after) else None),
         artifact=artifact,
         instruction_audit=audit,
-        output_audit=({"before": audit_before, "after": audit_after} if audit_outputs else None),
-        rollouts={"trainset": len(train), "holdout_before": len(held),
-                  "holdout_after": len(held)},
+        output_audit=({"before": audit_before, "after": audit_after}
+                      if (audit_outputs and held) else None),
+        failed_rollouts=((before[3] if before else 0) + (after[3] if after else 0)),
+        rollouts={"trainset_examples": len(train), "holdout_examples": len(held),
+                  "holdout_rollouts": 2 * len(held)},
     )
 
 
-def _planner_text(program: Any) -> str | None:
-    """The instruction an optimizer rewrites, or None when this program has no such seam.
+def _instruction_map(program: Any) -> dict[str, str]:
+    """Every predictor's instruction text, keyed by name. Empty when there is no such seam.
 
-    Returns None rather than raising: a consumer with a program shape the kit does not recognise
-    should still get a compile and a score, with the audit absent and visibly so, instead of a
-    crash after the rollouts have been paid for.
+    EVERY predictor, not the planner: GEPA moves one component at a time, so reading the planner
+    alone left an `extract`-only compile looking pristine.
+
+    Empty rather than raising: a consumer whose program shape the kit does not recognise should
+    still get a compile and a score, with the audit absent and visibly so, instead of a crash
+    after the rollouts have been paid for.
     """
-    for name, predictor in (dict(program.named_predictors()) or {}).items():
-        if name.endswith("generate_action"):
-            text = getattr(getattr(predictor, "signature", None), "instructions", None)
-            return text if isinstance(text, str) else None
-    return None
+    out: dict[str, str] = {}
+    try:
+        named = dict(program.named_predictors())
+    except Exception:
+        return out
+    for name, predictor in named.items():
+        text = getattr(getattr(predictor, "signature", None), "instructions", None)
+        if isinstance(text, str):
+            out[name] = text
+    return out
 
 
-def _evaluate(program: Any, examples: Sequence[Any],
-              metric: Metric) -> tuple[float, list[Any], list[float]]:
-    """Score a program over examples, returning the mean, the predictions and every score.
+def _evaluate(program: Any, examples: Sequence[Any], metric: Metric,
+              failure_score: float = 0.0) -> tuple[float, list[Any], list[float], int]:
+    """Score a program over examples: the mean, the predictions, every score, and the failures.
 
     The per-example scores come back because a mean over six examples hides which way each one
     moved, and a compile that raises the mean while making two examples worse is a different
     decision from one that raises all six.
+
+    **A failing rollout scores ``failure_score`` instead of propagating.** These rollouts are not
+    behind :meth:`RLMTask.arun`'s retry, so without this one provider 500 on the last held-out
+    example discarded an entire compile: the exception escaped before the artifact was saved, and
+    an ``auto="light"`` run on a two-predictor program is 790 metric calls. dspy is tolerant for
+    the same reason on the same rollouts, via ``Evaluate(failure_score=…, max_errors=…)``. A run
+    that failed is a run that scored badly, which is information, not an abort.
     """
-    preds, scores = [], []
+    preds, scores, failed = [], [], 0
     for ex in examples:
-        inputs = ex.inputs().toDict() if hasattr(ex, "inputs") else dict(ex)
-        pred = program(**inputs)
+        try:
+            inputs = ex.inputs().toDict() if hasattr(ex, "inputs") else dict(ex)
+            pred = program(**inputs)
+            score = float(metric(ex, pred))
+        except Exception:
+            logger.warning("holdout rollout failed; scoring it %s", failure_score, exc_info=True)
+            preds.append(None)
+            scores.append(failure_score)
+            failed += 1
+            continue
         preds.append(pred)
-        scores.append(float(metric(ex, pred)))
-    return (sum(scores) / len(scores) if scores else 0.0), preds, scores
+        scores.append(score)
+    return (sum(scores) / len(scores) if scores else 0.0), preds, scores, failed
 
 
 FINGERPRINT_KEY = "rlm_harness"

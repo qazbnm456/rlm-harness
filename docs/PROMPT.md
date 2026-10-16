@@ -413,7 +413,8 @@ after the model tries.
 
 **The remaining owner is dspy's own protocol text**, which is identical across every dspy the
 declared bound allows, so comparing it would catch nothing. The event records which dspy compiled
-the artifact, which is how you check that premise instead of assuming it.
+the artifact and which one is running now, which is how you check that premise rather than
+inferring it from the bound.
 
 **Any disagreement is a refusal, not a warning.** `compiled_instructions` refuses a state with no
 record at all, one whose record disagrees on any of those four, one holding an empty instruction,

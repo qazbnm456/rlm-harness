@@ -141,7 +141,12 @@ def test_the_holdout_is_measured_before_and_after_in_one_process(task, fake_gepa
     assert result.holdout_after == 1.0
     assert result.delta == 1.0
     assert result.per_example == {"before": [0.0, 0.0], "after": [1.0, 1.0]}
-    assert result.rollouts == {"trainset": 1, "holdout_before": 2, "holdout_after": 2}
+    assert result.rollouts == {"trainset_examples": 1, "holdout_examples": 2,
+                               "holdout_rollouts": 4}, (
+        "the counts must say what they count: `trainset` read as the compile's cost, which is "
+        "GEPA's own budget and about 790 metric calls at auto='light', not the trainset's size"
+    )
+    assert result.failed_rollouts == 0
 
 
 def test_without_a_holdout_the_delta_is_None_rather_than_a_number(task, fake_gepa, monkeypatch):
@@ -165,6 +170,59 @@ def test_per_example_scores_survive_so_a_mean_cannot_hide_a_regression(task, fak
                                    reflection_lm=object(), holdout=held)
     assert result.per_example["before"] == [1.0, 0.0]
     assert result.per_example["after"] == [1.0, 0.0]
+
+
+def test_a_failing_holdout_rollout_scores_rather_than_discarding_the_compile(task, fake_gepa,
+                                                                             monkeypatch,
+                                                                             tmp_path):
+    """These rollouts are not behind `arun`'s retry, so one provider 500 on the last held-out
+    example used to escape before the artifact was saved, taking an `auto="light"` compile of
+    about 790 metric calls with it. dspy tolerates the same failure on the same rollouts."""
+    class _Flaky(_FakeProgram):
+        def __call__(self, **kw):
+            if kw.get("q") == "boom":
+                raise RuntimeError("litellm.InternalServerError: provider returned 500")
+            return super().__call__(**kw)
+
+    monkeypatch.setattr(type(task), "_build_rlm", lambda self: _Flaky(answer="right"))
+    monkeypatch.setattr(optimize, "save_program", lambda *a, **k: None)
+    out = str(tmp_path / "a.json")
+    result = optimize.compile_task(
+        task, [_example("t", "right")], _metric, reflection_lm=object(),
+        holdout=[_example("ok", "right"), _example("boom", "right")], save_to=out)
+    assert result.artifact == out, "the artifact was lost to a transient rollout error"
+    assert result.failed_rollouts == 1
+    assert result.per_example["before"] == [1.0, 0.0], "the failure scored, rather than aborting"
+
+
+def test_the_artifact_is_saved_before_the_after_evaluation_can_lose_it(monkeypatch, task,
+                                                                      tmp_path):
+    """Everything downstream of a complete artifact should be unable to discard it.
+
+    The fake optimizer has to return a COUNTED program here. The first version let the default
+    fake return a plain one, so the after-evaluation's rollout was invisible and the assertion
+    that something ran after the save could not hold: the test's own instrument hid the half it
+    was checking.
+    """
+    order = []
+
+    class _Counted(_FakeProgram):
+        def __call__(self, **kw):
+            order.append("rollout")
+            return super().__call__(**kw)
+
+    class _GEPA:
+        def __init__(self, **kw): pass
+        def compile(self, program, **kw): return _Counted(answer="right")
+
+    monkeypatch.setattr(dspy, "GEPA", _GEPA)
+    monkeypatch.setattr(optimize, "save_program", lambda *a, **k: order.append("save"))
+    monkeypatch.setattr(type(task), "_build_rlm", lambda self: _Counted())
+    optimize.compile_task(task, [_example("t", "a")], _metric, reflection_lm=object(),
+                          holdout=[_example("h", "a")], save_to=str(tmp_path / "a.json"))
+    assert order == ["rollout", "save", "rollout"], (
+        f"the artifact must be saved between the two evaluations, not after both: {order}"
+    )
 
 
 def test_the_artifact_is_saved_with_its_fingerprint(task, fake_gepa, monkeypatch, tmp_path):
@@ -223,15 +281,78 @@ def test_no_audit_callable_leaves_the_field_absent_rather_than_empty(task, fake_
     assert result.output_audit is None, "an empty dict would read as an audit that found nothing"
 
 
-def test_reflection_lm_and_auto_reach_gepa_and_the_trainset_reaches_compile(task, fake_gepa,
-                                                                           monkeypatch):
+def test_auto_alone_reaches_gepa_with_the_metric_and_the_trainset(task, fake_gepa, monkeypatch):
     monkeypatch.setattr(type(task), "_build_rlm", lambda self: _FakeProgram())
     lm = object()
     train = [_example("a", "1"), _example("b", "2")]
-    optimize.compile_task(task, train, _metric, reflection_lm=lm, auto="medium",
-                          max_metric_calls=7)
+    optimize.compile_task(task, train, _metric, reflection_lm=lm, auto="medium")
     assert fake_gepa["init"]["reflection_lm"] is lm
     assert fake_gepa["init"]["auto"] == "medium"
-    assert fake_gepa["init"]["max_metric_calls"] == 7, "extra gepa kwargs were dropped"
     assert fake_gepa["init"]["metric"] is _metric
     assert fake_gepa["compile"]["trainset"] == train
+
+
+def test_a_budget_kwarg_displaces_auto_because_dspy_refuses_both(task, fake_gepa, monkeypatch):
+    """dspy asserts EXACTLY one of `max_metric_calls`, `max_full_evals` and `auto` is set, so
+    passing a budget beside the default `auto="light"` raised `AssertionError` out of the
+    constructor. The first version of this test pinned that very combination, and the fake GEPA
+    accepted it because a fake accepts anything: the gate passed on an input the real class
+    rejects, which is the failure this release's own commit messages keep naming.
+    """
+    monkeypatch.setattr(type(task), "_build_rlm", lambda self: _FakeProgram())
+    optimize.compile_task(task, [_example("a", "1")], _metric, reflection_lm=object(),
+                          max_metric_calls=7)
+    assert fake_gepa["init"]["max_metric_calls"] == 7, "the budget kwarg was dropped"
+    assert "auto" not in fake_gepa["init"], (
+        "auto was passed beside a budget kwarg, which real dspy.GEPA refuses with an "
+        "AssertionError from its constructor"
+    )
+
+
+def test_auto_None_leaves_the_budget_to_the_caller(task, fake_gepa, monkeypatch):
+    monkeypatch.setattr(type(task), "_build_rlm", lambda self: _FakeProgram())
+    optimize.compile_task(task, [_example("a", "1")], _metric, reflection_lm=object(),
+                          auto=None, max_full_evals=3)
+    assert "auto" not in fake_gepa["init"]
+    assert fake_gepa["init"]["max_full_evals"] == 3
+
+
+def test_the_optimizer_is_built_before_anything_is_evaluated(task, monkeypatch):
+    """Its constructor validates the metric's arity and the budget combination for free. Built
+    after the before-evaluation, as it first was, those same exceptions arrive at the price of one
+    FULL rollout per held-out example."""
+    order = []
+
+    class _GEPA:
+        def __init__(self, **kw):
+            order.append("gepa")
+        def compile(self, program, **kw):
+            return _FakeProgram()
+
+    monkeypatch.setattr(dspy, "GEPA", _GEPA)
+
+    class _Watched(_FakeProgram):
+        def __call__(self, **kw):
+            order.append("rollout")
+            return super().__call__(**kw)
+
+    monkeypatch.setattr(type(task), "_build_rlm", lambda self: _Watched())
+    optimize.compile_task(task, [_example("a", "1")], _metric, reflection_lm=object(),
+                          holdout=[_example("h", "1")])
+    assert order[0] == "gepa", f"a rollout was paid for before the optimizer validated: {order}"
+
+
+def test_exact_field_metric_says_so_rather_than_scoring_a_flat_zero(tmp_path):
+    """The two new features' defaults did not compose: `trainset_from_traces` stores a non-dict
+    `label` return at `.label`, and `exact_field_metric("answer")` over that trainset found
+    nothing on every example and returned 0.0 for all of them. A metric that is identically zero
+    gives GEPA no gradient, which is the failure this module warns about, and the whole budget
+    would have been spent discovering it."""
+    metric = optimize.exact_field_metric("answer")
+    good = dspy.Example(q="x", answer="right").with_inputs("q")
+    assert metric(good, _Pred("right")) == 1.0
+    assert metric(good, _Pred("wrong")) == 0.0
+
+    mislabelled = dspy.Example(q="x", label="right").with_inputs("q")
+    with pytest.raises(AttributeError, match="no 'answer' on the example"):
+        metric(mislabelled, _Pred("right"))

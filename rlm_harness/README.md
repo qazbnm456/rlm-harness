@@ -381,9 +381,9 @@ sandbox's own description, so a kit upgrade that leaves all four alone is not a 
 task's own instructions and the budget caps are recorded and not compared, because a typo fix
 and a raised cap should not invalidate an artifact. The run records a `compiled_instructions`
 event naming the source, the versions that compiled it and the one running now, what moved
-without refusing, which checks were skipped because one side could not supply them, any predictor
-the file named that this build does not have, and which predictors it replaced, so a reader of the
-trace knows the prompt was not the shipped one.
+without refusing, which caps only one side recorded, which checks were skipped because one side
+could not supply them, any predictor the file named that this build does not have, and which
+predictors it replaced, so a reader of the trace knows the prompt was not the shipped one.
 
 `compiled_instructions=""` runs what the build ships, which is the A/B you need to decide whether
 to keep an artifact.

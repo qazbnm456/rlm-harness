@@ -4,17 +4,21 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
-## [1.20.0] - 2026-10-15
+## [1.20.0] - 2026-10-17
 
-**The optimizer loop closes: a task can be compiled, measured against a holdout, saved, and run
-again from the artifact.** `compile_task` was the one piece still raising `NotImplementedError`,
-and three fields in the `compiled_instructions` event answered a question next to the one they
-were named for. All three were found by review on 1.19.0, filed rather than fixed because none is
-reachable with an artifact that release can write, and each becomes live the moment something
-moves: a later kit adding or dropping a cap, a dspy renaming a predictor, an artifact outliving
-the dspy that compiled it. The event exists because a later reader is otherwise on a false premise
-about what the model was shown, so a field that answers the wrong question is the one defect it
-cannot absorb.
+**The optimizer loop closes.** A task can now be compiled against your own metric, measured
+against a holdout before and after in one process, saved as an artifact that carries what it was
+compiled against, and run again from it. `compile_task` was the one piece still raising
+`NotImplementedError`, with the body it would run written in its own docstring; the pieces around
+it are what a consumer would otherwise have to write, and what the kit can own without having an
+opinion about anyone's task.
+
+Three fields in the `compiled_instructions` event also answered a question next to the one they
+were named for. None of the three is reachable with an artifact 1.19.0 can write, and each becomes
+live the moment something moves: a later kit adding or dropping a cap, a dspy renaming a
+predictor, an artifact outliving the dspy that compiled it. That event exists because a later
+reader is otherwise on a false premise about what the model was shown, so a field answering the
+wrong question is the one defect it cannot absorb.
 
 ### Added
 
@@ -51,11 +55,12 @@ cannot absorb.
   trajectories and never reward, and that boundary is the whole shape of the signature.
 
   **The filter is the result's other half, and the default is not conservatism.** A real corpus of
-  153 runs carried 8 that never finished, and a failed run has ZERO `main_step` events because the
-  kit writes them in one batch after the pass returns. So an unfinished run is indistinguishable
-  from one that finished instantly, and a trainset built without the turn check teaches an
-  optimizer that dying early is cheap. `TrainsetBuild` carries the drop counts by reason, because
-  a build that silently returns 145 of 153 is a corpus-validity question nobody asked.
+  161 runs carried 8 that failed before the planner ever returned a prediction, and such a run has
+  ZERO `main_step` events, because the kit records the main trajectory off that prediction and
+  there was none. So it is indistinguishable from a run that finished instantly, and a trainset
+  built without the turn check teaches an optimizer that dying early is cheap. `TrainsetBuild`
+  carries the drop counts by reason, because a build that silently returns 153 of 161 is a
+  corpus-validity question nobody asked.
 
   `inputs` takes field names or a callable, because consumers do not agree on where the input
   lives: across five real ones it was `meta.task`, a JSON blob at `meta.event`, and `meta.lead`.
@@ -67,7 +72,7 @@ cannot absorb.
 
   **The holdout is the control, not a nicety.** Trainset hits alone cannot tell memorisation from
   a matcher firing on ordinary language; running the same match over answers the optimizer never
-  saw is what separates them, and `memorised` refuses to conclude when both sides hit. The run
+  saw is what separates them, and `memorised` declines the claim when both sides hit. The run
   this comes from put four of ten trainset answers in and none of six held-out ones, and it is
   the zero that makes the four mean anything.
 
@@ -94,8 +99,8 @@ cannot absorb.
   declared bound. `trace.py` is dspy-free by invariant and cannot read a version; `task.py`
   already imports dspy, so the event is where it belongs.
 
-Additive within `trace/v2`. No public name, declaration field or refusal changes, so 1.19.0 code
-runs unchanged.
+Additive within `trace/v2`, and no public name moves: nothing renamed, nothing removed, no
+declaration field or refusal changed, so 1.19.0 code runs unchanged.
 
 ## [1.19.0] - 2026-10-15
 
@@ -155,8 +160,8 @@ run path. That gap is what `docs/PROMPT.md` recorded as open work in 1.18.0.
   the kit and dspy versions that compiled it, whether the task's instructions moved and which
   caps did, which checked keys went uncompared because either side did not carry them, and which
   predictors it replaced with both lengths for each. 1.20.0 adds three more fields; see its entry
-  above for what each one answers. Every later reading of that trace is
-  otherwise on a false premise about what the model was shown, and nothing else in the file would
+  above for what each one answers. Every later reading of that trace is otherwise on a false
+  premise about what the model was shown, and nothing else in the file would
   say so. Additive within `trace/v2`, and `tests/test_contract.py`'s closed event set made adding
   it cost a visible diff, which is what that test is for.
 

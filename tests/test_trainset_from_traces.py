@@ -1,9 +1,9 @@
 """`optimize.trainset_from_traces`: the questions people actually asked, already on disk.
 
-The filter is the point. A corpus of 153 real runs carried 8 that never finished, and a failed run
-has ZERO `main_step` events because the kit writes them in one batch after the pass returns. So an
-unfinished run looks exactly like one that finished instantly, and a trainset built without that
-check teaches the optimizer that dying early is cheap.
+The filter is the point. A corpus of 161 real runs carried 8 that failed before the planner ever
+returned a prediction, and such a run has ZERO `main_step` events, because `RLMTask.arun` records
+the main trajectory off that prediction. So it looks exactly like a run that finished instantly,
+and a trainset built without that check teaches the optimizer that dying early is cheap.
 """
 
 from __future__ import annotations
@@ -54,9 +54,10 @@ def test_a_run_that_never_finished_is_dropped(tmp_path):
 def test_a_failed_run_is_dropped_even_though_it_reached_run_end(tmp_path):
     """The shape that actually occurs, and the reason the turn check is not redundant.
 
-    All 8 failures in a real 153-run corpus ended in `run_end` with `ok: false` and zero
-    `main_step` events, because main_step is written in one batch after the pass returns. Checking
-    only for `run_end` would have taken every one of them as a zero-cost success.
+    All 8 failures in a real 161-run corpus ended in `run_end` with `ok: false` and zero
+    `main_step` events, because `arun` records the main trajectory off the final prediction and
+    these failed before there was one. `run_end` is written from a `finally`, so checking only for
+    it would have taken every one of them as a zero-cost success.
     """
     _write(tmp_path / "ok.jsonl", meta={"q": "a"})
     _write(tmp_path / "failed.jsonl", meta={"q": "b"}, turns=0)
@@ -66,7 +67,7 @@ def test_a_failed_run_is_dropped_even_though_it_reached_run_end(tmp_path):
 
 
 def test_the_drop_counts_are_part_of_the_result_not_a_log(tmp_path):
-    """A build that silently returns 145 of 153 is a corpus-validity question nobody asked."""
+    """A build that silently returns 153 of 161 is a corpus-validity question nobody asked."""
     _write(tmp_path / "a.jsonl", meta={"q": "a"})
     _write(tmp_path / "b.jsonl", meta={"q": "b"}, turns=0)
     _write(tmp_path / "c.jsonl", meta={}, turns=1)
@@ -154,3 +155,22 @@ def test_a_v1_trace_still_builds(tmp_path):
     _write(tmp_path / "old.jsonl", meta={"q": "a"}, schema="rlm-kit/trace/v1")
     build = optimize.trainset_from_traces(tmp_path, inputs=["q"], label=lambda ev: "g")
     assert len(build) == 1
+
+
+def test_a_callable_returning_a_non_mapping_drops_rather_than_crashes(tmp_path):
+    """`got.values()` sat outside the try, so this raised `AttributeError` mid-corpus, after every
+    file had been read, in a function whose whole posture is drop-not-crash."""
+    _write(tmp_path / "a.jsonl", meta={"q": "a"})
+    build = optimize.trainset_from_traces(tmp_path, inputs=lambda ev: ["not", "a", "mapping"],
+                                          label=lambda ev: "gold")
+    assert len(build) == 0
+    assert build.dropped == {"inputs not a mapping": 1}
+
+
+def test_a_gold_field_colliding_with_an_input_drops_rather_than_crashes(tmp_path):
+    """`dspy.Example(**got, **gold)` raised `TypeError: got multiple values for keyword argument`."""
+    _write(tmp_path / "a.jsonl", meta={"q": "a"})
+    build = optimize.trainset_from_traces(tmp_path, inputs=["q"],
+                                          label=lambda ev: {"q": "clashes with the input"})
+    assert len(build) == 0
+    assert build.dropped == {"gold collides with an input": 1}
