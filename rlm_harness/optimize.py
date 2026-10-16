@@ -88,8 +88,128 @@ class CompileResult:
     delta: float | None = None
     per_example: dict[str, list[float]] | None = None
     artifact: str | None = None
+    instruction_audit: InstructionAudit | None = None
     output_audit: dict[str, Any] | None = None
     rollouts: dict[str, int] | None = None
+
+
+@dataclass
+class InstructionAudit:
+    """What a compiled instruction gained and lost, for the things a score cannot see.
+
+    Every field here exists because a measured compile did it: the run that raised a held-out set
+    by 0.221 also wrote four of ten trainset answers into the instruction, and dropped one
+    capability silently. Neither is visible in the number.
+    """
+
+    length_ratio: float
+    trainset_answers_in: list[int]
+    holdout_answers_in: list[int]
+    capabilities_lost: list[str]
+    capabilities_kept: list[str]
+
+    @property
+    def memorised(self) -> bool:
+        """Did it write trainset answers in that it did NOT write for the holdout?
+
+        The holdout count is the CONTROL, and it is why this is a property rather than a bare
+        trainset count: if holdout answers appear too, the matcher is finding common language
+        rather than answers, and the trainset figure means nothing. A compile that memorises shows
+        trainset hits with none on the holdout.
+        """
+        return bool(self.trainset_answers_in) and not self.holdout_answers_in
+
+
+def audit_instruction(
+    baseline: str,
+    compiled: str,
+    *,
+    trainset: Sequence[Any] = (),
+    holdout: Sequence[Any] = (),
+    answer_of: Callable[[Any], str] | None = None,
+    capabilities: dict[str, Sequence[str]] | None = None,
+) -> InstructionAudit:
+    """Read a compiled instruction for what the score is blind to.
+
+    **Answers written in.** An optimizer rewards itself for getting trainset examples right, and
+    one way to get them right is to carry them. A measured run put four of ten trainset answers
+    into the instruction and none of the six held-out ones, so the gain was real and the artifact
+    also shipped a crib sheet. In a periodic loop this is the failure that compounds, because
+    every round starts from the previous instruction and nothing removes what the last one wrote.
+
+    ``holdout`` is the control and not a nicety. Matching on the trainset alone cannot tell
+    memorisation from a matcher that fires on ordinary language; running the SAME match over
+    answers the optimizer never saw is what separates them. :attr:`InstructionAudit.memorised`
+    is the reading, not the raw count.
+
+    Matching is verbatim, on normalised whitespace and case, and that makes this a LOWER BOUND: a
+    paraphrased answer is undetectable here. The same limit sank a guardrail check that reported
+    five of seven capabilities deleted when one had gone, so it is stated rather than hidden.
+
+    **Capabilities lost.** Pass ``capabilities`` as a name mapped to several wordings, because the
+    literal-phrase version of this check is the one that was wrong. The real loss in that run was
+    the sub-LM: ``llm_query`` appears zero times after compilation, so the model is no longer told
+    it has one, and nothing in the score moved because that task never needed it.
+
+    **Length as a ratio**, never a character count, because a count measures something a release
+    can edit and goes stale with the next docstring.
+    """
+    base_n = _norm(baseline)
+    comp_n = _norm(compiled)
+    get = answer_of or _answer_of
+
+    def _hits(examples: Sequence[Any]) -> list[int]:
+        found = []
+        for i, ex in enumerate(examples):
+            answer = _norm(get(ex))
+            if len(answer) < _MIN_ANSWER_CHARS:
+                continue
+            if answer in comp_n and answer not in base_n:
+                found.append(i)
+        return found
+
+    lost, kept = [], []
+    for name, wordings in (capabilities or {}).items():
+        in_base = any(_norm(w) in base_n for w in wordings)
+        in_comp = any(_norm(w) in comp_n for w in wordings)
+        if in_base and not in_comp:
+            lost.append(name)
+        elif in_base:
+            kept.append(name)
+
+    return InstructionAudit(
+        length_ratio=(len(compiled) / len(baseline)) if baseline else float("nan"),
+        trainset_answers_in=_hits(trainset),
+        holdout_answers_in=_hits(holdout),
+        capabilities_lost=sorted(lost),
+        capabilities_kept=sorted(kept),
+    )
+
+
+#: Below this an "answer" is too short to tell a quotation from a coincidence, and the holdout
+#: control would fire on both sides. Picked to exclude single words and short labels.
+_MIN_ANSWER_CHARS = 24
+
+
+def _norm(text: Any) -> str:
+    """Case-folded, whitespace-collapsed. dspy flattens an instruction with `.replace("\n", "  ")`
+    before the model sees it, so a newline in the saved answer must not defeat the match."""
+    return " ".join(str(text or "").split()).casefold()
+
+
+def _answer_of(example: Any) -> str:
+    """The gold value of an example, without the caller having to name the field.
+
+    A `dspy.Example`'s inputs are declared, so whatever is NOT an input is the label. Falls back
+    to the whole example's text, which over-matches rather than under-matches: this check should
+    be wrong in the direction that reports a hit to look at, never the one that stays silent.
+    """
+    if hasattr(example, "inputs") and hasattr(example, "toDict"):
+        inputs = set(example.inputs().toDict())
+        rest = {k: v for k, v in example.toDict().items() if k not in inputs}
+        if rest:
+            return " ".join(str(v) for v in rest.values())
+    return str(example)
 
 
 def compile_task(
@@ -102,6 +222,8 @@ def compile_task(
     auto: str = "light",
     save_to: str | None = None,
     audit_outputs: Callable[[Sequence[Any], Sequence[Any]], dict] | None = None,
+    capabilities: dict[str, Sequence[str]] | None = None,
+    answer_of: Callable[[Any], str] | None = None,
     **gepa_kwargs: Any,
 ) -> CompileResult:
     """Compile an ``RLMTask``'s program with ``dspy.GEPA``, and measure whether it helped.
@@ -151,6 +273,9 @@ def compile_task(
     train = list(trainset)
     held = list(holdout) if holdout else []
     program = task._build_rlm()
+    # Captured BEFORE the compile, because GEPA mutates the predictor's signature in place on the
+    # candidate it returns and there is no second chance to read what the build shipped.
+    baseline_text = _planner_text(program)
 
     before = _evaluate(program, held, metric) if held else None
     audit_before = audit_outputs(held, before[1]) if (audit_outputs and before) else None
@@ -160,6 +285,12 @@ def compile_task(
 
     after = _evaluate(compiled, held, metric) if held else None
     audit_after = audit_outputs(held, after[1]) if (audit_outputs and after) else None
+
+    audit = None
+    compiled_text = _planner_text(compiled)
+    if baseline_text and compiled_text:
+        audit = audit_instruction(baseline_text, compiled_text, trainset=train, holdout=held,
+                                  answer_of=answer_of, capabilities=capabilities)
 
     artifact = None
     if save_to:
@@ -174,10 +305,25 @@ def compile_task(
         delta=(after[0] - before[0]) if (before and after) else None,
         per_example=({"before": before[2], "after": after[2]} if (before and after) else None),
         artifact=artifact,
+        instruction_audit=audit,
         output_audit=({"before": audit_before, "after": audit_after} if audit_outputs else None),
         rollouts={"trainset": len(train), "holdout_before": len(held),
                   "holdout_after": len(held)},
     )
+
+
+def _planner_text(program: Any) -> str | None:
+    """The instruction an optimizer rewrites, or None when this program has no such seam.
+
+    Returns None rather than raising: a consumer with a program shape the kit does not recognise
+    should still get a compile and a score, with the audit absent and visibly so, instead of a
+    crash after the rollouts have been paid for.
+    """
+    for name, predictor in (dict(program.named_predictors()) or {}).items():
+        if name.endswith("generate_action"):
+            text = getattr(getattr(predictor, "signature", None), "instructions", None)
+            return text if isinstance(text, str) else None
+    return None
 
 
 def _evaluate(program: Any, examples: Sequence[Any],

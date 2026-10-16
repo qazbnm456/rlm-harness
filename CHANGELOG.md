@@ -44,6 +44,24 @@ cannot absorb.
   corpus's metric at its ceiling and one was visible only by reading the prose. The kit cannot see
   that and does not pretend to.
 
+- **`optimize.audit_instruction` reads a compiled instruction for what the score cannot see**, and
+  `compile_task` reports it without being asked. Two things, both from the same measured compile:
+  the trainset answers an optimizer wrote into the instruction to get those examples right, and
+  the capabilities it dropped on the way.
+
+  **The holdout is the control, not a nicety.** Trainset hits alone cannot tell memorisation from
+  a matcher firing on ordinary language; running the same match over answers the optimizer never
+  saw is what separates them, and `memorised` refuses to conclude when both sides hit. The run
+  this comes from put four of ten trainset answers in and none of six held-out ones, and it is
+  the zero that makes the four mean anything.
+
+  **Capabilities are matched against several wordings, never one phrase.** A literal check over
+  the shipped phrases reported five of seven guardrails deleted when one had gone, because a
+  substring matcher on deliberately rewritten text answers "gone" for every rewrite. Pass a name
+  mapped to the wordings it can take. Verbatim answer matching makes the memorisation half a lower
+  bound, which is stated in the docstring rather than hidden: a paraphrased answer is not
+  detectable, and that is the same limit, pointed the other way.
+
 - **`budget_unrecorded`**, and `budget_changed` is now compared per cap and only where both sides
   carry it. A cap the record lacks has not moved, it is unknown, and reporting it as moved was the
   one-sided derivation this path had already got wrong once in `unchecked`. An uncomparable record
