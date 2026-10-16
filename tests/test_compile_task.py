@@ -146,7 +146,7 @@ def test_the_holdout_is_measured_before_and_after_in_one_process(task, fake_gepa
         "the counts must say what they count: `trainset` read as the compile's cost, which is "
         "GEPA's own budget and about 790 metric calls at auto='light', not the trainset's size"
     )
-    assert result.failed_rollouts == 0
+    assert result.failed_rollouts == {"before": 0, "after": 0}
 
 
 def test_without_a_holdout_the_delta_is_None_rather_than_a_number(task, fake_gepa, monkeypatch):
@@ -191,7 +191,7 @@ def test_a_failing_holdout_rollout_scores_rather_than_discarding_the_compile(tas
         task, [_example("t", "right")], _metric, reflection_lm=object(),
         holdout=[_example("ok", "right"), _example("boom", "right")], save_to=out)
     assert result.artifact == out, "the artifact was lost to a transient rollout error"
-    assert result.failed_rollouts == 1
+    assert result.failed_rollouts == {"before": 1, "after": 0}
     assert result.per_example["before"] == [1.0, 0.0], "the failure scored, rather than aborting"
 
 
@@ -356,3 +356,95 @@ def test_exact_field_metric_says_so_rather_than_scoring_a_flat_zero(tmp_path):
     mislabelled = dspy.Example(q="x", label="right").with_inputs("q")
     with pytest.raises(AttributeError, match="no 'answer' on the example"):
         metric(mislabelled, _Pred("right"))
+
+
+def test_a_metric_that_cannot_score_this_trainset_raises_at_zero_rollouts(task, fake_gepa,
+                                                                          monkeypatch):
+    """`dspy.GEPA.__init__` validates the metric's ARITY for free; this validates that it can
+    score THIS trainset. A metric looking for a field the examples do not carry scores every
+    rollout zero, gives the optimizer no gradient, and GEPA's own executor swallows the exception
+    on the trainset side, so the whole budget goes before anyone learns why."""
+    rolled = []
+
+    class _Watched(_FakeProgram):
+        def __call__(self, **kw):
+            rolled.append(kw)
+            return super().__call__(**kw)
+
+    monkeypatch.setattr(type(task), "_build_rlm", lambda self: _Watched())
+    mislabelled = dspy.Example(q="x", label="right").with_inputs("q")
+    with pytest.raises(AttributeError, match="no 'answer' on the example"):
+        optimize.compile_task(task, [mislabelled], optimize.exact_field_metric("answer"),
+                              reflection_lm=object(), holdout=[mislabelled])
+    assert rolled == [], f"rollouts were paid before the metric was probed: {rolled}"
+
+
+def test_a_metric_raising_is_not_scored_as_a_failed_rollout(task, fake_gepa, monkeypatch):
+    """The guard around a rollout used to cover the metric too, so the raise added in this same
+    release to stop a mis-named gold burning a whole budget was caught, logged and scored 0.0.
+    A rollout that failed is a run that scored badly; a metric that cannot score is a
+    configuration error, and only one of those is worth continuing through."""
+    monkeypatch.setattr(type(task), "_build_rlm", lambda self: _FakeProgram())
+
+    def _angry(example, prediction, *a, **k):
+        raise AttributeError("this metric cannot score this trainset")
+
+    with pytest.raises(AttributeError, match="cannot score this trainset"):
+        optimize.compile_task(task, [_example("q", "a")], _angry, reflection_lm=object(),
+                              holdout=[_example("h", "a")])
+
+
+def test_an_audit_that_raises_does_not_discard_the_measurement(task, fake_gepa, monkeypatch,
+                                                               tmp_path):
+    """A failing rollout puts `None` in the predictions, and the kit's own documented idiom
+    (`[p.answer for p in predictions]`) raises on it. On the after side that runs downstream of
+    the save, so it left the artifact on disk and took the paired delta with it."""
+    class _Flaky(_FakeProgram):
+        def __call__(self, **kw):
+            if kw.get("q") == "boom":
+                raise RuntimeError("provider 500")
+            return super().__call__(**kw)
+
+    monkeypatch.setattr(type(task), "_build_rlm", lambda self: _Flaky(answer="right"))
+    monkeypatch.setattr(optimize, "save_program", lambda *a, **k: None)
+    result = optimize.compile_task(
+        task, [_example("t", "right")], _metric, reflection_lm=object(),
+        holdout=[_example("boom", "right")],
+        audit_outputs=lambda ex, preds: {"answers": [p.answer for p in preds]},
+        save_to=str(tmp_path / "a.json"))
+    assert result.delta is not None, "the paired measurement was discarded by the audit"
+    assert "error" in result.output_audit["before"], "the audit's failure was not recorded"
+    # One, not two: the compiled program the fake optimizer returns does not raise, so only the
+    # BEFORE arm lost a rollout. Which is the point of counting per side rather than in total.
+    assert result.failed_rollouts == {"before": 1, "after": 0}
+
+
+def test_an_explicit_auto_beside_a_budget_kwarg_is_a_conflict(task, fake_gepa, monkeypatch):
+    """Displacing a default nobody chose is the kit's own pattern; silently dropping one of two
+    things the caller asked for is not. dspy names all three in its own assertion and it now
+    costs nothing, because the optimizer is built before any rollout."""
+    monkeypatch.setattr(type(task), "_build_rlm", lambda self: _FakeProgram())
+    optimize.compile_task(task, [_example("a", "1")], _metric, reflection_lm=object(),
+                          auto="heavy", max_metric_calls=7)
+    assert fake_gepa["init"]["auto"] == "heavy", "an explicit auto was dropped"
+    assert fake_gepa["init"]["max_metric_calls"] == 7
+    # dspy asserts on the pair; the kit passes both so its message, which names all three, is
+    # what the caller sees, at zero rollouts.
+
+
+def test_an_unknown_auto_is_refused_before_the_holdout_is_spent(task, fake_gepa, monkeypatch):
+    """dspy accepts any string in its constructor and raises `KeyError` from `compile()`, which
+    is after the before-evaluation."""
+    monkeypatch.setattr(type(task), "_build_rlm", lambda self: _FakeProgram())
+    with pytest.raises(ValueError, match="auto='turbo' is not one of"):
+        optimize.compile_task(task, [_example("a", "1")], _metric, reflection_lm=object(),
+                              auto="turbo", holdout=[_example("h", "1")])
+
+
+def test_a_None_valued_kwarg_that_is_not_a_budget_key_still_reaches_gepa(task, fake_gepa,
+                                                                        monkeypatch):
+    """`seed=None` and `max_merge_invocations=None` are accepted by dspy and have non-None
+    defaults, so dropping them gave a caller who explicitly asked for randomness determinism."""
+    monkeypatch.setattr(type(task), "_build_rlm", lambda self: _FakeProgram())
+    optimize.compile_task(task, [_example("a", "1")], _metric, reflection_lm=object(), seed=None)
+    assert "seed" in fake_gepa["init"] and fake_gepa["init"]["seed"] is None

@@ -105,6 +105,14 @@ keeps that text in `RLMTaskError`'s own message rather than only on `__cause__`.
 - **Offline-testable.** `rlm_harness.testing` drives the real `dspy.RLM` forward loop
   with no model, no Deno, no network.
 
+- **Compilable, and measured.** `optimize.compile_task` GEPA-compiles a task against your own
+  trainset and your own metric, measures an optional holdout before and after in one process
+  because an absolute score from one session does not reproduce and only the paired difference is
+  a result, and saves a fingerprinted artifact `RLMTask(compiled_instructions=…)` takes back.
+  `trainset_from_traces` builds the trainset out of runs already on disk, and
+  `audit_instruction` reads the compiled text for the trainset answers and lost capabilities a
+  score cannot see.
+
 ## Documentation: the guide
 
 The deep documentation lives in
@@ -194,10 +202,6 @@ release; a rename or removal ships with an alias and a `DeprecationWarning` firs
 itself waits for the next major. The trace format carries its own version and evolves
 additive-only within it; a break bumps that version instead, which has happened once (`v1` to `v2`
 in 1.17.0, for one removed usage key, and a v1 trace still reads). A `_`-prefixed name or module internal is not part of that promise.
-
-`optimize.compile_task` GEPA-compiles a task against a labelled trainset and your own metric,
-measuring a holdout before and after in one process, because an absolute score from one session is
-not reproducible and only the paired difference is a result.
 
 ## License
 

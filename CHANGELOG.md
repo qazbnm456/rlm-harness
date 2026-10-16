@@ -13,7 +13,7 @@ compiled against, and run again from it. `compile_task` was the one piece still 
 it are what a consumer would otherwise have to write, and what the kit can own without having an
 opinion about anyone's task.
 
-Three fields in the `compiled_instructions` event also answered a question next to the one they
+Three fields in the `compiled_instructions` event answered a question next to the one they
 were named for. None of the three is reachable with an artifact 1.19.0 can write, and each becomes
 live the moment something moves: a later kit adding or dropping a cap, a dspy renaming a
 predictor, an artifact outliving the dspy that compiled it. That event exists because a later
@@ -72,7 +72,12 @@ wrong question is the one defect it cannot absorb.
 
   **The holdout is the control, not a nicety.** Trainset hits alone cannot tell memorisation from
   a matcher firing on ordinary language; running the same match over answers the optimizer never
-  saw is what separates them, and `memorised` declines the claim when both sides hit. The run
+  saw is what separates them, and `memorised` declines the claim when both sides hit. It is `None`
+  when no holdout was given at all, because an absent control is not a clean one, and
+  `controlled`, `capabilities_checked` and `predictors` each name a half that did or did not run,
+  and `controlled` asks whether the control COULD fire rather than whether a holdout was passed.
+  Every predictor is read, not just the planner: GEPA moves one component at a time, so an
+  `extract`-only compile used to look pristine with the gold answer verbatim in it. The run
   this comes from put four of ten trainset answers in and none of six held-out ones, and it is
   the zero that makes the four mean anything.
 
@@ -100,7 +105,8 @@ wrong question is the one defect it cannot absorb.
   already imports dspy, so the event is where it belongs.
 
 Additive within `trace/v2`, and no public name moves: nothing renamed, nothing removed, no
-declaration field or refusal changed, so 1.19.0 code runs unchanged.
+declaration field or refusal changed. The one behaviour change to a pre-1.20.0 name is
+`exact_field_metric`, below.
 
 ## [1.19.0] - 2026-10-15
 
@@ -152,6 +158,21 @@ run path. That gap is what `docs/PROMPT.md` recorded as open work in 1.18.0.
   saving the module that wraps the RLM produces, and a load that changes no predictor at all,
   because a silent no-op runs the shipped instructions while the caller believes otherwise.
 
+  A held-out rollout that raises now scores `failure_score` and the run continues, counted per
+  side in `failed_rollouts`: these rollouts sit outside `arun`'s retry, so one provider error on
+  the last example used to discard a compile of several hundred metric calls. The artifact is
+  saved between the two evaluations for the same reason, and a consumer's `audit_outputs` is
+  guarded so it cannot discard the measurement either. A non-zero count makes `delta` suspect
+  rather than wrong, and which side took it decides which way the difference moved.
+
+  **A metric that cannot score the trainset is refused before anything is spent.** It is probed
+  once against the first example, because `dspy.GEPA`'s constructor validates a metric's arity
+  for free but not whether it can score THESE examples, and GEPA's own executor swallows the
+  exception on the trainset side: a metric looking for a field the examples do not carry returns
+  zero for every rollout, gives the optimizer no gradient, and spends the whole budget before
+  anyone learns why. An unknown `auto` is refused there too, since dspy accepts any string in its
+  constructor and raises `KeyError` from `compile()`, which is after the holdout.
+
   `compiled_instructions=""` means "run what this build ships", the way `tools=[]` means "no
   tools", so a subclass that declares an artifact can still be A/B'd against the baseline. That
   comparison is how anyone decides whether to keep an artifact.
@@ -161,9 +182,9 @@ run path. That gap is what `docs/PROMPT.md` recorded as open work in 1.18.0.
   caps did, which checked keys went uncompared because either side did not carry them, and which
   predictors it replaced with both lengths for each. 1.20.0 adds three more fields; see its entry
   above for what each one answers. Every later reading of that trace is otherwise on a false
-  premise about what the model was shown, and nothing else in the file would
-  say so. Additive within `trace/v2`, and `tests/test_contract.py`'s closed event set made adding
-  it cost a visible diff, which is what that test is for.
+  premise about what the model was shown, and nothing else in the file would say so. Additive
+  within `trace/v2`, and `tests/test_contract.py`'s closed event set made adding it cost a
+  visible diff, which is what that test is for.
 
 - **`tests/test_skills.py` gates the KNOWLEDGE-only rule.** `docs/INVARIANTS.md` has always said
   `read_skill` executes nothing and expands nothing, and a mutation pass over that file found it
@@ -172,6 +193,16 @@ run path. That gap is what `docs/PROMPT.md` recorded as open work in 1.18.0.
   own text, which an exec or a link expansion fails by appending. The invariant keeps only the
   half no test can reach, that an untrusted skill's text becomes model context and is therefore a
   prompt-injection surface.
+
+### Changed
+
+- **`exact_field_metric` raises instead of scoring zero when the EXAMPLE lacks the field.** The two
+  are not the same thing and only one of them is worth paying for. It composes with this release's
+  own default: `trainset_from_traces` stores a non-dict `label` return at `example.label`, so
+  `exact_field_metric("answer")` over that trainset found nothing on any example and returned a
+  flat zero, which gives GEPA no gradient and costs the whole budget to discover. Return a dict
+  from `label` to name the field, or name it in the metric. This is the only pre-1.20.0 name whose
+  behaviour moves.
 
 ### Fixed
 

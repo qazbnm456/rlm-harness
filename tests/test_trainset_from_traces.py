@@ -174,3 +174,13 @@ def test_a_gold_field_colliding_with_an_input_drops_rather_than_crashes(tmp_path
                                           label=lambda ev: {"q": "clashes with the input"})
     assert len(build) == 0
     assert build.dropped == {"gold collides with an input": 1}
+
+
+def test_a_non_string_input_key_drops_rather_than_crashes(tmp_path):
+    """`dspy.Example(**got)` raised `TypeError: keywords must be strings` mid-corpus. The mapping
+    check passed, no value was None, and nothing collided: a third shape of the same defect."""
+    _write(tmp_path / "a.jsonl", meta={"q": "a"})
+    build = optimize.trainset_from_traces(tmp_path, inputs=lambda ev: {1: "x"},
+                                          label=lambda ev: "gold")
+    assert len(build) == 0
+    assert build.dropped == {"inputs not a mapping": 1}

@@ -245,7 +245,8 @@ def test_a_plain_dict_trainset_still_finds_its_answer():
     answer = "the fingerprint is written by save_program when it is given the task argument"
     audit = optimize.audit_instruction(BASE, BASE + " Hint: " + answer,
                                        trainset=[{"q": "where?", "answer": answer}],
-                                       holdout=[{"q": "x", "answer": "an unrelated gold value"}])
+                                       holdout=[{"q": "x",
+                                                 "answer": "an unrelated held-out gold value"}])
     assert audit.trainset_answers_in == [0]
     assert audit.memorised is True
 
@@ -255,3 +256,29 @@ def test_an_example_with_no_identifiable_gold_is_skipped_not_matched_on_its_repr
         "q", "answer")
     audit = optimize.audit_instruction(BASE, BASE + " noise", trainset=[ex], holdout=[ex])
     assert audit.trainset_answers_in == [] and audit.holdout_answers_in == []
+
+
+def test_a_multi_gold_example_matches_on_each_field_not_only_their_join():
+    """The shape `trainset_from_traces` produces from a dict `label`, and the one
+    `exact_field_metric`'s own error message tells callers to use. The join alone missed it for
+    the same reason the mapping branch does not join: a combined string appears in no instruction
+    verbatim."""
+    gold = "inside TraceRecorder.record, immediately before the write"
+    ex = dspy.Example(q="where?", answer=gold, citation="trace.py:512").with_inputs("q")
+    audit = optimize.audit_instruction(BASE, BASE + " Hint: " + gold, trainset=[ex],
+                                       holdout=[dspy.Example(q="x", answer="unrelated gold value",
+                                                             citation="f.py:1").with_inputs("q")])
+    assert audit.trainset_answers_in == [0]
+    assert audit.memorised is True
+
+
+def test_a_holdout_that_cannot_clear_the_matcher_is_not_a_control():
+    """`controlled` meant "a holdout was supplied". A holdout whose examples yield no candidate
+    above the floor cannot fire, and a control that could not fire reading as a clean one is the
+    same defect as concluding without one."""
+    answer = "the fingerprint is written by save_program when it is given the task argument"
+    too_short = dspy.Example(q="x", answer="yes").with_inputs("q")
+    audit = optimize.audit_instruction(BASE, BASE + " Hint: " + answer,
+                                       trainset=[_ex("q", answer)], holdout=[too_short])
+    assert audit.controlled is False
+    assert audit.memorised is None, "a claim was made behind a control that could not fire"

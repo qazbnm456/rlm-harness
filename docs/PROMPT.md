@@ -328,7 +328,8 @@ the absolute figures above do not reproduce: re-running the same artifact over t
 questions in a later session scored 0.575 and 0.596 on two arms, against the 0.733 recorded here.
 Session-to-session drift of about 0.14 is the same order as the +0.221 the compile earned, so
 before and after have to be measured in one session or the delta is not a delta. Budget for that:
-it doubles the rollouts and it is the difference between a result and a number.
+it doubles the HOLDOUT rollouts, twelve instead of six here against the compile's own several
+hundred, and it is the difference between a result and a number.
 
 **That re-run also answers whether a compiled artifact survives save, load and run.** The two arms
 were the same text through `compiled_instructions` and the same text assigned straight onto the
