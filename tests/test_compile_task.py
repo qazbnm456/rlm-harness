@@ -413,7 +413,9 @@ def test_an_audit_that_raises_does_not_discard_the_measurement(task, fake_gepa, 
         audit_outputs=lambda ex, preds: {"answers": [p.answer for p in preds]},
         save_to=str(tmp_path / "a.json"))
     assert result.delta is not None, "the paired measurement was discarded by the audit"
-    assert "error" in result.output_audit["before"], "the audit's failure was not recorded"
+    assert "rlm_harness_error" in result.output_audit["before"], (
+        "the audit's failure was not recorded under the kit's reserved key"
+    )
     # One, not two: the compiled program the fake optimizer returns does not raise, so only the
     # BEFORE arm lost a rollout. Which is the point of counting per side rather than in total.
     assert result.failed_rollouts == {"before": 1, "after": 0}
@@ -448,3 +450,35 @@ def test_a_None_valued_kwarg_that_is_not_a_budget_key_still_reaches_gepa(task, f
     monkeypatch.setattr(type(task), "_build_rlm", lambda self: _FakeProgram())
     optimize.compile_task(task, [_example("a", "1")], _metric, reflection_lm=object(), seed=None)
     assert "seed" in fake_gepa["init"] and fake_gepa["init"]["seed"] is None
+
+
+#: The negative control this file did not have. Every metric above either reads the prediction
+#: through `getattr(..., None)`, which no stub can break, or raises unconditionally — so the
+#: pre-flight could have been wrong in the refusing direction and nothing here would have noticed.
+#: These are ordinary metric shapes that MUST compile.
+@pytest.mark.parametrize("name,metric", [
+    ("normalises the prediction", lambda e, p, *a, **k: float(p.answer.strip().lower() == e.answer)),
+    ("reads a structured field", lambda e, p, *a, **k: float(p.payload.get("answer") == e.answer)),
+    ("measures the prediction", lambda e, p, *a, **k: float(len(p.answer) > 0)),
+    ("compares attributes", lambda e, p, *a, **k: float(getattr(p, "answer", None) == e.answer)),
+])
+def test_an_ordinary_metric_is_not_refused_by_the_pre_flight(task, fake_gepa, monkeypatch, name,
+                                                             metric):
+    """Normalising before comparing is the most common thing a text metric does, and `.get()` on
+    a structured field is its equivalent for a task with an `output_model`. A single all-`None`
+    stub made both raise `AttributeError` and the pre-flight refused them at zero rollouts, with
+    a message pointing into the kit and no way past it."""
+    monkeypatch.setattr(type(task), "_build_rlm", lambda self: _FakeProgram(answer="right"))
+    result = optimize.compile_task(task, [_example("q", "right")], metric,
+                                   reflection_lm=object())
+    assert result.program is not None, f"the pre-flight refused a metric that {name}"
+
+
+def test_a_metric_that_no_prediction_could_satisfy_is_still_refused(task, fake_gepa, monkeypatch):
+    """The other side of the discriminator: a metric reading a field the EXAMPLES do not carry
+    raises against both stubs, because no prediction can supply what the example lacks."""
+    monkeypatch.setattr(type(task), "_build_rlm", lambda self: _FakeProgram())
+    mislabelled = dspy.Example(q="x", label="right").with_inputs("q")
+    with pytest.raises(AttributeError, match="no 'answer' on the example"):
+        optimize.compile_task(task, [mislabelled], optimize.exact_field_metric("answer"),
+                              reflection_lm=object())

@@ -48,6 +48,28 @@ wrong question is the one defect it cannot absorb.
   corpus's metric at its ceiling and one was visible only by reading the prose. The kit cannot see
   that and does not pretend to.
 
+  A held-out rollout that raises now scores `failure_score` and the run continues, counted per
+  side in `failed_rollouts`: these rollouts sit outside `arun`'s retry, so one provider error on
+  the last example used to discard a compile of several hundred metric calls. The artifact is
+  saved between the two evaluations for the same reason, and a consumer's `audit_outputs` is
+  guarded so it cannot discard the measurement either. A non-zero count makes `delta` suspect
+  rather than wrong, and which side took it decides which way the difference moved.
+
+  **A metric that RAISES on the trainset is refused before anything is spent.** It is probed
+  against the first example with a stub prediction that records whether the metric read it,
+  because `dspy.GEPA`'s constructor validates a metric's arity for free but not whether it can
+  score THESE examples, and GEPA's own executor swallows the
+  exception on the trainset side: a metric looking for a field the examples do not carry has
+  every rollout scored `failure_score`, the optimizer gets no gradient, and the whole budget goes
+  before anyone learns why. The recording is what makes the probe safe: a metric that raises
+  without ever reading the prediction failed on the example and no prediction could have saved
+  it, while one that read it first is only reacting to a stub. Judging on the exception type
+  alone refused `pred.answer.strip()`, which is the most common thing a text metric does. A
+  metric that merely returns a flat zero is not caught here either, which is why measuring its
+  spread first is the paragraph above. An unknown `auto` is refused there too, since dspy accepts
+  any string in its constructor and raises `KeyError` from `compile()`, which is after the
+  holdout.
+
 - **`optimize.trainset_from_traces` builds a trainset out of runs this kit already recorded.**
   The questions people actually asked beat ten someone wrote by hand, and they are already on
   disk. What is not on disk is whether each answer was good, so `label` is the consumer's: it
@@ -73,11 +95,13 @@ wrong question is the one defect it cannot absorb.
   **The holdout is the control, not a nicety.** Trainset hits alone cannot tell memorisation from
   a matcher firing on ordinary language; running the same match over answers the optimizer never
   saw is what separates them, and `memorised` declines the claim when both sides hit. It is `None`
-  when no holdout was given at all, because an absent control is not a clean one, and
-  `controlled`, `capabilities_checked` and `predictors` each name a half that did or did not run,
-  and `controlled` asks whether the control COULD fire rather than whether a holdout was passed.
-  Every predictor is read, not just the planner: GEPA moves one component at a time, so an
-  `extract`-only compile used to look pristine with the gold answer verbatim in it. The run
+  when the control could not have fired at all, which is not the same as a clean result:
+  `controlled` asks whether any held-out example carries an answer long enough to match, not
+  whether a holdout was passed, and `capabilities_checked` says the same for an empty
+  `capabilities_lost`. `predictors` names which ones were read, because every predictor is read
+  rather than the planner alone: GEPA moves one component at a time, so an `extract`-only compile
+  would otherwise look pristine with the gold answer verbatim in it.
+ The run
   this comes from put four of ten trainset answers in and none of six held-out ones, and it is
   the zero that makes the four mean anything.
 
@@ -104,9 +128,18 @@ wrong question is the one defect it cannot absorb.
   declared bound. `trace.py` is dspy-free by invariant and cannot read a version; `task.py`
   already imports dspy, so the event is where it belongs.
 
+### Changed
+
+- **`exact_field_metric` raises instead of scoring zero when the EXAMPLE lacks the field.** The two
+  are not the same thing and only one of them is worth paying for. It composes with this release's
+  own default: `trainset_from_traces` stores a non-dict `label` return at `example.label`, so
+  `exact_field_metric("answer")` over that trainset found nothing on any example and returned a
+  flat zero, which gives GEPA no gradient and costs the whole budget to discover. Return a dict
+  from `label` to name the field, or name it in the metric.
+
 Additive within `trace/v2`, and no public name moves: nothing renamed, nothing removed, no
 declaration field or refusal changed. The one behaviour change to a pre-1.20.0 name is
-`exact_field_metric`, below.
+`exact_field_metric`, above.
 
 ## [1.19.0] - 2026-10-15
 
@@ -158,21 +191,6 @@ run path. That gap is what `docs/PROMPT.md` recorded as open work in 1.18.0.
   saving the module that wraps the RLM produces, and a load that changes no predictor at all,
   because a silent no-op runs the shipped instructions while the caller believes otherwise.
 
-  A held-out rollout that raises now scores `failure_score` and the run continues, counted per
-  side in `failed_rollouts`: these rollouts sit outside `arun`'s retry, so one provider error on
-  the last example used to discard a compile of several hundred metric calls. The artifact is
-  saved between the two evaluations for the same reason, and a consumer's `audit_outputs` is
-  guarded so it cannot discard the measurement either. A non-zero count makes `delta` suspect
-  rather than wrong, and which side took it decides which way the difference moved.
-
-  **A metric that cannot score the trainset is refused before anything is spent.** It is probed
-  once against the first example, because `dspy.GEPA`'s constructor validates a metric's arity
-  for free but not whether it can score THESE examples, and GEPA's own executor swallows the
-  exception on the trainset side: a metric looking for a field the examples do not carry returns
-  zero for every rollout, gives the optimizer no gradient, and spends the whole budget before
-  anyone learns why. An unknown `auto` is refused there too, since dspy accepts any string in its
-  constructor and raises `KeyError` from `compile()`, which is after the holdout.
-
   `compiled_instructions=""` means "run what this build ships", the way `tools=[]` means "no
   tools", so a subclass that declares an artifact can still be A/B'd against the baseline. That
   comparison is how anyone decides whether to keep an artifact.
@@ -193,16 +211,6 @@ run path. That gap is what `docs/PROMPT.md` recorded as open work in 1.18.0.
   own text, which an exec or a link expansion fails by appending. The invariant keeps only the
   half no test can reach, that an untrusted skill's text becomes model context and is therefore a
   prompt-injection surface.
-
-### Changed
-
-- **`exact_field_metric` raises instead of scoring zero when the EXAMPLE lacks the field.** The two
-  are not the same thing and only one of them is worth paying for. It composes with this release's
-  own default: `trainset_from_traces` stores a non-dict `label` return at `example.label`, so
-  `exact_field_metric("answer")` over that trainset found nothing on any example and returned a
-  flat zero, which gives GEPA no gradient and costs the whole budget to discover. Return a dict
-  from `label` to name the field, or name it in the metric. This is the only pre-1.20.0 name whose
-  behaviour moves.
 
 ### Fixed
 

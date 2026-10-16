@@ -164,7 +164,7 @@ def test_a_callable_returning_a_non_mapping_drops_rather_than_crashes(tmp_path):
     build = optimize.trainset_from_traces(tmp_path, inputs=lambda ev: ["not", "a", "mapping"],
                                           label=lambda ev: "gold")
     assert len(build) == 0
-    assert build.dropped == {"inputs not a mapping": 1}
+    assert build.dropped == {"inputs not a string-keyed mapping": 1}
 
 
 def test_a_gold_field_colliding_with_an_input_drops_rather_than_crashes(tmp_path):
@@ -183,4 +183,4 @@ def test_a_non_string_input_key_drops_rather_than_crashes(tmp_path):
     build = optimize.trainset_from_traces(tmp_path, inputs=lambda ev: {1: "x"},
                                           label=lambda ev: "gold")
     assert len(build) == 0
-    assert build.dropped == {"inputs not a mapping": 1}
+    assert build.dropped == {"inputs not a string-keyed mapping": 1}

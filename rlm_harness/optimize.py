@@ -43,17 +43,6 @@ _UNSET = object()
 _AUTO_SETTINGS = ("light", "medium", "heavy")
 
 
-class _EmptyPrediction:
-    """Stands in for a prediction in the pre-flight metric probe: every attribute is None, so a
-    metric reading the PREDICTION side cannot raise, and one reading a missing EXAMPLE field
-    still does."""
-
-    def __getattr__(self, name: str) -> None:
-        return None
-
-
-_EMPTY_PREDICTION = _EmptyPrediction()
-
 # A metric scores a rollout. NOTE: this alias is documentation, not a gate -- no type checker runs
 # in CI, so nothing makes a wrong annotation here fail. What does fail is `dspy.GEPA.__init__`,
 # which `compile_task` now constructs before spending anything precisely so that it validates the
@@ -63,6 +52,46 @@ _EMPTY_PREDICTION = _EmptyPrediction()
 # signature is `(gold, pred, trace=None, pred_name=None, pred_trace=None)`, or `*args`. A type that
 # said `(example, prediction)` endorsed, through `py.typed`, the one shape guaranteed to fail.
 Metric = Callable[..., float]
+
+
+class _ProbePrediction:
+    """A prediction stub that records whether it was read. Every attribute answers ``None``.
+
+    The recording is the whole point. The pre-flight asks whether a metric can score a trainset
+    AT ALL, and the exception type cannot answer that: ``None.strip()`` and ``None.get(...)`` both
+    raise ``AttributeError``, exactly as a missing field on the example does, so refusing on the
+    type alone rejected two of five ordinary metric shapes at zero rollouts. A second stub
+    mirroring the example's fields does not close it either, because a metric may read a
+    prediction field the example never had.
+
+    What separates them is WHEN: a metric that raises without ever looking at the prediction
+    failed on the example, and no prediction could have saved it. One that read the prediction
+    first is reacting to the stub, which says nothing about the trainset.
+    """
+
+    def __init__(self) -> None:
+        self.touched = False
+
+    def __getattr__(self, name: str) -> None:
+        # Only called for attributes not found normally, so `touched` itself never trips it.
+        self.touched = True
+
+
+def _metric_cannot_score(metric: Metric, example: Any) -> bool:
+    """Would this metric raise on this trainset no matter what the model returned?
+
+    True only when the metric raised an ``AttributeError`` BEFORE reading the prediction. Returns
+    a bool rather than raising, so the caller owns the message; any other exception is the metric
+    reacting to a stub and says nothing either way.
+    """
+    probe = _ProbePrediction()
+    try:
+        metric(example, probe)
+    except AttributeError:
+        return not probe.touched
+    except Exception:
+        return False
+    return False
 
 
 def exact_field_metric(field: str) -> Metric:
@@ -245,7 +274,7 @@ def trainset_from_traces(
             # Outside the `try` above, so a callable returning a list used to raise
             # `AttributeError: 'list' object has no attribute 'values'` mid-corpus, after every
             # file had been read, in a function whose whole posture is drop-not-crash.
-            _drop("inputs not a mapping")
+            _drop("inputs not a string-keyed mapping")
             continue
         if not got or any(v is None for v in got.values()):
             _drop("inputs missing")
@@ -451,9 +480,12 @@ def _candidates(example: Any, answer_of: Callable[[Any], str] | None) -> list[st
     kept for.
 
     - ``answer_of`` given: trust it, one candidate.
-    - a `dspy.Example`: the inputs are declared, so the non-input fields joined are the gold.
-    - a plain mapping: each value is a candidate on its own, never the values joined. A joined
-      string carries the question too, and an instruction does not quote the question.
+    - a `dspy.Example`: the inputs are declared, so each non-input field is a candidate, plus
+      their join when there is more than one. A dict ``label`` from
+      :func:`trainset_from_traces` is that shape, and the join alone missed it.
+    - a plain mapping: each value on its own, with no join. Nothing there declares which key is
+      the question, so a joined string would carry it, and an instruction does not quote the
+      question.
 
     A `dspy.Example` whose every field is an input yields nothing and is skipped: that is a blind
     spot rather than a false clean, because there is no answer to find.
@@ -510,6 +542,11 @@ def compile_task(
     which gives an optimizer nothing to climb, and the cost axis that did have a gradient was
     satisfiable by doing less work rather than better work. ``docs/PROMPT.md`` has both.
 
+    **The metric is probed against the first trainset example before anything is spent**, with a
+    stub prediction, so a metric that cannot score this trainset at all is refused at zero
+    rollouts rather than after the budget. A metric that merely reads its prediction is not
+    refused; see :func:`_metric_cannot_score` for how the two are told apart.
+
     ``reflection_lm`` has no default and is checked here rather than left to dspy, which raises
     ``AssertionError: GEPA requires a reflection language model, or custom instruction proposer to
     be provided``. It must be a ``dspy.LM`` that can return JSON, which 3.4.1 and later require
@@ -518,8 +555,9 @@ def compile_task(
 
     ``audit_outputs(examples, predictions)`` is yours, run over the holdout before and after.
     **A prediction may be ``None``**, for a rollout that failed and was scored rather than
-    aborting, so the callable has to tolerate it: the kit guards the call so a raise cannot
-    discard the measurement, and reports the failure in the result instead. The
+    aborting, so the callable has to tolerate it: ``[p.answer for p in predictions]`` raises on
+    one. The kit guards the call so a raise cannot discard the measurement, and reports the
+    failure in the result instead. The
     kit cannot audit your outputs because it does not know what they mean: on the corpus above,
     two distinct ways of padding a page both held the quality metric at its ceiling, one of them
     visible only by reading the prose. Whatever the callable returns is carried in the result.
@@ -539,18 +577,14 @@ def compile_task(
     train = list(trainset)
     held = list(holdout) if holdout else []
 
-    # The metric, once, before anything is spent. `dspy.GEPA.__init__` validates its ARITY for
-    # free and this validates that it can score THIS trainset: a metric looking for a field the
-    # examples do not carry scores every rollout zero, gives the optimizer no gradient, and
-    # GEPA's own executor swallows the exception on the trainset side, so the whole budget goes
-    # before anyone learns why. An example-side check needs no real prediction.
-    try:
-        metric(train[0], _EMPTY_PREDICTION)
-    except AttributeError:
-        raise
-    except Exception:
-        # Anything else is the metric reacting to an empty prediction, which is expected here.
-        pass
+    # The metric, before anything is spent. `dspy.GEPA.__init__` validates its ARITY for free and
+    # this validates that it can score THIS trainset: a metric looking for a field the examples do
+    # not carry has every rollout scored `failure_score` by GEPA's own executor, which swallows the
+    # exception on the trainset side, so the optimizer gets no gradient and the whole budget goes
+    # before anyone learns why. It needs no real prediction, only a stub -- and the stub records whether
+    # the metric read it, for the reason in `_metric_cannot_score`.
+    if _metric_cannot_score(metric, train[0]):
+        metric(train[0], _ProbePrediction())   # raise it where the caller can read it
     program = task._build_rlm()
     # Captured BEFORE the compile. dspy 3.4.0's GEPA hands back a deepcopy and leaves the
     # student's own text intact, so this is not the only moment it could be read; it is the moment
@@ -655,8 +689,8 @@ def _run_audit(audit: Callable[..., dict] | None, examples: Sequence[Any],
     Guarded for the same reason `save_program` moved above the after-evaluation: on the after
     side this runs downstream of the save, so a raise left the artifact on disk and took
     `holdout_after`, `delta` and the instruction audit with it, and the only way back was
-    re-running the whole compile. A failing rollout also puts `None` in the predictions, which
-    the kit's own documented idiom (`[p.answer for p in predictions]`) raises on.
+    re-running the whole compile. A failing rollout also puts `None` in the predictions, which the
+    obvious ``[p.answer for p in predictions]`` raises on.
     """
     if audit is None or evaluated is None:
         return None
@@ -664,7 +698,9 @@ def _run_audit(audit: Callable[..., dict] | None, examples: Sequence[Any],
         return audit(examples, evaluated[1])
     except Exception as exc:
         logger.warning("audit_outputs raised; recording the failure instead", exc_info=True)
-        return {"error": f"{type(exc).__name__}: {exc}"}
+        # A reserved key, so a reader can tell the kit's failure record from a consumer's own
+        # field named `error`.
+        return {"rlm_harness_error": f"{type(exc).__name__}: {exc}"}
 
 
 def _evaluate(program: Any, examples: Sequence[Any], metric: Metric,
