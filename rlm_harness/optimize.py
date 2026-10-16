@@ -1,17 +1,22 @@
-"""GEPA optimization harness: PHASE 1 SKELETON.
+"""GEPA optimization harness: compile a task's instructions against your own metric.
 
-The whole point of choosing DSPy for RLM is that tasks can be *compiled*
-(prompt + few-shot demos optimised against a metric) rather than hand-tuned.
-This module wires that interface and ships ready-to-use metric templates.
+The point of building on dspy is that a task can be *compiled*, its instructions optimised
+against a metric, rather than hand-tuned forever. This module owns the wiring and leaves you the
+one thing it cannot have an opinion about.
 
-What is implemented now (Phase 1):
-- Metric templates (``exact_field_metric``, ``schema_valid_metric``): pure,
-  tested, usable today.
-- ``save_program`` / ``load_program`` thin wrappers over dspy persistence.
+- :func:`compile_task` runs ``dspy.GEPA`` over a task's own program, measures a holdout before and
+  after IN ONE PROCESS, and saves the artifact with the fingerprint
+  :attr:`~rlm_harness.task.RLMTask.compiled_instructions` needs to accept it back.
+- :func:`save_program` / :func:`load_program` wrap dspy persistence; ``save_program(..., task=)``
+  is what writes that fingerprint.
+- ``exact_field_metric`` and ``schema_valid_metric`` are metric templates, usable where an exact
+  label exists.
 
-What is deferred to Phase 2 (needs a labelled trainset you provide):
-- ``compile_task`` raises ``NotImplementedError`` with the exact call it will
-  make. The reference body is in the docstring so wiring it up is mechanical.
+**The metric is yours, and it is the part that decides whether the money bought anything.** Two
+measured warnings, both in ``docs/PROMPT.md``: a plausible quality signal on a real consumer
+corpus scored a perfect 1.000 on 151 of 153 examples, which leaves an optimizer nothing to climb;
+and the cost axis that did have a gradient was satisfiable by doing less work rather than better
+work. Measure your metric's spread before spending a compile on it.
 """
 
 from __future__ import annotations
@@ -64,8 +69,27 @@ def schema_valid_metric(model: type[BaseModel], field: str) -> Metric:
 
 @dataclass
 class CompileResult:
+    """What a compile produced, and whether it is worth keeping.
+
+    ``holdout_before`` and ``holdout_after`` are measured in ONE process, which is what makes
+    their difference a result: re-running a known artifact over the same held-out examples in a
+    later session scored 0.575 and 0.596 against a recorded 0.733, so session drift of that order
+    is the same size as the gain a compile earns. An absolute score from one session is not a
+    figure anyone can reproduce; the paired difference is.
+
+    ``delta`` is ``None`` rather than a number when no holdout was given, because there is nothing
+    to subtract and a plausible-looking figure in that slot would be the worst of the options.
+    """
+
     program: Any
     score: float | None = None
+    holdout_before: float | None = None
+    holdout_after: float | None = None
+    delta: float | None = None
+    per_example: dict[str, list[float]] | None = None
+    artifact: str | None = None
+    output_audit: dict[str, Any] | None = None
+    rollouts: dict[str, int] | None = None
 
 
 def compile_task(
@@ -73,50 +97,104 @@ def compile_task(
     trainset: Sequence[Any],
     metric: Metric,
     *,
+    reflection_lm: Any = None,
+    holdout: Sequence[Any] | None = None,
     auto: str = "light",
+    save_to: str | None = None,
+    audit_outputs: Callable[[Sequence[Any], Sequence[Any]], dict] | None = None,
     **gepa_kwargs: Any,
 ) -> CompileResult:
-    """Compile an ``RLMTask``'s underlying program with dspy.GEPA. (Phase 2.)
+    """Compile an ``RLMTask``'s program with ``dspy.GEPA``, and measure whether it helped.
 
-    Reference implementation to be enabled once a trainset exists::
+    The kit owns the wiring; you own the metric. What it does for you:
 
-        import dspy
-        program = task._build_rlm()
-        optimizer = dspy.GEPA(metric=metric, auto=auto, **gepa_kwargs)
-        compiled = optimizer.compile(program, trainset=list(trainset))
-        return CompileResult(program=compiled)
+    - **Builds the program with :meth:`RLMTask._build_rlm`**, so the sandbox guard, the per-pass
+      interpreter factory, tool timing and description normalisation all apply to every optimizer
+      pass, and passes it to GEPA DIRECTLY rather than wrapping it. A wrapper is tempting (it is
+      where a consumer hangs its own tracing) and it costs you the artifact: dspy prefixes each
+      predictor with the attribute it hangs off, so a state saved from a wrapper names
+      ``rlm.generate_action`` and :attr:`RLMTask.compiled_instructions` refuses it for naming no
+      predictor this build has.
+    - **Evaluates ``holdout`` before and after, in this process.** See :class:`CompileResult` for
+      why only a paired difference is a result.
+    - **Saves with the fingerprint**, via :func:`save_program` with ``task=``, so the artifact can
+      be loaded back by :attr:`RLMTask.compiled_instructions` instead of being refused.
 
-    **``gepa_kwargs`` MUST carry ``reflection_lm``**, which has no default::
+    What it refuses to do for you: pick a metric. One metric call is one FULL rollout, so the
+    metric decides what the money buys, and a plausible one can be measured saturated. On a real
+    consumer corpus of 153 runs the obvious quality signal scored a perfect 1.000 on 151 of them,
+    which gives an optimizer nothing to climb, and the cost axis that did have a gradient was
+    satisfiable by doing less work rather than better work. ``docs/PROMPT.md`` has both.
 
-        compile_task(task, trainset, metric, reflection_lm=dspy.LM("openai/gpt-4.1-mini"))
+    ``reflection_lm`` has no default and is checked here rather than left to dspy, which raises
+    ``AssertionError: GEPA requires a reflection language model, or custom instruction proposer to
+    be provided``. It must be a ``dspy.LM`` that can return JSON, which 3.4.1 requires because its
+    default proposer goes through ``dspy.Predict`` and ``JSONAdapter``.
 
-    Without it dspy 3.4.0 and 3.4.1 both raise ``AssertionError: GEPA requires a reflection
-    language model, or custom instruction proposer to be provided``, which is a failure the body
-    above cannot prevent and nothing here used to mention. It must be a
-    ``dspy.LM`` that can return JSON, which 3.4.1 requires because its default proposer went
-    through ``dspy.Predict`` + ``JSONAdapter``. Reaching GEPA at all has prerequisites this
-    function cannot supply, and ``docs/PROMPT.md`` carries them: one metric call is one FULL
-    rollout, ``auto="light"`` on a two-predictor program resolves to 790 of them at a ten-example
-    valset, and an optimized program re-enters a run through
-    ``RLMTask(compiled_instructions=…)``, which takes the TEXT and still builds the program
-    itself. A state compiled against different tool documentation is refused there rather than
-    silently reinstating the descriptions of whatever version compiled it.
-
-    THE BLOCKER THIS USED TO CARRY IS GONE as of 1.14.0. It said `optimizer.compile` calls the
-    program without a positional interpreter, so dspy would build one from the metadata CARRIER
-    `_build_rlm` passed, which raised when invoked. dspy 3.4.0 deleted the positional seam, so the
-    kit now passes a REAL factory (`_dspy_compat.interpreter_kwargs`) and every optimizer pass gets
-    its own sandbox, built by the kit with its guard, and shut down by dspy afterwards. Nothing
-    here needs a special interpreter any more.
-
-    It is intentionally not active yet: compiling without a representative,
-    labelled trainset produces a confidently-wrong program, which is worse than
-    none. Supply the trainset + metric, then swap this stub for the body above.
+    ``audit_outputs(examples, predictions)`` is yours, run over the holdout before and after. The
+    kit cannot audit your outputs because it does not know what they mean: on the corpus above,
+    two distinct ways of padding a page both held the quality metric at its ceiling, one of them
+    visible only by reading the prose. Whatever the callable returns is carried in the result.
     """
-    raise NotImplementedError(
-        "compile_task is a Phase-2 stub. Provide a labelled trainset and a "
-        "metric, then enable the reference body documented in this function."
+    import dspy
+
+    if reflection_lm is None:
+        raise ValueError(
+            "compile_task needs reflection_lm=dspy.LM(...): the LM that reads a trajectory and "
+            "proposes a new instruction. dspy raises a bare AssertionError without it. On dspy "
+            "3.4.1 it must be able to return JSON, because the default proposer goes through "
+            "dspy.Predict and JSONAdapter."
+        )
+    if not trainset:
+        raise ValueError("compile_task needs a non-empty trainset: GEPA has nothing to run on.")
+
+    train = list(trainset)
+    held = list(holdout) if holdout else []
+    program = task._build_rlm()
+
+    before = _evaluate(program, held, metric) if held else None
+    audit_before = audit_outputs(held, before[1]) if (audit_outputs and before) else None
+
+    optimizer = dspy.GEPA(metric=metric, auto=auto, reflection_lm=reflection_lm, **gepa_kwargs)
+    compiled = optimizer.compile(program, trainset=train)
+
+    after = _evaluate(compiled, held, metric) if held else None
+    audit_after = audit_outputs(held, after[1]) if (audit_outputs and after) else None
+
+    artifact = None
+    if save_to:
+        save_program(compiled, save_to, task=task)
+        artifact = save_to
+
+    return CompileResult(
+        program=compiled,
+        score=after[0] if after else None,
+        holdout_before=before[0] if before else None,
+        holdout_after=after[0] if after else None,
+        delta=(after[0] - before[0]) if (before and after) else None,
+        per_example=({"before": before[2], "after": after[2]} if (before and after) else None),
+        artifact=artifact,
+        output_audit=({"before": audit_before, "after": audit_after} if audit_outputs else None),
+        rollouts={"trainset": len(train), "holdout_before": len(held),
+                  "holdout_after": len(held)},
     )
+
+
+def _evaluate(program: Any, examples: Sequence[Any],
+              metric: Metric) -> tuple[float, list[Any], list[float]]:
+    """Score a program over examples, returning the mean, the predictions and every score.
+
+    The per-example scores come back because a mean over six examples hides which way each one
+    moved, and a compile that raises the mean while making two examples worse is a different
+    decision from one that raises all six.
+    """
+    preds, scores = [], []
+    for ex in examples:
+        inputs = ex.inputs().toDict() if hasattr(ex, "inputs") else dict(ex)
+        pred = program(**inputs)
+        preds.append(pred)
+        scores.append(float(metric(ex, pred)))
+    return (sum(scores) / len(scores) if scores else 0.0), preds, scores
 
 
 FINGERPRINT_KEY = "rlm_harness"

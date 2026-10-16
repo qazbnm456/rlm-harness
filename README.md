@@ -195,8 +195,9 @@ itself waits for the next major. The trace format carries its own version and ev
 additive-only within it; a break bumps that version instead, which has happened once (`v1` to `v2`
 in 1.17.0, for one removed usage key, and a v1 trace still reads). A `_`-prefixed name or module internal is not part of that promise.
 
-Next: enable `optimize.compile_task` against a labelled trainset to actually
-GEPA-compile tasks (currently a documented stub).
+`optimize.compile_task` GEPA-compiles a task against a labelled trainset and your own metric,
+measuring a holdout before and after in one process, because an absolute score from one session is
+not reproducible and only the paired difference is a result.
 
 ## License
 

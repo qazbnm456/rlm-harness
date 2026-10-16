@@ -6,8 +6,10 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 ## [1.20.0] - 2026-10-15
 
-**Three fields in the `compiled_instructions` event answered a question next to the one they were
-named for.** All three were found by review on 1.19.0, filed rather than fixed because none is
+**The optimizer loop closes: a task can be compiled, measured against a holdout, saved, and run
+again from the artifact.** `compile_task` was the one piece still raising `NotImplementedError`,
+and three fields in the `compiled_instructions` event answered a question next to the one they
+were named for. All three were found by review on 1.19.0, filed rather than fixed because none is
 reachable with an artifact that release can write, and each becomes live the moment something
 moves: a later kit adding or dropping a cap, a dspy renaming a predictor, an artifact outliving
 the dspy that compiled it. The event exists because a later reader is otherwise on a false premise
@@ -15,6 +17,32 @@ about what the model was shown, so a field that answers the wrong question is th
 cannot absorb.
 
 ### Added
+
+- **`optimize.compile_task` compiles, instead of raising `NotImplementedError`.** It runs
+  `dspy.GEPA` over the task's own program and owns every piece of wiring a consumer would
+  otherwise write: the reflection-LM check in the kit's words rather than dspy's bare
+  `AssertionError`, the holdout measured before and after IN ONE PROCESS, and the save that
+  carries a fingerprint so `RLMTask(compiled_instructions=…)` accepts the artifact back.
+
+  **`delta` is `None` when no holdout was given.** Re-running a known artifact over the same six
+  held-out examples in a later session scored 0.575 and 0.596 against a recorded 0.733, so session
+  drift is the same order as the gain a compile earns. An absolute score from one session is not
+  reproducible and only a paired difference is a result; a plausible-looking figure in that slot
+  would be read as one by everyone who did not write it. `per_example` carries every score for the
+  same reason: a mean that rises while one example falls is a different decision.
+
+  **The program goes to GEPA unwrapped.** A wrapping module is where a consumer hangs its own
+  tracing, and it costs them the artifact: dspy prefixes each predictor with the attribute it
+  hangs off, so a state saved from a wrapper names `rlm.generate_action` and the load refuses it
+  for naming no predictor the build has.
+
+  **The metric stays the consumer's, and so does auditing the outputs.** A plausible quality
+  signal measured on a real consumer corpus of 153 runs scored a perfect 1.000 on 151 of them,
+  which gives an optimizer nothing to climb, and the cost axis that did have a gradient was
+  satisfiable by writing less rather than better. `audit_outputs` is an optional callable run over
+  the holdout on both sides, because two distinct ways of padding an output both held that
+  corpus's metric at its ceiling and one was visible only by reading the prose. The kit cannot see
+  that and does not pretend to.
 
 - **`budget_unrecorded`**, and `budget_changed` is now compared per cap and only where both sides
   carry it. A cap the record lacks has not moved, it is unknown, and reporting it as moved was the
