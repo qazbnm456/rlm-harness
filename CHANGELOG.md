@@ -44,6 +44,22 @@ cannot absorb.
   corpus's metric at its ceiling and one was visible only by reading the prose. The kit cannot see
   that and does not pretend to.
 
+- **`optimize.trainset_from_traces` builds a trainset out of runs this kit already recorded.**
+  The questions people actually asked beat ten someone wrote by hand, and they are already on
+  disk. What is not on disk is whether each answer was good, so `label` is the consumer's: it
+  takes a run's events and returns the gold value, or `None` to drop that run. This kit emits
+  trajectories and never reward, and that boundary is the whole shape of the signature.
+
+  **The filter is the result's other half, and the default is not conservatism.** A real corpus of
+  153 runs carried 8 that never finished, and a failed run has ZERO `main_step` events because the
+  kit writes them in one batch after the pass returns. So an unfinished run is indistinguishable
+  from one that finished instantly, and a trainset built without the turn check teaches an
+  optimizer that dying early is cheap. `TrainsetBuild` carries the drop counts by reason, because
+  a build that silently returns 145 of 153 is a corpus-validity question nobody asked.
+
+  `inputs` takes field names or a callable, because consumers do not agree on where the input
+  lives: across five real ones it was `meta.task`, a JSON blob at `meta.event`, and `meta.lead`.
+
 - **`optimize.audit_instruction` reads a compiled instruction for what the score cannot see**, and
   `compile_task` reports it without being asked. Two things, both from the same measured compile:
   the trainset answers an optimizer wrote into the instruction to get those examples right, and

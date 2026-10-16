@@ -94,6 +94,129 @@ class CompileResult:
 
 
 @dataclass
+class TrainsetBuild:
+    """The examples, and what was dropped getting them.
+
+    The drops are not diagnostics, they are the result's other half. A corpus of 153 real runs
+    carried 8 that never finished, and a failed run has ZERO ``main_step`` events because the kit
+    writes them in one batch after the pass returns. So an unfinished run is indistinguishable
+    from one that finished instantly unless something checks, and a trainset built without that
+    check teaches the optimizer that dying early is cheap.
+    """
+
+    examples: list[Any]
+    dropped: dict[str, int]
+    sources: int
+
+    def __len__(self) -> int:
+        return len(self.examples)
+
+    def __iter__(self):
+        return iter(self.examples)
+
+
+def trainset_from_traces(
+    paths: Any,
+    *,
+    inputs: Sequence[str] | Callable[[list[dict]], dict],
+    label: Callable[[list[dict]], Any],
+    require: Sequence[str] = ("run_end", "main_step"),
+) -> TrainsetBuild:
+    """Build a trainset from runs this kit already recorded.
+
+    The questions people actually asked beat ten someone wrote by hand, and they are already on
+    disk. What is NOT on disk is whether each answer was any good, so ``label`` is yours: it takes
+    a run's events and returns the gold value, or ``None`` to drop that run. This kit emits
+    trajectories and never reward (``docs/INVARIANTS.md``), and that boundary is why the signature
+    looks like this.
+
+    ``inputs`` names the fields to lift from ``run_start``'s ``meta``, or is a callable taking the
+    events and returning the input dict, because consumers do not agree on where the input lives:
+    across five real ones it was under ``meta.task``, inside a JSON blob at ``meta.event``, and at
+    ``meta.lead``.
+
+    ``require`` is the filter that makes the result a trainset rather than a log. Defaults to a
+    finished run that took at least one turn. Loosen it knowing what you are loosening.
+
+    Every file is read with :func:`rlm_harness.load_events` rather than a hand-rolled parser,
+    which is not a style note: ``str.splitlines()`` breaks on eleven separators and a model's
+    reasoning text contains them, so a hand-rolled reader reported ten corrupt lines in an intact
+    corpus.
+    """
+    import dspy
+
+    from .trace import load_events
+
+    files = _trace_files(paths)
+    examples: list[Any] = []
+    dropped: dict[str, int] = {}
+
+    def _drop(why: str) -> None:
+        dropped[why] = dropped.get(why, 0) + 1
+
+    for path in files:
+        try:
+            events = load_events(str(path))
+        except Exception:
+            _drop("unreadable")
+            continue
+        if not events:
+            _drop("empty")
+            continue
+        present = {e.get("type") for e in events}
+        missing = [r for r in require if r not in present]
+        if missing:
+            _drop(f"no {missing[0]}")
+            continue
+        try:
+            got = inputs(events) if callable(inputs) else _lift(events, inputs)
+        except Exception:
+            _drop("inputs raised")
+            continue
+        if not got or any(v is None for v in got.values()):
+            _drop("inputs missing")
+            continue
+        try:
+            gold = label(events)
+        except Exception:
+            # A label that raises drops its run rather than the build: one unscoreable run in a
+            # corpus of hundreds is not a reason to produce nothing.
+            _drop("label raised")
+            continue
+        if gold is None:
+            _drop("label declined")
+            continue
+        examples.append(dspy.Example(**got, **gold if isinstance(gold, dict) else {"label": gold})
+                        .with_inputs(*got))
+    return TrainsetBuild(examples=examples, dropped=dropped, sources=len(files))
+
+
+def _trace_files(paths: Any) -> list[Any]:
+    """One path or many, as a string or a `Path`.
+
+    `isinstance(paths, str)` alone was the first version, and it turned a `Path` into
+    `list(Path)`, which raises `TypeError: 'PosixPath' object is not iterable` out of the middle
+    of a build. A smoke test that happened to pass a string did not see it.
+    """
+    import os
+    import pathlib
+
+    given = [paths] if isinstance(paths, (str, os.PathLike)) else list(paths)
+    out: list[Any] = []
+    for one in given:
+        p = pathlib.Path(one).expanduser()
+        out.extend(sorted(p.rglob("*.jsonl")) if p.is_dir() else [p])
+    return out
+
+
+def _lift(events: list[dict], names: Sequence[str]) -> dict:
+    """Pull named fields out of `run_start`'s meta, which is the caller's own namespace."""
+    start = next((e for e in events if e.get("type") == "run_start"), {})
+    meta = (start.get("payload") or {}).get("meta") or {}
+    return {n: meta.get(n) for n in names}
+
+
+@dataclass
 class InstructionAudit:
     """What a compiled instruction gained and lost, for the things a score cannot see.
 
