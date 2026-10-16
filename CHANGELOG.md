@@ -60,15 +60,16 @@ wrong question is the one defect it cannot absorb.
   because `dspy.GEPA`'s constructor validates a metric's arity for free but not whether it can
   score THESE examples, and GEPA's own executor swallows the exception on the trainset side: a
   metric looking for a field the examples do not carry has every rollout scored `failure_score`,
-  the optimizer gets no gradient, and the whole budget goes before anyone learns why.
-  without ever reading the prediction failed on the example and no prediction could have saved
-  it, while one that read it first is only reacting to a stub. Judging on the exception type
-  alone refused both `pred.answer.strip().lower()` and `.get()` on a structured field, which are
-  the most ordinary things a text metric and a schema'd one do. A metric that merely returns a
-  flat zero is not caught here either, which is why "The metric stays the consumer's" above says
-  to measure its spread before spending a compile on it. An unknown `auto` is refused there too,
-  since dspy accepts any string in its constructor and raises `KeyError` from `compile()`, which
-  is after the holdout.
+  the optimizer gets no gradient, and the whole budget goes before anyone learns why. The
+  recording is what makes the probe safe: a metric that raises without ever reading the prediction
+  failed on the example and no prediction could have saved it, while one that read it first may be
+  reacting to the stub, so the probe stays silent rather than refuse a working metric. Judging on
+  the exception type alone refused both `pred.answer.strip().lower()` and `.get()` on a structured
+  field, which are the most ordinary things a text metric and a schema'd one do. A metric that
+  merely returns a flat zero is not caught here either, which is why "The metric stays the
+  consumer's" above says to measure its spread before spending a compile on it. An unknown `auto`
+  is refused there too, since dspy accepts any string in its constructor and raises `KeyError`
+  from `compile()`, which is after the holdout.
 
 - **`optimize.trainset_from_traces` builds a trainset out of runs this kit already recorded.**
   The questions people actually asked beat ten someone wrote by hand, and they are already on

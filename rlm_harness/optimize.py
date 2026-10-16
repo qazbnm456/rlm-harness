@@ -571,10 +571,10 @@ def compile_task(
     **A prediction may be ``None``**, for a rollout that failed and was scored rather than
     aborting, so the callable has to tolerate it: ``[p.answer for p in predictions]`` raises on
     one. The kit guards the call so a raise cannot discard the measurement, and reports the
-    failure in the result instead. The kit cannot audit your outputs because it does not know what
-    they mean: on the corpus above,
-    two distinct ways of padding a page both held the quality metric at its ceiling, one of them
-    visible only by reading the prose. Whatever the callable returns is carried in the result.
+    failure in the result instead. The kit cannot audit your outputs because it does not know
+    what they mean: on the corpus above, two distinct ways of padding a page both held the
+    quality metric at its ceiling, one of them visible only by reading the prose. Whatever the
+    callable returns is carried in the result.
     """
     import dspy
 
