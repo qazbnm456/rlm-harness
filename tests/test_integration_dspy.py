@@ -482,7 +482,7 @@ def test_lenient_json_adapter_reads_a_braceless_body_before_stock_parse_can_misr
     field; a ``dict``-typed field accepts it, nothing raises, and the model's answer is silently
     replaced by a fragment of itself. Fails on the fallback ordering, which returned the fragment.
 
-    The second case is the one that hid this: a pydantic-typed field REJECTS the inner value, so
+    ``CollideTyped`` is the case that hid this: a pydantic-typed field REJECTS the inner value, so
     stock parse raises and the fallback fired. It must still reach the right answer.
     """
 
@@ -525,6 +525,62 @@ def test_lenient_json_adapter_reads_a_braceless_body_before_stock_parse_can_misr
         "payload": {"payload": {"payload": {"a": 1}}}
     }
     assert a.parse(CollideTyped, '"payload": {"payload": "x"}') == {"payload": Inner(payload="x")}
+
+
+def test_lenient_json_adapter_refuses_a_wrap_that_only_defaults_could_satisfy():
+    """A brace-less body naming none of the output fields is not wrapped, and a wrapped read that
+    FAILS is never replaced by the raw read's VALUE. Both close answers the kit invented rather
+    than read, and both were measured on dspy 3.4.0 and on 3.4.1.
+
+    ``'"a": 1, "b": 2'`` against an optional output field: stock dspy RAISES, and wrapping it
+    returned ``{"payload": None}``, because the wrap leaves no output field behind and dspy's
+    ``apply_output_field_defaults`` then fills one. That fabrication was the kit's own, not
+    inherited.
+
+    ``'"payload": {"payload": "x"}'`` against an optional ``str``: the wrapped read fails type
+    validation while the raw read SUCCEEDS with the fragment ``"x"``, so consulting the raw read
+    for a value reintroduced exactly the loss the wrap order exists to stop.
+
+    The first body against a signature whose output fields really are ``a`` and ``b`` is the
+    recovery the wrap exists for, so the two cannot be told apart from the body alone and the guard
+    is what separates them. It matches as a SUBSTRING deliberately: a false yes leaves the old
+    behaviour, a false no would break a real recovery, and dspy's repair accepts unquoted keys,
+    which carry no quotes to match on. The unquoted assertion below is what rules out the tighter
+    form.
+    """
+    class Opt(dspy.Signature):
+        """Optional."""
+        q: str = dspy.InputField()
+        payload: str | None = dspy.OutputField()
+
+    class Feature(dspy.Signature):
+        """The recovery the wrap exists for."""
+        q: str = dspy.InputField()
+        a: int = dspy.OutputField()
+        b: int = dspy.OutputField()
+
+    a = rt._LenientJSONAdapter()
+    with pytest.raises(dspy.AdapterParseError):
+        a.parse(Opt, '"a": 1, "b": 2')
+    with pytest.raises(dspy.AdapterParseError):
+        a.parse(Opt, '"payload": {"payload": "x"}')
+    assert a.parse(Feature, '"a": 1, "b": 2') == {"a": 1, "b": 2}
+    assert a.parse(Feature, "a: 1, b: 2") == {"a": 1, "b": 2}
+
+
+def test_lenient_json_adapter_reports_the_completion_the_model_actually_sent():
+    """The error quotes the RAW completion, not a stripped or brace-wrapped form of it.
+
+    ``AdapterParseError`` embeds the text the failing parse was handed. Quoting the wrapped body
+    sends a reader hunting for braces the model never wrote; quoting the stripped body hides
+    whitespace that may be the whole problem. Handing the final read ``body`` instead of
+    ``completion`` leaves every other test in this suite green, so this is its only gate.
+    """
+    sig = dspy.Signature("q: str -> answer: str")
+    raw = "  the answer is unknowable  "
+    with pytest.raises(dspy.AdapterParseError) as caught:
+        rt._LenientJSONAdapter().parse(sig, raw)
+    assert raw in str(caught.value), "the message must quote the completion verbatim, unstripped"
 
 
 def test_lenient_json_adapter_never_answers_an_empty_reply_from_an_invented_object():

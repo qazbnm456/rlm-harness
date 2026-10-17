@@ -226,10 +226,10 @@ cannot see.
     `uv run --with "hatchling==1.27.0" --no-project python -c "from hatchling.metadata.spec import DEFAULT_METADATA_VERSION as d; print(d)"`
   - no `win_arm64` wheel for `deno` (`ci.yml`, CHANGELOG Unreleased):
     `curl -s https://pypi.org/pypi/deno/json | jq -r '.urls[].filename'`
-  - `json_repair` dropping the outer key of a brace-less body, on every dspy in the supported range
-    (`runtime.py` `_LenientJSONAdapter.parse`, CHANGELOG 1.20.1). Prints the FRAGMENT
-    `{'payload': {'a': 'b'}}` rather than the whole value, which is the misread the parse order
-    exists to avoid; swap `3.4.0` for `3.4.1` for the other end of the range:
+  - stock parse reducing a brace-less body to a FRAGMENT of itself, measured on dspy 3.4.0 and on
+    3.4.1 (`runtime.py` `_LenientJSONAdapter.parse`, CHANGELOG 1.20.1). Prints
+    `{'payload': {'a': 'b'}}` rather than the whole value the body carries, which is the misread the
+    parse order exists to avoid. Re-run it on any newer 3.4.x by swapping the pin:
     `uv run --with "dspy==3.4.0" --no-project python -c "import dspy; print(dspy.JSONAdapter().parse(dspy.Signature('q: str -> payload: dict'), '\"payload\": {\"payload\": {\"a\": \"b\"}}'))"`
 
   A **corpus-attributed** claim ("385 runs", "141 traces", "57% of tool wall-clock") can be audited

@@ -46,14 +46,14 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
        ``ChatAdapter``'s call path directly: for a ``JSONAdapter`` instance it raises rather than
        falling back, see dspy ``chat_adapter`` ``isinstance(self, JSONAdapter)``.)
     2. **Brace-tolerant `parse`.** Schema-guided decoding intermittently drops the outer
-       ``{`` ``}`` and returns just ``"a": 1, "b": 2``; stock parse then can't recover a dict.
-       A NON-EMPTY body that does not start with ``{`` is read as an object body FIRST, not as a
-       fallback after stock parse fails: stock parse can SUCCEED on such a body with the WRONG
-       value, so waiting for an exception loses data silently. An EMPTY or whitespace-only body is
-       never read as one, which is the other half: stock parse fills a DEFAULTED output field from
-       an invented ``{}``, so the fallback used to answer a reply that said nothing. ``parse`` has
-       the conditions for both. A genuinely non-JSON response still raises, with the error the raw
-       completion produces.
+       ``{`` ``}`` and returns just ``"a": 1, "b": 2``, which stock parse cannot read back as that
+       object. A brace-less body is therefore read AS one, and that reading is authoritative: stock
+       parse is consulted for an ERROR, never for a value, because on such a body it can succeed
+       with a FRAGMENT of what the model sent. Three bodies are never wrapped, each because
+       wrapping could only invent an answer instead of reading one: an empty or whitespace-only
+       body, a body naming none of the output fields, and a body already starting with ``{``.
+       ``parse`` carries the reason for each. A reply that is not an object body still raises, with
+       the error the raw completion produces.
 
     (A future, NIM-specific alternative is to drive ``nvext.guided_json`` directly instead of
     relying on ``response_format``: deliberately deferred; this keeps the path provider-agnostic.)"""
@@ -83,41 +83,40 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
         from dspy.utils.exceptions import AdapterParseError
 
         body = (completion or "").strip()
-        # A NON-EMPTY body that does not start with "{" IS a brace-less object body, so read it as
-        # one FIRST, not only after stock parse has failed. Waiting for an exception loses data
-        # silently, and it takes THREE things together, which is why every one-clause account of
-        # this is wrong:
+        # ONE rule: a brace-less body IS an object body missing its braces, so that is how it is
+        # read, and if THAT read fails the body is not an object body for this signature. Stock
+        # parse is not a second opinion to fall back on, because it can SUCCEED on such a body with
+        # a FRAGMENT of what the model sent: dspy repairs the text before matching fields, by more
+        # than one route, so a value nested under the output field's own name can come back as the
+        # whole answer. `docs/VERIFY.md` carries the command that shows one. Hence:
         #
-        #   1. the body's VALUE is itself an object. `json_repair` recovers "" from scalar values,
-        #      so '"a": 1, "b": 2' raises whatever the field types are, but it DROPS THE OUTER KEY
-        #      from an object one: '"payload": {"payload": {"a": "b"}}' becomes {"payload": {"a": "b"}}.
-        #   2. that object carries a key with the output field's OWN name, so the inner value looks
-        #      like the field dspy was looking for.
-        #   3. the value under it satisfies that field's declared type, so NOTHING RAISES. A `dict`
-        #      field accepts {"a": "b"}; a `str` field accepts "x"; a pydantic field rejects both,
-        #      which is the only reason the fallback ordering ever looked correct.
+        #   * the wrap runs FIRST, not after an exception, since waiting for one loses the cases
+        #     where none is raised;
+        #   * the raw read is reached only for its ERROR, never for its value;
+        #   * an empty body is never wrapped, because "{}" satisfies a DEFAULTED output field
+        #     through dspy's `apply_output_field_defaults` and so answers a reply that said
+        #     nothing (measured: an `Optional` field came back None, no exception);
+        #   * a body naming none of the output fields is never wrapped, for the same reason: the
+        #     wrap could only be satisfied by those defaults. The check is a substring, so it is
+        #     deliberately PERMISSIVE: a false yes leaves the old behaviour, while a false no would
+        #     break a real recovery, and unquoted keys (which dspy's repair accepts) have no quotes
+        #     to match on.
         #
-        # Then the task receives the inner value, the model's answer is gone, and nothing is logged.
-        # True on dspy 3.4.0 and on 3.4.1; `docs/VERIFY.md` carries the command that settles it.
-        #
-        # The `body` conjunct is the OTHER half of the same bug, not a tidiness check: an empty or
-        # whitespace-only body must not be read as an object body, because stock parse fills a
-        # DEFAULTED output field from the invented "{}" and so answers a reply that said nothing
-        # (measured: an `Optional[str]` output field came back {"payload": None}, no exception).
-        # Whitespace reaches here through the real call path, since dspy's `_call_postprocess` only
-        # blocks falsy text.
-        #
-        # A completion that already starts with "{" is NOT wrapped, as before: it failed for some
-        # other reason (incomplete, or a missing required field) and wrapping would double the
-        # brace into "{{...}" and bury the real error.
-        if body and not body.startswith("{"):
+        # A body already starting with "{" is never wrapped either: it failed for some other reason
+        # and doubling the brace would bury it.
+        if (
+            body
+            and not body.startswith("{")
+            and any(name in body for name in signature.output_fields)
+        ):
             try:
                 return super().parse(signature, "{" + body + "}")
             except AdapterParseError:
-                # Not an object body after all (prose, a bare scalar). Fall through so the RAW
-                # completion produces the error, which describes what the model actually sent
-                # rather than what wrapping made of it.
-                pass
+                # The raw read is consulted ONLY for its error. If it raises, that error propagates
+                # and names what the model actually sent. If it SUCCEEDS, its value is the fragment,
+                # so re-raise the wrapped read's failure rather than return it.
+                super().parse(signature, completion)
+                raise
         return super().parse(signature, completion)
 
     def _call_postprocess(self, processed_signature, original_signature, outputs, lm, lm_kwargs):

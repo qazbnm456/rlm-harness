@@ -6,41 +6,46 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 ## [1.20.1] - 2026-10-17
 
-**A reply that lost its outer braces could be read as the wrong answer, and a reply that said
-nothing could be answered anyway.** Both came off the same line: the brace-tolerant parse ran as a
-FALLBACK, after stock parse had failed, and stock parse does not always fail.
+**The brace-tolerant parse could answer a reply it had not read.** It treated the brace-wrap as a
+fallback, to be tried after stock parse failed, and stock parse does not always fail: on a body
+missing its outer braces it can succeed with a fragment of what the model sent, and on nothing at
+all it can fill a defaulted output field. So some replies came back as answers that were invented
+rather than read, with no exception raised and nothing recorded.
 
 ### Fixed
 
-- **A non-empty brace-less body is read as an object body FIRST, not after an exception.** Three
-  things have to line up for the fallback ordering to lose data, which is why every one-clause
-  account of it is wrong. The body's VALUE has to be an object: `json_repair` recovers nothing from
-  scalar values, so `"a": 1, "b": 2` raised whatever the field types were, but it DROPS THE OUTER
-  KEY from an object one, turning `"payload": {"payload": {"a": "b"}}` into `{"payload": {"a": "b"}}`.
-  That object has to carry a key with the output field's OWN name, so the inner value looks like the
-  field dspy was looking for. And the value under it has to satisfy that field's declared type: a
-  `dict` field accepts `{"a": "b"}` and a `str` field accepts `"x"`, while a pydantic field rejects
-  both, which is the only reason waiting for an exception ever looked correct. With all three the
-  task received the inner value, the model's answer was gone, and nothing was recorded. Confirmed on
-  dspy 3.4.0 and on 3.4.1; `docs/VERIFY.md` carries the command that settles it.
+- **A brace-less body is read as an object body, and that reading is authoritative.** Stock parse is
+  no longer consulted for a VALUE on such a body, only for an ERROR. What a consumer sees: a reply
+  whose outer key is repeated inside its own value parses to the whole value rather than to the
+  fragment nested under it. `tests/test_integration_dspy.py` carries the shapes, and
+  `docs/VERIFY.md` carries a command that shows one on a pinned dspy.
 
-- **An empty or whitespace-only reply no longer fabricates an answer**, which is the same defect on
-  the other side of the guard. Wrapping nothing produces `{}`, and dspy fills a DEFAULTED output
-  field from it, so the fallback answered a reply that said nothing: an `Optional` output field came
-  back as `{"payload": None}`, no exception raised and no error recorded. It raises now. A required
-  output field raised under both orderings, so only a defaulted one was ever exposed.
+- **Three replies are never wrapped, because wrapping them could only invent an answer.** An empty
+  or whitespace-only reply, a reply naming none of the output fields, and a reply already starting
+  with `{`. The first two used to produce one: when an output field has a default or admits `None`,
+  wrapping left nothing of the reply behind and dspy filled the field from that, so `"a": 1, "b": 2`
+  against an unrelated optional field came back as `None`. Stock dspy refuses that reply outright,
+  so the answer was the kit's own invention and not something it inherited. Where stock dspy answers
+  such a reply itself, the kit answers identically, which is dspy's behaviour to own and
+  `output_model` is the consumer's guard against it.
 
-  **This one is a behaviour change, not only a repair.** A consumer with an `Optional` output field
-  and no `output_model` sees a raise where it used to see `None`, and that consumes a retry and can
-  end the run. It is the direction this should fail in, and it is still a change to read before
-  upgrading.
+  **This is the behaviour change to read before upgrading.** Those replies raise
+  `AdapterParseError` now, which consumes a retry and can end the run, where a consumer with such a
+  field and no `output_model` used to receive a value. An `output_model` already masked it, since
+  `coerce_output` rejects `None`.
 
-- **A brace-less completion that still fails now reports the raw completion.** The error embeds the
-  text the failing parse was handed, and that used to be the brace-wrapped body; the first line is
-  often the same, because the wrapped and raw bodies usually fail the same way, so compare whole
-  messages rather than first lines. The exception type is unchanged on every shape measured, and a
-  completion that already starts with `{` keeps a byte-identical message: it is never wrapped, since
-  it failed for some other reason and doubling the brace would bury it.
+  The field-name check is a substring match deliberately. A false yes leaves the old behaviour,
+  while a false no would break a real recovery, and dspy's repair accepts unquoted keys, which carry
+  no quotes to match on.
+
+- **An error quotes the completion the model actually sent**, unstripped and unwrapped, rather than
+  the brace-wrapped text the failing read was handed. The exception type is unchanged on every shape
+  measured, and a reply already starting with `{` keeps a byte-identical message.
+
+- **A value only a `str` field could hold comes back as a Python repr.** `"payload": {"payload":
+  "x"}` against a `str` output field now parses to the whole value rendered by `str()`, so it is not
+  `json.loads`-able. Preserving the value means coercing it, and the whole value in repr form is the
+  point of the change; the fragment it used to return was parseable and wrong.
 
 ## [1.20.0] - 2026-10-17
 
