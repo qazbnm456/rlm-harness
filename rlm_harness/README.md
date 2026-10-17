@@ -2113,12 +2113,12 @@ model:
 - **`json`** (default): schema-guided structured output, end-to-end. A lenient `JSONAdapter` always
   sends the `json_schema` response format directly: bypassing dspy's `supports_response_schema`
   gate, so no `litellm.register_model` poke is needed, and a brace-tolerant parse absorbs guided
-  output that drops the outer `{ }`. An EMPTY or whitespace-only completion is not absorbed: since
-  1.20.1 it raises rather than being wrapped into the `{}` that a defaulted output field would be
-  filled from. Works on **any** structured-output endpoint: OpenAI-proper
+  output that drops the outer `{ }`. Works on **any** structured-output endpoint: OpenAI-proper
   AND vLLM / NVIDIA NIM (which reject schema-less `json_object` but accept `json_schema`). The
   decoder enforces the schema, so it **yields valid output even from a weak / imperfectly-
-  formatting model**.
+  formatting model**. An EMPTY or whitespace-only completion is not absorbed: since 1.20.1 it
+  raises, rather than being wrapped into the `{}` that dspy supplies a value for whenever an output
+  field has a default or an annotation admitting `None`.
 - **`chat`**: `dspy.ChatAdapter` with the JSONAdapter fallback **off**: never sends
   `response_format`. For an endpoint with **no** structured-output support. Needs the model to
   follow dspy's text field-marker format reliably. The fallback is off (dspy's stock ChatAdapter

@@ -224,13 +224,15 @@ cannot see.
     `uv run --with "dspy==3.2.1" --no-project python -c "from dspy.primitives.python_interpreter import CodeInterpreter as C; print(getattr(C,'_is_runtime_protocol',False))"`
   - hatchling 1.27's own default metadata version (`pyproject.toml`, `release.yml`):
     `uv run --with "hatchling==1.27.0" --no-project python -c "from hatchling.metadata.spec import DEFAULT_METADATA_VERSION as d; print(d)"`
-  - no `win_arm64` wheel for `deno` (`ci.yml`, CHANGELOG Unreleased):
+  - no `win_arm64` wheel for `deno` (`ci.yml`, CHANGELOG 1.14.1):
     `curl -s https://pypi.org/pypi/deno/json | jq -r '.urls[].filename'`
   - stock parse reducing a brace-less body to a FRAGMENT of itself, measured on dspy 3.4.0 and on
     3.4.1 (`runtime.py` `_LenientJSONAdapter.parse`, CHANGELOG 1.20.1). Prints
-    `{'payload': {'a': 'b'}}` rather than the whole value the body carries, which is the misread the
-    parse order exists to avoid. Re-run it on any newer 3.4.x by swapping the pin:
-    `uv run --with "dspy==3.4.0" --no-project python -c "import dspy; print(dspy.JSONAdapter().parse(dspy.Signature('q: str -> payload: dict'), '\"payload\": {\"payload\": {\"a\": \"b\"}}'))"`
+    `{'payload': {'a': 'b'}}` rather than the whole value the body carries. The kit INHERITS this
+    rather than adding it: stock parse succeeds here, so the brace wrap never runs. Pinned to 3.4.1
+    because the lock resolves 3.4.0, so only the other pin needs a fetch; re-run on any newer 3.4.x
+    by swapping it:
+    `uv run --with "dspy==3.4.1" --no-project python -c "import dspy; print(dspy.JSONAdapter().parse(dspy.Signature('q: str -> payload: dict'), '\"payload\": {\"payload\": {\"a\": \"b\"}}'))"`
 
   A **corpus-attributed** claim ("385 runs", "141 traces", "57% of tool wall-clock") can be audited
   exactly ONCE, at the moment it is written, and never again by anyone. No review of this repo can

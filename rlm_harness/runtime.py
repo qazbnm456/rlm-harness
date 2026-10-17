@@ -86,11 +86,13 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
             # worse: let the original error stand.
             #
             # An EMPTY or whitespace-only completion is excluded for a different reason, and it is
-            # the one this clause was added for: wrapping nothing yields "{}", and dspy's
-            # `apply_output_field_defaults` fills a DEFAULTED output field from that, so the wrap
-            # ANSWERED a reply that said nothing (measured on dspy 3.4.0 and on 3.4.1: an
-            # `Optional[str]` output field came back None, with no exception raised and nothing
-            # recorded). Wrapping an empty body can never be a recovery, only an invention.
+            # the one the `not body` half was added for: wrapping nothing yields "{}", and dspy's
+            # `apply_output_field_defaults` supplies a value for an output field left unset, from a
+            # default, a default factory, or an annotation that admits None, in that order. So the
+            # wrap ANSWERED a reply that said nothing (measured on dspy 3.4.0 and on 3.4.1: a field
+            # annotated `str | None`, which carries NO default, came back None with no exception
+            # raised and nothing recorded). Wrapping an empty body is never a recovery, only an
+            # invention.
             if not body or body.startswith("{"):
                 raise
             return super().parse(signature, "{" + body + "}")

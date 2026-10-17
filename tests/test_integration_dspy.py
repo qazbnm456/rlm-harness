@@ -521,25 +521,28 @@ def test_lenient_json_adapter_never_answers_an_empty_reply_from_an_invented_obje
     """An empty or whitespace-only completion is never brace-wrapped, because wrapping nothing can
     only invent an answer.
 
-    The wrap turns ``""`` into ``"{}"``, and dspy's ``apply_output_field_defaults`` fills a
-    DEFAULTED output field from that, so the reply that said nothing came back as an answer.
+    The wrap turns ``""`` into ``"{}"``, and dspy's ``apply_output_field_defaults`` supplies a
+    value for an output field left unset, from a default, a default factory, or an annotation that
+    admits ``None``. So the reply that said nothing came back as an answer.
     Measured on dspy 3.4.0 and on 3.4.1: an output field annotated ``str | None`` returned
-    ``{"payload": None}``, no exception raised and nothing recorded. A REQUIRED output field raised
-    under both orderings, which is why only a defaulted one exposes it.
+    ``{"payload": None}``, no exception raised and nothing recorded. Note it carries NO default:
+    the value comes from the annotation admitting ``None``. A REQUIRED output field raised both
+    before and after this change, which is why only a field dspy will supply a value for exposes
+    it.
 
     Whitespace reaches ``parse`` through the real call path: dspy's ``_call_postprocess`` gates on
     FALSY text, so ``"   "`` and ``"\n"`` pass it. ``""`` does not reach it that way, and is here
     because ``parse`` is public and the kit's own tests call it directly.
     """
-    class Defaulted(dspy.Signature):
-        """Defaulted."""
+    class NoneAdmitting(dspy.Signature):
+        """An output field dspy will supply a value for."""
         q: str = dspy.InputField()
         payload: str | None = dspy.OutputField()
 
     adapter = rt._LenientJSONAdapter()
     for body in ("", "   ", "\n", "\t"):
         with pytest.raises(dspy.AdapterParseError):
-            adapter.parse(Defaulted, body)
+            adapter.parse(NoneAdmitting, body)
 
 
 def test_lenient_json_adapter_never_falls_back_to_bare_json_object():
