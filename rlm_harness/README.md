@@ -2119,6 +2119,8 @@ model:
   formatting model**. An EMPTY or whitespace-only completion is not absorbed: since 1.20.1 it
   raises, rather than being wrapped into the `{}` that dspy reads as an output field left unset,
   then filling that field from a default, a default factory, or an annotation admitting `None`.
+  That reached a task only when EVERY output field was one dspy would supply: a single plain
+  required field made the parse raise before 1.20.1 as well.
 - **`chat`**: `dspy.ChatAdapter` with the JSONAdapter fallback **off**: never sends
   `response_format`. For an endpoint with **no** structured-output support. Needs the model to
   follow dspy's text field-marker format reliably. The fallback is off (dspy's stock ChatAdapter

@@ -533,16 +533,31 @@ def test_lenient_json_adapter_never_answers_an_empty_reply_from_an_invented_obje
     Whitespace reaches ``parse`` through the real call path: dspy's ``_call_postprocess`` gates on
     FALSY text, so ``"   "`` and ``"\n"`` pass it. ``""`` does not reach it that way, and is here
     because ``parse`` is public and the kit's own tests call it directly.
+
+    Both shapes dspy supplies a value for are pinned, because the DEFAULT one is the variant whose
+    failure is invisible: where the invented answer was ``None`` an ``output_model`` already
+    rejected it, but a default can yield one that passes schema validation. Measured on dspy 3.4.0
+    and on 3.4.1, the old ordering returned ``{"payload": {"ok": True}}`` here and
+    ``coerce_output`` accepted it into a model cleanly.
+
+    Exposure was all or nothing across a signature: one plain required output field made the parse
+    raise before this change too, because dspy supplies no value for it.
     """
     class NoneAdmitting(dspy.Signature):
-        """An output field dspy will supply a value for."""
+        """One dspy supplies from the annotation."""
         q: str = dspy.InputField()
         payload: str | None = dspy.OutputField()
 
+    class Defaulted(dspy.Signature):
+        """One dspy supplies from a default."""
+        q: str = dspy.InputField()
+        payload: dict = dspy.OutputField(default={"ok": True})
+
     adapter = rt._LenientJSONAdapter()
-    for body in ("", "   ", "\n", "\t"):
-        with pytest.raises(dspy.AdapterParseError):
-            adapter.parse(NoneAdmitting, body)
+    for signature in (NoneAdmitting, Defaulted):
+        for body in ("", "   ", "\n", "\t"):
+            with pytest.raises(dspy.AdapterParseError):
+                adapter.parse(signature, body)
 
 
 def test_lenient_json_adapter_never_falls_back_to_bare_json_object():
