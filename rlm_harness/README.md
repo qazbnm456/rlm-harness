@@ -2117,8 +2117,8 @@ model:
   AND vLLM / NVIDIA NIM (which reject schema-less `json_object` but accept `json_schema`). The
   decoder enforces the schema, so it **yields valid output even from a weak / imperfectly-
   formatting model**. An EMPTY or whitespace-only completion is not absorbed: since 1.20.1 it
-  raises, rather than being wrapped into the `{}` that dspy supplies a value for whenever an output
-  field has a default or an annotation admitting `None`.
+  raises, rather than being wrapped into the `{}` that dspy fills an unset output field FROM,
+  whenever that field carries a default, a default factory, or an annotation admitting `None`.
 - **`chat`**: `dspy.ChatAdapter` with the JSONAdapter fallback **off**: never sends
   `response_format`. For an endpoint with **no** structured-output support. Needs the model to
   follow dspy's text field-marker format reliably. The fallback is off (dspy's stock ChatAdapter

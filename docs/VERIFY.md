@@ -229,9 +229,8 @@ cannot see.
   - stock parse reducing a brace-less body to a FRAGMENT of itself, measured on dspy 3.4.0 and on
     3.4.1 (`runtime.py` `_LenientJSONAdapter.parse`, CHANGELOG 1.20.1). Prints
     `{'payload': {'a': 'b'}}` rather than the whole value the body carries. The kit INHERITS this
-    rather than adding it: stock parse succeeds here, so the brace wrap never runs. Pinned to 3.4.1
-    because the lock resolves 3.4.0, so only the other pin needs a fetch; re-run on any newer 3.4.x
-    by swapping it:
+    rather than adding it: stock parse succeeds here, so the brace wrap never runs. Re-run on any
+    newer 3.4.x by swapping the pin:
     `uv run --with "dspy==3.4.1" --no-project python -c "import dspy; print(dspy.JSONAdapter().parse(dspy.Signature('q: str -> payload: dict'), '\"payload\": {\"payload\": {\"a\": \"b\"}}'))"`
 
   A **corpus-attributed** claim ("385 runs", "141 traces", "57% of tool wall-clock") can be audited

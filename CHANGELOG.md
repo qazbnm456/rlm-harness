@@ -8,17 +8,18 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 **An empty reply could come back as an answer.** The brace-tolerant parse wraps a completion in
 braces to recover guided output that dropped them, and it wrapped an empty one too, which yields
-`{}`. dspy reads that as an output field left unset and supplies one, from the field's default or
-from `None` where the annotation admits it, so a reply that said nothing was answered.
+`{}`. dspy reads that as an output field left unset and supplies one, from a default, a default
+factory, or an annotation that admits `None`, so a reply that said nothing was answered.
 
 ### Fixed
 
 - **An empty or whitespace-only completion is never brace-wrapped.** Measured on dspy 3.4.0 and on
   3.4.1: an output field annotated `str | None` came back as `{"payload": None}`, with no exception
   raised and nothing recorded. The parse raises `AdapterParseError` now, which consumes a retry and
-  can end the run. A required output field raised before and still does, so only a field with a
-  default, or one admitting `None`, was reaching this. Where the invented answer was `None`, a task
-  declaring an `output_model` already saw a failure, because `coerce_output` rejects `None`.
+  can end the run. Only a field dspy will supply a value for was reaching this: one carrying a
+  default, a default factory, or an annotation admitting `None`. Any other output field raised
+  before and still does. Where the invented answer was `None`, a task declaring an `output_model`
+  already saw a failure, because `coerce_output` rejects `None`.
 
   **Known, and not fixed here:** stock dspy can reduce a brace-less completion to a FRAGMENT of
   itself, so a reply whose outer key is repeated inside its own value parses to the value nested

@@ -47,7 +47,8 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
        falling back, see dspy ``chat_adapter`` ``isinstance(self, JSONAdapter)``.)
     2. **Brace-tolerant `parse`.** Schema-guided decoding intermittently drops the outer
        ``{`` ``}`` and returns just ``"a": 1, "b": 2``; stock parse then can't recover a dict.
-       We retry once with the body wrapped in braces; a genuinely non-JSON response still raises.
+       We retry once with the body wrapped in braces, unless it is empty or already braced; a
+       genuinely non-JSON response still raises.
 
     (A future, NIM-specific alternative is to drive ``nvext.guided_json`` directly instead of
     relying on ``response_format``: deliberately deferred; this keeps the path provider-agnostic.)"""
