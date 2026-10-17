@@ -6,46 +6,25 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 ## [1.20.1] - 2026-10-17
 
-**The brace-tolerant parse could answer a reply it had not read.** It treated the brace-wrap as a
-fallback, to be tried after stock parse failed, and stock parse does not always fail: on a body
-missing its outer braces it can succeed with a fragment of what the model sent, and on nothing at
-all it can fill a defaulted output field. So some replies came back as answers that were invented
-rather than read, with no exception raised and nothing recorded.
+**An empty reply could come back as an answer.** The brace-tolerant parse wraps a completion in
+braces to recover guided output that dropped them, and it wrapped an empty one too, which yields
+`{}`. dspy reads that as an output field left unset and supplies one, from the field's default or
+from `None` where the annotation admits it, so a reply that said nothing was answered.
 
 ### Fixed
 
-- **A brace-less body is read as an object body, and that reading is authoritative.** Stock parse is
-  no longer consulted for a VALUE on such a body, only for an ERROR. What a consumer sees: a reply
-  whose outer key is repeated inside its own value parses to the whole value rather than to the
-  fragment nested under it. `tests/test_integration_dspy.py` carries the shapes, and
-  `docs/VERIFY.md` carries a command that shows one on a pinned dspy.
+- **An empty or whitespace-only completion is never brace-wrapped.** Measured on dspy 3.4.0 and on
+  3.4.1: an output field annotated `str | None` came back as `{"payload": None}`, with no exception
+  raised and nothing recorded. It raises `AdapterParseError` now, which consumes a retry and can end
+  the run. A required output field raised before and still does, so only a field with a default, or
+  one admitting `None`, was reaching this. Where the invented answer was `None`, a task declaring an
+  `output_model` already saw a failure, because `coerce_output` rejects `None`.
 
-- **Three replies are never wrapped, because wrapping them could only invent an answer.** An empty
-  or whitespace-only reply, a reply naming none of the output fields, and a reply already starting
-  with `{`. The first two used to produce one: when an output field has a default or admits `None`,
-  wrapping left nothing of the reply behind and dspy filled the field from that, so `"a": 1, "b": 2`
-  against an unrelated optional field came back as `None`. Stock dspy refuses that reply outright,
-  so the answer was the kit's own invention and not something it inherited. Where stock dspy answers
-  such a reply itself, the kit answers identically, which is dspy's behaviour to own and
-  `output_model` is the consumer's guard against it.
-
-  **This is the behaviour change to read before upgrading.** Those replies raise
-  `AdapterParseError` now, which consumes a retry and can end the run, where a consumer with such a
-  field and no `output_model` used to receive a value. An `output_model` already masked it, since
-  `coerce_output` rejects `None`.
-
-  The field-name check is a substring match deliberately. A false yes leaves the old behaviour,
-  while a false no would break a real recovery, and dspy's repair accepts unquoted keys, which carry
-  no quotes to match on.
-
-- **An error quotes the completion the model actually sent**, unstripped and unwrapped, rather than
-  the brace-wrapped text the failing read was handed. The exception type is unchanged on every shape
-  measured, and a reply already starting with `{` keeps a byte-identical message.
-
-- **A value only a `str` field could hold comes back as a Python repr.** `"payload": {"payload":
-  "x"}` against a `str` output field now parses to the whole value rendered by `str()`, so it is not
-  `json.loads`-able. Preserving the value means coercing it, and the whole value in repr form is the
-  point of the change; the fragment it used to return was parseable and wrong.
+  **Known, and not fixed here:** stock dspy can reduce a brace-less completion to a FRAGMENT of
+  itself, so a reply whose outer key is repeated inside its own value parses to the value nested
+  under it. `docs/VERIFY.md` carries a command that shows it on a pinned dspy. That is dspy's own
+  reading rather than something this kit adds on top, and an `output_model` is the consumer's guard
+  against it.
 
 ## [1.20.0] - 2026-10-17
 

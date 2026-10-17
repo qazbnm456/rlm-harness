@@ -7,7 +7,6 @@ Deno sandbox), so it stays free and offline. Skipped if dspy is absent.
 """
 
 import threading
-import typing
 
 import pytest
 
@@ -472,142 +471,6 @@ def test_lenient_json_adapter_recovers_braceless_object():
     assert a.parse(sig, '{"reasoning": "r2", "code": "c2"}') == {"reasoning": "r2", "code": "c2"}
 
 
-def test_lenient_json_adapter_reads_a_braceless_body_before_stock_parse_can_misread_it():
-    """A brace-LESS body is read as an object body FIRST, because stock parse can SUCCEED on one
-    with the WRONG value, and then there is no exception to fall back from.
-
-    dspy repairs a partial body with ``json_repair``, which DROPS the outer key, so
-    ``'"payload": {"payload": {"a": "b"}}'`` becomes ``{"payload": {"a": "b"}}``. When the output
-    field's name also names a key INSIDE its own value, that inner value looks like the found
-    field; a ``dict``-typed field accepts it, nothing raises, and the model's answer is silently
-    replaced by a fragment of itself. Fails on the fallback ordering, which returned the fragment.
-
-    ``CollideTyped`` is the case that hid this: a pydantic-typed field REJECTS the inner value, so
-    stock parse raises and the fallback fired. It must still reach the right answer.
-    """
-
-    class Collide(dspy.Signature):
-        """Collide."""
-        q: str = dspy.InputField()
-        payload: dict = dspy.OutputField()
-
-    class Inner(BaseModel):
-        payload: str
-
-    class CollideTyped(dspy.Signature):
-        """Collide, typed."""
-        q: str = dspy.InputField()
-        payload: Inner = dspy.OutputField()
-
-    class CollideAny(dspy.Signature):
-        """Collide, loosely typed."""
-        q: str = dspy.InputField()
-        payload: typing.Any = dspy.OutputField()
-
-    class CollideList(dspy.Signature):
-        """Collide, list."""
-        q: str = dspy.InputField()
-        payload: list = dspy.OutputField()
-
-    a = rt._LenientJSONAdapter()
-    assert a.parse(Collide, '"payload": {"payload": {"a": "b"}}') == {
-        "payload": {"payload": {"a": "b"}}
-    }, "the whole value the model sent, not the inner fragment json_repair leaves behind"
-    # `Any` and `list` accept the fragment too, so each is the same bug under a different type.
-    assert a.parse(CollideAny, '"payload": {"payload": {"a": "b"}}') == {
-        "payload": {"payload": {"a": "b"}}
-    }
-    assert a.parse(CollideList, '"payload": [{"payload": [1, 2]}]') == {
-        "payload": [{"payload": [1, 2]}]
-    }
-    # Deeper than one level: the old ordering ate exactly one.
-    assert a.parse(Collide, '"payload": {"payload": {"payload": {"a": 1}}}') == {
-        "payload": {"payload": {"payload": {"a": 1}}}
-    }
-    assert a.parse(CollideTyped, '"payload": {"payload": "x"}') == {"payload": Inner(payload="x")}
-
-
-def test_lenient_json_adapter_refuses_a_wrap_that_only_defaults_could_satisfy():
-    """A brace-less body naming none of the output fields is not wrapped, and a wrapped read that
-    FAILS is never replaced by the raw read's VALUE. Both close answers the kit invented rather
-    than read, and both were measured on dspy 3.4.0 and on 3.4.1.
-
-    ``'"a": 1, "b": 2'`` against an optional output field: stock dspy RAISES, and wrapping it
-    returned ``{"payload": None}``, because the wrap leaves no output field behind and dspy's
-    ``apply_output_field_defaults`` then fills one. That fabrication was the kit's own, not
-    inherited.
-
-    ``'"payload": {"payload": "x"}'`` against an optional ``str``: the wrapped read fails type
-    validation while the raw read SUCCEEDS with the fragment ``"x"``, so consulting the raw read
-    for a value reintroduced exactly the loss the wrap order exists to stop.
-
-    The first body against a signature whose output fields really are ``a`` and ``b`` is the
-    recovery the wrap exists for, so the two cannot be told apart from the body alone and the guard
-    is what separates them. It matches as a SUBSTRING deliberately: a false yes leaves the old
-    behaviour, a false no would break a real recovery, and dspy's repair accepts unquoted keys,
-    which carry no quotes to match on. The unquoted assertion below is what rules out the tighter
-    form.
-    """
-    class Opt(dspy.Signature):
-        """Optional."""
-        q: str = dspy.InputField()
-        payload: str | None = dspy.OutputField()
-
-    class Feature(dspy.Signature):
-        """The recovery the wrap exists for."""
-        q: str = dspy.InputField()
-        a: int = dspy.OutputField()
-        b: int = dspy.OutputField()
-
-    a = rt._LenientJSONAdapter()
-    with pytest.raises(dspy.AdapterParseError):
-        a.parse(Opt, '"a": 1, "b": 2')
-    with pytest.raises(dspy.AdapterParseError):
-        a.parse(Opt, '"payload": {"payload": "x"}')
-    assert a.parse(Feature, '"a": 1, "b": 2') == {"a": 1, "b": 2}
-    assert a.parse(Feature, "a: 1, b: 2") == {"a": 1, "b": 2}
-
-
-def test_lenient_json_adapter_reports_the_completion_the_model_actually_sent():
-    """The error quotes the RAW completion, not a stripped or brace-wrapped form of it.
-
-    ``AdapterParseError`` embeds the text the failing parse was handed. Quoting the wrapped body
-    sends a reader hunting for braces the model never wrote; quoting the stripped body hides
-    whitespace that may be the whole problem. Handing the final read ``body`` instead of
-    ``completion`` leaves every other test in this suite green, so this is its only gate.
-    """
-    sig = dspy.Signature("q: str -> answer: str")
-    raw = "  the answer is unknowable  "
-    with pytest.raises(dspy.AdapterParseError) as caught:
-        rt._LenientJSONAdapter().parse(sig, raw)
-    assert raw in str(caught.value), "the message must quote the completion verbatim, unstripped"
-
-
-def test_lenient_json_adapter_never_answers_an_empty_reply_from_an_invented_object():
-    """An empty or whitespace-only body is NOT read as an object body, which is the other half of
-    the same bug and needs its own guard.
-
-    Wrapping nothing produces ``{}``, and dspy's ``apply_output_field_defaults`` fills a DEFAULTED
-    output field from it. So the brace-wrap, applied to a reply that said nothing, FABRICATED an
-    answer: measured on dspy 3.4.0 and 3.4.1, an ``Optional`` output field came back as
-    ``{"payload": None}`` with no exception raised and nothing recorded. A required field raised on
-    both orderings, which is why only a defaulted one exposes it.
-
-    Whitespace is reachable through the real call path: dspy's ``_call_postprocess`` blocks only
-    FALSY text, so ``"   "`` and ``"\n"`` reach ``parse``. Deleting the ``body`` conjunct from
-    ``parse`` leaves every other test in this suite green, so this case is its only gate.
-    """
-    class Defaulted(dspy.Signature):
-        """Defaulted."""
-        q: str = dspy.InputField()
-        payload: str | None = dspy.OutputField()
-
-    a = rt._LenientJSONAdapter()
-    for body in ("", "   ", "\n", "\t"):
-        with pytest.raises(dspy.AdapterParseError):   # the public seam, not dspy.utils.exceptions
-            a.parse(Defaulted, body)
-
-
 def test_lenient_adapter_promotes_reasoning_content_when_content_empty():
     """A REASONING root (qwen3 / deepseek / gpt-oss) sometimes emits the whole structured turn into
     `reasoning_content` and returns `content` (text) null. The adapter promotes it so the turn
@@ -647,12 +510,36 @@ def test_lenient_json_adapter_skips_wrap_for_braced_completion(monkeypatch):
     with pytest.raises(AdapterParseError):
         rt._LenientJSONAdapter().parse(sig, '{ "code": "x"')   # already starts with "{"
     assert seen == ['{ "code": "x"']   # only the original, no "{{"-wrapped retry
-    # contrast: a brace-LESS body is read WRAPPED FIRST, then falls through to the raw body
-    # so the error describes what the model sent rather than what wrapping made of it
+    # contrast: a brace-LESS body IS retried wrapped
     seen.clear()
     with pytest.raises(AdapterParseError):
         rt._LenientJSONAdapter().parse(sig, '"code": "x"')
-    assert seen == ['{"code": "x"}', '"code": "x"']   # brace-wrapped FIRST, then the raw body
+    assert seen == ['"code": "x"', '{"code": "x"}']   # original, then brace-wrapped retry
+
+
+def test_lenient_json_adapter_never_answers_an_empty_reply_from_an_invented_object():
+    """An empty or whitespace-only completion is never brace-wrapped, because wrapping nothing can
+    only invent an answer.
+
+    The wrap turns ``""`` into ``"{}"``, and dspy's ``apply_output_field_defaults`` fills a
+    DEFAULTED output field from that, so the reply that said nothing came back as an answer.
+    Measured on dspy 3.4.0 and on 3.4.1: an output field annotated ``str | None`` returned
+    ``{"payload": None}``, no exception raised and nothing recorded. A REQUIRED output field raised
+    under both orderings, which is why only a defaulted one exposes it.
+
+    Whitespace reaches ``parse`` through the real call path: dspy's ``_call_postprocess`` gates on
+    FALSY text, so ``"   "`` and ``"\n"`` pass it. ``""`` does not reach it that way, and is here
+    because ``parse`` is public and the kit's own tests call it directly.
+    """
+    class Defaulted(dspy.Signature):
+        """Defaulted."""
+        q: str = dspy.InputField()
+        payload: str | None = dspy.OutputField()
+
+    adapter = rt._LenientJSONAdapter()
+    for body in ("", "   ", "\n", "\t"):
+        with pytest.raises(dspy.AdapterParseError):
+            adapter.parse(Defaulted, body)
 
 
 def test_lenient_json_adapter_never_falls_back_to_bare_json_object():

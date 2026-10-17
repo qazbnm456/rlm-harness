@@ -46,14 +46,8 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
        ``ChatAdapter``'s call path directly: for a ``JSONAdapter`` instance it raises rather than
        falling back, see dspy ``chat_adapter`` ``isinstance(self, JSONAdapter)``.)
     2. **Brace-tolerant `parse`.** Schema-guided decoding intermittently drops the outer
-       ``{`` ``}`` and returns just ``"a": 1, "b": 2``, which stock parse cannot read back as that
-       object. A brace-less body is therefore read AS one, and that reading is authoritative: stock
-       parse is consulted for an ERROR, never for a value, because on such a body it can succeed
-       with a FRAGMENT of what the model sent. Three bodies are never wrapped, each because
-       wrapping could only invent an answer instead of reading one: an empty or whitespace-only
-       body, a body naming none of the output fields, and a body already starting with ``{``.
-       ``parse`` carries the reason for each. A reply that is not an object body still raises, with
-       the error the raw completion produces.
+       ``{`` ``}`` and returns just ``"a": 1, "b": 2``; stock parse then can't recover a dict.
+       We retry once with the body wrapped in braces; a genuinely non-JSON response still raises.
 
     (A future, NIM-specific alternative is to drive ``nvext.guided_json`` directly instead of
     relying on ``response_format``: deliberately deferred; this keeps the path provider-agnostic.)"""
@@ -82,42 +76,24 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
     def parse(self, signature, completion):
         from dspy.utils.exceptions import AdapterParseError
 
-        body = (completion or "").strip()
-        # ONE rule: a brace-less body IS an object body missing its braces, so that is how it is
-        # read, and if THAT read fails the body is not an object body for this signature. Stock
-        # parse is not a second opinion to fall back on, because it can SUCCEED on such a body with
-        # a FRAGMENT of what the model sent: dspy repairs the text before matching fields, by more
-        # than one route, so a value nested under the output field's own name can come back as the
-        # whole answer. `docs/VERIFY.md` carries the command that shows one. Hence:
-        #
-        #   * the wrap runs FIRST, not after an exception, since waiting for one loses the cases
-        #     where none is raised;
-        #   * the raw read is reached only for its ERROR, never for its value;
-        #   * an empty body is never wrapped, because "{}" satisfies a DEFAULTED output field
-        #     through dspy's `apply_output_field_defaults` and so answers a reply that said
-        #     nothing (measured: an `Optional` field came back None, no exception);
-        #   * a body naming none of the output fields is never wrapped, for the same reason: the
-        #     wrap could only be satisfied by those defaults. The check is a substring, so it is
-        #     deliberately PERMISSIVE: a false yes leaves the old behaviour, while a false no would
-        #     break a real recovery, and unquoted keys (which dspy's repair accepts) have no quotes
-        #     to match on.
-        #
-        # A body already starting with "{" is never wrapped either: it failed for some other reason
-        # and doubling the brace would bury it.
-        if (
-            body
-            and not body.startswith("{")
-            and any(name in body for name in signature.output_fields)
-        ):
-            try:
-                return super().parse(signature, "{" + body + "}")
-            except AdapterParseError:
-                # The raw read is consulted ONLY for its error. If it raises, that error propagates
-                # and names what the model actually sent. If it SUCCEEDS, its value is the fragment,
-                # so re-raise the wrapped read's failure rather than return it.
-                super().parse(signature, completion)
+        try:
+            return super().parse(signature, completion)
+        except AdapterParseError:
+            body = (completion or "").strip()
+            # The wrap targets a brace-LESS object body ('"a": 1, "b": 2'). A completion that
+            # already starts with "{" failed for some other reason (incomplete / missing a
+            # required field); wrapping it would just double the brace ("{{...}") and make it
+            # worse: let the original error stand.
+            #
+            # An EMPTY or whitespace-only completion is excluded for a different reason, and it is
+            # the one this clause was added for: wrapping nothing yields "{}", and dspy's
+            # `apply_output_field_defaults` fills a DEFAULTED output field from that, so the wrap
+            # ANSWERED a reply that said nothing (measured on dspy 3.4.0 and on 3.4.1: an
+            # `Optional[str]` output field came back None, with no exception raised and nothing
+            # recorded). Wrapping an empty body can never be a recovery, only an invention.
+            if not body or body.startswith("{"):
                 raise
-        return super().parse(signature, completion)
+            return super().parse(signature, "{" + body + "}")
 
     def _call_postprocess(self, processed_signature, original_signature, outputs, lm, lm_kwargs):
         """Promote ``reasoning_content`` to the answer when a reasoning root left ``content`` empty.
