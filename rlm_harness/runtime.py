@@ -86,14 +86,13 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
             # required field); wrapping it would just double the brace ("{{...}") and make it
             # worse: let the original error stand.
             #
-            # An EMPTY or whitespace-only completion is excluded for a different reason:
-            # wrapping nothing yields "{}", and dspy's
-            # `apply_output_field_defaults` supplies a value for an output field left unset, from a
-            # default, a default factory, or an annotation that admits None, in that order. So the
-            # wrap ANSWERED a reply that said nothing (measured on dspy 3.4.0 and on 3.4.1: a field
-            # annotated `str | None`, which carries NO default, came back None with no exception
-            # raised and nothing recorded). Wrapping an empty body is never a recovery, only an
-            # invention.
+            # An EMPTY or whitespace-only completion is excluded for a different reason: wrapping
+            # nothing yields "{}", and dspy's `apply_output_field_defaults` supplies a value for an
+            # output field left unset, from a default, a default factory, or an annotation that
+            # admits None, in that order. So the wrap ANSWERED a reply that said nothing (measured
+            # on dspy 3.4.0 and on 3.4.1: a field annotated `str | None`, which carries NO default,
+            # came back None with no exception raised and nothing recorded). Wrapping an empty body
+            # is never a recovery, only an invention.
             if not body or body.startswith("{"):
                 raise
             return super().parse(signature, "{" + body + "}")
