@@ -471,6 +471,40 @@ def test_lenient_json_adapter_recovers_braceless_object():
     assert a.parse(sig, '{"reasoning": "r2", "code": "c2"}') == {"reasoning": "r2", "code": "c2"}
 
 
+def test_lenient_json_adapter_reads_a_braceless_body_before_stock_parse_can_misread_it():
+    """A brace-LESS body is read as an object body FIRST, because stock parse can SUCCEED on one
+    with the WRONG value, and then there is no exception to fall back from.
+
+    dspy repairs a partial body with ``json_repair``, which DROPS the outer key, so
+    ``'"payload": {"payload": {"a": "b"}}'`` becomes ``{"payload": {"a": "b"}}``. When the output
+    field's name also names a key INSIDE its own value, that inner value looks like the found
+    field; a ``dict``-typed field accepts it, nothing raises, and the model's answer is silently
+    replaced by a fragment of itself. Fails on the fallback ordering, which returned the fragment.
+
+    The second case is the one that hid this: a pydantic-typed field REJECTS the inner value, so
+    stock parse raises and the fallback fired. It must still reach the right answer.
+    """
+
+    class Collide(dspy.Signature):
+        """Collide."""
+        q: str = dspy.InputField()
+        payload: dict = dspy.OutputField()
+
+    class Inner(BaseModel):
+        payload: str
+
+    class CollideTyped(dspy.Signature):
+        """Collide, typed."""
+        q: str = dspy.InputField()
+        payload: Inner = dspy.OutputField()
+
+    a = rt._LenientJSONAdapter()
+    assert a.parse(Collide, '"payload": {"payload": {"a": "b"}}') == {
+        "payload": {"payload": {"a": "b"}}
+    }, "the whole value the model sent, not the inner fragment json_repair leaves behind"
+    assert a.parse(CollideTyped, '"payload": {"payload": "x"}') == {"payload": Inner(payload="x")}
+
+
 def test_lenient_adapter_promotes_reasoning_content_when_content_empty():
     """A REASONING root (qwen3 / deepseek / gpt-oss) sometimes emits the whole structured turn into
     `reasoning_content` and returns `content` (text) null. The adapter promotes it so the turn
@@ -510,11 +544,12 @@ def test_lenient_json_adapter_skips_wrap_for_braced_completion(monkeypatch):
     with pytest.raises(AdapterParseError):
         rt._LenientJSONAdapter().parse(sig, '{ "code": "x"')   # already starts with "{"
     assert seen == ['{ "code": "x"']   # only the original, no "{{"-wrapped retry
-    # contrast: a brace-LESS body IS retried wrapped
+    # contrast: a brace-LESS body is read WRAPPED FIRST, then falls through to the raw body
+    # so the error describes what the model sent rather than what wrapping made of it
     seen.clear()
     with pytest.raises(AdapterParseError):
         rt._LenientJSONAdapter().parse(sig, '"code": "x"')
-    assert seen == ['"code": "x"', '{"code": "x"}']   # original, then brace-wrapped retry
+    assert seen == ['{"code": "x"}', '"code": "x"']   # brace-wrapped FIRST, then the raw body
 
 
 def test_lenient_json_adapter_never_falls_back_to_bare_json_object():

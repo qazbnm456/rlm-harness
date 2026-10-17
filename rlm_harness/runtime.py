@@ -47,7 +47,10 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
        falling back, see dspy ``chat_adapter`` ``isinstance(self, JSONAdapter)``.)
     2. **Brace-tolerant `parse`.** Schema-guided decoding intermittently drops the outer
        ``{`` ``}`` and returns just ``"a": 1, "b": 2``; stock parse then can't recover a dict.
-       We retry once with the body wrapped in braces; a genuinely non-JSON response still raises.
+       A body that does not start with ``{`` is read as an object body FIRST, not as a fallback
+       after stock parse fails: stock parse can SUCCEED on such a body with the wrong value, so
+       waiting for an exception loses data silently (see ``parse``). A genuinely non-JSON response
+       still raises, with the error the raw completion produces.
 
     (A future, NIM-specific alternative is to drive ``nvext.guided_json`` directly instead of
     relying on ``response_format``: deliberately deferred; this keeps the path provider-agnostic.)"""
@@ -76,17 +79,29 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
     def parse(self, signature, completion):
         from dspy.utils.exceptions import AdapterParseError
 
-        try:
-            return super().parse(signature, completion)
-        except AdapterParseError:
-            body = (completion or "").strip()
-            # The wrap targets a brace-LESS object body ('"a": 1, "b": 2'). A completion that
-            # already starts with "{" failed for some other reason (incomplete / missing a
-            # required field); wrapping it would just double the brace ("{{...}") and make it
-            # worse: let the original error stand.
-            if body.startswith("{"):
-                raise
-            return super().parse(signature, "{" + body + "}")
+        body = (completion or "").strip()
+        # A body that does not start with "{" IS a brace-less object body, so read it as one FIRST
+        # rather than only after stock parse has failed. Treating the wrap as a FALLBACK loses data
+        # silently: dspy repairs a partial body with `json_repair`, which DROPS the outer key, so
+        # `"payload": {"payload": {"a": "b"}}` becomes `{"payload": {"a": "b"}}`. When the output
+        # field's name also names a key INSIDE its own value, that inner value then looks like the
+        # found field, and if it happens to satisfy the field's type NOTHING RAISES: the task
+        # receives the inner value, the model's actual answer is gone, and no error is recorded.
+        # Measured with a `dict`-typed output field on both dspy 3.4.0 and 3.4.1, which is every
+        # version the kit supports. A pydantic-typed field rejects
+        # the inner value and therefore raises, which is the only reason the fallback ordering ever
+        # looked correct. A completion that already starts with "{" is NOT wrapped, as before:
+        # it failed for some other reason (incomplete, or a missing required field) and wrapping
+        # would double the brace into "{{...}" and bury the real error.
+        if body and not body.startswith("{"):
+            try:
+                return super().parse(signature, "{" + body + "}")
+            except AdapterParseError:
+                # Not an object body after all (prose, a bare scalar). Fall through so the RAW
+                # completion produces the error, which describes what the model actually sent
+                # rather than what wrapping made of it.
+                pass
+        return super().parse(signature, completion)
 
     def _call_postprocess(self, processed_signature, original_signature, outputs, lm, lm_kwargs):
         """Promote ``reasoning_content`` to the answer when a reasoning root left ``content`` empty.
