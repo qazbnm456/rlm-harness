@@ -47,10 +47,13 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
        falling back, see dspy ``chat_adapter`` ``isinstance(self, JSONAdapter)``.)
     2. **Brace-tolerant `parse`.** Schema-guided decoding intermittently drops the outer
        ``{`` ``}`` and returns just ``"a": 1, "b": 2``; stock parse then can't recover a dict.
-       A body that does not start with ``{`` is read as an object body FIRST, not as a fallback
-       after stock parse fails: stock parse can SUCCEED on such a body with the wrong value, so
-       waiting for an exception loses data silently (see ``parse``). A genuinely non-JSON response
-       still raises, with the error the raw completion produces.
+       A NON-EMPTY body that does not start with ``{`` is read as an object body FIRST, not as a
+       fallback after stock parse fails: stock parse can SUCCEED on such a body with the WRONG
+       value, so waiting for an exception loses data silently. An EMPTY or whitespace-only body is
+       never read as one, which is the other half: stock parse fills a DEFAULTED output field from
+       an invented ``{}``, so the fallback used to answer a reply that said nothing. ``parse`` has
+       the conditions for both. A genuinely non-JSON response still raises, with the error the raw
+       completion produces.
 
     (A future, NIM-specific alternative is to drive ``nvext.guided_json`` directly instead of
     relying on ``response_format``: deliberately deferred; this keeps the path provider-agnostic.)"""
@@ -80,19 +83,33 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
         from dspy.utils.exceptions import AdapterParseError
 
         body = (completion or "").strip()
-        # A body that does not start with "{" IS a brace-less object body, so read it as one FIRST
-        # rather than only after stock parse has failed. Treating the wrap as a FALLBACK loses data
-        # silently: dspy repairs a partial body with `json_repair`, which DROPS the outer key, so
-        # `"payload": {"payload": {"a": "b"}}` becomes `{"payload": {"a": "b"}}`. When the output
-        # field's name also names a key INSIDE its own value, that inner value then looks like the
-        # found field, and if it happens to satisfy the field's type NOTHING RAISES: the task
-        # receives the inner value, the model's actual answer is gone, and no error is recorded.
-        # Measured with a `dict`-typed output field on both dspy 3.4.0 and 3.4.1, which is every
-        # version the kit supports. A pydantic-typed field rejects
-        # the inner value and therefore raises, which is the only reason the fallback ordering ever
-        # looked correct. A completion that already starts with "{" is NOT wrapped, as before:
-        # it failed for some other reason (incomplete, or a missing required field) and wrapping
-        # would double the brace into "{{...}" and bury the real error.
+        # A NON-EMPTY body that does not start with "{" IS a brace-less object body, so read it as
+        # one FIRST, not only after stock parse has failed. Waiting for an exception loses data
+        # silently, and it takes THREE things together, which is why every one-clause account of
+        # this is wrong:
+        #
+        #   1. the body's VALUE is itself an object. `json_repair` recovers "" from scalar values,
+        #      so '"a": 1, "b": 2' raises whatever the field types are, but it DROPS THE OUTER KEY
+        #      from an object one: '"payload": {"payload": {"a": "b"}}' becomes {"payload": {"a": "b"}}.
+        #   2. that object carries a key with the output field's OWN name, so the inner value looks
+        #      like the field dspy was looking for.
+        #   3. the value under it satisfies that field's declared type, so NOTHING RAISES. A `dict`
+        #      field accepts {"a": "b"}; a `str` field accepts "x"; a pydantic field rejects both,
+        #      which is the only reason the fallback ordering ever looked correct.
+        #
+        # Then the task receives the inner value, the model's answer is gone, and nothing is logged.
+        # True on dspy 3.4.0 and on 3.4.1; `docs/VERIFY.md` carries the command that settles it.
+        #
+        # The `body` conjunct is the OTHER half of the same bug, not a tidiness check: an empty or
+        # whitespace-only body must not be read as an object body, because stock parse fills a
+        # DEFAULTED output field from the invented "{}" and so answers a reply that said nothing
+        # (measured: an `Optional[str]` output field came back {"payload": None}, no exception).
+        # Whitespace reaches here through the real call path, since dspy's `_call_postprocess` only
+        # blocks falsy text.
+        #
+        # A completion that already starts with "{" is NOT wrapped, as before: it failed for some
+        # other reason (incomplete, or a missing required field) and wrapping would double the
+        # brace into "{{...}" and bury the real error.
         if body and not body.startswith("{"):
             try:
                 return super().parse(signature, "{" + body + "}")

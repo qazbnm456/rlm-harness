@@ -6,34 +6,41 @@ All notable changes to `rlm-harness`. Format loosely follows
 
 ## [1.20.1] - 2026-10-17
 
-**A reply that lost its outer braces could be read as the wrong answer, with nothing raised and
-nothing recorded.** The brace-tolerant parse ran only as a FALLBACK, after stock parse had failed,
-and stock parse does not always fail: on a brace-less body it can succeed and hand back a fragment
-of what the model sent.
+**A reply that lost its outer braces could be read as the wrong answer, and a reply that said
+nothing could be answered anyway.** Both came off the same line: the brace-tolerant parse ran as a
+FALLBACK, after stock parse had failed, and stock parse does not always fail.
 
 ### Fixed
 
-- **A brace-less body is read as an object body FIRST, not after an exception.** dspy repairs a
-  partial body with `json_repair`, which DROPS the outer key, so `"payload": {"payload": {"a": "b"}}`
-  becomes `{"payload": {"a": "b"}}`. When the output field's name also names a key inside its own
-  value, that inner value looks like the found field. A `dict`-typed field accepts it, so nothing
-  raises, and the task receives the fragment while the model's actual answer is gone and no error is
-  recorded. Confirmed on dspy 3.4.0 and on 3.4.1.
+- **A non-empty brace-less body is read as an object body FIRST, not after an exception.** Three
+  things have to line up for the fallback ordering to lose data, which is why every one-clause
+  account of it is wrong. The body's VALUE has to be an object: `json_repair` recovers nothing from
+  scalar values, so `"a": 1, "b": 2` raised whatever the field types were, but it DROPS THE OUTER
+  KEY from an object one, turning `"payload": {"payload": {"a": "b"}}` into `{"payload": {"a": "b"}}`.
+  That object has to carry a key with the output field's OWN name, so the inner value looks like the
+  field dspy was looking for. And the value under it has to satisfy that field's declared type: a
+  `dict` field accepts `{"a": "b"}` and a `str` field accepts `"x"`, while a pydantic field rejects
+  both, which is the only reason waiting for an exception ever looked correct. With all three the
+  task received the inner value, the model's answer was gone, and nothing was recorded. Confirmed on
+  dspy 3.4.0 and on 3.4.1; `docs/VERIFY.md` carries the command that settles it.
 
-  A pydantic-typed field rejects the inner value and therefore raises, which is the only reason
-  waiting for an exception ever looked correct. It is also why a consumer carrying this exact name
-  collision saw a recovered answer rather than a wrong one, and why the gap survived a test that
-  exercised the real parse: that test used plain string outputs, and the type of the output field is
-  what decides whether anything raises at all.
+- **An empty or whitespace-only reply no longer fabricates an answer**, which is the same defect on
+  the other side of the guard. Wrapping nothing produces `{}`, and dspy fills a DEFAULTED output
+  field from it, so the fallback answered a reply that said nothing: an `Optional` output field came
+  back as `{"payload": None}`, no exception raised and no error recorded. It raises now. A required
+  output field raised under both orderings, so only a defaulted one was ever exposed.
 
-  **The error text changes for a completion that is not an object body.** An empty reply, a
-  whitespace-only reply, and a brace-less body naming no output field each now surface the error the
-  RAW completion produces, rather than the error from parsing an invented `{}`. The exception type is
-  unchanged on every shape measured. For an empty reply the new message says the response could not
-  be serialized to a JSON object, which is what happened.
+  **This one is a behaviour change, not only a repair.** A consumer with an `Optional` output field
+  and no `output_model` sees a raise where it used to see `None`, and that consumes a retry and can
+  end the run. It is the direction this should fail in, and it is still a change to read before
+  upgrading.
 
-  A braced completion is still never wrapped. It failed for some other reason, and doubling the brace
-  would bury it.
+- **A brace-less completion that still fails now reports the raw completion.** The error embeds the
+  text the failing parse was handed, and that used to be the brace-wrapped body; the first line is
+  often the same, because the wrapped and raw bodies usually fail the same way, so compare whole
+  messages rather than first lines. The exception type is unchanged on every shape measured, and a
+  completion that already starts with `{` keeps a byte-identical message: it is never wrapped, since
+  it failed for some other reason and doubling the brace would bury it.
 
 ## [1.20.0] - 2026-10-17
 

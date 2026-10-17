@@ -7,6 +7,7 @@ Deno sandbox), so it stays free and offline. Skipped if dspy is absent.
 """
 
 import threading
+import typing
 
 import pytest
 
@@ -498,11 +499,57 @@ def test_lenient_json_adapter_reads_a_braceless_body_before_stock_parse_can_misr
         q: str = dspy.InputField()
         payload: Inner = dspy.OutputField()
 
+    class CollideAny(dspy.Signature):
+        """Collide, loosely typed."""
+        q: str = dspy.InputField()
+        payload: typing.Any = dspy.OutputField()
+
+    class CollideList(dspy.Signature):
+        """Collide, list."""
+        q: str = dspy.InputField()
+        payload: list = dspy.OutputField()
+
     a = rt._LenientJSONAdapter()
     assert a.parse(Collide, '"payload": {"payload": {"a": "b"}}') == {
         "payload": {"payload": {"a": "b"}}
     }, "the whole value the model sent, not the inner fragment json_repair leaves behind"
+    # `Any` and `list` accept the fragment too, so each is the same bug under a different type.
+    assert a.parse(CollideAny, '"payload": {"payload": {"a": "b"}}') == {
+        "payload": {"payload": {"a": "b"}}
+    }
+    assert a.parse(CollideList, '"payload": [{"payload": [1, 2]}]') == {
+        "payload": [{"payload": [1, 2]}]
+    }
+    # Deeper than one level: the old ordering ate exactly one.
+    assert a.parse(Collide, '"payload": {"payload": {"payload": {"a": 1}}}') == {
+        "payload": {"payload": {"payload": {"a": 1}}}
+    }
     assert a.parse(CollideTyped, '"payload": {"payload": "x"}') == {"payload": Inner(payload="x")}
+
+
+def test_lenient_json_adapter_never_answers_an_empty_reply_from_an_invented_object():
+    """An empty or whitespace-only body is NOT read as an object body, which is the other half of
+    the same bug and needs its own guard.
+
+    Wrapping nothing produces ``{}``, and dspy's ``apply_output_field_defaults`` fills a DEFAULTED
+    output field from it. So the brace-wrap, applied to a reply that said nothing, FABRICATED an
+    answer: measured on dspy 3.4.0 and 3.4.1, an ``Optional`` output field came back as
+    ``{"payload": None}`` with no exception raised and nothing recorded. A required field raised on
+    both orderings, which is why only a defaulted one exposes it.
+
+    Whitespace is reachable through the real call path: dspy's ``_call_postprocess`` blocks only
+    FALSY text, so ``"   "`` and ``"\n"`` reach ``parse``. Deleting the ``body`` conjunct from
+    ``parse`` leaves every other test in this suite green, so this case is its only gate.
+    """
+    class Defaulted(dspy.Signature):
+        """Defaulted."""
+        q: str = dspy.InputField()
+        payload: str | None = dspy.OutputField()
+
+    a = rt._LenientJSONAdapter()
+    for body in ("", "   ", "\n", "\t"):
+        with pytest.raises(dspy.AdapterParseError):   # the public seam, not dspy.utils.exceptions
+            a.parse(Defaulted, body)
 
 
 def test_lenient_adapter_promotes_reasoning_content_when_content_empty():

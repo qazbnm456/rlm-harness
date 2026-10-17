@@ -217,7 +217,7 @@ cannot see.
   action's SHA-to-tag mapping, a behaviour of `os.kill` on Windows, a module missing from mcp 1.0.0.
   Auditable, but not by a local sweep, since it needs network, another platform or an uncached wheel.
   **Write the command or the page that would settle it next to the claim**, or it lands in the bucket
-  below by default and gets treated as permanently on trust when it is one `curl` away. The three
+  below by default and gets treated as permanently on trust when it is one `curl` away. The four
   in this repo today, each with the command that settles it, so nobody has to re-derive it:
 
   - `@runtime_checkable` on `CodeInterpreter` in dspy 3.2.1 (CHANGELOG 1.6.0):
@@ -226,6 +226,11 @@ cannot see.
     `uv run --with "hatchling==1.27.0" --no-project python -c "from hatchling.metadata.spec import DEFAULT_METADATA_VERSION as d; print(d)"`
   - no `win_arm64` wheel for `deno` (`ci.yml`, CHANGELOG Unreleased):
     `curl -s https://pypi.org/pypi/deno/json | jq -r '.urls[].filename'`
+  - `json_repair` dropping the outer key of a brace-less body, on every dspy in the supported range
+    (`runtime.py` `_LenientJSONAdapter.parse`, CHANGELOG 1.20.1). Prints the FRAGMENT
+    `{'payload': {'a': 'b'}}` rather than the whole value, which is the misread the parse order
+    exists to avoid; swap `3.4.0` for `3.4.1` for the other end of the range:
+    `uv run --with "dspy==3.4.0" --no-project python -c "import dspy; print(dspy.JSONAdapter().parse(dspy.Signature('q: str -> payload: dict'), '\"payload\": {\"payload\": {\"a\": \"b\"}}'))"`
 
   A **corpus-attributed** claim ("385 runs", "141 traces", "57% of tool wall-clock") can be audited
   exactly ONCE, at the moment it is written, and never again by anyone. No review of this repo can
