@@ -527,7 +527,8 @@ def test_lenient_json_adapter_never_answers_an_empty_reply_from_an_invented_obje
     Measured on dspy 3.4.0 and on 3.4.1: an output field annotated ``str | None`` returned
     ``{"payload": None}``, no exception raised and nothing recorded. Note it carries NO default:
     the value comes from the annotation admitting ``None``. An output field dspy will NOT supply a
-    value for raises either way, which is why only one it will supply a value for exposes this.
+    value for raised before this change and raises after it, which is why only a field it WILL
+    supply a value for was ever exposed.
 
     Whitespace reaches ``parse`` through the real call path: dspy's ``_call_postprocess`` gates on
     FALSY text, so ``"   "`` and ``"\n"`` pass it. ``""`` does not reach it that way, and is here

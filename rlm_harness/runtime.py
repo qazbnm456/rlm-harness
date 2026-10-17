@@ -47,8 +47,8 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
        falling back, see dspy ``chat_adapter`` ``isinstance(self, JSONAdapter)``.)
     2. **Brace-tolerant `parse`.** Schema-guided decoding intermittently drops the outer
        ``{`` ``}`` and returns just ``"a": 1, "b": 2``; stock parse then can't recover a dict.
-       We retry once with the body wrapped in braces, unless it is empty or already braced; a
-       genuinely non-JSON response still raises.
+       We retry once with the body wrapped in braces, unless it is empty, whitespace-only, or
+       already starts with a brace; a genuinely non-JSON response still raises.
 
     (A future, NIM-specific alternative is to drive ``nvext.guided_json`` directly instead of
     relying on ``response_format``: deliberately deferred; this keeps the path provider-agnostic.)"""
@@ -86,8 +86,8 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
             # required field); wrapping it would just double the brace ("{{...}") and make it
             # worse: let the original error stand.
             #
-            # An EMPTY or whitespace-only completion is excluded for a different reason, and it is
-            # the one the `not body` half was added for: wrapping nothing yields "{}", and dspy's
+            # An EMPTY or whitespace-only completion is excluded for a different reason:
+            # wrapping nothing yields "{}", and dspy's
             # `apply_output_field_defaults` supplies a value for an output field left unset, from a
             # default, a default factory, or an annotation that admits None, in that order. So the
             # wrap ANSWERED a reply that said nothing (measured on dspy 3.4.0 and on 3.4.1: a field

@@ -230,7 +230,7 @@ cannot see.
     3.4.1 (`runtime.py` `_LenientJSONAdapter.parse`, CHANGELOG 1.20.1). Prints
     `{'payload': {'a': 'b'}}` rather than the whole value the body carries. The kit INHERITS this
     rather than adding it: stock parse succeeds here, so the brace wrap never runs. Re-run on any
-    newer 3.4.x by swapping the pin:
+    newer dspy by swapping the pin:
     `uv run --with "dspy==3.4.1" --no-project python -c "import dspy; print(dspy.JSONAdapter().parse(dspy.Signature('q: str -> payload: dict'), '\"payload\": {\"payload\": {\"a\": \"b\"}}'))"`
 
   A **corpus-attributed** claim ("385 runs", "141 traces", "57% of tool wall-clock") can be audited
