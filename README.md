@@ -94,6 +94,11 @@ keeps that text in `RLMTaskError`'s own message rather than only on `__cause__`.
   root you scope, plus safe archive extraction and `git clone`. Every path resolves inside
   that root (no subprocess, no `rg` on `PATH`), and `verify_quote` checks a model's citation
   against the bytes it claims to quote.
+- **Memory that outlives a run, built in.** `MemoryStore` keeps short texts in one SQLite file,
+  each labelled `observed`, `said` or `inferred`, and three tools let a model search, read and
+  annotate it. Nothing written is ever changed or deleted, and a model can only ever write
+  `inferred`, so its own notes never pass for a source. Search handles Chinese, Japanese and Korean
+  without a dictionary. No extra, no service.
 - **Delegate to another harness, or be one.** `make_harness_tool` wraps a downstream
   rlm-harness harness as a tool: the parent records one `tool_call` plus a link to the child,
   while the child runs its own full RLM loop over the long text and owns its own trace.
@@ -122,6 +127,7 @@ The deep documentation lives in
 - [RLM as harness engineering](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#rlm-as-harness-engineering-sub-lm-hook--tracing): the sub-LM hook + trajectory tracing.
 - [Sub-LM vs. tool](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#sub-lm-vs-tool-which-model-goes-where): which model goes where; the choice decides what your RL data records.
 - [Skills](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#skills-progressive-disclosure), [MCP tools](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#mcp-tools-connect-an-external-mcp-server), [running local commands](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#running-local-commands-an-isolated-runner), and [`run_in_subprocess`](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#run_in_subprocess-a-safe-isolated-subprocess-primitive-isolationpy): the tool surfaces and the isolated-subprocess primitive under them.
+- [Memory](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#memory-a-provenance-typed-store-that-outlives-a-run-memorypy-toolsmemorypy): a provenance-typed store that outlives a run, and the tools that reach it.
 - [Reading and searching local files](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#reading-and-searching-local-files-a-bounded-directory-no-shell), [writing and editing them](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#writing-and-editing-a-bounded-local-directory-toolseditpy), and [extracting archives](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#extracting-archives-safely-toolsarchivepy): a bounded directory, no shell.
 - [The container interpreter](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#environment-interpreter-interpretercontainer), [sandbox turn timeout + cancellation](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#sandbox-turn-timeout--cancellation-pyodidedeno), and [what bounds what](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#timeouts-what-bounds-what): the execution environment and its deadlines.
 - [Grounded completeness](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#grounded-completeness-the-sufficiency-critic-recipe) and [judgement-only SUBMIT](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#judgement-only-submit-assemble-facts-dont-let-the-policy-report-them): the rollout conventions.

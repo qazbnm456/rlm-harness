@@ -39,7 +39,7 @@ function's return value.
 **This belongs here and not in the function's docstring, because that docstring is PROMPT TEXT.**
 dspy takes `dspy.Tool.desc` from `__doc__` and renders it into the system message of every task
 that hands this function to a model, where this description was 52.2% of the 13280
-characters of model-facing text across the fourteen tools the kit ships: more than the other
+characters of model-facing text across the fourteen tools the kit shipped then: more than the other
 thirteen put together. The function keeps a short description written for the model;
 everything here is for a developer reading the implementation. See docs/PROMPT.md and
 docs/INVARIANTS.md, "A tool's DOCSTRING is prompt text".

@@ -139,8 +139,8 @@ reason is in the rule.
   dspy, so a future rename fails safe rather than over-eagerly killing a retryable run.
 - **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`,
   `tools/`, `trace.py`, `skills.py`, `replay.py`, `dataset.py`, `serving.py`, `harness_serve.py`,
-  `_dspy_compat.py`, `metrics.py`, `rubric.py`, `_toolname.py`, `atomic.py`, `isolation.py`
-  must NOT import `dspy` at module top: that keeps their logic testable without dspy. Only
+  `_dspy_compat.py`, `metrics.py`, `rubric.py`, `_toolname.py`, `atomic.py`, `isolation.py`,
+  `memory.py` must NOT import `dspy` at module top: that keeps their logic testable without dspy. Only
   `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`, `container_interpreter.py`,
   `testing.py`, and `claude_agent_lm.py` touch dspy: the last four live outside the dspy-free
   set and are lazily imported (by `__getattr__` / by `sandbox.build_interpreter`'s
@@ -275,7 +275,7 @@ reason is in the rule.
     of 7800, inside a system message of about 9000 whose user-message counterpart was a few
     hundred.
 
-  * Of the **fourteen** tools the kit ships, **three** had no model-facing docstring at all, so
+  * Of the **fourteen** tools the kit shipped then, **three** had no model-facing docstring at all, so
     dspy rendered the literal words `No description`. Of the eleven that had one, **eight**
     carried Sphinx markup and **ten** produced a mid-sentence gap or markup, because dspy flattens
     with `.replace("\n", "  ")` and a docstring's 8-space continuation indent becomes ten spaces.
@@ -331,10 +331,11 @@ reason is in the rule.
   * A non-empty, markup-free, gap-free description for every tool the kit ships.
 
   * That every sentinel string a description quotes is one the code really returns, plus that a
-    quoted EXAMPLE is a prefix of the real return and that the one number in a description comes
-    from the constant it describes. The sentinels are ENUMERATED out of each rendered description
-    rather than listed, so a new one arrives already needing a row, and the sweep's coverage is
-    asserted against the catalogue because a hand-written table drifts from it in silence and did.
+    quoted EXAMPLE is a prefix of the real return and that each number in a description comes
+    from the constant or factory argument it describes. The sentinels are ENUMERATED out of each
+    rendered description rather than listed, so a new one arrives already needing a row, and the
+    sweep's coverage is asserted against the catalogue because a hand-written table drifts from it
+    in silence and did.
 
   * **The loop has three sides and two are asserted.** Quoted-in-a-description to
     returned-by-the-code, and in-a-row to named-in-the-description. The third,
@@ -359,11 +360,12 @@ reason is in the rule.
     is a shipped helper rather than a verified claim; the scan would be the first of those.
 
     Its own bound, stated with it: only a return whose head is an inline literal is visible, which
-    is 41 of 137 returns under `tools/` today.
+    was 41 of 137 returns under `tools/` when it was measured, before the memory tools added
+    more.
 
   * That the seam reaches the three producers that come from no factory, asserted end to end on a
-    built task rather than as a property of their docstrings. The SIZE gate covers the fourteen
-    catalogue tools and not those three.
+    built task rather than as a property of their docstrings. The SIZE gate covers every
+    catalogue tool and not those three.
 
   * That the seam is wired in rather than merely correct, and that a caller's own object is never
     rewritten.
@@ -524,6 +526,35 @@ reason is in the rule.
   only place code runs. What no test can gate: a third-party skill is usable, but its text
   becomes LM context, so treat an untrusted skill as a prompt-injection surface. See the guide
   (`rlm_harness/README.md`) "Skills (progressive disclosure)".
+- **Memory is append-only evidence, and a model writes only `inferred`.** `MemoryStore`
+  (`memory.py`) labels every item with one of `PROVENANCES`: `observed` (taken from a source by
+  the host), `said` (written by a person) and `inferred` (written by a model). Two properties hold
+  and must keep holding:
+  1. **The model's only write path cannot name a provenance.** `memory_note(text, revises)` has
+     no such argument and stores `inferred`, so the guarantee comes from the tool's SHAPE, the way
+     `HarnessInvoke`'s single long-text argument enforces its contract. Do not add a `provenance=`
+     parameter to that tool, or a second model-facing write tool that takes one. A note written
+     after reading untrusted text is replayed into every later run that searches for it, and the
+     label is the only thing that lets a reader discount it.
+  2. **Nothing written is changed or deleted.** `revise` adds a new row pointing at the old one,
+     and `retire` sets `valid_to` once; that is the module's only UPDATE. Triggers refuse a stray
+     `UPDATE`, `DELETE` or `INSERT OR REPLACE` (REPLACE deletes without firing a DELETE trigger,
+     which is why an INSERT trigger refuses an existing id; it guards on `NEW.id > 0` because an
+     auto-assigned id reads as -1 there, and `CHECK (id > 0)` keeps a stray row at -1 from turning
+     that guard against every later add), and the UPDATE trigger compares with
+     `IS NOT`, because a `!=` guard reads `NULL != 'x'` as false and would let a NULL `revises`
+     or `run_id` be filled in later. The triggers protect `items`, the source of truth. The FTS5
+     index is contentless, which refuses a plain DELETE or UPDATE, but its own `'delete'` and
+     `'delete-all'` commands and a direct INSERT can still change what it matches, so search can
+     miss or mis-match an item while the item itself is intact. These protect history from a
+     host's SQL mistakes, not from someone with the file: `DROP TRIGGER` still works, and the
+     docs must not claim otherwise.
+
+  What the kit cannot verify is the host's choice between `observed` and `said`; the host's code
+  path assigns it, and the docs say so rather than implying a check. The schema changes only by
+  appending to `memory._MIGRATIONS`, counted in `PRAGMA user_version`, and a shipped step is never
+  edited. A memory call records an ordinary `tool_call` with an optional `memory_ids` field; it
+  does not add an event type. Pinned by `tests/test_memory.py` and `tests/test_memory_tools.py`.
 - **The trace is a VERSIONED wire format: additive-only within a version.** `SCHEMA =
   "rlm-harness/trace/v2"` + every `EVENT_*` type string + the `{schema, run_id, step_id, ts, type,
   payload}` envelope + the dataset-exporter record shapes are a CONTRACT that offline readers build

@@ -115,7 +115,7 @@ to hide behind: its developer half belongs in the module docstring.
 
 **Say what a caller needs and stop.** Two of the kit's tools shipped 6936 and 3816 characters of
 design rationale and implementation notes: 52.2% and 28.7% of the 13280 characters of
-model-facing text across the fourteen tools the kit ships, 81% between them,
+model-facing text across the fourteen tools the kit shipped then, 81% between them,
 re-sent in the system message on every turn of every run. Keep the parameters, the return shape,
 and the sentinel strings a model has to branch on. Drop the reasoning. When a tool seems to need
 more than its baseline to be *used* correctly, that surplus is developer-facing by definition.

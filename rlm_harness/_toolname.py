@@ -237,7 +237,7 @@ def signature_from_json_schema(schema: Any) -> inspect.Signature:
 #     Read lines ``start_line``..``end_line`` (1-indexed, inclusive; ``end_line=None`` means
 #               "to the end of the file") of a file at ``path``
 #
-# Of the fourteen tools the kit ships, three had no model-facing docstring at all, so dspy
+# Of the fourteen tools the kit shipped then, three had no model-facing docstring at all, so dspy
 # rendered the literal string "No description" for them; of the eleven that had one, eight
 # carried Sphinx markup and ten produced markup or a mid-sentence gap.
 #
