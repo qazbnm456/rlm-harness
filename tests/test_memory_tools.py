@@ -25,10 +25,11 @@ def _calls(path):
 # ---- memory_search ----------------------------------------------------------------------------
 
 def test_search_returns_json_rows_with_provenance(store):
-    store.add("sleep consolidates memory", provenance="observed", origin="paper", tags=["sleep"])
-    rows = json.loads(make_memory_search_tool(store)("sleep"))
-    assert rows == [{"id": "m1", "provenance": "observed", "origin": "paper", "tags": ["sleep"],
-                     "text": "sleep consolidates memory", "revises": None}]
+    store.add("databases need regular vacuuming", provenance="observed", origin="paper", tags=["databases"])
+    rows = json.loads(make_memory_search_tool(store)("databases"))
+    assert rows == [{"id": "m1", "provenance": "observed", "origin": "paper", "tags": ["databases"],
+                     "title": "", "title_provenance": None, "text": "databases need regular vacuuming",
+                     "revises": None}]
 
 
 def test_search_cuts_long_text_and_marks_the_cut(store):
@@ -38,9 +39,9 @@ def test_search_cuts_long_text_and_marks_the_cut(store):
 
 
 def test_search_never_returns_a_retired_item(store):
-    item = store.add("sleep", provenance="observed", origin="o")
+    item = store.add("vacuum", provenance="observed", origin="o")
     store.retire(item.id)
-    assert make_memory_search_tool(store)("sleep") == "No memories match 'sleep'."
+    assert make_memory_search_tool(store)("vacuum") == "No memories match 'vacuum'."
 
 
 def test_an_empty_query_tells_an_empty_store_from_an_all_retired_one(store):
@@ -118,14 +119,14 @@ def test_search_never_raises_on_a_query_of_any_type(store, query):
 
 
 def test_the_trace_records_the_raw_limit_and_the_ids_returned(store, tmp_path):
-    store.add("sleep a", provenance="observed", origin="o")
-    store.add("sleep b", provenance="observed", origin="o")
+    store.add("vacuum a", provenance="observed", origin="o")
+    store.add("vacuum b", provenance="observed", origin="o")
     trace = tmp_path / "t.jsonl"
     with TraceRecorder(str(trace), run_id="r"):
-        make_memory_search_tool(store, max_results=8)("sleep", limit=99)
+        make_memory_search_tool(store, max_results=8)("vacuum", limit=99)
     call = _calls(trace)[-1]
     assert call["tool"] == "memory_search" and call["ok"] is True
-    assert call["args"] == {"query": "sleep", "limit": 99}, "the model's own value, not the clamp"
+    assert call["args"] == {"query": "vacuum", "limit": 99}, "the model's own value, not the clamp"
     assert sorted(call["memory_ids"]) == ["m1", "m2"]
 
 
@@ -243,7 +244,7 @@ class _BrokenStore(MemoryStore):
 
 
 @pytest.mark.parametrize("build,call", [
-    (make_memory_search_tool, lambda t: t("sleep")),
+    (make_memory_search_tool, lambda t: t("vacuum")),
     (make_memory_get_tool, lambda t: t("m1")),
     (make_memory_note_tool, lambda t: t("a note")),
     (make_memory_note_tool, lambda t: t("a note", revises="m1")),
@@ -312,3 +313,12 @@ def test_every_memory_tool_is_repl_safe(store):
     for tool in (make_memory_search_tool(store), make_memory_get_tool(store),
                  make_memory_note_tool(store)):
         assert_repl_safe(tool)
+
+
+def test_search_rows_carry_the_current_title(store):
+    item = store.add("replication slot notes", provenance="observed", origin="o")
+    store.label(item.id, title="Replication slots", provenance="inferred")
+    rows = json.loads(make_memory_search_tool(store)("replication"))
+    assert rows[0]["title"] == "Replication slots"
+    # A model-written title on an observed item is marked as the model's, never shown as observed.
+    assert rows[0]["provenance"] == "observed" and rows[0]["title_provenance"] == "inferred"

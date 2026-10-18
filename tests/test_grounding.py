@@ -437,3 +437,28 @@ def test_a_gutter_of_zero_is_refused():
     empty list -- so a gutter of 0 cannot verify with or without the bound. This docstring used to
     assert the opposite and name itself the bound's guardian."""
     assert verify_quote("a\nlast\n", "     0\tlast").startswith("MISMATCH:")
+
+
+# ---- _find_span: the half a host STORES from ---------------------------------------------------
+
+def test_find_span_returns_the_sources_own_bytes():
+    from rlm_harness.tools.grounding import _find_span
+
+    source = "The replication   slot keeps\nWAL segments until confirmed."
+    span = _find_span(source, "replication slot keeps WAL segments")
+    assert span is not None
+    assert source[span[0]:span[1]] == "replication   slot keeps\nWAL segments", "spacing is the source's"
+
+
+def test_find_span_refuses_what_verify_quote_refuses_and_short_quotes():
+    from rlm_harness.tools.grounding import MIN_QUOTE_CHARS, _find_span
+
+    source = "alpha beta gamma delta epsilon zeta eta theta\n     2\tline two text here and more"
+    assert _find_span(source, "") is None and _find_span(source, "   ") is None
+    assert _find_span(source, " 7 ") is None, "digits only"
+    assert _find_span(source, "alpha beta") is None, f"under {MIN_QUOTE_CHARS} characters"
+    assert _find_span(source, "not anywhere in the source at all") is None
+    # A guttered quote has no span in the source: there is no line-number path here.
+    assert _find_span("first line\nsecond line of text that is long enough",
+                      "     2\tsecond line of text that is long enough") is None
+    assert _find_span(None, "x" * 30) is None and _find_span(source, None) is None

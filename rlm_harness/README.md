@@ -16,7 +16,9 @@ pitch, the quickstart, and installation: start at the
 | `_retry.py` | Validation + retry engine (dspy-free, unit-tested). Mostly private, but `short_error` is public: head-and-tail elision for a caught exception, so a giant `AdapterParseError` (which embeds the whole raw completion) becomes one readable log line instead of thousands. |
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
 | `atomic.py` | `atomic_write_text` / `atomic_write_stream`: a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write; `atomic_write_stream` takes an iterable of `bytes` chunks instead of one in-memory blob, aborting once a running total exceeds an optional `max_bytes`. dspy-free. |
-| `memory.py` | `MemoryStore` / `MemoryItem` / `PROVENANCES` / `MemoryUnavailable`: a provenance-typed, append-only memory in one SQLite file that outlives a run, with CJK-aware full-text search (see "Memory" below). dspy-free, stdlib only. |
+| `memory.py` | `MemoryStore` / `MemoryItem` / `MemoryLabels` / `PurgeRecord` / `PROVENANCES` / `MemoryUnavailable`: a provenance-typed memory in one SQLite file that outlives a run, with labels, CJK-aware full-text search and a host-only `purge` (see "Memory" below). dspy-free, stdlib only. |
+| `memory_organise.py` | The model-free half of organising a store: `section_map`, `clean_language`, `known_listing`. dspy-free. |
+| `memory_tasks.py` | The model-backed half: `SummariseShort` (one `dspy.Predict` call), `DistillLongItem` (an `RLMTask`), `run_step` / `arun_step` / `subprocess_step_runner`, and `distill_pending`. Lazily exported, since it imports dspy. |
 | `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` / `RUN_FACT_KEYS` / `compute_run_facts` / `compute_run_facts_by_run` (the generic half of a rubric's facts): reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded trace events. dspy-free. |
 | `isolation.py` | `run_in_subprocess`: a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
 | `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema: the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` (see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths`) a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` (safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `make_extract_archive_tool`) safe `zip`/tar extraction in `tools/archive.py` (see below), `verify_quote` (a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool`) a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool`: the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), the memory tools `make_memory_search_tool` / `make_memory_get_tool` / `make_memory_note_tool` in `tools/memory.py` (see "Memory" below), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
@@ -758,8 +760,8 @@ from rlm_harness import MemoryStore
 from rlm_harness.tools import make_memory_get_tool, make_memory_note_tool, make_memory_search_tool
 
 memory = MemoryStore("state/memory.db")
-memory.add(page_text, provenance="observed", origin=url, tags=["sleep"])
-memory.add("I only care about human studies", provenance="said", origin="user")
+memory.add(page_text, provenance="observed", origin=url, tags=["databases"])
+memory.add("Prefer answers that cite the official documentation", provenance="said", origin="user")
 
 tools = [make_memory_search_tool(memory), make_memory_get_tool(memory), make_memory_note_tool(memory)]
 answer = MyTask(tools=tools).run(question=q)
@@ -785,42 +787,54 @@ returned to every later run whose search matches it, which makes memory a persis
 prompt-injection path. `inferred` is how a reader, or a later task's instructions, tells a model's
 own words from a source and declines to cite them.
 
-**Nothing written is ever changed or deleted.** Two calls change what a reader sees, and neither
-touches the original row:
+**What is written is never changed, an id never names different text, and only the host erases.**
+Three calls change what a reader sees, and none rewrites a row:
 
 - `revise(item_id, text, *, origin, provenance="inferred")` adds a new item whose `revises` points
   at the old one. Pass `provenance="said"` when the revision is a person's correction.
 - `retire(item_id, *, at=None)` sets `valid_to` once. It is the only UPDATE the module issues.
+- `label(item_id, ...)` adds label rows (below); the latest shows, and a person's outranks a model's.
 
-SQLite triggers refuse a stray `UPDATE`, `DELETE` or `INSERT OR REPLACE` against the items table,
-which is the source of truth. This protects history from a host's own SQL mistakes; it is not a
-security boundary against someone holding the file, since `DROP TRIGGER` still works. The search
-index is a contentless FTS5 table, which refuses a plain `DELETE` or `UPDATE`, but FTS5's own
-`'delete'` and `'delete-all'` commands and a direct `INSERT` can still change what it matches.
-That can make search miss an item or match the wrong one; it never changes an item.
+`purge` is the one way anything leaves the file; see "Removing data" below.
 
-**Search** (`search(query="", *, limit=10, provenance=None, tags=(), at=None, include_retired=False)`):
+SQLite triggers refuse a stray `UPDATE`, `DELETE` or `INSERT OR REPLACE` against the item and label
+tables. This protects history from a host's own SQL mistakes; it is not a security boundary against
+someone holding the file, since `DROP TRIGGER` still works. An index row deleted by other means only
+makes search miss that item; it never changes the item.
 
+**Search** (`search(query="", *, limit=10, provenance=None, tags=(), entities=(), at=None,
+include_retired=False)`):
+
+- A query matches an item's text or one of its current labels. An item that matches in a label
+  ranks above one that matches only in its text, because a label says what an item is about; within
+  each group, by `bm25` and then newest first (among text-only matches, a hit in the item's own
+  tags outranks one in its body). A superseded label is not
+  searched.
 - A query is split into terms the way the index's tokenizer splits text (letters, digits and
-  combining marks, so a Hindi or pointed Hebrew word stays whole) and ranked with `bm25`; a hit in
-  a tag outranks a hit in the text.
+  combining marks, so a Hindi or pointed Hebrew word stays whole). Thai, Lao, Khmer and Myanmar are
+  written without spaces and are not split into words, so a query in them matches only a whole
+  run.
+- `tags` needs every given tag among the item's own tags or its current tag labels; `entities`
+  needs every given name among its current entity labels, compared casefolded.
 - An empty query lists the newest items. A query with no usable terms (punctuation, a lone letter
   or digit) matches nothing.
 - Items retired as of now are left out unless `include_retired=True`; one retired at a future time
   stays visible until then. `at=<timestamp>` is a point-in-time view: only items whose `valid_from`
-  has passed and that were not yet retired at that moment.
+  has passed and that were not yet retired at that moment. Labels have no time window, so `at`
+  always reads the current ones.
 - Chinese, Japanese and Korean need no dictionary. That covers kana, the CJK ideograph blocks
   including extensions A to G with the marks `々 〆 〇 〻`, and Hangul syllables and both jamo
   blocks. An unspaced run is indexed as its overlapping character pairs and its single characters,
-  so `記憶` matches inside `睡眠與記憶` and a one-character query still finds something. Text is
+  so `索引` matches inside `資料庫與索引` and a one-character query still finds something. Text is
   NFKC-normalised, so `ＰＤＦ` matches `pdf`.
 
 **The three tools.** Reading and writing are separate factories, the way `read_file` and
 `write_file` are, so a task that should only consult memory leaves the note tool out.
 
 - `make_memory_search_tool(store, *, max_results=8, max_chars=500)`: `memory_search(query, limit)`
-  returns a JSON list. `limit` is clamped to `max_results`, each text is cut at `max_chars` and
-  marked ` …[truncated]`, and items retired as of the call never appear.
+  returns a JSON list, each row with the item's current `title` and its `title_provenance`, since a
+  model-written title is a label and never evidence. `limit` is clamped to `max_results`, each text
+  is cut at `max_chars` and marked ` …[truncated]`, and items retired as of the call never appear.
 - `make_memory_get_tool(store, *, max_chars=4000)`: `memory_get(item_id)` returns one item, retired
   or not, with every field (including `origin`, `run_id` and your `meta`, so keep private data out
   of `meta`), plus `revised_by`.
@@ -833,9 +847,85 @@ Each takes `name=` so two stores can sit in one task. Each records exactly one `
 failures included, with the raw arguments the model passed and a `memory_ids` field listing the ids
 it returned or wrote; there is no new trace event type. An argument longer than its cap is
 recorded cut, with `<name>_len` beside it, so an oversized argument cannot bloat the trace (a list
-or dict is measured by its JSON form). Each
-returns a string and never raises on a model-controlled argument, and a database failure (a lock
-held past the timeout, a full disk, a damaged file) comes back as `Memory error: <type>`.
+or dict is measured by its JSON form). Each returns a string and never raises on a model-controlled
+argument, and a database failure (a lock held past the timeout, a full disk, a damaged file) comes
+back as `Memory error: <type>`.
+
+### Labels and distillation (`memory_tasks.py`, `memory_organise.py`)
+
+A label says what an item is about: a `title`, a `summary`, `tags` and `entities`. Labels are rows
+of their own, so the item itself never changes.
+
+```python
+from rlm_harness import distill_pending
+
+memory.label("m12", title="Replication slots", tags=["databases"])    # a person's labels: said
+report = await distill_pending(memory, limit=50, language="English")  # a model's: inferred
+memory.labels("m12")   # MemoryLabels(title=..., summary=..., tags=(...), entities=(...), provenance={...})
+```
+
+- **Which label shows.** For each kind, the latest `said` label when it has a value, otherwise the
+  latest `inferred` one. So a person's label outranks any later summary, and `label(id, title=None)`
+  (a `said` clear) lets the model's show again. Labels are trimmed, never refused: title 80
+  characters, summary 600, up to 8 tags of 40 (casefolded), up to 8 entities of 60 (case kept).
+- **The queue.** `unlabelled()` lists items with no summary yet, newest first. It is derived from
+  the labels, so nothing can be stuck in a "being summarised" state. An empty summary from a model
+  counts as an answer, so a text too thin to summarise is asked about once; a person clearing their
+  own summary does not, so the item is queued again. An item that failed three times
+  (`note_distill_failure`, `last_distill_error`) leaves the queue unless named in `item_ids`.
+- **The pass.** `distill_pending` runs only when you await it, at most 500 items per call. A text up
+  to `SHORT_LIMIT` (12,000) characters is ONE `dspy.Predict` call (`SummariseShort`). A longer one is
+  an RLM run (`DistillLongItem`) with the text in the REPL and a section map in the prompt, and only
+  that path needs Deno; `defer_long=True` skips it. The labels already in use (`label_counts`) are
+  shown to each call, so related items converge on one tag instead of two near-synonyms. The
+  returned `DistillReport` lists what was labelled, what came back with an empty summary
+  (`skipped_empty`, the model's judgement that the text was too thin), what failed and why, and
+  whether `should_stop` ended the pass early.
+- **What a label may say.** Coordinate markers are stripped. An entity is kept only when its name
+  occurs in the item as a whole word (for a long item, in the span its quote was found at, the quote
+  checked like `verify_quote` and at least 20 characters), or when it is an entity name already in
+  use that the call was shown, which is what lets a text in one script carry a name other items
+  write in another. A name matched that way is stored in the spelling already in use, so one entity
+  keeps one name.
+- **Running the model elsewhere.** `run=` replaces the default step runner. It receives a
+  JSON-serialisable payload and returns a dict, so a consumer that isolates model calls passes
+  `run=subprocess_step_runner(timeout_s=300)`, which runs each step in a fresh process through
+  `run_in_subprocess`, configured with this process's `RLMConfig`. Cancelling the pass does not stop
+  a child already running (it runs until done or `timeout_s`), and a long item's steps run in the
+  child, so they do not reach a `recorder_for` trace. A short item's one `Predict` call is never
+  recorded, in-process or not, so its run holds only `run_start` and `run_end`.
+  `recorder_for(item_id)` gives each item its own trace run, and the labels it writes carry that
+  run's id. `should_stop` and `on_progress` make a long pass stoppable and observable. A database
+  error while writing (a lock held past the timeout, as behind a long purge) fails that item without
+  counting toward its three failures and never ends the pass. Two passes at once may label one item
+  twice; keep one running.
+- `optimize.compile_task` compiles `DistillLongItem`; compile `SummariseShort`'s `Predict` with
+  `dspy.GEPA` directly.
+
+### Removing data (`purge`)
+
+`purge(item_ids, *, reason="", include_revisions=False, secure=False)` erases items for good. It is
+the host's deliberate exception to append-only: no tool and no model-facing path reaches it, and it
+exists because a person may want back out what they put in.
+
+- It deletes each item, its labels, its recorded failures and its search-index entries, and writes a
+  `purged` record with the time and `reason`, never the text (`purged(item_id)` reads it back).
+- Deleting from the index only writes a tombstone; the words stay in its segments until they are
+  merged. So every purge merges both indexes, which rewrites them and costs time in proportion to
+  the store's size, holding the write lock throughout: other writers, a model's `memory_note`
+  included, wait up to the 30-second busy timeout and past it get `Memory error`. Every connection
+  the store opens runs with SQLite's `secure_delete` on, so space freed by any write is zeroed
+  (extra writes on ordinary adds and labels too); without that, an ordinary index merge long before
+  the purge leaves an old copy of the text in a live page, where no later purge can reach it.
+- Ids are never reused, so an id in an old trace or citation names nothing rather than something
+  else; `get` returns `None` and `memory_get` says `Not found`.
+- `include_revisions=True` also purges every item that revises a purged one; otherwise a revision
+  survives, with a `revises` naming an id that no longer exists.
+- `secure=True` also runs `VACUUM` to shrink the file. Last, the WAL is checkpointed. If another
+  connection is reading at that moment the checkpoint cannot finish and a warning is logged; the old
+  pages then leave the main file and the WAL at the next full checkpoint, which SQLite runs when the
+  last connection closes. A `VACUUM` that cannot get the lock is logged too, and the purge, already
+  committed, still returns its ids.
 
 **Operational notes.**
 
@@ -845,16 +935,17 @@ held past the timeout, a full disk, a damaged file) comes back as `Memory error:
   VM-shared filesystem is unreliable for it.
 - `":memory:"` is refused, because a per-operation connection would lose everything between calls.
 - `max_item_chars` (default 200,000) caps one item, and a longer text raises rather than being cut.
-- A Python whose SQLite lacks FTS5 raises `MemoryUnavailable` when the store is constructed, for a
-  new file and an existing one alike.
+- A Python whose SQLite lacks FTS5, or is older than 3.43, raises `MemoryUnavailable` when the store
+  is constructed, for a new file and an existing one alike. Every Python the kit's CI uses ships a
+  newer one.
 - The schema changes only by appending a step to `memory._MIGRATIONS`, counted in
   `PRAGMA user_version`. A file whose schema is newer than this kit knows is refused rather than
   opened.
 - Timestamps (`valid_from`, `at`) must be finite numbers: SQLite stores NaN as NULL, which would
   read as "never retired".
 
-**Not built yet.** The store holds what you put in it. Writing memory automatically from finished
-traces, condensing or linking items, and similarity search over embeddings are later work, and none
+**Not built yet.** Merging names that mean the same thing, grouping items into topics, similarity
+search over embeddings, and writing memory automatically from finished runs are later work, and none
 of it is implied by anything above.
 
 ## Environment interpreter (`interpreter="container"`)

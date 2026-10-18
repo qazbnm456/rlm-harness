@@ -134,10 +134,12 @@ def make_memory_search_tool(
     def memory_search(query: str = "", limit: int = 5) -> str:
         """Search long-term memory for `query`; an empty query lists the newest items. Returns a
         JSON list of up to {cap} items, best match first, each with id, provenance, origin, tags,
-        text and revises; each text is cut at {width} characters, and reading the item by id
-        returns more. provenance is observed (taken from a source), said (written by a person) or
-        inferred (written by a model, never evidence on its own). Returns "No memories match ..."
-        when nothing matches, "Memory is empty." when nothing has ever been stored, "No current
+        title, title_provenance, text and revises; each text is cut at {width} characters, and
+        reading the item by id returns more. provenance is observed (taken from a source), said
+        (written by a person) or inferred (written by a model, never evidence on its own). A title
+        is a label, not the item: title_provenance says who wrote it, and an inferred title is
+        never evidence. Returns "No memories match ..."
+        when nothing matches, "Memory is empty." when nothing is stored, "No current
         memories." when everything stored has been retired, or "Memory error: ..." when the store
         cannot be read."""
         args, lengths = _bounded(query=(query, _TRACE_ARG_CHARS), limit=(limit, _TRACE_ARG_CHARS))
@@ -145,6 +147,7 @@ def make_memory_search_tool(
         try:
             items = store.search(q, limit=_as_limit(limit, 5, cap))
             empty = not items and not q and store.count() == 0
+            titles = {i.id: store.labels(i.id) for i in items}
         except sqlite3.Error as exc:
             record_tool_call(name, args=args, ok=False, memory_ids=[],
                              note=f"error: {type(exc).__name__}", **lengths)
@@ -156,6 +159,7 @@ def make_memory_search_tool(
             return "Memory is empty." if empty else "No current memories."
         rows = [
             {"id": i.id, "provenance": i.provenance, "origin": i.origin, "tags": list(i.tags),
+             "title": titles[i.id].title, "title_provenance": titles[i.id].provenance["title"],
              "text": _cut(i.text, width), "revises": i.revises}
             for i in items
         ]

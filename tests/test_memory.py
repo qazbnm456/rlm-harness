@@ -36,14 +36,14 @@ def _raw(store: MemoryStore):
 # ---- writing and reading back ------------------------------------------------------------------
 
 def test_add_returns_the_stored_item_and_get_reads_it_back(store):
-    item = store.add("Sleep consolidates memory", provenance="observed", origin="https://x",
-                     tags=["sleep", " sleep ", "", "memory"], meta={"page": 3}, run_id="r1")
+    item = store.add("Databases need regular vacuuming", provenance="observed", origin="https://x",
+                     tags=["databases", " databases ", "", "storage"], meta={"page": 3}, run_id="r1")
     assert isinstance(item, MemoryItem)
     assert item.id == "m1"
-    assert item.tags == ("sleep", "memory"), "tags are stripped, emptied out and de-duplicated"
+    assert item.tags == ("databases", "storage"), "tags are stripped, emptied out and de-duplicated"
     assert item.valid_from == item.created_at and item.valid_to is None and not item.retired
     assert store.get("m1") == item
-    assert item.to_dict()["tags"] == ["sleep", "memory"] and item.to_dict()["meta"] == {"page": 3}
+    assert item.to_dict()["tags"] == ["databases", "storage"] and item.to_dict()["meta"] == {"page": 3}
 
 
 def test_an_item_survives_a_new_store_on_the_same_file(tmp_path):
@@ -155,10 +155,14 @@ def test_valid_to_can_be_set_once_and_never_unset(store):
     assert store.get("m1").valid_to == 5
 
 
-def test_the_search_index_refuses_deletion(store):
-    store.add("x", provenance="said", origin="o")
-    with _raw(store) as conn, pytest.raises(sqlite3.OperationalError, match="contentless"):
+def test_deleting_an_index_row_never_touches_the_item(store):
+    """The index can forget (purge needs that), and forgetting there is all it does: the item, the
+    source of truth, is untouched and only search stops finding it."""
+    store.add("a distinctive phrase", provenance="said", origin="o")
+    with _raw(store) as conn:
         conn.execute("DELETE FROM items_fts WHERE rowid = 1")
+    assert store.get("m1").text == "a distinctive phrase"
+    assert store.search("distinctive") == []
 
 
 def test_a_stray_row_at_a_non_positive_id_is_refused_and_cannot_block_later_adds(store):
@@ -238,16 +242,16 @@ def test_get_and_revisions_treat_a_malformed_id_as_absent(store):
 # ---- search -----------------------------------------------------------------------------------
 
 def test_a_tag_hit_outranks_a_body_hit(store):
-    body = store.add("a long note that mentions sleep once", provenance="observed", origin="o")
-    tagged = store.add("about rest", provenance="observed", origin="o", tags=["sleep"])
-    assert [i.id for i in store.search("sleep")] == [tagged.id, body.id]
+    body = store.add("a long note that mentions vacuum once", provenance="observed", origin="o")
+    tagged = store.add("about rest", provenance="observed", origin="o", tags=["vacuum"])
+    assert [i.id for i in store.search("vacuum")] == [tagged.id, body.id]
 
 
 def test_a_two_character_cjk_word_matches_inside_a_longer_run(store):
-    hit = store.add("睡眠與記憶的關係", provenance="observed", origin="o")
+    hit = store.add("資料庫與索引的關係", provenance="observed", origin="o")
     store.add("完全無關的內容", provenance="observed", origin="o")
-    assert [i.id for i in store.search("記憶")] == [hit.id]
-    assert [i.id for i in store.search("記")] == [hit.id], "a one-character query still matches"
+    assert [i.id for i in store.search("索引")] == [hit.id]
+    assert [i.id for i in store.search("索")] == [hit.id], "a one-character query still matches"
 
 
 def test_a_cjk_tag_is_found_by_part_of_it(store):
@@ -309,7 +313,7 @@ def test_a_query_term_is_quoted_so_it_cannot_be_syntax(store):
 
 
 def test_query_terms_are_capped_and_deduplicated():
-    assert _query_terms("sleep sleep Sleep") == ["sleep"]
+    assert _query_terms("vacuum vacuum Vacuum") == ["vacuum"]
     assert len(_query_terms(" ".join(f"w{n}" for n in range(200)))) == 64
 
 
@@ -321,41 +325,41 @@ def test_an_empty_query_lists_the_newest_first(store):
 
 
 def test_the_filters(store):
-    obs = store.add("sleep paper", provenance="observed", origin="o", tags=["a", "b"])
-    said = store.add("sleep diary", provenance="said", origin="o", tags=["a"])
-    note = store.add("sleep note", provenance="inferred", origin="o")
-    assert {i.id for i in store.search("sleep", provenance="observed")} == {obs.id}
-    assert {i.id for i in store.search("sleep", provenance=["said", "inferred"])} == {said.id, note.id}
-    assert {i.id for i in store.search("sleep", tags=["a", "b"])} == {obs.id}
+    obs = store.add("vacuum paper", provenance="observed", origin="o", tags=["a", "b"])
+    said = store.add("vacuum diary", provenance="said", origin="o", tags=["a"])
+    note = store.add("vacuum note", provenance="inferred", origin="o")
+    assert {i.id for i in store.search("vacuum", provenance="observed")} == {obs.id}
+    assert {i.id for i in store.search("vacuum", provenance=["said", "inferred"])} == {said.id, note.id}
+    assert {i.id for i in store.search("vacuum", tags=["a", "b"])} == {obs.id}
     assert {i.id for i in store.search("", tags="a")} == {obs.id, said.id}
     with pytest.raises(ValueError):
-        store.search("sleep", provenance="verified")
+        store.search("vacuum", provenance="verified")
 
 
 def test_retired_items_are_hidden_unless_asked_for(store):
-    old = store.add("sleep fact", provenance="observed", origin="o")
+    old = store.add("vacuum fact", provenance="observed", origin="o")
     store.retire(old.id, at=50.0)
-    assert store.search("sleep") == []
-    assert [i.id for i in store.search("sleep", include_retired=True)] == [old.id]
+    assert store.search("vacuum") == []
+    assert [i.id for i in store.search("vacuum", include_retired=True)] == [old.id]
 
 
 def test_an_item_retired_in_the_future_stays_visible_until_then(store):
-    item = store.add("sleep fact", provenance="observed", origin="o")
+    item = store.add("vacuum fact", provenance="observed", origin="o")
     store.retire(item.id, at=time.time() + 3600)
-    assert [i.id for i in store.search("sleep")] == [item.id]
-    assert [i.id for i in store.search("sleep", at=time.time())] == [item.id]
-    assert store.search("sleep", at=time.time() + 7200) == []
+    assert [i.id for i in store.search("vacuum")] == [item.id]
+    assert [i.id for i in store.search("vacuum", at=time.time())] == [item.id]
+    assert store.search("vacuum", at=time.time() + 7200) == []
 
 
 def test_at_is_a_point_in_time_view(store):
-    early = store.add("sleep fact", provenance="observed", origin="o", valid_from=10.0)
-    later = store.add("sleep fact two", provenance="observed", origin="o", valid_from=100.0)
+    early = store.add("vacuum fact", provenance="observed", origin="o", valid_from=10.0)
+    later = store.add("vacuum fact two", provenance="observed", origin="o", valid_from=100.0)
     store.retire(early.id, at=50.0)
-    assert {i.id for i in store.search("sleep", at=20.0)} == {early.id}
-    assert {i.id for i in store.search("sleep", at=60.0)} == set()
-    assert {i.id for i in store.search("sleep", at=200.0)} == {later.id}
+    assert {i.id for i in store.search("vacuum", at=20.0)} == {early.id}
+    assert {i.id for i in store.search("vacuum", at=60.0)} == set()
+    assert {i.id for i in store.search("vacuum", at=200.0)} == {later.id}
     # A future valid_from is not hidden by the default view.
-    assert later.id in {i.id for i in store.search("sleep")}
+    assert later.id in {i.id for i in store.search("vacuum")}
 
 
 # ---- concurrency, schema, packaging -------------------------------------------------------------

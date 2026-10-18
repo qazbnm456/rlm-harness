@@ -719,7 +719,7 @@ def _sentinel_rows(root: str):
     src = "alpha beta\ngamma delta\n"
     empty_store = MemoryStore(os.path.join(root, "empty.db"))
     store = MemoryStore(os.path.join(root, "mem.db"))
-    known = store.add("sleep and memory", provenance="observed", origin="o")
+    known = store.add("vacuum and indexes", provenance="observed", origin="o")
     memory_empty = T.make_memory_search_tool(empty_store)
     retired_store = MemoryStore(os.path.join(root, "retired.db"))
     retired_store.retire(retired_store.add("gone", provenance="said", origin="o").id)

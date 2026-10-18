@@ -19,30 +19,37 @@ plant. A note written after reading an untrusted page is replayed into every lat
 searches for it, which is a PERSISTENT prompt-injection path, and the ``inferred`` label is the
 only thing that lets a later reader discount it rather than cite it.
 
-**Nothing written is ever changed or deleted.** Two ways exist to change what a reader sees, and
-neither touches the original row:
+**What is written is never changed, an id never names different text, and only the host erases.**
+Three ways exist to change what a reader sees, and none rewrites a row:
 
 - :meth:`MemoryStore.revise` adds a NEW item that points at the old one (``revises``).
 - :meth:`MemoryStore.retire` sets ``valid_to`` once, from NULL to a time. It is the only UPDATE in
   this module.
+- :meth:`MemoryStore.label` adds a label row; the latest one shows, and a person's (``said``)
+  outranks a model's (``inferred``) whatever the order.
 
-SQLite triggers refuse a stray ``UPDATE``, ``DELETE`` or ``INSERT OR REPLACE`` against ``items``,
-so a host's own SQL cannot quietly rewrite history either. They are not a security boundary
-against someone with the file: ``DROP TRIGGER`` still works. The triggers protect ``items``, the
-source of truth. The search index is a contentless FTS5 table, which refuses a plain ``DELETE`` or
-``UPDATE``, but FTS5's own ``'delete'`` and ``'delete-all'`` commands and a direct ``INSERT`` can
-still change what it matches; that can make search miss an item or match the wrong one, and never
-changes an item.
+:meth:`MemoryStore.purge` is the one way anything leaves the file, and it is the host's alone: no
+tool and no model-facing path reaches it. It exists because a person may want back out what they
+put in. An id is never reused, so a purged id in an old trace names nothing rather than something
+else, and a ``purged`` record keeps when and why, never what.
+
+SQLite triggers refuse a stray ``UPDATE``, ``DELETE`` or ``INSERT OR REPLACE`` against the item and
+label tables, so a host's own SQL cannot quietly rewrite history either; ``purge`` passes them by a
+flag row only its own transaction can see. They are not a security boundary against someone with
+the file: ``DROP TRIGGER`` still works. The search indexes are contentless FTS5 tables built with
+``contentless_delete=1`` (SQLite 3.43 or newer), and a purge merges them afterwards, because a
+delete alone leaves the words in the index's segments behind a tombstone. An index row deleted by
+other means only makes search miss that item; it never changes the item.
 
 **Chinese, Japanese and Korean are indexed without a dictionary.** That covers kana, the CJK
 ideograph blocks including extensions A to G with the marks ``々 〆 〇 〻``, and Hangul syllables
 and both jamo blocks. FTS5's ``unicode61`` tokenizer treats a whole unspaced run as one token, so
-``記憶`` inside ``睡眠與記憶`` would never match. Each such run is indexed as its overlapping
+``索引`` inside ``資料庫與索引`` would never match. Each such run is indexed as its overlapping
 character pairs AND its single characters, computed in Python because Python's ``sqlite3`` cannot
-register an FTS5 tokenizer. A query keeps only the
-pairs of a run, or the character itself when the run is one character long, so a two-character
-word matches inside a longer run and a one-character query still finds something. Text is NFKC
-normalised first, so a full-width ``ＰＤＦ`` and ``PDF`` are one word.
+register an FTS5 tokenizer. A query keeps only the pairs of a run, or the character itself when the
+run is one character long, so a two-character word matches inside a longer run and a one-character
+query still finds something. Text is NFKC normalised first, so a full-width ``ＰＤＦ`` and ``PDF``
+are one word.
 
 **One connection per operation.** That makes a store safe to share between the thread dspy calls a
 tool on and a host thread, with SQLite serialising the writers. Writes take ``BEGIN IMMEDIATE`` so
@@ -58,19 +65,47 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import math
 import os
 import re
 import sqlite3
 import time
 import unicodedata
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 #: The closed set of provenance labels, in the order of how much a reader may trust them.
 PROVENANCES = ("observed", "said", "inferred")
+
+#: The provenances a DERIVED row (a label) may carry. Nothing derived is observed: a label is either
+#: a person's or the host's word (`said`) or a model's (`inferred`).
+LABEL_PROVENANCES = ("said", "inferred")
+
+#: The four kinds of label an item can carry.
+LABEL_KINDS = ("title", "summary", "tags", "entities")
+
+#: The longest item text summarised in one model call; a longer one is read in the REPL instead.
+#: Lifted from the summariser this design was taken from, where it was measured, not guessed.
+SHORT_LIMIT = 12_000
+
+#: Per-kind caps a label is trimmed to, never refused for. A list label keeps at most
+#: `_LABEL_ITEMS` entries, each cut to its own cap.
+_TITLE_CHARS = 80
+_SUMMARY_CHARS = 600
+_TAG_CHARS = 40
+_ENTITY_CHARS = 60
+_LABEL_ITEMS = 8
+
+#: The oldest SQLite this store runs on. `contentless_delete=1`, which lets `purge` take a row's
+#: tokens out of the search index, arrived in 3.43.
+_MIN_SQLITE = (3, 43, 0)
+
+_UNSET: Any = object()
+
+logger = logging.getLogger(__name__)
 
 Provenance = Literal["observed", "said", "inferred"]
 
@@ -102,7 +137,8 @@ _MAX_ROWID = 2**63 - 1
 
 # Each step is a tuple of single statements rather than one script: `executescript` COMMITs any
 # open transaction before it runs, which would let two stores opening one new file both run a step.
-_MIGRATIONS: tuple[tuple[str, ...], ...] = (
+# A step may also hold a callable taking the connection, for work SQL cannot do (re-gramming text).
+_MIGRATIONS: tuple[tuple[str | Callable[[sqlite3.Connection], None], ...], ...] = (
     (
         """CREATE TABLE items (
             id         INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id > 0),
@@ -147,6 +183,100 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
         """CREATE TRIGGER items_no_delete BEFORE DELETE ON items
            BEGIN SELECT RAISE(ABORT, 'memory items are append-only: rows are never deleted'); END""",
     ),
+    # Step 2: labels, purge, and an index that can forget. Step 1 is shipped and never edited, so
+    # what it created is altered here rather than there.
+    (
+        # `purge` is the one deliberate path past the delete triggers. It inserts a row here inside
+        # its own transaction and removes it before COMMIT, so no other connection ever sees one,
+        # and every other DELETE (a host's stray SQL included) is still refused. An ordinary table
+        # rather than a TEMP one because a trigger in the main schema may not read the temp schema.
+        # A row a host's stray SQL commits here would disarm the triggers, so every open clears it.
+        "CREATE TABLE purge_flag (x INTEGER)",
+        "DROP TRIGGER items_no_delete",
+        """CREATE TRIGGER items_no_delete BEFORE DELETE ON items
+           WHEN NOT EXISTS (SELECT 1 FROM purge_flag)
+           BEGIN SELECT RAISE(ABORT, 'memory items are append-only: only purge removes a row'); END""",
+        # Rebuilt with contentless_delete=1, so a purged item's tokens leave the index too.
+        "DROP TABLE items_fts",
+        (
+            "CREATE VIRTUAL TABLE items_fts USING fts5("
+            "tags, text, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2')"
+        ),
+        # Calls the live `_grams`. The index is derived data rebuilt from `items`, so a later change
+        # to `_grams` is a reindex question for the whole store, not a reason to freeze this step.
+        lambda conn: _reindex_items(conn),
+        """CREATE TABLE labels (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id > 0),
+            item_id    INTEGER NOT NULL,
+            kind       TEXT NOT NULL CHECK (kind IN ('title', 'summary', 'tags', 'entities')),
+            value_json TEXT CHECK (value_json IS NOT NULL OR provenance = 'said'),
+            provenance TEXT NOT NULL CHECK (provenance IN ('said', 'inferred')),
+            run_id     TEXT,
+            created_at REAL NOT NULL,
+            CHECK (value_json IS NULL OR (json_valid(value_json) AND json_type(value_json) =
+                   CASE WHEN kind IN ('title', 'summary') THEN 'text' ELSE 'array' END))
+        )""",
+        "CREATE INDEX labels_key ON labels(item_id, kind, provenance, id)",
+        """CREATE TRIGGER labels_no_replace BEFORE INSERT ON labels
+           WHEN NEW.id > 0 AND EXISTS (SELECT 1 FROM labels WHERE id = NEW.id)
+           BEGIN SELECT RAISE(ABORT, 'memory labels are append-only: this id already exists'); END""",
+        # A CHECK cannot hold a subquery, so "an array of strings" is a trigger.
+        """CREATE TRIGGER labels_strings_only BEFORE INSERT ON labels
+           WHEN NEW.value_json IS NOT NULL AND json_type(NEW.value_json) = 'array'
+             AND EXISTS (SELECT 1 FROM json_each(NEW.value_json) WHERE type <> 'text')
+           BEGIN SELECT RAISE(ABORT, 'a tags or entities label is an array of strings'); END""",
+        """CREATE TRIGGER labels_no_update BEFORE UPDATE ON labels
+           BEGIN SELECT RAISE(ABORT, 'memory labels are append-only: a change is a new row'); END""",
+        """CREATE TRIGGER labels_no_delete BEFORE DELETE ON labels
+           WHEN NOT EXISTS (SELECT 1 FROM purge_flag)
+           BEGIN SELECT RAISE(ABORT, 'memory labels are append-only: only purge removes a row'); END""",
+        (
+            "CREATE VIRTUAL TABLE labels_fts USING fts5("
+            "text, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2')"
+        ),
+        """CREATE TABLE distill_failures (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id > 0),
+            item_id    INTEGER NOT NULL,
+            error      TEXT NOT NULL,
+            created_at REAL NOT NULL
+        )""",
+        "CREATE INDEX distill_failures_item ON distill_failures(item_id, id)",
+        """CREATE TRIGGER distill_failures_no_replace BEFORE INSERT ON distill_failures
+           WHEN NEW.id > 0 AND EXISTS (SELECT 1 FROM distill_failures WHERE id = NEW.id)
+           BEGIN SELECT RAISE(ABORT, 'distill failures are append-only: this id already exists'); END""",
+        """CREATE TRIGGER distill_failures_no_update BEFORE UPDATE ON distill_failures
+           BEGIN SELECT RAISE(ABORT, 'distill failures are append-only'); END""",
+        """CREATE TRIGGER distill_failures_no_delete BEFORE DELETE ON distill_failures
+           WHEN NOT EXISTS (SELECT 1 FROM purge_flag)
+           BEGIN SELECT RAISE(ABORT, 'distill failures are append-only: only purge removes a row'); END""",
+        # The record that something was purged: when and why, never what. Not even purge removes it.
+        """CREATE TABLE purged (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id > 0),
+            item_id    INTEGER NOT NULL,
+            reason     TEXT NOT NULL,
+            created_at REAL NOT NULL
+        )""",
+        "CREATE INDEX purged_item ON purged(item_id, id)",
+        """CREATE TRIGGER purged_no_replace BEFORE INSERT ON purged
+           WHEN NEW.id > 0 AND EXISTS (SELECT 1 FROM purged WHERE id = NEW.id)
+           BEGIN SELECT RAISE(ABORT, 'purge records are append-only: this id already exists'); END""",
+        """CREATE TRIGGER purged_no_update BEFORE UPDATE ON purged
+           BEGIN SELECT RAISE(ABORT, 'purge records are append-only'); END""",
+        """CREATE TRIGGER purged_no_delete BEFORE DELETE ON purged
+           BEGIN SELECT RAISE(ABORT, 'purge records are never deleted'); END""",
+        # The label each (item, kind) shows: the latest `said` row when its value is set, otherwise
+        # the latest `inferred` row. A `said` row with a NULL value is a person clearing their own
+        # label, which lets the model's show through again. Each lookup is one index probe.
+        """CREATE VIEW current_labels AS
+           SELECT l.* FROM labels l
+           WHERE l.id = COALESCE(
+               (SELECT CASE WHEN s.value_json IS NOT NULL THEN s.id END FROM labels s
+                WHERE s.item_id = l.item_id AND s.kind = l.kind AND s.provenance = 'said'
+                ORDER BY s.id DESC LIMIT 1),
+               (SELECT i.id FROM labels i
+                WHERE i.item_id = l.item_id AND i.kind = l.kind AND i.provenance = 'inferred'
+                ORDER BY i.id DESC LIMIT 1))""",
+    ),
 )
 
 _SCHEMA_VERSION = len(_MIGRATIONS)
@@ -161,7 +291,7 @@ _BUSY_TIMEOUT_S = 30.0
 
 
 class MemoryUnavailable(RuntimeError):
-    """This Python's SQLite cannot hold a memory store, because it was built without FTS5."""
+    """This Python's SQLite cannot hold a memory store: it lacks FTS5, or predates 3.43."""
 
 
 @dataclass(frozen=True)
@@ -203,6 +333,71 @@ class MemoryItem:
             "valid_to": self.valid_to,
             "meta": dict(self.meta),
         }
+
+
+@dataclass(frozen=True)
+class MemoryLabels:
+    """What an item is about: its current title, summary, tags and entities.
+
+    Each kind shows its latest `said` value when one is set, otherwise its latest `inferred` one,
+    so a person's label outranks any later summary. ``provenance`` says which, per kind, and is
+    ``None`` for a kind with no label at all.
+    """
+
+    title: str = ""
+    summary: str = ""
+    tags: tuple[str, ...] = ()
+    entities: tuple[str, ...] = ()
+    provenance: dict = field(default_factory=lambda: dict.fromkeys(LABEL_KINDS), hash=False)
+
+
+@dataclass(frozen=True)
+class PurgeRecord:
+    """That an item was purged, when and why. It holds nothing of what the item said."""
+
+    item_id: str
+    reason: str
+    purged_at: float
+
+
+def _reindex_items(conn: sqlite3.Connection) -> None:
+    """Fill a freshly created ``items_fts`` from ``items``: migration step 2's rebuild."""
+    for row in conn.execute("SELECT id, tags_json, text FROM items").fetchall():
+        conn.execute(
+            "INSERT INTO items_fts (rowid, tags, text) VALUES (?, ?, ?)",
+            (row[0], _grams(" ".join(json.loads(row[1])), unigrams=True), _grams(row[2], unigrams=True)),
+        )
+
+
+def _fold(text: Any) -> str:
+    """How two labels are compared for sameness: NFKC, then casefolded, whitespace collapsed."""
+    return " ".join(unicodedata.normalize("NFKC", text if isinstance(text, str) else "").casefold().split())
+
+
+def _oneline(value: Any, cap: int) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"a label must be a str, got {type(value).__name__}")
+    return " ".join(unicodedata.normalize("NFKC", value).split())[:cap].strip()
+
+
+def _label_list(values: Any, cap: int, *, fold: bool) -> list[str]:
+    """NFKC, then (for tags) casefold, then strip, cut and dedupe, keeping order. Trimmed to
+    ``_LABEL_ITEMS``; never refused for length."""
+    if isinstance(values, str) or not isinstance(values, Iterable):
+        raise TypeError("a list label must be a list of str")
+    seen: dict[str, None] = {}
+    for value in values:
+        if not isinstance(value, str):
+            raise TypeError(f"a label entry must be a str, got {type(value).__name__}")
+        text = unicodedata.normalize("NFKC", value)
+        if fold:
+            text = text.casefold()
+        text = " ".join(text.split())[:cap].strip()
+        if text:
+            seen.setdefault(text, None)
+        if len(seen) >= _LABEL_ITEMS:
+            break
+    return list(seen)
 
 
 def _grams(text: str, *, unigrams: bool) -> str:
@@ -326,7 +521,8 @@ class MemoryStore:
     ``max_item_chars`` (default ``200_000``) caps one item's text. A longer text raises rather
     than being cut, so nothing is stored that the caller did not mean to store.
 
-    Raises :class:`MemoryUnavailable` at construction when this SQLite has no FTS5.
+    Raises :class:`MemoryUnavailable` at construction when this SQLite has no FTS5 or is older
+    than 3.43.
     """
 
     def __init__(self, path: str | os.PathLike[str], *, max_item_chars: int = 200_000) -> None:
@@ -334,6 +530,11 @@ class MemoryStore:
             raise ValueError("MemoryStore needs a file path; an in-memory database would not persist")
         if max_item_chars < 1:
             raise ValueError("max_item_chars must be at least 1")
+        if sqlite3.sqlite_version_info < _MIN_SQLITE:
+            raise MemoryUnavailable(
+                f"this Python's SQLite is {sqlite3.sqlite_version}; a memory store needs 3.43 or "
+                "newer, for an index that can forget what purge removes"
+            )
         self.path = Path(path)
         self.max_item_chars = max_item_chars
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -349,6 +550,14 @@ class MemoryStore:
         conn = sqlite3.connect(self.path, timeout=_BUSY_TIMEOUT_S, isolation_level=None)
         try:
             conn.row_factory = sqlite3.Row
+            # On for EVERY connection, not only purge's: the index merges its segments on ordinary
+            # writes too, and a merge without it leaves an old copy of the text as slack in a live
+            # page, where a later purge cannot reach it. Measured: a purged word survived on disk
+            # until this moved here from the purge path.
+            conn.execute("PRAGMA secure_delete = ON")
+            # Entity names keep their case, so a filter compares them folded, the same way grounding
+            # and the known-name map do.
+            conn.create_function("rlm_fold", 1, _fold, deterministic=True)
             yield conn
         finally:
             conn.close()
@@ -398,10 +607,19 @@ class MemoryStore:
                         )
                     for step in _MIGRATIONS[version:]:
                         for statement in step:
-                            conn.execute(statement)
+                            if callable(statement):
+                                statement(conn)
+                            else:
+                                conn.execute(statement)
                     if version < _SCHEMA_VERSION:
                         conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
                     conn.execute(_FTS_PROBE)
+                    if _SCHEMA_VERSION >= 2:
+                        stray = conn.execute("SELECT COUNT(*) FROM purge_flag").fetchone()[0]
+                        if stray:
+                            logger.warning("%s: cleared %d stray purge_flag row(s) that disarmed "
+                                           "the delete triggers", self.path, stray)
+                            conn.execute("DELETE FROM purge_flag")
                 except BaseException:
                     if conn.in_transaction:
                         conn.execute("ROLLBACK")
@@ -539,6 +757,278 @@ class MemoryStore:
                 raise ValueError(f"{item_id} is already retired")
         return self._get_rowid(target)
 
+    # ---- labels -------------------------------------------------------------------------
+
+    def label(
+        self,
+        item_id: str,
+        *,
+        title: Any = _UNSET,
+        summary: Any = _UNSET,
+        tags: Any = _UNSET,
+        entities: Any = _UNSET,
+        provenance: str = "said",
+        run_id: str | None = None,
+    ) -> MemoryLabels:
+        """Record what ``item_id`` is about, one row per kind given, and return its current labels.
+
+        An omitted kind is untouched. ``None`` clears a kind, and only a ``said`` call may clear:
+        a person removing their own label, so the latest ``inferred`` one shows again. An empty
+        value (``""`` or ``[]``) is NOT a clear: it sets an empty label, which a ``said`` call makes
+        outrank the model's, and an empty ``said`` summary keeps the item out of the distill queue. Values are
+        trimmed to their caps (title 80 characters, summary 600, up to 8 tags of 40, up to 8
+        entities of 60), never refused for length; tags are casefolded, entities keep their case.
+        Raises ``KeyError`` for an unknown item, ``ValueError`` for a call that names no kind, a
+        provenance outside :data:`LABEL_PROVENANCES` or an ``inferred`` clear, and ``TypeError``
+        for a value of the wrong type.
+        """
+        if provenance not in LABEL_PROVENANCES:
+            raise ValueError(f"provenance must be one of {LABEL_PROVENANCES}, got {provenance!r}")
+        given = {k: v for k, v in (("title", title), ("summary", summary), ("tags", tags),
+                                   ("entities", entities)) if v is not _UNSET}
+        if not given:
+            raise ValueError("label() needs at least one of title, summary, tags or entities")
+        rows: list[tuple[str, str | None, str]] = []
+        for kind, value in given.items():
+            if value is None:
+                if provenance != "said":
+                    raise ValueError("only a said label may clear a kind")
+                rows.append((kind, None, ""))
+                continue
+            if kind in ("title", "summary"):
+                text = _oneline(value, _TITLE_CHARS if kind == "title" else _SUMMARY_CHARS)
+                rows.append((kind, json.dumps(text, ensure_ascii=False), text))
+            else:
+                values = _label_list(value, _TAG_CHARS if kind == "tags" else _ENTITY_CHARS,
+                                     fold=kind == "tags")
+                rows.append((kind, json.dumps(values, ensure_ascii=False), " ".join(values)))
+        target = _rowid(item_id)
+        now = time.time()
+        with self._write() as conn:
+            if target is None or conn.execute(
+                "SELECT 1 FROM items WHERE id = ?", (target,)
+            ).fetchone() is None:
+                raise KeyError(item_id)
+            for kind, value_json, text in rows:
+                cursor = conn.execute(
+                    "INSERT INTO labels (item_id, kind, value_json, provenance, run_id, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (target, kind, value_json, provenance, run_id, now),
+                )
+                if text:
+                    conn.execute("INSERT INTO labels_fts (rowid, text) VALUES (?, ?)",
+                                 (cursor.lastrowid, _grams(text, unigrams=True)))
+        return self.labels(item_id)
+
+    def labels(self, item_id: str) -> MemoryLabels:
+        """The current labels of ``item_id``: empty for an unlabelled, unknown or malformed id."""
+        target = _rowid(item_id)
+        if target is None:
+            return MemoryLabels()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT kind, value_json, provenance FROM current_labels WHERE item_id = ?", (target,)
+            ).fetchall()
+        values: dict[str, Any] = {}
+        origin: dict[str, str | None] = dict.fromkeys(LABEL_KINDS)
+        for row in rows:
+            value = json.loads(row["value_json"])
+            values[row["kind"]] = tuple(value) if isinstance(value, list) else value
+            origin[row["kind"]] = row["provenance"]
+        return MemoryLabels(provenance=origin, **values)
+
+    def unlabelled(
+        self,
+        *,
+        limit: int = 20,
+        item_ids: Iterable[str] | None = None,
+        max_failures: int = 3,
+        max_chars: int | None = None,
+    ) -> list[MemoryItem]:
+        """Items still waiting for a summary, newest first: the queue a distill pass reads.
+
+        It is derived from the labels themselves, so nothing can be stuck in a "being summarised"
+        state. An item counts as labelled once a model has answered (an empty summary included, so a
+        text too thin to summarise is asked about once) or a summary currently shows; a person who
+        sets and then clears their own summary leaves neither, so the item is queued again. Retired
+        items are left out. An item that failed ``max_failures`` times is skipped unless
+        ``item_ids`` names it; ``item_ids`` limits the queue to those items, and ``max_chars`` to
+        texts no longer than that.
+        """
+        where = ["(items.valid_to IS NULL OR items.valid_to > ?)",
+                 # Labelled means a summary shows now: a model's answer (an empty one included) always
+                 # does, so it is asked about once. A person who sets and then clears their own
+                 # summary leaves none, so the item is queued again.
+                 ("NOT EXISTS (SELECT 1 FROM current_labels cl WHERE cl.item_id = items.id "
+                  "AND cl.kind = 'summary')")]
+        params: list[Any] = [time.time()]
+        named: list[int] = []
+        if item_ids is not None:
+            if isinstance(item_ids, str):
+                raise TypeError("item_ids is a list of ids, not a str")
+            named = [r for r in (_rowid(i) for i in item_ids) if r is not None]
+            if not named:
+                return []
+            where.append("items.id IN (SELECT value FROM json_each(?))")
+            params.append(json.dumps(named))
+        else:
+            where.append("(SELECT COUNT(*) FROM distill_failures f WHERE f.item_id = items.id) < ?")
+            params.append(max(1, int(max_failures)))
+        if max_chars is not None:
+            where.append("length(items.text) <= ?")
+            params.append(int(max_chars))
+        sql = f"SELECT items.* FROM items WHERE {' AND '.join(where)} ORDER BY items.id DESC LIMIT ?"
+        with self._connect() as conn:
+            rows = conn.execute(sql, [*params, max(1, int(limit))]).fetchall()
+        return [self._item(row) for row in rows]
+
+    def label_counts(self, kind: str, *, limit: int = 80) -> list[tuple[str, int]]:
+        """The most used tags or entities across current labels of non-retired items, with counts.
+
+        This is the list a summariser is shown so that related items converge on one label.
+        """
+        if kind not in ("tags", "entities"):
+            raise ValueError("label_counts counts 'tags' or 'entities'")
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT j.value AS name, COUNT(*) AS n FROM current_labels cl "
+                "JOIN items ON items.id = cl.item_id, json_each(cl.value_json) j "
+                "WHERE cl.kind = ? AND (items.valid_to IS NULL OR items.valid_to > ?) "
+                "GROUP BY j.value ORDER BY n DESC, name LIMIT ?",
+                (kind, time.time(), max(1, int(limit))),
+            ).fetchall()
+        return [(row["name"], int(row["n"])) for row in rows]
+
+    def note_distill_failure(self, item_id: str, error: str) -> None:
+        """Record that summarising ``item_id`` failed, so a pass can stop retrying it forever."""
+        target = _rowid(item_id)
+        if target is None:
+            raise KeyError(item_id)
+        with self._write() as conn:
+            if conn.execute("SELECT 1 FROM items WHERE id = ?", (target,)).fetchone() is None:
+                raise KeyError(item_id)
+            conn.execute("INSERT INTO distill_failures (item_id, error, created_at) VALUES (?, ?, ?)",
+                         (target, str(error)[:2000], time.time()))
+
+    def last_distill_error(self, item_id: str) -> tuple[str, float] | None:
+        """The latest recorded failure for ``item_id`` as ``(error, when)``, or ``None``."""
+        target = _rowid(item_id)
+        if target is None:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT error, created_at FROM distill_failures WHERE item_id = ? ORDER BY id DESC "
+                "LIMIT 1", (target,)
+            ).fetchone()
+        return None if row is None else (row["error"], row["created_at"])
+
+    # ---- removing -----------------------------------------------------------------------
+
+    def purge(
+        self,
+        item_ids: Iterable[str],
+        *,
+        reason: str = "",
+        include_revisions: bool = False,
+        secure: bool = False,
+    ) -> list[str]:
+        """Erase items for good, and return the ids actually purged.
+
+        This is the host's deliberate exception to append-only, and the only one: no tool and no
+        model-facing path reaches it. For each item it deletes the row, its labels, its recorded
+        failures and its search-index entries, and writes a ``purged`` record holding the time and
+        ``reason``, never the text. Ids are never reused, so an id in an old trace names nothing
+        rather than something else.
+
+        **Getting the words out, not only the row.** Deleting from a ``contentless_delete`` index
+        only writes a tombstone; the terms stay in its segments until they are merged. So every
+        purge merges both indexes (FTS5 ``'optimize'``), which rewrites them whole and costs time
+        in proportion to the store's size. Every connection the store opens runs with SQLite's
+        ``secure_delete`` on, so space freed by any write, a merge included, is zeroed rather than
+        left holding old text. ``secure=True`` then runs ``VACUUM`` to shrink the file. Last, the WAL is
+        checkpointed. If another connection is reading at that moment the checkpoint cannot finish,
+        a warning is logged, and the old pages leave the main file at the next full checkpoint,
+        which SQLite runs when the last connection closes.
+
+        **What it costs others.** The merge holds the write lock for its whole duration, so on a large
+        store other writers, a model's ``memory_note`` included, wait up to the 30-second busy
+        timeout and past it get ``Memory error``. ``secure_delete`` adds zero-writes to every write
+        that frees pages, ordinary adds and labels included. If ``VACUUM`` cannot get the lock, the
+        purge has still committed: a warning is logged and the purged ids are returned.
+
+        ``reason`` is kept up to 500 characters. ``include_revisions`` also purges every item that
+        revises a purged one, transitively; otherwise a revision survives and its ``revises`` names
+        an id that no longer exists. Unknown and malformed ids are ignored.
+        """
+        if isinstance(item_ids, str):
+            raise TypeError("purge takes a list of ids; a bare str would be read one character at a time")
+        wanted = {r for r in (_rowid(i) for i in item_ids) if r is not None}
+        done: list[int] = []
+        if wanted:
+            with self._write() as conn:
+                # One JSON array bound as ONE value: an `IN (?, ?, ...)` list fails past SQLite's
+                # 32,766 bound variables, which a host erasing a large selection reaches.
+                existing = {row[0] for row in conn.execute(
+                    "SELECT id FROM items WHERE id IN (SELECT value FROM json_each(?))",
+                    (json.dumps(sorted(wanted)),)).fetchall()}
+                if include_revisions:
+                    frontier = set(existing)
+                    while frontier:
+                        found = {row[0] for row in conn.execute(
+                            "SELECT id FROM items WHERE revises IN (SELECT value FROM json_each(?))",
+                            (json.dumps(sorted(frontier)),)).fetchall()} - existing
+                        existing |= found
+                        frontier = found
+                if existing:
+                    conn.execute("INSERT INTO purge_flag (x) VALUES (1)")
+                    now = time.time()
+                    for rowid in sorted(existing):
+                        label_ids = [row[0] for row in conn.execute(
+                            "SELECT id FROM labels WHERE item_id = ?", (rowid,)).fetchall()]
+                        conn.executemany("DELETE FROM labels_fts WHERE rowid = ?",
+                                         [(i,) for i in label_ids])
+                        conn.execute("DELETE FROM labels WHERE item_id = ?", (rowid,))
+                        conn.execute("DELETE FROM distill_failures WHERE item_id = ?", (rowid,))
+                        conn.execute("DELETE FROM items_fts WHERE rowid = ?", (rowid,))
+                        conn.execute("DELETE FROM items WHERE id = ?", (rowid,))
+                        conn.execute("INSERT INTO purged (item_id, reason, created_at) VALUES (?, ?, ?)",
+                                     (rowid, str(reason)[:500], now))
+                        done.append(rowid)
+                    conn.execute("DELETE FROM purge_flag")
+                    conn.execute("INSERT INTO items_fts (items_fts) VALUES ('optimize')")
+                    conn.execute("INSERT INTO labels_fts (labels_fts) VALUES ('optimize')")
+        if done:
+            with self._connect() as conn:
+                # VACUUM before the checkpoint: in WAL mode VACUUM writes into the WAL, so the
+                # checkpoint is what carries the rewritten file into the main database.
+                if secure:
+                    try:
+                        conn.execute("VACUUM")
+                    except sqlite3.OperationalError as exc:
+                        # The purge committed above; a raise here would read as if it had not.
+                        logger.warning("%s: purge committed, but VACUUM failed (%s); free pages "
+                                       "stay until a later VACUUM", self.path, exc)
+                # No waiting: a TRUNCATE checkpoint otherwise sits out the whole busy timeout behind
+                # any open reader, and the purge has already committed by now.
+                conn.execute("PRAGMA busy_timeout = 0")
+                busy, _, _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if busy:
+                    logger.warning("%s: purge committed, but another connection kept the WAL "
+                                   "checkpoint from finishing; the old pages leave the main file "
+                                   "at the next full checkpoint", self.path)
+        return [f"m{rowid}" for rowid in done]
+
+    def purged(self, item_id: str) -> PurgeRecord | None:
+        """The record of ``item_id``'s purge, or ``None`` if it was never purged."""
+        target = _rowid(item_id)
+        if target is None:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT reason, created_at FROM purged WHERE item_id = ? ORDER BY id DESC LIMIT 1",
+                (target,)).fetchone()
+        return None if row is None else PurgeRecord(f"m{target}", row["reason"], row["created_at"])
+
     # ---- reading ------------------------------------------------------------------------
 
     @staticmethod
@@ -589,25 +1079,35 @@ class MemoryStore:
         limit: int = 10,
         provenance: str | Iterable[str] | None = None,
         tags: Iterable[str] | str = (),
+        entities: Iterable[str] | str = (),
         at: float | None = None,
         include_retired: bool = False,
     ) -> list[MemoryItem]:
         """Items matching ``query``, best first; with an empty query, the newest first.
 
+        - A query matches an item's text or one of its CURRENT labels (a superseded title is not
+          searched). Ranking is a stated heuristic: an item matching in a label comes before one
+          matching only in its text, because a label says what an item is about; within each
+          group, by ``bm25`` and then newest first.
         - A non-empty query that reduces to no terms (punctuation, a lone letter or digit) matches
           nothing, rather than falling back to the newest items.
         - ``provenance`` keeps only the given label or labels.
-        - ``tags`` keeps only items carrying ALL of them.
+        - ``tags`` keeps only items carrying ALL of them, each found among the item's own tags or
+          its current tag labels (compared casefolded there, as tag labels are stored).
+        - ``entities`` keeps only items whose current entity labels name ALL of them, compared
+          NFKC-normalised and casefolded (``postgresql`` finds ``PostgreSQL``).
         - Items retired as of now are left out unless ``include_retired`` is true. One retired at
           a future time stays visible until then, and one whose ``valid_from`` lies in the future
           is NOT left out either.
-        - ``at`` is a point-in-time view instead: only items valid at that instant
+        - ``at`` is a point-in-time view of validity instead: only items valid at that instant
           (``valid_from <= at`` and not yet retired at ``at``), whatever ``include_retired`` says.
+          Labels are always the current ones; a label has no validity window.
 
         ``limit`` is clamped to at least 1. Raises ``ValueError`` for an unknown provenance.
         """
         kinds = _provenance_set(provenance)
         wanted_tags = _normalise_tags(tags)
+        wanted_entities = _normalise_tags(entities)
         limit = max(1, int(limit))
         where: list[str] = []
         params: list[Any] = []
@@ -615,8 +1115,18 @@ class MemoryStore:
             where.append(f"items.provenance IN ({', '.join('?' for _ in kinds)})")
             params.extend(kinds)
         for tag in wanted_tags:
-            where.append("EXISTS (SELECT 1 FROM json_each(items.tags_json) WHERE value = ?)")
-            params.append(tag)
+            where.append(
+                "(EXISTS (SELECT 1 FROM json_each(items.tags_json) WHERE value = ?) OR EXISTS ("
+                "SELECT 1 FROM current_labels cl, json_each(cl.value_json) j "
+                "WHERE cl.item_id = items.id AND cl.kind = 'tags' AND j.value = ?))"
+            )
+            params.extend([tag, tag.casefold()])
+        for entity in wanted_entities:
+            where.append(
+                "EXISTS (SELECT 1 FROM current_labels cl, json_each(cl.value_json) j "
+                "WHERE cl.item_id = items.id AND cl.kind = 'entities' AND rlm_fold(j.value) = ?)"
+            )
+            params.append(_fold(entity))
         if at is not None:
             when = _timestamp(at, "at")
             where.append("items.valid_from <= ? AND (items.valid_to IS NULL OR items.valid_to > ?)")
@@ -624,30 +1134,45 @@ class MemoryStore:
         elif not include_retired:
             where.append("(items.valid_to IS NULL OR items.valid_to > ?)")
             params.append(time.time())
+        filters = "".join(f" AND {clause}" for clause in where)
 
-        if query and query.strip():
-            terms = _query_terms(query)
-            if not terms:
-                return []
-            sql = (
-                "SELECT items.* FROM items_fts JOIN items ON items.id = items_fts.rowid "
-                "WHERE items_fts MATCH ?"
-                + "".join(f" AND {clause}" for clause in where)
-                + f" ORDER BY bm25(items_fts, {_TAG_WEIGHT}, 1.0), items.id DESC LIMIT ?"
-            )
-            params = [_match_expression(terms), *params, limit]
-        else:
+        if not (query and query.strip()):
             sql = (
                 "SELECT items.* FROM items"
                 + (" WHERE " + " AND ".join(where) if where else "")
                 + " ORDER BY items.id DESC LIMIT ?"
             )
-            params = [*params, limit]
+            with self._connect() as conn:
+                rows = conn.execute(sql, [*params, limit]).fetchall()
+            return [self._item(row) for row in rows]
+
+        terms = _query_terms(query)
+        if not terms:
+            return []
+        expression = _match_expression(terms)
+        # `bm25()` cannot be aggregated directly and a plain subquery is flattened back into the
+        # aggregate, so the label hits are MATERIALIZED first, then reduced to each item's best.
+        label_sql = (
+            "WITH hits AS MATERIALIZED (SELECT rowid AS label_id, bm25(labels_fts) AS score "
+            "FROM labels_fts WHERE labels_fts MATCH ?) "
+            "SELECT items.*, MIN(hits.score) AS score FROM hits "
+            "JOIN current_labels cl ON cl.id = hits.label_id JOIN items ON items.id = cl.item_id "
+            "WHERE 1" + filters + " GROUP BY items.id ORDER BY score, items.id DESC LIMIT ?"
+        )
+        body_sql = (
+            "SELECT items.* FROM items_fts JOIN items ON items.id = items_fts.rowid "
+            "WHERE items_fts MATCH ?" + filters
+            + f" ORDER BY bm25(items_fts, {_TAG_WEIGHT}, 1.0), items.id DESC LIMIT ?"
+        )
         with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [self._item(row) for row in rows]
+            labelled = conn.execute(label_sql, [expression, *params, limit]).fetchall()
+            seen = {row["id"] for row in labelled}
+            # Over-fetched by the label hits, which may repeat here and are dropped.
+            body = conn.execute(body_sql, [expression, *params, limit + len(seen)]).fetchall()
+        rows = list(labelled) + [row for row in body if row["id"] not in seen]
+        return [self._item(row) for row in rows[:limit]]
 
     def count(self) -> int:
-        """How many items the store holds, retired ones included."""
+        """How many items the store holds, retired ones included and purged ones not."""
         with self._connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
