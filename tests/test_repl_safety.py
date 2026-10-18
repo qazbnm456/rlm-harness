@@ -16,6 +16,7 @@ import dspy
 from pydantic import BaseModel
 
 from rlm_harness.mcp import _make_tool
+from rlm_harness.memory import MemoryStore
 from rlm_harness.skills import load_skills_as_tools
 from rlm_harness.sub_lm import model_as_tool
 from rlm_harness.testing import assert_repl_safe
@@ -27,6 +28,9 @@ from rlm_harness.tools import (
     make_git_clone_tool,
     make_grep_files_tool,
     make_harness_tool,
+    make_memory_get_tool,
+    make_memory_note_tool,
+    make_memory_search_tool,
     make_model_tool,
     make_read_file_tool,
     make_schema_validator,
@@ -101,6 +105,11 @@ _REPL_FACTORIES = {
     "make_harness_tool": lambda tmp_path: make_harness_tool(
         lambda src: types.SimpleNamespace(content="x"),
         lambda raw: types.SimpleNamespace(ok=True, errors=[]),
+    ),
+    "make_memory_get_tool": lambda tmp_path: make_memory_get_tool(MemoryStore(tmp_path / "m.db")),
+    "make_memory_note_tool": lambda tmp_path: make_memory_note_tool(MemoryStore(tmp_path / "m.db")),
+    "make_memory_search_tool": lambda tmp_path: make_memory_search_tool(
+        MemoryStore(tmp_path / "m.db")
     ),
     "make_model_tool": lambda tmp_path: make_model_tool(
         lambda spec: "x", lambda raw: types.SimpleNamespace(ok=True, errors=[])

@@ -22,6 +22,7 @@ from .harness import (
     make_harness_tool,
     pointer_to_invocation,
 )
+from .memory import make_memory_get_tool, make_memory_note_tool, make_memory_search_tool
 from .model import (
     CAUSE_CIRCUIT_BROKEN,
     CAUSE_ENDPOINT,
@@ -55,6 +56,9 @@ __all__ = [
     "make_grep_files_tool",
     "make_harness_tool",
     "make_json_schema_validator",
+    "make_memory_get_tool",
+    "make_memory_note_tool",
+    "make_memory_search_tool",
     "make_model_tool",
     "make_read_file_tool",
     "make_schema_validator",

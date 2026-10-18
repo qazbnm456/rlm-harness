@@ -11,9 +11,10 @@ Public surface::
     from rlm_harness import load_timeline, export_sft_turns, export_rl  # replay + dataset
     from rlm_harness import atomic_write_text, atomic_write_stream      # atomic filesystem write
     from rlm_harness import compute_run_utilization, RunUtilization    # trace utilization metrics
+    from rlm_harness import MemoryStore, MemoryItem, PROVENANCES        # provenance-typed memory
 
-``config``, ``trace``, ``sub_lm``, ``skills``, ``replay``, ``dataset``, ``atomic``, ``metrics`` and
-the tools are import-light (no dspy). ``RLMTask`` / ``configure`` pull in dspy lazily
+``config``, ``trace``, ``sub_lm``, ``skills``, ``replay``, ``dataset``, ``atomic``, ``metrics``,
+``memory`` and the tools are import-light (no dspy). ``RLMTask`` / ``configure`` pull in dspy lazily
 on first attribute access, so ``import rlm_harness`` stays cheap and the dspy-free
 modules remain testable in isolation. ``intercept_sub_lm`` imports dspy only
 when actually called.
@@ -33,6 +34,7 @@ from .atomic import atomic_write_stream, atomic_write_text
 from .config import RLMConfig
 from .dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
 from .isolation import run_in_subprocess
+from .memory import PROVENANCES, MemoryItem, MemoryStore, MemoryUnavailable
 from .metrics import (
     RUN_FACT_KEYS,
     RunUtilization,
@@ -165,9 +167,15 @@ __all__ = [
     # safe, isolated-subprocess primitive for a web-facing consumer: a host-level orchestration
     # decision, never invoked by the model, so it lives here rather than under rlm_harness.tools
     "run_in_subprocess",
+    # provenance-typed memory that outlives a run: append-only, and a model writes only `inferred`
+    # (the REPL tools are rlm_harness.tools.make_memory_*_tool)
+    "MemoryStore",
+    "MemoryItem",
+    "MemoryUnavailable",
+    "PROVENANCES",
 ]
 
-__version__ = "1.20.1"
+__version__ = "1.21.0"
 
 
 def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import

@@ -78,6 +78,9 @@ _NOT_OUTBOUND = {
     "make_edit_file_tool": "local fs edit; timed by the task seam",
     "make_grep_files_tool": "local fs scan; timed by the task seam, and NOT cheap -- see above",
     "make_extract_archive_tool": "local archive extraction; timed by the task seam",
+    "make_memory_search_tool": "local SQLite read; timed by the task seam",
+    "make_memory_get_tool": "local SQLite read; timed by the task seam",
+    "make_memory_note_tool": "local SQLite write; timed by the task seam",
     # Host-side validators, never placed in a `tools=[...]` list and doing no I/O at all.
     "make_json_schema_validator": "host-side validator, no I/O",
     "make_schema_validator": "host-side validator, no I/O",

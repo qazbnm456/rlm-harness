@@ -8,7 +8,7 @@ message whose user-message counterpart was 448.
 
 The kit wrote them for Sphinx. dspy flattens with `.replace("\\n", "  ")`, which
 turns Python's own indentation into runs of ten spaces and passes ``literals`` through verbatim.
-Of the fourteen tools the kit ships, THREE had no model-facing docstring at all, so dspy rendered
+Of the fourteen tools the kit shipped then, THREE had no model-facing docstring at all, so dspy rendered
 the literal words "No description"; of the eleven that had one, eight carried Sphinx markup and
 ten produced markup or a mid-sentence gap.
 
@@ -21,6 +21,7 @@ import json
 import os
 import pathlib
 import re
+import sqlite3
 import tempfile
 
 import pytest
@@ -28,6 +29,7 @@ from pydantic import BaseModel
 
 import rlm_harness.tools as T
 from rlm_harness._toolname import model_facing_description, with_model_facing_description
+from rlm_harness.memory import MemoryStore
 
 # How dspy renders a description into the prompt: `rlm.py` `_format_tool_docs`.
 DSPY_FLATTEN = "  "
@@ -63,6 +65,9 @@ def _build_every_shipped_tool(root: str) -> dict:
         "model": T.make_model_tool(noop, noop),
         "schema_validator": T.make_schema_validator(_Out),
         "json_schema_validator": T.make_json_schema_validator({"type": "object"}),
+        "memory_search": T.make_memory_search_tool(MemoryStore(os.path.join(root, "m.db"))),
+        "memory_get": T.make_memory_get_tool(MemoryStore(os.path.join(root, "m.db"))),
+        "memory_note": T.make_memory_note_tool(MemoryStore(os.path.join(root, "m.db"))),
         "verify_quote": T.verify_quote,
     }
 
@@ -90,6 +95,9 @@ def test_the_table_covers_every_shipped_factory():
         "make_grep_files_tool": "grep_files",
         "make_harness_tool": "harness",
         "make_json_schema_validator": "json_schema_validator",
+        "make_memory_get_tool": "memory_get",
+        "make_memory_note_tool": "memory_note",
+        "make_memory_search_tool": "memory_search",
         "make_model_tool": "model",
         "make_read_file_tool": "read_file",
         "make_schema_validator": "schema_validator",
@@ -313,13 +321,13 @@ def test_the_indentation_python_put_there_does_not_reach_the_prompt():
 #
 # Markup and emptiness are shape defects and the tests above catch them. SIZE is the one that came
 # back: `verify_quote` shipped 6936 chars of design rationale and `grep_files` 3816 of
-# implementation notes: 52.2% and 28.7% of the fourteen shipped tools' 13280 characters of
+# implementation notes: 52.2% and 28.7% of the then-fourteen shipped tools' 13280 characters of
 # model-facing text, 81% between them, and no assertion anywhere would have noticed.
 #
 # Deliberately NOT a hardcoded cap, for two reasons.
 #
-# An AGGREGATE cap measures a task that never ships: the table above builds all fourteen tools at
-# once, where a real task hands the model two to four. A number over the sum of fourteen is a
+# An AGGREGATE cap measures a task that never ships: the table above builds every catalogue tool at
+# once, where a real task hands the model two to four. A number over the sum of all of them is a
 # budget for a fiction.
 #
 # A PER-TOOL cap is a number someone has to guess for every tool that does not exist yet. A tool
@@ -597,8 +605,8 @@ def test_the_seam_reaches_the_other_producers_too(tmp_path):
 # --- the one description built from an argument --------------------------------------------------
 
 def test_web_searchs_stated_cap_is_the_cap_the_build_enforces():
-    """`make_web_search_tool` is the only tool whose description carries a NUMBER, and it is
-    substituted from `max_results` at build time. Nothing asserted that the substitution ran:
+    """`make_web_search_tool` was the first tool whose description carries a NUMBER, substituted
+    from `max_results` at build time; the memory tools below are the others. Nothing asserted that the substitution ran:
     deleting the `.replace(...)` line left `{cap}` in the prompt, and hardcoding a `5` left the
     docstring lying about any other cap, and the whole suite stayed green under both.
     """
@@ -609,6 +617,49 @@ def test_web_searchs_stated_cap_is_the_cap_the_build_enforces():
         assert f"up to {cap} results" in rendered, (
             f"max_results={cap} but the description says: {rendered[:120]}"
         )
+
+
+def test_memory_searchs_stated_cap_is_the_cap_the_build_enforces(tmp_path):
+    """Same rule as `web_search`'s: the number is built from `max_results`, and a model that asks
+    for more than it receives was told the truth beforehand."""
+    store = MemoryStore(tmp_path / "m.db")
+    for n in range(30):
+        store.add(f"memory item {n}", provenance="observed", origin="o")
+    for cap in (1, 3, 8, 25):
+        tool = T.make_memory_search_tool(store, max_results=cap)
+        rendered = model_facing_description(tool.__doc__)
+        assert "{cap}" not in rendered, "the substitution did not run: `{cap}` reached the prompt"
+        assert f"up to {cap} items" in rendered, rendered[:160]
+        assert len(json.loads(tool("memory", limit=100))) == cap
+
+
+def test_the_memory_tools_state_the_text_width_they_cut_at(tmp_path):
+    """`memory_search` and `memory_get` both cut each text at `max_chars`; the number a model
+    reads is the one the build cuts at."""
+    store = MemoryStore(tmp_path / "m.db")
+    item = store.add("z" * 100, provenance="observed", origin="o")
+    for width in (7, 30, 4000):
+        search = T.make_memory_search_tool(store, max_chars=width)
+        get = T.make_memory_get_tool(store, max_chars=width)
+        for tool in (search, get):
+            rendered = model_facing_description(tool.__doc__)
+            assert "{width}" not in rendered, "the substitution did not run"
+            assert f"cut at {width} characters" in rendered, rendered[:200]
+        assert json.loads(search(""))[0]["text"].startswith("z" * min(width, 100))
+        assert json.loads(get(item.id))["text"].count("z") == min(width, 100)
+
+
+def test_memory_notes_stated_cap_is_the_cap_the_build_enforces(tmp_path):
+    """The note's length limit is stated in its description and enforced by its gate, and both
+    come from `max_chars`."""
+    store = MemoryStore(tmp_path / "m.db")
+    for cap in (5, 40, 2000):
+        tool = T.make_memory_note_tool(store, max_chars=cap)
+        rendered = model_facing_description(tool.__doc__)
+        assert "{cap}" not in rendered
+        assert f"at most {cap} characters" in rendered, rendered[:160]
+        assert tool("x" * cap).startswith("Noted: ")
+        assert tool("x" * (cap + 1)) == f"Refused: text exceeds {cap} characters."
 
 
 def test_the_stated_cap_never_promises_fewer_results_than_the_build_returns():
@@ -645,8 +696,6 @@ def test_the_stated_cap_never_promises_fewer_results_than_the_build_returns():
 # that fails for the wrong reason. Breaking the code reds it; breaking the description reds it too.
 
 def _sentinel_rows(root: str):
-    import os
-
     os.makedirs(os.path.join(root, "d"), exist_ok=True)
     with open(os.path.join(root, "a.txt"), "w") as fh:
         fh.write("alpha beta\nseven\n")
@@ -668,7 +717,51 @@ def _sentinel_rows(root: str):
     failing_command = T.make_command_tool(_boom_cmd)
     guarded_command = T.make_command_tool(_boom_cmd, guard=lambda c: "not on this host")
     src = "alpha beta\ngamma delta\n"
+    empty_store = MemoryStore(os.path.join(root, "empty.db"))
+    store = MemoryStore(os.path.join(root, "mem.db"))
+    known = store.add("sleep and memory", provenance="observed", origin="o")
+    memory_empty = T.make_memory_search_tool(empty_store)
+    retired_store = MemoryStore(os.path.join(root, "retired.db"))
+    retired_store.retire(retired_store.add("gone", provenance="said", origin="o").id)
+    retired_search = T.make_memory_search_tool(retired_store)
+    memory_search = T.make_memory_search_tool(store)
+    memory_get = T.make_memory_get_tool(store)
+    memory_note = T.make_memory_note_tool(store, max_chars=10)
+
+    class _Locked(MemoryStore):
+        def _fail(self, *a, **k):
+            raise sqlite3.OperationalError("database is locked")
+
+        search = get = add = revise = count = _fail
+
+    locked = _Locked(os.path.join(root, "locked.db"))
+    locked_search = T.make_memory_search_tool(locked)
+    locked_get = T.make_memory_get_tool(locked)
+    locked_note = T.make_memory_note_tool(locked)
     return [
+        ("memory_search reports a store failure", locked_search, lambda: locked_search("q"),
+         "Memory error: OperationalError", "Memory error"),
+        ("memory_get reports a store failure", locked_get, lambda: locked_get("m1"),
+         "Memory error: OperationalError", "Memory error"),
+        ("memory_note reports a store failure", locked_note, lambda: locked_note("x"),
+         "Memory error: OperationalError", "Memory error"),
+        ("memory_search reports an empty store", memory_empty, lambda: memory_empty(""),
+         "Memory is empty.", "Memory is empty."),
+        ("memory_search reports no match", memory_search, lambda: memory_search("zzzz"),
+         "No memories match 'zzzz'", "No memories match"),
+        ("memory_search reports an all-retired store", retired_search, lambda: retired_search(""),
+         "No current memories.", "No current memories."),
+        ("memory_get reports an unknown id", memory_get, lambda: memory_get("m999"),
+         "Not found: 'm999'", "Not found"),
+        ("memory_note saves", memory_note, lambda: memory_note("a note"), "Noted: m", "Noted"),
+        ("memory_note refuses an empty text", memory_note, lambda: memory_note("  "),
+         "Refused: text must be non-empty", "Refused"),
+        ("memory_note refuses an over-long text", memory_note, lambda: memory_note("x" * 11),
+         "Refused: text exceeds 10 characters", "Refused"),
+        ("memory_note refuses an unknown id", memory_note,
+         lambda: memory_note("fix", revises="m999"), "Refused: no memory with id 'm999'", "Refused"),
+        ("memory_note revises a known id", memory_note,
+         lambda: memory_note("fix", revises=known.id), "Noted: m", "Noted"),
         ("read_file refuses an escaping path", read_file, lambda: read_file("../x"),
          "Refused:", "Refused:"),
         ("web_search refuses an empty query", search, lambda: search("  "),

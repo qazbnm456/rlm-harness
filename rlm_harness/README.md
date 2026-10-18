@@ -16,9 +16,10 @@ pitch, the quickstart, and installation: start at the
 | `_retry.py` | Validation + retry engine (dspy-free, unit-tested). Mostly private, but `short_error` is public: head-and-tail elision for a caught exception, so a giant `AdapterParseError` (which embeds the whole raw completion) becomes one readable log line instead of thousands. |
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
 | `atomic.py` | `atomic_write_text` / `atomic_write_stream`: a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write; `atomic_write_stream` takes an iterable of `bytes` chunks instead of one in-memory blob, aborting once a running total exceeds an optional `max_bytes`. dspy-free. |
+| `memory.py` | `MemoryStore` / `MemoryItem` / `PROVENANCES` / `MemoryUnavailable`: a provenance-typed, append-only memory in one SQLite file that outlives a run, with CJK-aware full-text search (see "Memory" below). dspy-free, stdlib only. |
 | `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` / `RUN_FACT_KEYS` / `compute_run_facts` / `compute_run_facts_by_run` (the generic half of a rubric's facts): reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded trace events. dspy-free. |
 | `isolation.py` | `run_in_subprocess`: a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
-| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema: the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` (see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths`) a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` (safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `make_extract_archive_tool`) safe `zip`/tar extraction in `tools/archive.py` (see below), `verify_quote` (a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool`) a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool`: the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
+| `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema: the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` (see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths`) a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` (safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `make_extract_archive_tool`) safe `zip`/tar extraction in `tools/archive.py` (see below), `verify_quote` (a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool`) a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool`: the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), the memory tools `make_memory_search_tool` / `make_memory_get_tool` / `make_memory_note_tool` in `tools/memory.py` (see "Memory" below), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
 | `optimize.py` | GEPA harness: `compile_task`, `audit_instruction`, `trainset_from_traces`. |
 | `sub_lm.py` | Every sub-LM escalation is traced as a `sub_call` automatically (1.7.0). `intercept_sub_lm`: wrap the RLM's sub-LM to ADD a deterministic validate/post-process pipeline; `model_as_tool` for LM-decided multi-model routing. |
 | `skills.py` | `load_skills_as_tools`: expose a Skills directory to the RLM as tools. |
@@ -745,6 +746,116 @@ finding = MyTask(tools=[extract_archive, read_file, write_file]).run(...)
   same-directory-temp-file/`fsync`/`os.replace`/permission-preservation idiom, but for a caller
   with an iterable of `bytes` chunks rather than one already-in-memory blob, aborting the moment a
   running total exceeds `max_bytes`: checked after every chunk, not merely once at the end.
+
+## Memory: a provenance-typed store that outlives a run (`memory.py`, `tools/memory.py`)
+
+A run's REPL forgets everything when it ends. `MemoryStore` is the part that does not: one SQLite
+file of short texts that your host code puts things into and a model reads from inside a run. It
+needs no extra and no service.
+
+```python
+from rlm_harness import MemoryStore
+from rlm_harness.tools import make_memory_get_tool, make_memory_note_tool, make_memory_search_tool
+
+memory = MemoryStore("state/memory.db")
+memory.add(page_text, provenance="observed", origin=url, tags=["sleep"])
+memory.add("I only care about human studies", provenance="said", origin="user")
+
+tools = [make_memory_search_tool(memory), make_memory_get_tool(memory), make_memory_note_tool(memory)]
+answer = MyTask(tools=tools).run(question=q)
+```
+
+**Every item carries a provenance, and there are exactly three** (`PROVENANCES`):
+
+| Provenance | Meaning | Who writes it |
+|---|---|---|
+| `observed` | text taken from a tool output or an external source | your host code |
+| `said` | text a person wrote | your host code |
+| `inferred` | text a model wrote: a note, a summary, a revision | the note tool, or your host code |
+
+The kit cannot check which of the first two a host-side `add` really is, so choose the label from
+the code path the text arrived by, never from anything the text says about itself. What the kit
+does guarantee is that a model writes only `inferred`. `memory_note(text, revises="")` has no
+argument that names a provenance, so no prompt, injected page or confused plan can make a model's
+words arrive as `observed` or `said`. The rule holds because of the tool's shape, so nobody has to
+remember to check it.
+
+That label is what makes a note safe to keep. A note written after reading a hostile page is
+returned to every later run whose search matches it, which makes memory a persistent
+prompt-injection path. `inferred` is how a reader, or a later task's instructions, tells a model's
+own words from a source and declines to cite them.
+
+**Nothing written is ever changed or deleted.** Two calls change what a reader sees, and neither
+touches the original row:
+
+- `revise(item_id, text, *, origin, provenance="inferred")` adds a new item whose `revises` points
+  at the old one. Pass `provenance="said"` when the revision is a person's correction.
+- `retire(item_id, *, at=None)` sets `valid_to` once. It is the only UPDATE the module issues.
+
+SQLite triggers refuse a stray `UPDATE`, `DELETE` or `INSERT OR REPLACE` against the items table,
+which is the source of truth. This protects history from a host's own SQL mistakes; it is not a
+security boundary against someone holding the file, since `DROP TRIGGER` still works. The search
+index is a contentless FTS5 table, which refuses a plain `DELETE` or `UPDATE`, but FTS5's own
+`'delete'` and `'delete-all'` commands and a direct `INSERT` can still change what it matches.
+That can make search miss an item or match the wrong one; it never changes an item.
+
+**Search** (`search(query="", *, limit=10, provenance=None, tags=(), at=None, include_retired=False)`):
+
+- A query is split into terms the way the index's tokenizer splits text (letters, digits and
+  combining marks, so a Hindi or pointed Hebrew word stays whole) and ranked with `bm25`; a hit in
+  a tag outranks a hit in the text.
+- An empty query lists the newest items. A query with no usable terms (punctuation, a lone letter
+  or digit) matches nothing.
+- Items retired as of now are left out unless `include_retired=True`; one retired at a future time
+  stays visible until then. `at=<timestamp>` is a point-in-time view: only items whose `valid_from`
+  has passed and that were not yet retired at that moment.
+- Chinese, Japanese and Korean need no dictionary. That covers kana, the CJK ideograph blocks
+  including extensions A to G with the marks `々 〆 〇 〻`, and Hangul syllables and both jamo
+  blocks. An unspaced run is indexed as its overlapping character pairs and its single characters,
+  so `記憶` matches inside `睡眠與記憶` and a one-character query still finds something. Text is
+  NFKC-normalised, so `ＰＤＦ` matches `pdf`.
+
+**The three tools.** Reading and writing are separate factories, the way `read_file` and
+`write_file` are, so a task that should only consult memory leaves the note tool out.
+
+- `make_memory_search_tool(store, *, max_results=8, max_chars=500)`: `memory_search(query, limit)`
+  returns a JSON list. `limit` is clamped to `max_results`, each text is cut at `max_chars` and
+  marked ` …[truncated]`, and items retired as of the call never appear.
+- `make_memory_get_tool(store, *, max_chars=4000)`: `memory_get(item_id)` returns one item, retired
+  or not, with every field (including `origin`, `run_id` and your `meta`, so keep private data out
+  of `meta`), plus `revised_by`.
+- `make_memory_note_tool(store, *, max_chars=2000, tags=())`: `memory_note(text, revises)` stores an
+  `inferred` item, with `origin` set to `run:<run_id>` inside a traced run. Its refusals are strings
+  the model can read: an empty text, a text over `max_chars`, an unknown id, or a text the store
+  itself refuses (over its `max_item_chars`, or not encodable).
+
+Each takes `name=` so two stores can sit in one task. Each records exactly one `tool_call`,
+failures included, with the raw arguments the model passed and a `memory_ids` field listing the ids
+it returned or wrote; there is no new trace event type. An argument longer than its cap is
+recorded cut, with `<name>_len` beside it, so an oversized argument cannot bloat the trace (a list
+or dict is measured by its JSON form). Each
+returns a string and never raises on a model-controlled argument, and a database failure (a lock
+held past the timeout, a full disk, a damaged file) comes back as `Memory error: <type>`.
+
+**Operational notes.**
+
+- The store opens one connection per operation, so it is safe to share between the thread dspy
+  calls a tool on and your own threads. Writes take `BEGIN IMMEDIATE` and queue rather than fail.
+- The file runs in WAL mode, which needs shared memory. Keep it on a local disk; a network or
+  VM-shared filesystem is unreliable for it.
+- `":memory:"` is refused, because a per-operation connection would lose everything between calls.
+- `max_item_chars` (default 200,000) caps one item, and a longer text raises rather than being cut.
+- A Python whose SQLite lacks FTS5 raises `MemoryUnavailable` when the store is constructed, for a
+  new file and an existing one alike.
+- The schema changes only by appending a step to `memory._MIGRATIONS`, counted in
+  `PRAGMA user_version`. A file whose schema is newer than this kit knows is refused rather than
+  opened.
+- Timestamps (`valid_from`, `at`) must be finite numbers: SQLite stores NaN as NULL, which would
+  read as "never retired".
+
+**Not built yet.** The store holds what you put in it. Writing memory automatically from finished
+traces, condensing or linking items, and similarity search over embeddings are later work, and none
+of it is implied by anything above.
 
 ## Environment interpreter (`interpreter="container"`)
 

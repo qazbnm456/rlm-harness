@@ -4,6 +4,52 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.21.0] - 2026-10-19
+
+**A run can remember.** The REPL forgets everything when a run ends, and until now a consumer that
+wanted memory across runs had to bring a third-party package and wire it in as a tool.
+`MemoryStore` is built in: one SQLite file, no extra, no service, and three REPL tools over it.
+
+What sets it apart from a plain note store is that every item says where it came from, and the
+label is enforced where it matters most. A model's own words are the cheapest thing to get wrong
+and the easiest to plant, and a note written after reading a hostile page comes back in every later
+run that searches for it. So a model can only ever write `inferred`, and nothing written is ever
+changed or deleted.
+
+### Added
+
+- **`MemoryStore`, `MemoryItem`, `MemoryUnavailable` and `PROVENANCES`** (`rlm_harness/memory.py`,
+  dspy-free, stdlib only).
+  - Every item is labelled `observed` (the host took it from a source), `said` (a person wrote it)
+    or `inferred` (a model wrote it). The host's code path chooses between the first two; the kit
+    cannot verify that choice and the docs say so.
+  - Append-only. `revise` adds a new item that points at the old one, and `retire` sets `valid_to`
+    once. SQLite triggers refuse a stray `UPDATE`, `DELETE` or `INSERT OR REPLACE` on the items
+    table, the source of truth. This guards against a host's own SQL mistakes, not against someone
+    holding the file. The contentless FTS5 index refuses a plain `DELETE` or `UPDATE`, though its
+    own commands can still change what it matches.
+  - Full-text search ranked by `bm25`, with a tag hit above a text hit, filters for provenance,
+    tags and retirement, and `at=` for a point-in-time view. Chinese, Japanese and Korean are
+    indexed as character pairs plus single characters, so a two-character word matches inside a
+    longer run without a dictionary. Query terms are split the way the index splits text, so words
+    carrying combining marks (Hindi, pointed Hebrew) are found whole.
+  - One connection per operation, WAL mode and `BEGIN IMMEDIATE` writes, so one store can be
+    shared across threads. The schema evolves by numbered steps counted in `PRAGMA user_version`.
+- **`make_memory_search_tool`, `make_memory_get_tool` and `make_memory_note_tool`**
+  (`rlm_harness/tools/memory.py`). Reading and writing are separate factories, so a read-only task
+  leaves the note tool out. `memory_note` takes a text and an optional id to revise and nothing
+  else, so the `inferred` label comes from the tool's shape rather than from a check. Each tool
+  records an ordinary `tool_call` with the model's raw arguments and a new optional `memory_ids`
+  payload field, which is additive under trace `v2`. Each returns a string and never raises on a
+  model-controlled argument: a database failure comes back as `Memory error: <type>` and is
+  recorded with `ok=False`, and an oversized argument (a list or dict measured by its JSON form)
+  is recorded cut with its length. Each description states the cap its build enforces.
+
+### Not yet
+
+Memory written automatically from finished traces, condensing and linking items, and similarity
+search over embeddings are later work. The store holds what the host or a model puts in it.
+
 ## [1.20.1] - 2026-10-17
 
 **An empty reply could come back as an answer.** The brace-tolerant parse wraps a completion in

@@ -275,7 +275,7 @@ def make_grep_files_tool(
 
     **This belongs here and not in the closure's docstring, because that docstring is PROMPT
     TEXT**: dspy renders it into the system message, where this description was 28.7% of the
-    13280 characters of model-facing text across the fourteen tools the kit ships, second only to
+    13280 characters of model-facing text across the fourteen tools the kit shipped then, second only to
     ``verify_quote``'s 52.2%. The closure carries the half a CALLER acts on (the three
     modes and their output formats, both error strings, what ``max_results`` caps, the
     context-line conventions, the timeout behaviour); the rationale and implementation notes below
