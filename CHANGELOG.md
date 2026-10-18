@@ -13,8 +13,11 @@ wanted memory across runs had to bring a third-party package and wire it in as a
 What sets it apart from a plain note store is that every item says where it came from, and the
 label is enforced where it matters most. A model's own words are the cheapest thing to get wrong
 and the easiest to plant, and a note written after reading a hostile page comes back in every later
-run that searches for it. So a model can only ever write `inferred`, and nothing written is ever
-changed or deleted.
+run that searches for it. So a model can only ever write `inferred`, nothing written is ever
+changed, and only the host can erase.
+
+The store also organises itself, when the host asks: each item can carry a title, a summary, tags
+and entities, written by a person or by a model pass that costs one call per short item.
 
 ### Added
 
@@ -23,13 +26,24 @@ changed or deleted.
   - Every item is labelled `observed` (the host took it from a source), `said` (a person wrote it)
     or `inferred` (a model wrote it). The host's code path chooses between the first two; the kit
     cannot verify that choice and the docs say so.
-  - Append-only. `revise` adds a new item that points at the old one, and `retire` sets `valid_to`
-    once. SQLite triggers refuse a stray `UPDATE`, `DELETE` or `INSERT OR REPLACE` on the items
-    table, the source of truth. This guards against a host's own SQL mistakes, not against someone
-    holding the file. The contentless FTS5 index refuses a plain `DELETE` or `UPDATE`, though its
-    own commands can still change what it matches.
-  - Full-text search ranked by `bm25`, with a tag hit above a text hit, filters for provenance,
-    tags and retirement, and `at=` for a point-in-time view. Chinese, Japanese and Korean are
+  - Never rewritten. `revise` adds a new item that points at the old one, and `retire` sets
+    `valid_to` once. SQLite triggers refuse a stray `UPDATE`, `DELETE` or `INSERT OR REPLACE` on the
+    item and label tables. This guards against a host's own SQL mistakes, not against someone
+    holding the file.
+  - **`purge`, host-only erasure.** It deletes items with their labels and index entries, then
+    merges both indexes so the words leave the file too (a delete alone only tombstones them), with
+    `secure_delete` on for every store connection so no earlier write left a copy behind, writes a
+    content-free `purged` record, and never reuses an id, so a purged id in an old trace names
+    nothing rather than something else. No tool reaches it. `secure=True` also runs `VACUUM`. The
+    indexes use FTS5's `contentless_delete`, so the store needs SQLite 3.43 or newer, which every
+    Python the kit's CI uses ships.
+  - **Labels.** `label()` records a title, summary, tags and entities as rows of their own, and
+    `labels()` reads the current ones: the latest `said` label outranks any `inferred` one, and a
+    `said` clear lets the model's show again. `unlabelled()`, `label_counts()`,
+    `note_distill_failure()` and `last_distill_error()` back a summarising pass.
+  - Full-text search ranked by `bm25` over an item's text and its current labels, with a label hit
+    above a text-only hit, filters for provenance, tags, entities and retirement, and `at=` for a
+    point-in-time view. Chinese, Japanese and Korean are
     indexed as character pairs plus single characters, so a two-character word matches inside a
     longer run without a dictionary. Query terms are split the way the index splits text, so words
     carrying combining marks (Hindi, pointed Hebrew) are found whole.
@@ -43,12 +57,28 @@ changed or deleted.
   payload field, which is additive under trace `v2`. Each returns a string and never raises on a
   model-controlled argument: a database failure comes back as `Memory error: <type>` and is
   recorded with `ok=False`, and an oversized argument (a list or dict measured by its JSON form)
-  is recorded cut with its length. Each description states the cap its build enforces.
+  is recorded cut with its length. Each description states the cap its build enforces. Search rows
+  carry the item's current `title` and `title_provenance`, so a model-written title is never shown
+  under the item's own provenance.
+- **`distill_pending`** (`rlm_harness/memory_tasks.py`, lazily exported). It labels queued items
+  only when the host awaits it, at most 500 per call. A text up to `SHORT_LIMIT` (12,000) characters
+  is one `dspy.Predict` call (`SummariseShort`); a longer one is an RLM run (`DistillLongItem`)
+  reading the text in the REPL through a section map, and only that path needs Deno. Every call is
+  shown the labels already in use, so related items converge. An entity is kept only when its name
+  occurs in the item (for a long item, in the span its quote was found at), or when it is one of the
+  names in use, so a text in one script can carry a name other items write in another. `run=` takes
+  a JSON-in, JSON-out step runner (the default is `arun_step`; `subprocess_step_runner` runs each
+  step in a fresh process through `run_in_subprocess`), `recorder_for` traces each item as its own
+  run, and `should_stop` and `on_progress` make a pass stoppable and observable. A failing item
+  stops heading the queue after three failures.
+- `tools.grounding._find_span`, the literal half of `verify_quote`, returns the source's own span
+  and refuses a quote under 20 characters. It is private, shared by the passes that store what a
+  model quoted.
 
 ### Not yet
 
-Memory written automatically from finished traces, condensing and linking items, and similarity
-search over embeddings are later work. The store holds what the host or a model puts in it.
+Merging names that mean the same thing, grouping items into topics, similarity search over
+embeddings, and memory written automatically from finished runs are later work.
 
 ## [1.20.1] - 2026-10-17
 

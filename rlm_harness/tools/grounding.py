@@ -334,6 +334,46 @@ def _coordinate_match(source: str, quote: str) -> int | None:
     return start if occurrences == 1 else None
 
 
+def _quote_pattern(stripped_quote: str, normalize_whitespace: bool) -> str:
+    """The regex `verify_quote`'s literal search uses for an already-stripped quote: each literal
+    piece escaped, each whitespace run a `_whitespace_joiner` when normalising. Shared with
+    `_find_span`, so the two can never disagree on what "the quote occurs" means."""
+    pieces = re.split(r"(\s+)", stripped_quote)
+    pattern_parts = []
+    for i, piece in enumerate(pieces):
+        is_whitespace_run = i % 2 == 1  # re.split with a capturing group alternates literal/delim
+        if is_whitespace_run and normalize_whitespace:
+            pattern_parts.append(_whitespace_joiner(pieces[i - 1], pieces[i + 1]))
+        else:
+            pattern_parts.append(re.escape(piece))
+    return "".join(pattern_parts)
+
+
+#: The fewest non-whitespace characters a quote needs before `_find_span` will ground anything on
+#: it. A two-word quote such as "the data" occurs in almost any text and proves nothing.
+MIN_QUOTE_CHARS = 20
+
+
+def _find_span(source: str, quote: str, *, min_chars: int = MIN_QUOTE_CHARS) -> tuple[int, int] | None:
+    """Where ``quote`` occurs in ``source``, as ``(start, end)``, or ``None``.
+
+    The literal half of :func:`verify_quote`, for a host that will STORE what was quoted: it
+    returns the span so the caller keeps ``source[start:end]``, the source's own bytes, never the
+    quote's spacing. Same whitespace flexibility and the same refusals (empty, digits only), plus a
+    floor of ``min_chars`` non-whitespace characters. No line-number path: a guttered quote is not
+    a substring of the source, so there would be no span to store.
+    """
+    if not isinstance(source, str) or not isinstance(quote, str):
+        return None
+    stripped = quote.strip()
+    if not stripped or _carries_only_numbers(quote):
+        return None
+    if len("".join(stripped.split())) < min_chars:
+        return None
+    match = re.search(_quote_pattern(stripped, True), source)
+    return None if match is None else (match.start(), match.end())
+
+
 def verify_quote(
     source: str,
     quote: str,
@@ -404,15 +444,7 @@ def verify_quote(
     # instead (its outward neighbour is the empty string), which is harmless. The strip stays
     # load-bearing for a DIFFERENT reason: it is what guarantees the joiner never sees an empty
     # neighbour on the inside, the premise this function's ReDoS-safety argument rests on.
-    pieces = re.split(r"(\s+)", stripped_quote)
-    pattern_parts = []
-    for i, piece in enumerate(pieces):
-        is_whitespace_run = i % 2 == 1  # re.split with a capturing group alternates literal/delim
-        if is_whitespace_run and normalize_whitespace:
-            pattern_parts.append(_whitespace_joiner(pieces[i - 1], pieces[i + 1]))
-        else:
-            pattern_parts.append(re.escape(piece))
-    pattern = "".join(pattern_parts)
+    pattern = _quote_pattern(stripped_quote, normalize_whitespace)
 
     match = re.search(pattern, source)
     if match is not None:

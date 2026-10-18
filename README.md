@@ -96,9 +96,10 @@ keeps that text in `RLMTaskError`'s own message rather than only on `__cause__`.
   against the bytes it claims to quote.
 - **Memory that outlives a run, built in.** `MemoryStore` keeps short texts in one SQLite file,
   each labelled `observed`, `said` or `inferred`, and three tools let a model search, read and
-  annotate it. Nothing written is ever changed or deleted, and a model can only ever write
-  `inferred`, so its own notes never pass for a source. Search handles Chinese, Japanese and Korean
-  without a dictionary. No extra, no service.
+  annotate it. Nothing written is ever changed, only the host can erase, and a model can only ever
+  write `inferred`, so its own notes never pass for a source. A pass you call labels each item with
+  a title, summary, tags and entities, one model call per short item. Search handles Chinese,
+  Japanese and Korean without a dictionary. No extra, no service.
 - **Delegate to another harness, or be one.** `make_harness_tool` wraps a downstream
   rlm-harness harness as a tool: the parent records one `tool_call` plus a link to the child,
   while the child runs its own full RLM loop over the long text and owns its own trace.

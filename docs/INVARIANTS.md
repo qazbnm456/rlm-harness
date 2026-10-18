@@ -137,17 +137,18 @@ reason is in the rule.
   other shim in `_dspy_compat.py`. Degrades to `False` (never fast-fail, i.e. today's pre-1.2.1
   behavior) whenever `dspy.LMError` or `dspy.is_retryable_lm_error` is missing on the installed
   dspy, so a future rename fails safe rather than over-eagerly killing a retryable run.
-- **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`,
-  `tools/`, `trace.py`, `skills.py`, `replay.py`, `dataset.py`, `serving.py`, `harness_serve.py`,
+- **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`, `tools/`,
+  `trace.py`, `skills.py`, `replay.py`, `dataset.py`, `serving.py`, `harness_serve.py`,
   `_dspy_compat.py`, `metrics.py`, `rubric.py`, `_toolname.py`, `atomic.py`, `isolation.py`,
-  `memory.py` must NOT import `dspy` at module top: that keeps their logic testable without dspy. Only
-  `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`, `container_interpreter.py`,
-  `testing.py`, and `claude_agent_lm.py` touch dspy: the last four live outside the dspy-free
-  set and are lazily imported (by `__getattr__` / by `sandbox.build_interpreter`'s
-  `"container"` branch / inside `testing.py`'s functions), so `sandbox.py`'s module top and
-  `import rlm_harness` stay dspy-free. `claude_agent_lm.py` (optional `rlm-harness[subscription]`)
-  additionally keeps its `claude-agent-sdk` import out of module top: deferred to instance
-  construction, so `rlm_harness.ClaudeAgentLM` is gettable without the extra, like `mcp_tools`.
+  `memory.py`, `memory_organise.py` must NOT import `dspy` at module top: that keeps their logic
+  testable without dspy. Only `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`,
+  `container_interpreter.py`, `testing.py`, `claude_agent_lm.py` and `memory_tasks.py` touch dspy:
+  the last five live outside the dspy-free set and are lazily imported (by `__getattr__` / by
+  `sandbox.build_interpreter`'s `"container"` branch / inside `testing.py`'s functions), so
+  `sandbox.py`'s module top and `import rlm_harness` stay dspy-free. `claude_agent_lm.py` (optional
+  `rlm-harness[subscription]`) additionally keeps its `claude-agent-sdk` import out of module top:
+  deferred to instance construction, so `rlm_harness.ClaudeAgentLM` is gettable without the extra,
+  like `mcp_tools`.
 
   **`ClaudeAgentLM` is an ENGINE, not a `forward()` subclass, and the suite must stay free of that
   DeprecationWarning.** It was a `dspy.BaseLM` implementing `forward`/`aforward` until 1.17.0, on a
@@ -526,35 +527,66 @@ reason is in the rule.
   only place code runs. What no test can gate: a third-party skill is usable, but its text
   becomes LM context, so treat an untrusted skill as a prompt-injection surface. See the guide
   (`rlm_harness/README.md`) "Skills (progressive disclosure)".
-- **Memory is append-only evidence, and a model writes only `inferred`.** `MemoryStore`
-  (`memory.py`) labels every item with one of `PROVENANCES`: `observed` (taken from a source by
-  the host), `said` (written by a person) and `inferred` (written by a model). Two properties hold
-  and must keep holding:
+- **Memory is never rewritten, a model writes only `inferred`, and only the host erases.**
+  `MemoryStore` (`memory.py`) labels every item with one of `PROVENANCES`: `observed` (taken from a
+  source by the host), `said` (written by a person) and `inferred` (written by a model). Four
+  properties hold and must keep holding:
   1. **The model's only write path cannot name a provenance.** `memory_note(text, revises)` has
      no such argument and stores `inferred`, so the guarantee comes from the tool's SHAPE, the way
      `HarnessInvoke`'s single long-text argument enforces its contract. Do not add a `provenance=`
      parameter to that tool, or a second model-facing write tool that takes one. A note written
      after reading untrusted text is replayed into every later run that searches for it, and the
      label is the only thing that lets a reader discount it.
-  2. **Nothing written is changed or deleted.** `revise` adds a new row pointing at the old one,
-     and `retire` sets `valid_to` once; that is the module's only UPDATE. Triggers refuse a stray
+  2. **Nothing written is changed, and an id never names different text.** `revise` adds a new row
+     pointing at the old one, and `retire` sets `valid_to` once; that is the module's only UPDATE.
+     Triggers on the item, label and failure tables refuse a stray
      `UPDATE`, `DELETE` or `INSERT OR REPLACE` (REPLACE deletes without firing a DELETE trigger,
      which is why an INSERT trigger refuses an existing id; it guards on `NEW.id > 0` because an
      auto-assigned id reads as -1 there, and `CHECK (id > 0)` keeps a stray row at -1 from turning
      that guard against every later add), and the UPDATE trigger compares with
      `IS NOT`, because a `!=` guard reads `NULL != 'x'` as false and would let a NULL `revises`
-     or `run_id` be filled in later. The triggers protect `items`, the source of truth. The FTS5
-     index is contentless, which refuses a plain DELETE or UPDATE, but its own `'delete'` and
-     `'delete-all'` commands and a direct INSERT can still change what it matches, so search can
-     miss or mis-match an item while the item itself is intact. These protect history from a
+     or `run_id` be filled in later. The FTS5 indexes are contentless with `contentless_delete=1`
+     (SQLite 3.43 or newer, checked at construction), so they can forget; an index row deleted by
+     other means only makes search miss an item that is still intact. These protect history from a
      host's SQL mistakes, not from someone with the file: `DROP TRIGGER` still works, and the
      docs must not claim otherwise.
+  3. **Only `purge` erases, and only the host calls it.** A person may want back out what they put
+     in, so erasure exists, but as one deliberate host-side method with no tool and no model-facing
+     path. It deletes the item, its labels, failures and index rows and writes a content-free
+     `purged` record. A `contentless_delete` index keeps a deleted row's words in its segments
+     behind a tombstone, so purge then merges both indexes (FTS5 `'optimize'`). Every store
+     connection runs with `secure_delete` on, not only purge's: an ordinary write merges index
+     segments too, and without it leaves an old copy of the text as slack in a live page that a
+     later purge cannot reach (measured). A test scans the file's bytes for a purged word, because
+     a search-only test passed while the words were still on disk. It passes the delete triggers through a
+     `purge_flag` row inserted and removed inside its own transaction, which no other connection can
+     see; the table is ordinary rather than TEMP because a main-schema trigger cannot read the temp
+     schema, so every open clears a row a host's stray SQL may have committed there. Do not add another
+     way past the triggers, and do not expose `purge` to a model. Ids stay AUTOINCREMENT, so a purged
+     id names nothing rather than something else: that, not "nothing is ever deleted", is what keeps
+     an old trace or citation honest.
+  4. **A person's label outranks a model's.** For each item and kind, the current label is the
+     latest `said` row when its value is set, otherwise the latest `inferred` row; a `said` NULL is
+     a person clearing their own label. This lives in the `current_labels` view and nowhere else,
+     so every reader agrees. A model-backed pass writes `inferred` labels only. A label shown to a
+     model carries its own provenance (`memory_search` rows have `title_provenance`): a review found
+     a model-written title riding in a row whose only provenance said `observed`, which is the
+     mislabelling rule 1 exists to prevent.
 
   What the kit cannot verify is the host's choice between `observed` and `said`; the host's code
   path assigns it, and the docs say so rather than implying a check. The schema changes only by
   appending to `memory._MIGRATIONS`, counted in `PRAGMA user_version`, and a shipped step is never
   edited. A memory call records an ordinary `tool_call` with an optional `memory_ids` field; it
-  does not add an event type. Pinned by `tests/test_memory.py` and `tests/test_memory_tools.py`.
+  does not add an event type. Pinned by `tests/test_memory.py`, `tests/test_memory_tools.py`,
+  `tests/test_memory_labels.py`, `tests/test_memory_purge.py` and `tests/test_memory_tasks.py`.
+
+  The labelling pass (`memory_tasks.distill_pending`) makes no model call the host did not ask for,
+  caps a pass at 500 items, and keeps a short item to ONE `dspy.Predict` call; only a text past
+  `SHORT_LIMIT` pays for an RLM run. An entity label is kept only when its name occurs in the item,
+  in the span its quote was found at (`tools.grounding._find_span`, which returns the source's own
+  bytes and refuses a quote under 20 characters), or among the names in use the call was shown. Do
+  not drop that last clause: a summary told to reuse a known name writes it in another script than
+  the text uses, and grounding on the text alone would delete exactly the convergence it exists for.
 - **The trace is a VERSIONED wire format: additive-only within a version.** `SCHEMA =
   "rlm-harness/trace/v2"` + every `EVENT_*` type string + the `{schema, run_id, step_id, ts, type,
   payload}` envelope + the dataset-exporter record shapes are a CONTRACT that offline readers build

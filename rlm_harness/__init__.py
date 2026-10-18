@@ -34,7 +34,17 @@ from .atomic import atomic_write_stream, atomic_write_text
 from .config import RLMConfig
 from .dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
 from .isolation import run_in_subprocess
-from .memory import PROVENANCES, MemoryItem, MemoryStore, MemoryUnavailable
+from .memory import (
+    LABEL_KINDS,
+    LABEL_PROVENANCES,
+    PROVENANCES,
+    SHORT_LIMIT,
+    MemoryItem,
+    MemoryLabels,
+    MemoryStore,
+    MemoryUnavailable,
+    PurgeRecord,
+)
 from .metrics import (
     RUN_FACT_KEYS,
     RunUtilization,
@@ -173,6 +183,22 @@ __all__ = [
     "MemoryItem",
     "MemoryUnavailable",
     "PROVENANCES",
+    "MemoryLabels",
+    "PurgeRecord",
+    "LABEL_KINDS",
+    "LABEL_PROVENANCES",
+    "SHORT_LIMIT",
+    # labelling passes (rlm_harness.memory_tasks): imported lazily, they touch dspy
+    "distill_pending",
+    "DistillReport",
+    "DistillLongItem",
+    "SummariseShort",
+    "ShortLabels",
+    "LongLabels",
+    "EntityMention",
+    "run_step",
+    "arun_step",
+    "subprocess_step_runner",
 ]
 
 __version__ = "1.21.0"
@@ -208,4 +234,14 @@ def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import
         from .claude_agent_lm import SUBSCRIPTION_PREFIX
 
         return SUBSCRIPTION_PREFIX
+    if name in _MEMORY_TASK_NAMES:  # the labelling passes: memory_tasks.py imports dspy, so lazily
+        from . import memory_tasks as _memory_tasks
+
+        return getattr(_memory_tasks, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+_MEMORY_TASK_NAMES = frozenset({
+    "distill_pending", "DistillReport", "DistillLongItem", "SummariseShort", "ShortLabels",
+    "LongLabels", "EntityMention", "run_step", "arun_step", "subprocess_step_runner",
+})

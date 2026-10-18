@@ -247,6 +247,9 @@ def test_public_surface_includes_the_consumer_contract():
         "EVENT_FINAL", "EVENT_RESULT", "EVENT_RUN_END", "EVENT_API_ROUNDS",
         # the provenance-typed memory (1.21.0): a consumer builds its store and tools on these
         "MemoryStore", "MemoryItem", "MemoryUnavailable", "PROVENANCES",
+        "MemoryLabels", "PurgeRecord", "LABEL_KINDS", "LABEL_PROVENANCES", "SHORT_LIMIT",
+        "distill_pending", "DistillReport", "DistillLongItem", "SummariseShort", "run_step",
+        "subprocess_step_runner",
     }
     assert must_export <= set(rlm_harness.__all__)
     # ...and each is actually REACHABLE. `__all__` membership alone would pass for a name with
