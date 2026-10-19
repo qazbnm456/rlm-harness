@@ -143,6 +143,10 @@ _UNSPACED = re.compile(
 )
 
 _ID = re.compile(r"m([1-9][0-9]{0,18})")
+_TOPIC_ID = re.compile(r"t([1-9][0-9]{0,18})")
+
+#: The longest topic name kept; a longer one is cut, never refused.
+_TOPIC_NAME_CHARS = 60
 
 #: SQLite's INTEGER ceiling. A well-formed id above it names no row, and binding it would raise
 #: `OverflowError` out of a read that promises to return None.
@@ -336,6 +340,126 @@ _MIGRATIONS: tuple[tuple[str | Callable[[sqlite3.Connection], None], ...], ...] 
                (SELECT MAX(i.id) FROM entity_aliases i
                 WHERE i.alias = a.alias AND i.provenance = 'inferred'))""",
     ),
+    # Step 4: topics, named groups of items. Every table is an event log; what a reader sees is the
+    # latest row by the rules in the views below. The rows that name an item (membership,
+    # dismissal, leftover) go with it when it is purged; a topic and its names do not.
+    (
+        """CREATE TABLE topics (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id > 0),
+            provenance TEXT NOT NULL CHECK (provenance IN ('said', 'inferred')),
+            run_id     TEXT,
+            created_at REAL NOT NULL
+        )""",
+        """CREATE TRIGGER topics_no_replace BEFORE INSERT ON topics
+           WHEN NEW.id > 0 AND EXISTS (SELECT 1 FROM topics WHERE id = NEW.id)
+           BEGIN SELECT RAISE(ABORT, 'topics is append-only: this id already exists'); END""",
+        """CREATE TRIGGER topics_no_update BEFORE UPDATE ON topics
+           BEGIN SELECT RAISE(ABORT, 'topics is append-only: a change is a new row'); END""",
+        """CREATE TRIGGER topics_no_delete BEFORE DELETE ON topics
+           BEGIN SELECT RAISE(ABORT, 'topics is append-only'); END""",
+        """CREATE TABLE topic_names (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id > 0),
+            topic_id   INTEGER NOT NULL,
+            name       TEXT NOT NULL,
+            provenance TEXT NOT NULL CHECK (provenance IN ('said', 'inferred')),
+            run_id     TEXT,
+            created_at REAL NOT NULL
+        )""",
+        "CREATE INDEX topic_names_key ON topic_names(topic_id, provenance, id)",
+        """CREATE TRIGGER topic_names_no_replace BEFORE INSERT ON topic_names
+           WHEN NEW.id > 0 AND EXISTS (SELECT 1 FROM topic_names WHERE id = NEW.id)
+           BEGIN SELECT RAISE(ABORT, 'topic_names is append-only: this id already exists'); END""",
+        """CREATE TRIGGER topic_names_no_update BEFORE UPDATE ON topic_names
+           BEGIN SELECT RAISE(ABORT, 'topic_names is append-only: a change is a new row'); END""",
+        """CREATE TRIGGER topic_names_no_delete BEFORE DELETE ON topic_names
+           BEGIN SELECT RAISE(ABORT, 'topic_names is append-only'); END""",
+        """CREATE TABLE topic_retired (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id > 0),
+            topic_id   INTEGER NOT NULL,
+            retired    INTEGER NOT NULL CHECK (retired IN (0, 1)),
+            provenance TEXT NOT NULL CHECK (provenance IN ('said', 'inferred')),
+            run_id     TEXT,
+            created_at REAL NOT NULL
+        )""",
+        "CREATE INDEX topic_retired_key ON topic_retired(topic_id, id)",
+        """CREATE TRIGGER topic_retired_no_replace BEFORE INSERT ON topic_retired
+           WHEN NEW.id > 0 AND EXISTS (SELECT 1 FROM topic_retired WHERE id = NEW.id)
+           BEGIN SELECT RAISE(ABORT, 'topic_retired is append-only: this id already exists'); END""",
+        """CREATE TRIGGER topic_retired_no_update BEFORE UPDATE ON topic_retired
+           BEGIN SELECT RAISE(ABORT, 'topic_retired is append-only: a change is a new row'); END""",
+        """CREATE TRIGGER topic_retired_no_delete BEFORE DELETE ON topic_retired
+           BEGIN SELECT RAISE(ABORT, 'topic_retired is append-only'); END""",
+        """CREATE TABLE topic_members (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id > 0),
+            item_id    INTEGER NOT NULL,
+            topic_id   INTEGER NOT NULL,
+            member     INTEGER NOT NULL CHECK (member IN (0, 1)),
+            provenance TEXT NOT NULL CHECK (provenance IN ('said', 'inferred')),
+            run_id     TEXT,
+            created_at REAL NOT NULL
+        )""",
+        "CREATE INDEX topic_members_key ON topic_members(item_id, topic_id, provenance, id)",
+        "CREATE INDEX topic_members_topic ON topic_members(topic_id)",
+        """CREATE TRIGGER topic_members_no_replace BEFORE INSERT ON topic_members
+           WHEN NEW.id > 0 AND EXISTS (SELECT 1 FROM topic_members WHERE id = NEW.id)
+           BEGIN SELECT RAISE(ABORT, 'topic_members is append-only: this id already exists'); END""",
+        """CREATE TRIGGER topic_members_no_update BEFORE UPDATE ON topic_members
+           BEGIN SELECT RAISE(ABORT, 'topic_members is append-only: a change is a new row'); END""",
+        """CREATE TRIGGER topic_members_no_delete BEFORE DELETE ON topic_members
+           WHEN NOT EXISTS (SELECT 1 FROM purge_flag)
+           BEGIN SELECT RAISE(ABORT, 'topic_members is append-only: only purge removes a row'); END""",
+        """CREATE TABLE topic_dismissed (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id > 0),
+            item_id    INTEGER NOT NULL,
+            topic_id   INTEGER NOT NULL,
+            created_at REAL NOT NULL
+        )""",
+        "CREATE INDEX topic_dismissed_key ON topic_dismissed(item_id, topic_id)",
+        """CREATE TRIGGER topic_dismissed_no_replace BEFORE INSERT ON topic_dismissed
+           WHEN NEW.id > 0 AND EXISTS (SELECT 1 FROM topic_dismissed WHERE id = NEW.id)
+           BEGIN SELECT RAISE(ABORT, 'topic_dismissed is append-only: this id already exists'); END""",
+        """CREATE TRIGGER topic_dismissed_no_update BEFORE UPDATE ON topic_dismissed
+           BEGIN SELECT RAISE(ABORT, 'topic_dismissed is append-only: a change is a new row'); END""",
+        """CREATE TRIGGER topic_dismissed_no_delete BEFORE DELETE ON topic_dismissed
+           WHEN NOT EXISTS (SELECT 1 FROM purge_flag)
+           BEGIN SELECT RAISE(ABORT, 'topic_dismissed is append-only: only purge removes a row'); END""",
+        """CREATE TABLE topic_left (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id > 0),
+            item_id    INTEGER NOT NULL,
+            signature  TEXT NOT NULL,
+            created_at REAL NOT NULL
+        )""",
+        "CREATE INDEX topic_left_key ON topic_left(signature, item_id)",
+        """CREATE TRIGGER topic_left_no_replace BEFORE INSERT ON topic_left
+           WHEN NEW.id > 0 AND EXISTS (SELECT 1 FROM topic_left WHERE id = NEW.id)
+           BEGIN SELECT RAISE(ABORT, 'topic_left is append-only: this id already exists'); END""",
+        """CREATE TRIGGER topic_left_no_update BEFORE UPDATE ON topic_left
+           BEGIN SELECT RAISE(ABORT, 'topic_left is append-only: a change is a new row'); END""",
+        """CREATE TRIGGER topic_left_no_delete BEFORE DELETE ON topic_left
+           WHEN NOT EXISTS (SELECT 1 FROM purge_flag)
+           BEGIN SELECT RAISE(ABORT, 'topic_left is append-only: only purge removes a row'); END""",
+        # A topic's name follows the label rule: the latest said name, else the latest inferred one.
+        """CREATE VIEW current_topic_names AS
+           SELECT n.topic_id, n.name, n.provenance FROM topic_names n
+           WHERE n.id = COALESCE(
+               (SELECT MAX(s.id) FROM topic_names s
+                WHERE s.topic_id = n.topic_id AND s.provenance = 'said'),
+               (SELECT MAX(i.id) FROM topic_names i
+                WHERE i.topic_id = n.topic_id AND i.provenance = 'inferred'))""",
+        # Membership follows the alias rule: a said row decides whenever one exists, a removal (0)
+        # included, so a person's "not in this topic" is never undone by a model's placement.
+        """CREATE VIEW current_members AS
+           SELECT m.item_id, m.topic_id, m.provenance FROM topic_members m
+           WHERE m.member = 1 AND m.id = COALESCE(
+               (SELECT MAX(s.id) FROM topic_members s WHERE s.item_id = m.item_id
+                AND s.topic_id = m.topic_id AND s.provenance = 'said'),
+               (SELECT MAX(i.id) FROM topic_members i WHERE i.item_id = m.item_id
+                AND i.topic_id = m.topic_id AND i.provenance = 'inferred'))""",
+        """CREATE VIEW live_topics AS
+           SELECT t.id, t.provenance, t.created_at FROM topics t
+           WHERE COALESCE((SELECT r.retired FROM topic_retired r WHERE r.topic_id = t.id
+                           ORDER BY r.id DESC LIMIT 1), 0) = 0""",
+    ),
 )
 
 _SCHEMA_VERSION = len(_MIGRATIONS)
@@ -408,6 +532,18 @@ class MemoryLabels:
     tags: tuple[str, ...] = ()
     entities: tuple[str, ...] = ()
     provenance: dict = field(default_factory=lambda: dict.fromkeys(LABEL_KINDS), hash=False)
+
+
+@dataclass(frozen=True)
+class Topic:
+    """A named group of items. ``name_provenance`` says who wrote the name that shows now."""
+
+    id: str
+    name: str
+    name_provenance: str
+    provenance: str
+    retired: bool
+    created_at: float
 
 
 @dataclass(frozen=True)
@@ -565,6 +701,25 @@ def _rowid(item_id: Any) -> int | None:
         return None
     rowid = int(match.group(1))
     return rowid if rowid <= _MAX_ROWID else None
+
+
+def _topic_rowid(topic_id: Any) -> int | None:
+    if not isinstance(topic_id, str):
+        return None
+    match = _TOPIC_ID.fullmatch(topic_id.strip())
+    if not match:
+        return None
+    rowid = int(match.group(1))
+    return rowid if rowid <= _MAX_ROWID else None
+
+
+def _topic_name(name: Any) -> str:
+    if not isinstance(name, str):
+        raise TypeError("a topic name must be a str")
+    clean = " ".join(unicodedata.normalize("NFKC", name).split())[:_TOPIC_NAME_CHARS].strip()
+    if not clean:
+        raise ValueError("a topic name must be non-empty")
+    return clean
 
 
 def _timestamp(value: Any, name: str) -> float:
@@ -911,6 +1066,28 @@ class MemoryStore:
             origin[row["kind"]] = row["provenance"]
         return MemoryLabels(provenance=origin, **values)
 
+    def _labels_by_item(self) -> dict[str, MemoryLabels]:
+        """The current labels of every non-retired item that has any, newest item first, read in
+        one query and resolved through the alias table once. For the organising reads, which
+        otherwise opened a connection per item."""
+        out: dict[str, dict[str, Any]] = {}
+        with self._connect() as conn:
+            aliases = self._readings(conn)
+            rows = conn.execute(
+                "SELECT cl.item_id, cl.kind, cl.value_json, cl.provenance FROM current_labels cl "
+                "JOIN items ON items.id = cl.item_id "
+                "WHERE items.valid_to IS NULL OR items.valid_to > ? ORDER BY cl.item_id DESC",
+                (time.time(),),
+            ).fetchall()
+        for row in rows:
+            entry = out.setdefault(f"m{row['item_id']}", {"provenance": dict.fromkeys(LABEL_KINDS)})
+            value = json.loads(row["value_json"])
+            if row["kind"] == "entities":
+                value = list(dict.fromkeys(aliases.get(_fold(v), v) for v in value))
+            entry[row["kind"]] = tuple(value) if isinstance(value, list) else value
+            entry["provenance"][row["kind"]] = row["provenance"]
+        return {item_id: MemoryLabels(**values) for item_id, values in out.items()}
+
     def unlabelled(
         self,
         *,
@@ -1145,24 +1322,258 @@ class MemoryStore:
                     "INSERT INTO entity_seen (name, created_at) SELECT ?, ? "
                     "WHERE NOT EXISTS (SELECT 1 FROM entity_seen WHERE name = ?)", (key, now, key))
 
-    def entity_graph(self, *, limit: int = 200) -> list[tuple[str, str, int]]:
+    def entity_graph(self, *, topic: str | None = None, limit: int = 200) -> list[tuple[str, str, int]]:
         """Pairs of entities named together by one item, with how many items do, strongest first.
 
         Read from the current entity labels of non-retired items, through the alias table, so a
-        merged pair is one node. It is data to draw, not a drawing.
+        merged pair is one node. ``topic`` limits it to that topic's members. It is data to draw,
+        not a drawing.
         """
         pairs: Counter[tuple[str, str]] = Counter()
+        scope, params = "", [time.time()]
+        if topic is not None:
+            scope = (" AND EXISTS (SELECT 1 FROM current_members cm WHERE cm.item_id = items.id "
+                     "AND cm.topic_id = ?)")
+            params.append(_topic_rowid(topic) or 0)
         with self._connect() as conn:
             aliases = self._readings(conn)
             for row in conn.execute(
                 "SELECT cl.value_json FROM current_labels cl JOIN items ON items.id = cl.item_id "
-                "WHERE cl.kind = 'entities' AND (items.valid_to IS NULL OR items.valid_to > ?)",
-                (time.time(),),
+                "WHERE cl.kind = 'entities' AND (items.valid_to IS NULL OR items.valid_to > ?)" + scope,
+                params,
             ).fetchall():
                 names = sorted({aliases.get(_fold(n), n) for n in json.loads(row[0])})
                 pairs.update(itertools.combinations(names, 2))
         ranked = sorted(pairs.items(), key=lambda pair: (-pair[1], pair[0]))
         return [(a, b, n) for (a, b), n in ranked[: max(1, int(limit))]]
+
+    # ---- topics ---------------------------------------------------------------------------
+
+    @staticmethod
+    def _topic_row(conn: sqlite3.Connection, rowid: int) -> Topic | None:
+        row = conn.execute(
+            "SELECT t.id, t.provenance, t.created_at, n.name, n.provenance AS name_provenance, "
+            "COALESCE((SELECT r.retired FROM topic_retired r WHERE r.topic_id = t.id "
+            "ORDER BY r.id DESC LIMIT 1), 0) AS retired "
+            "FROM topics t JOIN current_topic_names n ON n.topic_id = t.id WHERE t.id = ?",
+            (rowid,),
+        ).fetchone()
+        if row is None:
+            return None
+        return Topic(f"t{row['id']}", row["name"], row["name_provenance"], row["provenance"],
+                     bool(row["retired"]), row["created_at"])
+
+    def _require_topic(self, conn: sqlite3.Connection, topic_id: str) -> int:
+        rowid = _topic_rowid(topic_id)
+        if rowid is None or conn.execute("SELECT 1 FROM topics WHERE id = ?", (rowid,)).fetchone() is None:
+            raise KeyError(topic_id)
+        return rowid
+
+    def create_topic(self, name: str, *, provenance: str = "said", run_id: str | None = None) -> Topic:
+        """Open a topic named ``name`` (cut to 60 characters) and return it."""
+        if provenance not in LABEL_PROVENANCES:
+            raise ValueError(f"provenance must be one of {LABEL_PROVENANCES}, got {provenance!r}")
+        clean = _topic_name(name)
+        now = time.time()
+        with self._write() as conn:
+            rowid = conn.execute("INSERT INTO topics (provenance, run_id, created_at) VALUES (?, ?, ?)",
+                                 (provenance, run_id, now)).lastrowid
+            conn.execute("INSERT INTO topic_names (topic_id, name, provenance, run_id, created_at) "
+                         "VALUES (?, ?, ?, ?, ?)", (rowid, clean, provenance, run_id, now))
+            return self._topic_row(conn, rowid)
+
+    def rename_topic(self, topic_id: str, name: str, *, provenance: str = "said",
+                     run_id: str | None = None) -> Topic:
+        """Give a topic a new name. A person's (``said``) name outranks any model's, whatever the
+        order. Raises ``KeyError`` for an unknown topic."""
+        if provenance not in LABEL_PROVENANCES:
+            raise ValueError(f"provenance must be one of {LABEL_PROVENANCES}, got {provenance!r}")
+        clean = _topic_name(name)
+        with self._write() as conn:
+            rowid = self._require_topic(conn, topic_id)
+            conn.execute("INSERT INTO topic_names (topic_id, name, provenance, run_id, created_at) "
+                         "VALUES (?, ?, ?, ?, ?)", (rowid, clean, provenance, run_id, time.time()))
+            return self._topic_row(conn, rowid)
+
+    def _set_retired(self, topic_id: str, retired: bool, provenance: str, run_id: str | None) -> Topic:
+        if provenance not in LABEL_PROVENANCES:
+            raise ValueError(f"provenance must be one of {LABEL_PROVENANCES}, got {provenance!r}")
+        with self._write() as conn:
+            rowid = self._require_topic(conn, topic_id)
+            last = conn.execute("SELECT provenance FROM topic_retired WHERE topic_id = ? "
+                                "ORDER BY id DESC LIMIT 1", (rowid,)).fetchone()
+            if provenance == "inferred" and last is not None and last[0] == "said":
+                # A person retired or restored this topic last; a model does not overturn that.
+                raise ValueError(f"a person already decided whether {topic_id} is retired")
+            conn.execute("INSERT INTO topic_retired (topic_id, retired, provenance, run_id, created_at) "
+                         "VALUES (?, ?, ?, ?, ?)", (rowid, int(retired), provenance, run_id, time.time()))
+            return self._topic_row(conn, rowid)
+
+    def retire_topic(self, topic_id: str, *, provenance: str = "said", run_id: str | None = None) -> Topic:
+        """Hide a topic from listings and suggestions. Its memberships stay readable. A ``said``
+        retirement also keeps its name from being reopened by a model (``said_retired_names``). An
+        ``inferred`` retirement is refused (``ValueError``) when a person last retired or restored
+        the topic."""
+        return self._set_retired(topic_id, True, provenance, run_id)
+
+    def restore_topic(self, topic_id: str) -> Topic:
+        """Bring a retired topic back."""
+        return self._set_retired(topic_id, False, "said", None)
+
+    def said_retired_names(self) -> set[str]:
+        """The folded names of topics a person retired and that are still retired: names a model
+        may not open a new topic under. A topic retired by a pass, not a person, is not here."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT n.name FROM topics t JOIN current_topic_names n ON n.topic_id = t.id "
+                "JOIN topic_retired r ON r.id = (SELECT MAX(x.id) FROM topic_retired x WHERE x.topic_id = t.id) "
+                "WHERE r.retired = 1 AND r.provenance = 'said'").fetchall()
+        return {_fold(row[0]) for row in rows}
+
+    def _items_by_ids(self, item_ids: list[str]) -> dict[str, MemoryItem]:
+        """The items with these ids that exist, read in one query."""
+        rows = [r for r in (_rowid(i) for i in item_ids) if r is not None]
+        if not rows:
+            return {}
+        with self._connect() as conn:
+            found = conn.execute("SELECT * FROM items WHERE id IN (SELECT value FROM json_each(?))",
+                                 (json.dumps(rows),)).fetchall()
+        return {f"m{row['id']}": self._item(row) for row in found}
+
+    def topic(self, topic_id: str) -> Topic | None:
+        """The topic with this id, retired or not, or ``None``."""
+        rowid = _topic_rowid(topic_id)
+        if rowid is None:
+            return None
+        with self._connect() as conn:
+            return self._topic_row(conn, rowid)
+
+    def topics(self, *, include_retired: bool = False) -> list[Topic]:
+        """Every topic, oldest first; retired ones only when asked for."""
+        with self._connect() as conn:
+            ids = [row[0] for row in conn.execute("SELECT id FROM topics ORDER BY id").fetchall()]
+            found = [self._topic_row(conn, rowid) for rowid in ids]
+        return [t for t in found if t is not None and (include_retired or not t.retired)]
+
+    def _membership(self, item_id: str, topic_id: str, member: bool, provenance: str,
+                    run_id: str | None) -> None:
+        if provenance not in LABEL_PROVENANCES:
+            raise ValueError(f"provenance must be one of {LABEL_PROVENANCES}, got {provenance!r}")
+        item = _rowid(item_id)
+        with self._write() as conn:
+            topic = self._require_topic(conn, topic_id)
+            if item is None or conn.execute("SELECT 1 FROM items WHERE id = ?", (item,)).fetchone() is None:
+                raise KeyError(item_id)
+            if member and self._topic_row(conn, topic).retired:
+                raise ValueError(f"{topic_id} is retired")
+            if provenance == "inferred" and conn.execute(
+                "SELECT 1 FROM topic_members WHERE item_id = ? AND topic_id = ? AND provenance = 'said'",
+                (item, topic),
+            ).fetchone():
+                raise ValueError(f"a person already decided whether {item_id} is in {topic_id}")
+            conn.execute(
+                "INSERT INTO topic_members (item_id, topic_id, member, provenance, run_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)", (item, topic, int(member), provenance, run_id, time.time()))
+
+    def place(self, item_id: str, topic_id: str, *, provenance: str = "said",
+              run_id: str | None = None) -> None:
+        """Put an item into a topic.
+
+        A person's decision about a pair stands whenever one exists, a removal included: an
+        ``inferred`` placement is refused (``ValueError``) for any pair a person placed or removed.
+        A retired topic takes no new members. ``KeyError`` for an unknown item or topic.
+        """
+        self._membership(item_id, topic_id, True, provenance, run_id)
+
+    def unplace(self, item_id: str, topic_id: str, *, provenance: str = "said",
+                run_id: str | None = None) -> None:
+        """Take an item out of a topic. A ``said`` removal keeps the pair apart for good: no later
+        ``inferred`` placement can put it back."""
+        self._membership(item_id, topic_id, False, provenance, run_id)
+
+    def topic_items(self, topic_id: str) -> list[MemoryItem]:
+        """The items that are members of a topic now, newest first, retired items included (a
+        membership outlives an item's retirement). Empty for an unknown id."""
+        rowid = _topic_rowid(topic_id)
+        if rowid is None:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT items.* FROM current_members cm JOIN items ON items.id = cm.item_id "
+                "WHERE cm.topic_id = ? ORDER BY items.id DESC", (rowid,)).fetchall()
+        return [self._item(row) for row in rows]
+
+    def item_topics(self, item_id: str) -> list[Topic]:
+        """The live topics an item is in now, oldest first."""
+        rowid = _rowid(item_id)
+        if rowid is None:
+            return []
+        with self._connect() as conn:
+            ids = [row[0] for row in conn.execute(
+                "SELECT cm.topic_id FROM current_members cm JOIN live_topics lt ON lt.id = cm.topic_id "
+                "WHERE cm.item_id = ? ORDER BY cm.topic_id", (rowid,)).fetchall()]
+            return [t for t in (self._topic_row(conn, i) for i in ids) if t is not None]
+
+    def dismiss(self, item_id: str, topic_id: str) -> None:
+        """Never suggest this item for this topic again."""
+        item = _rowid(item_id)
+        with self._write() as conn:
+            topic = self._require_topic(conn, topic_id)
+            if item is None or conn.execute("SELECT 1 FROM items WHERE id = ?", (item,)).fetchone() is None:
+                raise KeyError(item_id)
+            conn.execute(
+                "INSERT INTO topic_dismissed (item_id, topic_id, created_at) SELECT ?, ?, ? WHERE NOT "
+                "EXISTS (SELECT 1 FROM topic_dismissed WHERE item_id = ? AND topic_id = ?)",
+                (item, topic, time.time(), item, topic))
+
+    def dismissed(self) -> set[tuple[str, str]]:
+        """Every dismissed ``(item_id, topic_id)`` pair."""
+        with self._connect() as conn:
+            return {(f"m{r[0]}", f"t{r[1]}") for r in
+                    conn.execute("SELECT item_id, topic_id FROM topic_dismissed").fetchall()}
+
+    def removed_pairs(self) -> set[tuple[str, str]]:
+        """Every ``(item_id, topic_id)`` pair whose latest ``said`` row is a removal: a person took
+        it apart, and no model may place it."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT m.item_id, m.topic_id FROM topic_members m WHERE m.provenance = 'said' "
+                "AND m.member = 0 AND m.id = (SELECT MAX(s.id) FROM topic_members s "
+                "WHERE s.item_id = m.item_id AND s.topic_id = m.topic_id AND s.provenance = 'said')"
+            ).fetchall()
+        return {(f"m{r[0]}", f"t{r[1]}") for r in rows}
+
+    def record_left(self, item_ids: Iterable[str], signature: str) -> None:
+        """Record that organising left these items against the topic set ``signature``, so they
+        are not asked about again until the set of live topics changes."""
+        if isinstance(item_ids, str):
+            raise TypeError("record_left takes a list of ids, not a str")
+        rows = [r for r in (_rowid(i) for i in item_ids) if r is not None]
+        now = time.time()
+        with self._write() as conn:
+            for rowid in rows:
+                conn.execute(
+                    "INSERT INTO topic_left (item_id, signature, created_at) SELECT ?, ?, ? "
+                    "WHERE EXISTS (SELECT 1 FROM items WHERE id = ?) AND NOT EXISTS "
+                    "(SELECT 1 FROM topic_left WHERE item_id = ? AND signature = ?)",
+                    (rowid, signature, now, rowid, rowid, signature))
+
+    def left_items(self, signature: str | None = None) -> list[str]:
+        """Items organising left: against ``signature``, or against any topic set when it is
+        ``None``, each once."""
+        with self._connect() as conn:
+            if signature is None:
+                rows = conn.execute("SELECT DISTINCT item_id FROM topic_left ORDER BY item_id").fetchall()
+            else:
+                rows = conn.execute("SELECT item_id FROM topic_left WHERE signature = ? ORDER BY id",
+                                    (signature,)).fetchall()
+        return [f"m{r[0]}" for r in rows]
+
+    def topic_signature(self) -> str:
+        """The set of live topics a decision is made against: a leftover is reconsidered once it
+        changes, since a new topic may now take it."""
+        with self._connect() as conn:
+            return "\u001f".join(f"t{r[0]}" for r in conn.execute("SELECT id FROM live_topics ORDER BY id"))
 
     def note_distill_failure(self, item_id: str, error: str) -> None:
         """Record that summarising ``item_id`` failed, so a pass can stop retrying it forever."""
@@ -1201,7 +1612,8 @@ class MemoryStore:
 
         This is the host's deliberate exception to append-only, and the only one: no tool and no
         model-facing path reaches it. For each item it deletes the row, its labels, its recorded
-        failures and its search-index entries, and writes a ``purged`` record holding the time and
+        failures, its topic memberships, dismissals and leftovers, and its search-index entries,
+        and writes a ``purged`` record holding the time and
         ``reason``, never the text. Ids are never reused, so an id in an old trace names nothing
         rather than something else.
 
@@ -1256,6 +1668,8 @@ class MemoryStore:
                                          [(i,) for i in label_ids])
                         conn.execute("DELETE FROM labels WHERE item_id = ?", (rowid,))
                         conn.execute("DELETE FROM distill_failures WHERE item_id = ?", (rowid,))
+                        for table in ("topic_members", "topic_dismissed", "topic_left"):
+                            conn.execute(f"DELETE FROM {table} WHERE item_id = ?", (rowid,))
                         conn.execute("DELETE FROM items_fts WHERE rowid = ?", (rowid,))
                         conn.execute("DELETE FROM items WHERE id = ?", (rowid,))
                         conn.execute("INSERT INTO purged (item_id, reason, created_at) VALUES (?, ?, ?)",
@@ -1347,6 +1761,7 @@ class MemoryStore:
         provenance: str | Iterable[str] | None = None,
         tags: Iterable[str] | str = (),
         entities: Iterable[str] | str = (),
+        topic: str | None = None,
         at: float | None = None,
         include_retired: bool = False,
     ) -> list[MemoryItem]:
@@ -1365,6 +1780,8 @@ class MemoryStore:
           NFKC-normalised and casefolded (``postgresql`` finds ``PostgreSQL``), each matched by
           every name in its alias group.
         - A query that is itself an entity name also searches every other name in its alias group.
+        - ``topic`` keeps only the items that are members of that topic now (an unknown id matches
+          nothing).
         - Items retired as of now are left out unless ``include_retired`` is true. One retired at
           a future time stays visible until then, and one whose ``valid_from`` lies in the future
           is NOT left out either.
@@ -1398,6 +1815,10 @@ class MemoryStore:
                 "AND rlm_fold(j.value) IN (SELECT value FROM json_each(?)))"
             )
             params.append(json.dumps(sorted(_name_group(entity, aliases))))
+        if topic is not None:
+            where.append("EXISTS (SELECT 1 FROM current_members cm "
+                         "WHERE cm.item_id = items.id AND cm.topic_id = ?)")
+            params.append(_topic_rowid(topic) or 0)
         if at is not None:
             when = _timestamp(at, "at")
             where.append("items.valid_from <= ? AND (items.valid_to IS NULL OR items.valid_to > ?)")

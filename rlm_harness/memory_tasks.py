@@ -33,9 +33,11 @@ this process; a short item's single ``Predict`` call records no event, so its ru
 ``run_start`` and ``run_end``. A recorder the caller entered around the whole pass would put every
 item in one run; nothing here relies on one.
 
-There is no claim mechanism: two passes running at once may label one item twice, or align one batch
-of names twice. That is harmless, since the latest label wins and a second merge of one name is
-refused, but it costs a call, so a consumer keeps one pass of each kind at a time.
+There is no claim mechanism, so a consumer keeps one pass of each kind running at a time. Two
+labelling passes may label one item twice and two alignment passes align one batch twice, which
+costs calls but changes nothing (the latest label wins, a second merge of one name is refused). Two
+organising passes are worse: each may open a topic of the same name, and that duplicate stays until
+someone retires one.
 """
 
 from __future__ import annotations
@@ -248,10 +250,68 @@ class AlignEntities(RLMTask):
         super().__init__(config=config, **kw)
 
 
+class OrganisePlan(BaseModel):
+    """What :class:`OrganiseBatch` returns: the plan as the model wrote it, judged on the host."""
+
+    plan_json: str = ""
+
+
+_ORGANISE_INSTRUCTIONS = (
+    "You sort items kept in someone's memory into topics: named groups they read and ask questions "
+    "about together.\n\n"
+    "`items` is a JSON list of items in no topic yet, each with an id, a title, a summary, tags and "
+    "entities. `topics` is a JSON list of the topics that exist, each with an id, a name and the "
+    "titles of some items it holds.\n\n"
+    "For each item decide one of:\n"
+    "- put it into an existing topic (use that topic's id), and say how it fits in `fit`: "
+    "\"subject\" when the item is about the topic's subject, \"part\" when it is about one part of "
+    "it, \"loose\" when all it shares is a word, a place, a person or a broad theme. A recipe is "
+    "not chemistry because both involve heat; a travel diary is not geology because it mentions a "
+    "mountain. A loose placement is not filed, so leave the item instead;\n"
+    "- put it into a NEW topic, when no existing topic fits and at least one other item here shares "
+    "its subject. Items on one new subject share one new topic. An item whose subject no other item "
+    "shares and no existing topic holds is left: it gets a topic once a second item on its subject "
+    "arrives. A new topic's name is short (2 to 6 words), names the subject broadly enough to hold "
+    "more items like it, and is written in `language` when one is given, otherwise in the language "
+    "most items are written in;\n"
+    "- leave it, when it is too thin to place, or when no existing topic is about its subject and no "
+    "other item here shares it.\n\n"
+    "Prefer an existing topic when the item is about its subject or a part of it. Never invent a new "
+    "topic that duplicates an existing one. Open at most `max_new_topics` new topics. Never put "
+    "items on unrelated subjects into one topic to stay under that number, and never file an item "
+    "into a topic whose subject it does not share: leave it instead.\n\n"
+    "Answer `plan_json` with JSON only: {\"placements\": [{\"item\": \"<item id>\", \"topic\": "
+    "\"<existing topic id or empty>\", \"fit\": \"<subject, part or loose, for an existing topic>\", "
+    "\"new_topic\": \"<new topic name or empty>\"}]}."
+)
+
+
+class OrganiseBatch:
+    """Sort a batch of items into topics in ONE ``dspy.Predict`` call. What the answer may do is
+    decided on the host, by ``plan_from``."""
+
+    async def arun(self, *, items: str = "[]", topics: str = "[]", language: str = "",
+                   max_new_topics: int = 10) -> OrganisePlan:
+        import dspy
+
+        predictor = dspy.Predict(dspy.Signature(
+            "items: str, topics: str, language: str, max_new_topics: int -> plan_json: str",
+            _ORGANISE_INSTRUCTIONS,
+        ))
+        try:
+            cap = max(0, int(max_new_topics))
+        except (TypeError, ValueError):
+            cap = MAX_NEW_TOPICS
+        result = await predictor.acall(items=items, topics=topics, language=language or "",
+                                       max_new_topics=cap)
+        return OrganisePlan(plan_json=str(getattr(result, "plan_json", "") or ""))
+
+
 _STEPS: dict[str, tuple[Callable[[], Any], tuple[str, ...]]] = {
     "summarise_short": (SummariseShort, ("text", "language", "known")),
     "distill_long": (DistillLongItem, ("text", "section_map", "language", "known")),
     "align_entities": (AlignEntities, ("known", "new_names")),
+    "organise_batch": (OrganiseBatch, ("items", "topics", "language", "max_new_topics")),
 }
 
 
@@ -594,4 +654,275 @@ async def align_pending(
         logger.warning("could not mark %d aligned names seen: %s", len(batch), exc)
     if on_progress is not None:
         on_progress({"batch": len(batch), "ok": True, "error": ""})
+    return report
+
+
+#: Defaults and limits for organising, lifted from the organiser this design was taken from.
+ORGANISE_BATCH = 40
+MAX_NEW_TOPICS = 10
+MIN_NEW_TOPIC = 2
+FILING_FITS = frozenset({"subject", "part"})
+_SUMMARY_CHARS = 400
+_MEMBER_TITLES = 6
+
+
+def parse_plan(text: Any) -> dict:
+    """The JSON object in a reply, tolerating a fenced block or text around it."""
+    raw = (text if isinstance(text, str) else "").strip()
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    try:
+        plan = json.loads(match.group(0) if match else raw)
+    except (ValueError, AttributeError):
+        return {"placements": []}
+    return plan if isinstance(plan, dict) else {"placements": []}
+
+
+def plan_from(
+    raw: dict,
+    *,
+    items: set[str],
+    topics: dict[str, str],
+    retired_names: set[str] = frozenset(),
+    blocked: set[tuple[str, str]] = frozenset(),
+    max_new: int = MAX_NEW_TOPICS,
+) -> list[tuple[str, str, str]]:
+    """What a model's plan may actually do: ``(item_id, "topic", topic_id)`` or
+    ``(item_id, "new", name)``, in the order given.
+
+    Only an item it was shown, each at most once; only a topic that is live (``topics`` maps id to
+    name); a placement into an existing topic counts only with a ``fit`` in ``FILING_FITS``, so a
+    loose one leaves the item; a new name equal (folded) to a live topic's is that topic, with the
+    same fit rule; a new name in ``retired_names`` (the names of topics a person retired) is
+    refused, so such a topic is not reopened under its own name; a new name only one item was given is not opened
+    (``MIN_NEW_TOPIC``); past ``max_new`` distinct new names the rest are dropped; and an
+    ``(item, topic)`` pair in ``blocked`` (dismissed, or taken apart by a person) is skipped, so
+    the item's next usable entry can still apply.
+    """
+    by_name = {fold(name): tid for tid, name in topics.items() if name}
+    placements = raw.get("placements") if isinstance(raw, dict) else None
+    entries = [p for p in placements if isinstance(p, dict)] if isinstance(placements, list) else []
+
+    def new_name(entry: dict) -> str:
+        return " ".join(str(entry.get("new_topic") or "").split())[:60]
+
+    # Support for a new name counts only items whose FIRST usable placement is that name: an item
+    # sent to an existing topic earlier in the list is not there to make up a new topic's two.
+    wanted: dict[str, set[str]] = {}
+    claimed: set[str] = set()
+    for entry in entries:
+        item, name = str(entry.get("item") or ""), new_name(entry)
+        if item not in items or item in claimed:
+            continue
+        topic, key = str(entry.get("topic") or ""), fold(name)
+        fit = str(entry.get("fit") or "").strip().lower()
+        if topic in topics or key in by_name:
+            target = topic if topic in topics else by_name[key]
+            if fit in FILING_FITS and (item, target) not in blocked:
+                claimed.add(item)
+        elif key and key not in retired_names:
+            claimed.add(item)
+            wanted.setdefault(key, set()).add(item)
+    seen: set[str] = set()
+    opened: dict[str, str] = {}
+    out: list[tuple[str, str, str]] = []
+    for entry in entries:
+        item = str(entry.get("item") or "")
+        if item not in items or item in seen:
+            continue
+        topic, name = str(entry.get("topic") or ""), new_name(entry)
+        fit = str(entry.get("fit") or "").strip().lower()
+        if topic in topics or fold(name) in by_name:
+            target = topic if topic in topics else by_name[fold(name)]
+            if fit not in FILING_FITS:
+                continue   # a loose or unstated fit waits for a subject of its own
+            if (item, target) in blocked:
+                continue   # a person said no to this pair
+            seen.add(item)
+            out.append((item, "topic", target))
+        elif name:
+            key = fold(name)
+            if key in retired_names or len(wanted.get(key, ())) < MIN_NEW_TOPIC:
+                continue
+            if key not in opened:
+                if len(opened) >= max_new:
+                    continue
+                opened[key] = name
+            seen.add(item)
+            out.append((item, "new", opened[key]))
+    return out
+
+
+@dataclass
+class OrganizeReport:
+    """What one :func:`organize_pending` pass did. ``placed`` holds ``(item_id, topic_id)``;
+    ``created`` the topics it opened, and ``retired`` any of those it retired again because fewer than
+    two of their placements landed; ``left`` the items it showed but did not place, recorded so they
+    are not asked about again until the topic set changes or a new item arrives beside them; ``refused`` placements the store
+    turned down, as ``(item_id, topic_id, reason)``. ``error`` is set when a call failed, which ends
+    the pass with that round's items not recorded as left."""
+
+    placed: list[tuple[str, str]] = field(default_factory=list)
+    created: list[str] = field(default_factory=list)
+    retired: list[str] = field(default_factory=list)
+    left: list[str] = field(default_factory=list)
+    refused: list[tuple[str, str, str]] = field(default_factory=list)
+    rounds: int = 0
+    error: str = ""
+    stopped: bool = False
+
+
+def _organise_candidates(store: MemoryStore, *, limit: int, landing: str | None,
+                         signature: str) -> list[Any]:
+    """Labelled items in no live topic, newest first: the ones not yet left against this topic set,
+    and, when there is at least one of those, the ones left too.
+
+    A leftover is shown again beside a new arrival because the arrival may share its subject: an
+    item left because its subject was its alone gets a topic when the second one comes. With no new
+    arrival nothing is asked, so a store that does not change is not paid for again.
+    """
+    left = set(store.left_items(signature))
+    filed = {i.id for t in store.topics() if t.id != landing for i in store.topic_items(t.id)}
+    labels = store._labels_by_item()
+    fresh = [i for i, lab in labels.items() if i not in filed and lab.summary and i not in left]
+    if not fresh:
+        return []
+    held = [i for i, lab in labels.items() if i not in filed and lab.summary and i in left]
+    chosen = (fresh + held)[:limit]
+    # The items are read only for the ids shown, in one query; one purged meanwhile is skipped.
+    items = store._items_by_ids(chosen)
+    return [(items[i], labels[i]) for i in chosen if i in items]
+
+
+async def organize_pending(
+    store: MemoryStore,
+    *,
+    limit: int = ORGANISE_BATCH,
+    max_new_topics: int = MAX_NEW_TOPICS,
+    rounds: int = 3,
+    language: str | None = None,
+    landing: str | None = None,
+    run: Callable[[dict], Awaitable[dict]] | None = None,
+    recorder_for: Callable[[str], Any] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    on_progress: Callable[[dict], None] | None = None,
+) -> OrganizeReport:
+    """Sort labelled items that are in no topic into topics, one model call per round.
+
+    Nothing runs unless the host calls this. Each round shows up to ``limit`` items (clamped to
+    ``[1, 500]``) that have a summary and are in no live topic (``landing`` is a catch-all that
+    still counts as none), together with the live topics, to ONE :class:`OrganiseBatch` call. An
+    item already left against the current topic set is shown again only beside a new arrival, so a
+    lone item on a subject gets its topic when a second one comes, and an unchanged store asks
+    nothing. ``plan_from`` decides what the answer may do;
+    new topics are opened and items placed with provenance ``inferred``, and a pair a person took
+    apart is refused. Items shown but not placed are recorded as left. It stops after ``rounds``
+    rounds, after a round that placed nothing, or when ``should_stop`` says so (checked before each
+    call). ``recorder_for("organize:round<N>")`` traces each call and the rows it writes carry its
+    run id; ``on_progress`` receives ``{"round", "ok", "error"}`` after each round.
+    """
+    run = run or arun_step
+    report = OrganizeReport()
+    lang = clean_language(language)
+    batch_size = max(1, min(int(limit), MAX_PASS_ITEMS))
+    for round_no in range(1, max(1, int(rounds)) + 1):
+        # The topic set the model is shown; leftovers are recorded against it, not against what the
+        # round itself opens, so the next round looks at them again beside the new topics.
+        signature = store.topic_signature()
+        candidates = _organise_candidates(store, limit=batch_size, landing=landing,
+                                          signature=signature)
+        if not candidates:
+            break
+        if should_stop is not None and should_stop():
+            report.stopped = True
+            break
+        live = [t for t in store.topics() if t.id != landing]
+        retired_names = store.said_retired_names()
+        items_json = json.dumps([
+            {"id": item.id, "title": labels.title, "summary": labels.summary[:_SUMMARY_CHARS],
+             "tags": list(labels.tags), "entities": list(labels.entities)}
+            for item, labels in candidates
+        ], ensure_ascii=False)
+        topics_json = json.dumps([
+            {"id": t.id, "name": t.name,
+             "holds": [store.labels(i.id).title or i.text[:80] for i in store.topic_items(t.id)[:_MEMBER_TITLES]]}
+            for t in live
+        ], ensure_ascii=False)
+        recorder = recorder_for(f"organize:round{round_no}") if recorder_for is not None else None
+        run_id = getattr(recorder, "run_id", None)
+        payload = {"step": "organise_batch", "items": items_json, "topics": topics_json,
+                   "language": lang, "max_new_topics": max(0, int(max_new_topics)), "run_id": run_id}
+        report.rounds = round_no
+        try:
+            if recorder is not None:
+                with recorder:
+                    result = await run(payload)
+            else:
+                result = await run(payload)
+            if not isinstance(result, dict):
+                raise TypeError(f"run returned {type(result).__name__}, not a dict")
+        except Exception as exc:
+            report.error = f"{type(exc).__name__}: {exc}"[:2000]
+            if on_progress is not None:
+                on_progress({"round": round_no, "ok": False, "error": report.error})
+            break
+        shown = {item.id for item, _ in candidates}
+        plan = plan_from(parse_plan(result.get("plan_json")), items=shown,
+                         topics={t.id: t.name for t in live}, retired_names=retired_names,
+                         blocked=store.dismissed() | store.removed_pairs(),
+                         max_new=max(0, int(max_new_topics)))
+        opened: dict[str, str] = {}
+        placed_now: set[str] = set()
+        filled: dict[str, int] = {}
+        for item_id, kind, target in plan:
+            try:
+                if kind == "new":
+                    if store.get(item_id) is None:
+                        raise KeyError(item_id)   # purged meanwhile: open nothing for it
+                    if fold(target) not in opened:
+                        topic = store.create_topic(target, provenance="inferred", run_id=run_id)
+                        opened[fold(target)] = topic.id
+                        report.created.append(topic.id)
+                    target = opened[fold(target)]
+                store.place(item_id, target, provenance="inferred", run_id=run_id)
+                report.placed.append((item_id, target))
+                placed_now.add(item_id)
+                filled[target] = filled.get(target, 0) + 1
+            except (KeyError, ValueError) as exc:
+                report.refused.append((item_id, target, str(exc)))
+            except sqlite3.Error as exc:
+                report.refused.append((item_id, target, f"database error: {type(exc).__name__}"))
+        # A topic this round opened that ended up with fewer than two members (its other
+        # placements refused) is retired rather than left behind half made. The retirement is the
+        # pass's own (`inferred`), so the name stays free for a later pass to open properly, and a
+        # placement into it is reported as refused, not placed.
+        for topic_id in opened.values():
+            if filled.get(topic_id, 0) < MIN_NEW_TOPIC:
+                pairs = [p for p in report.placed if p[1] == topic_id]
+                for pair in pairs:
+                    report.placed.remove(pair)
+                    placed_now.discard(pair[0])
+                    report.refused.append((pair[0], topic_id, "its new topic was retired with too few members"))
+                    # Taken out first, so restoring the topic later does not bring back a
+                    # membership the pass gave up on. One purged meanwhile has nothing to undo.
+                    try:
+                        store.unplace(pair[0], topic_id, provenance="inferred", run_id=run_id)
+                    except (KeyError, ValueError, sqlite3.Error) as exc:
+                        logger.warning("could not take %s out of %s: %s", pair[0], topic_id, exc)
+                try:
+                    store.retire_topic(topic_id, provenance="inferred", run_id=run_id)
+                    report.retired.append(topic_id)
+                except (KeyError, ValueError, sqlite3.Error) as exc:
+                    logger.warning("could not retire the underfilled topic %s: %s", topic_id, exc)
+        left_now = sorted(shown - placed_now)
+        try:
+            store.record_left(left_now, signature)
+            # One entry per item, and none for an item a later round placed.
+            placed_ids = {p[0] for p in report.placed}
+            report.left = [i for i in dict.fromkeys(report.left + left_now) if i not in placed_ids]
+        except sqlite3.Error as exc:
+            logger.warning("could not record %d organised items as left: %s", len(left_now), exc)
+        if on_progress is not None:
+            on_progress({"round": round_no, "ok": True, "error": ""})
+        if not placed_now:
+            break
     return report

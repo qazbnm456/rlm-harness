@@ -44,7 +44,9 @@ from .memory import (
     MemoryStore,
     MemoryUnavailable,
     PurgeRecord,
+    Topic,
 )
+from .memory_organise import TopicGraph, TopicSuggestion, suggest_topics, topic_graph
 from .metrics import (
     RUN_FACT_KEYS,
     RunUtilization,
@@ -204,6 +206,15 @@ __all__ = [
     "AlignEntities",
     "EntityMerge",
     "EntityMerges",
+    "Topic",
+    "TopicSuggestion",
+    "TopicGraph",
+    "suggest_topics",
+    "topic_graph",
+    "organize_pending",
+    "OrganizeReport",
+    "OrganiseBatch",
+    "OrganisePlan",
 ]
 
 __version__ = "1.21.0"
@@ -250,4 +261,5 @@ _MEMORY_TASK_NAMES = frozenset({
     "distill_pending", "DistillReport", "DistillLongItem", "SummariseShort", "ShortLabels",
     "LongLabels", "EntityMention", "run_step", "arun_step", "subprocess_step_runner",
     "align_pending", "AlignReport", "AlignEntities", "EntityMerge", "EntityMerges",
+    "organize_pending", "OrganizeReport", "OrganiseBatch", "OrganisePlan",
 })
