@@ -11,10 +11,11 @@ error (the new ``CodeExecutionError`` took that role), and only the first failed
 kit was completely unrunnable on a fresh install while its whole suite stayed green
 (CHANGELOG 1.0.1).
 
-Since 1.2.0 the floor is ``dspy>=3.3.0`` (``>=3.3.1`` since 1.5.0, which needs
-``interpreter_factory.execution_instructions``) and the 3.2.x branches are gone, so most of these
-now resolve a single answer. **They are kept anyway**: the module's value was never "supports
-two versions", it is that every dspy fact lives at ONE introspected call site, so the NEXT
+The floor is ``dspy>=3.4.1`` since 1.21.0 (``>=3.4.0`` since 1.14.0, ``>=3.3.1`` since 1.5.0,
+which needs ``interpreter_factory.execution_instructions``, and ``>=3.3.0`` since 1.2.0), and the
+older branches are gone, so most of these now resolve a single answer. **They are kept anyway**:
+the module's value was never "supports two versions", it is that every dspy fact lives at ONE
+introspected call site, so the NEXT
 rename is a one-line change here plus a red test in ``tests/test_dspy_compat.py``: instead of
 a silent behaviour change in someone's rollout. Do not collapse a shim into its call site just
 because it currently has one branch.
@@ -37,7 +38,6 @@ import contextlib
 import copy
 import dataclasses
 import inspect
-import sys
 from functools import lru_cache
 from typing import Any
 
@@ -48,26 +48,6 @@ _BUDGET_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("max_llm_calls", ("max_llm_calls",)),
     ("max_output_chars", ("max_output_chars",)),
 )
-
-
-def load_lazy_module(name: str) -> None:
-    """Load a module dspy left in ``sys.modules`` as a lazy proxy, before anything imports one of
-    its submodules. A real module, or none at all, is left alone.
-
-    dspy 3.4.0's proxy (``dspy.utils.lazy_import._LazyModule``) loads the real module from its
-    ``__setattr__``, and the import system sets a submodule on its parent while that submodule is
-    still executing. So ``import openai._models`` under a proxied ``openai`` runs
-    ``openai/__init__.py`` midway, which imports ``openai._models`` again and finds it half built.
-    litellm starts with exactly that import. Measured on dspy 3.4.0, litellm 1.88.1 and openai
-    2.41.0, ``import dspy; import litellm`` raised a circular ``ImportError`` with numpy installed
-    (without numpy, ``import dspy`` happened to import openai for real). dspy 3.4.1 keeps proxies
-    out of ``sys.modules``, so the defect cannot arise there and this finds nothing to load; it is
-    kept while the floor allows 3.4.0, and a test reds once the floor moves past it. Loading the
-    proxy first makes the parent real, so the submodule import never touches the proxy.
-    """
-    module = sys.modules.get(name)
-    if module is not None and "_dspy_lazy_spec" in vars(module):
-        module._load()
 
 
 @lru_cache(maxsize=1)

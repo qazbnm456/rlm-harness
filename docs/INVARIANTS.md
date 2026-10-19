@@ -56,10 +56,11 @@ reason is in the rule.
   dropped once during this feature's own design revision and only caught by a second adversarial
   review pass; keep it isolated and commented so it cannot be dropped silently again.
 - **Every dspy API difference is resolved in `_dspy_compat.py`: one place, by introspection.**
-  The kit declares a FLOOR **and, since 1.14.0, a CAP** on dspy (`>=3.4.0,<3.5.0`; 1.15.2
+  The kit declares a FLOOR **and, since 1.14.0, a CAP** on dspy (`>=3.4.1,<3.5.0`; 1.15.2
   tightened the cap to `<3.4.1` and 1.16.0 lifted it back once 3.4.1 was supported, see
-  `pyproject.toml` for the two conditions that lifting had to meet; the floor was `>=3.3.1` since
-  1.5.0 and `>=3.3.0` since 1.2.0). This sentence said `<3.4.1` and sent the reader to
+  `pyproject.toml` for the two conditions that lifting had to meet; the floor moved from 3.4.0 to
+  3.4.1 in 1.21.0, because 3.4.0's lazy-import proxy broke `import litellm`, and was `>=3.3.1`
+  since 1.5.0 and `>=3.3.0` since 1.2.0). This sentence said `<3.4.1` and sent the reader to
   `pyproject.toml` "for why 3.4.1 is excluded" until 1.17.0, nine lines from the sibling sentence
   1.17.0 did sweep: 1.15.2 wrote it and 1.16.0 lifted the cap without coming back here, so the
   authority document stated two different caps at once. Consumers pin the KIT, so a consumer's fresh

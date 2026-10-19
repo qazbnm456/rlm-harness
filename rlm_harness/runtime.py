@@ -241,7 +241,6 @@ def configure(
     # aiohttp logs a noisy "Unclosed connector". Force litellm onto httpx: no aiohttp session is created,
     # so nothing dangles. Set before the LMs are built (→ before the first LM call); best-effort.
     try:
-        _dspy_compat.load_lazy_module("openai")   # or, on dspy 3.4.0 with numpy, litellm's import fails
         import litellm
         litellm.disable_aiohttp_transport = True
     except Exception:

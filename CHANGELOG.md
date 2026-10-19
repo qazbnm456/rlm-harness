@@ -111,14 +111,14 @@ and entities, written by a person or by a model pass that costs one call per sho
   and refuses a quote under 20 characters. It is private, shared by the passes that store what a
   model quoted.
 
-### Fixed
+### Changed
 
-- **`configure` sets litellm's transport on dspy 3.4.0 with numpy installed.** That dspy leaves
-  openai in `sys.modules` as a lazy proxy, which loads the real module midway through importing a
-  submodule; litellm's first import is `openai._models`, so `import litellm` raised a circular
-  `ImportError`, which `configure` swallowed, skipping the setting. dspy 3.4.1 keeps its proxies
-  out of `sys.modules` and fixes it. `_dspy_compat.load_lazy_module` loads the proxy first on
-  3.4.0 and does nothing on 3.4.1; a test reds once the dspy floor moves past 3.4.0, when it can go.
+- **The dspy floor is 3.4.1 (`dspy>=3.4.1,<3.5.0`).** dspy 3.4.0 leaves openai in `sys.modules`
+  as a lazy proxy that loads the real module midway through importing a submodule; litellm's
+  first import is `openai._models`, so with numpy installed `import dspy; import litellm` raised a
+  circular `ImportError`, which `configure` swallowed, silently skipping litellm's transport
+  setting. 3.4.1 keeps its proxies out of `sys.modules`. The kit has run on 3.4.1 since 1.16.0, so
+  this needs no new code; a consumer still on 3.4.0 moves up one patch release.
 
 ### Not yet
 
