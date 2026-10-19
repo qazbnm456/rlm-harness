@@ -86,7 +86,8 @@ cannot see.
   a contributor's unrelated PR, which is the very reason the job below is kept off that trigger.
 - **`.github/workflows/dspy-latest.yml` runs the same suite against the NEWEST published dspy,
   and since the 1.2.0 floor bump it is the ONLY dspy axis** (the floor and `uv.lock` are both on
-  3.4.0 since 1.14.0, so `ci.yml` no longer covers a second version; the workflow says so in a
+  3.4.1 since 1.21.0, and were both on 3.4.0 from 1.14.0, so `ci.yml` no longer covers a second
+  version; the workflow says so in a
   `::notice::` and restores real two-version coverage by itself the day a newer dspy ships).
   **It carries a SECOND job on the same triggers, `mcp-latest`**, for the same reason and for the
   dependency that had no such defence: the `mcp` extra is uncapped, `uv.lock` held 1.x, and SDK

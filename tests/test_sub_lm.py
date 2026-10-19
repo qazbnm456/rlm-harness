@@ -132,7 +132,7 @@ _TYPED_CLS = dspy.lm15.Response
 def _typed(*texts, extra_parts=()):
     """dspy's typed response carrying `texts` as separate text parts.
 
-    Single-version on purpose: the kit's floor is dspy >= 3.4.0, so there is no 3.3 layout to
+    Single-version on purpose: the kit's floor is dspy >= 3.4.1, so there is no 3.3 layout to
     build. A dual-version helper here would be dead code claiming support the CHANGELOG declines,
     and the one that briefly existed was itself broken (3.3.1's thinking part takes `text`, not
     `thinking`), which is what dead branches do.

@@ -421,7 +421,6 @@ def test_module_top_is_dspy_free():
     dspy in. It is imported at `task.py`'s module top and from inside `sandbox.py`, so a
     stray top-level `import dspy` here would quietly make `sandbox.py` dspy-bearing.
     Checked in a SUBPROCESS because this test session has already imported dspy."""
-    import subprocess
     import sys
 
     code = (
@@ -440,7 +439,6 @@ def test_importing_the_package_still_does_not_import_dspy():
     """The companion invariant: `import rlm_harness` stays cheap. `task.py` imports
     `_dspy_compat` at ITS module top, which is fine only because `task.py` itself is a
     lazy `__getattr__` re-export: this pins that it stayed that way."""
-    import subprocess
     import sys
 
     code = (
@@ -518,7 +516,6 @@ def test_a_copied_subscription_lm_still_routes_through_its_own_engine():
     test was built against. `_dspy_compat.copy_lm`'s docstring carries the history.
     """
     import os
-    import sys
     import types
 
     import rlm_harness
@@ -1131,7 +1128,6 @@ def test_the_kits_own_LMs_are_off_the_interface_dspy_removes_in_3_5():
     import asyncio
     import warnings
 
-    _dspy_compat.load_lazy_module("openai")
     import litellm
 
     class _Legacy(dspy.BaseLM):
@@ -1289,67 +1285,21 @@ def test_the_interpreter_factory_the_kit_supplies_is_the_one_it_can_read_back():
     )
 
 
-# dspy 3.4.0 registers each lazy proxy in sys.modules, and importing a submodule under one fails;
-# 3.4.1 keeps proxies out of sys.modules, so the defect cannot arise there. Whether `import dspy`
-# happens to leave openai proxied also varies, so the probe installs the proxy itself, with dspy's
-# own `require`, and reports which kind of dspy it ran on before importing litellm.
-_LITELLM_UNDER_A_PROXY = (
-    "import sys\n"
-    "import dspy\n"
-    "from dspy.utils.lazy_import import _LazyModule, require\n"
-    "for name in [m for m in sys.modules if m == 'openai' or m.startswith(('openai.', 'litellm'))]:\n"
-    "    del sys.modules[name]\n"
-    "require('openai')\n"
-    "registered = isinstance(sys.modules.get('openai'), _LazyModule)\n"
-    "print('registered' if registered else 'unregistered', file=sys.stderr, flush=True)\n"
-    "{shim}"
-    "import litellm\n"
-    "print('ok')\n"
-)
-_SHIM = "from rlm_harness._dspy_compat import load_lazy_module\nload_lazy_module('openai')\n"
-
-
-def _under_a_proxy(shim: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-c", _LITELLM_UNDER_A_PROXY.format(shim=shim)],
-                          capture_output=True, text=True, check=False)
-
-
-def test_litellm_imports_after_the_shim_on_any_dspy():
-    """`configure` imports litellm after dspy; on a dspy that registers its proxy that import
-    failed and was swallowed, silently skipping the transport setting. With `load_lazy_module` it
-    works on either kind of dspy."""
-    proc = _under_a_proxy(_SHIM)
-    assert proc.returncode == 0, proc.stderr[-2000:]
-
-
-def test_without_the_shim_litellm_fails_exactly_when_dspy_registers_its_proxy():
-    """The control for the test above: on a dspy that puts its proxy in sys.modules (3.4.0) the
-    import fails with a circular ImportError, and on one that does not (3.4.1) it works, so the
-    shim is needed exactly where the floor still allows the first kind."""
-    proc = _under_a_proxy("")
-    marks = proc.stderr.splitlines()   # by line: a warning printed first must not hide the mark
-    if "registered" in marks:
-        assert proc.returncode != 0 and "circular import" in proc.stderr, proc.stderr[-2000:]
-    else:
-        assert "unregistered" in marks and proc.returncode == 0, proc.stderr[-2000:]
-
-
-def test_the_shim_goes_once_the_dspy_floor_excludes_the_proxy_defect():
-    """A tripwire on the floor, not on the installed dspy: `load_lazy_module` is needed while the
-    kit allows dspy 3.4.0, and can be removed, with its call in `configure`, once it does not."""
-    import pathlib
-    import re
-
-    pyproject = (pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml").read_text("utf-8")
-    floor = tuple(int(n) for n in re.search(r'"dspy>=([0-9.]+)', pyproject).group(1).split("."))
-    assert floor < (3, 4, 1), (
-        "the dspy floor no longer allows 3.4.0, whose lazy proxy broke submodule imports: remove "
-        "_dspy_compat.load_lazy_module and its call in runtime.configure")
-
-
-def test_load_lazy_module_leaves_a_real_module_and_a_missing_one_alone():
-    import json
-
-    _dspy_compat.load_lazy_module("json")
-    _dspy_compat.load_lazy_module("no_such_module_here")
-    assert sys.modules["json"] is json
+def test_configure_reaches_litellm_after_dspy_with_numpy_loaded():
+    """`configure` sets litellm's transport inside a try that swallows every failure, so only a test
+    of the outcome would notice the import breaking. It broke on dspy 3.4.0, whose lazy proxy for
+    openai made `import litellm` after `import dspy` fail when numpy was installed; the floor is
+    3.4.1 for that reason. litellm's default is False, so True here means `configure` set it."""
+    code = (
+        "import numpy, dspy\n"
+        "from dspy.utils.dummies import DummyLM\n"
+        "from rlm_harness import RLMConfig, configure\n"
+        "lm = DummyLM([])\n"
+        "configure(RLMConfig(main_model='x', sub_model='x', interpreter='mock', observe=False),"
+        " main_lm=lm, sub_lm=lm)\n"
+        "import litellm\n"
+        "assert litellm.disable_aiohttp_transport is True, litellm.disable_aiohttp_transport\n"
+        "print('ok')\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0 and proc.stdout.strip() == "ok", proc.stderr[-2000:]

@@ -173,7 +173,7 @@ single wrong sentence, and worth keeping apart.
 **The one seam is `{interpreter_rules}`**, filled from the interpreter factory's
 `execution_instructions` attribute and rendered under an `Execution environment:` heading. It
 arrived in 3.3.1, which is why the kit's floor moved to `dspy>=3.3.1` at the time; the declared
-bound is now `>=3.4.0,<3.5.0`. Before 3.3.1 there was no seam at all. The kit already feeds it
+bound is now `>=3.4.1,<3.5.0`. Before 3.3.1 there was no seam at all. The kit already feeds it
 from the live interpreter, so a `container` run is described as a container rather than as Pyodide.
 It is the only sanctioned place to say something about the environment from the host side.
 

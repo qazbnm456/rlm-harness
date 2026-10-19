@@ -29,7 +29,13 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # FLOOR 3.4.0 since rlm-harness 1.14.0 (3.3.1 since 1.5.0, 3.3.0 since 1.2.0). Required, not
+    # FLOOR 3.4.1 since rlm-harness 1.21.0 (3.4.0 since 1.14.0, 3.3.1 since 1.5.0, 3.3.0 since
+    # 1.2.0). 3.4.1 rather than 3.4.0 because 3.4.0 registers its lazy-import proxy for openai in
+    # `sys.modules`, and importing a submodule under it re-enters the proxy: with numpy installed,
+    # `import dspy; import litellm` raised a circular ImportError, which `configure` swallowed,
+    # silently skipping litellm's transport setting. 3.4.1 keeps its proxies out of `sys.modules`.
+    # The kit already ran on 3.4.1 (supported since 1.16.0, below), so raising the floor retired a
+    # workaround rather than adding one. The 3.4.0 floor itself was required, not
     # preferred: 3.4.0 DELETED the positional interpreter argument of `RLM.forward`/`aforward`, so
     # on it `interpreter_factory=` is the only way the kit can supply its own sandbox, and it
     # deleted `dspy.LMResponse` in favour of the differently-shaped `dspy.lm15.Response`. The kit
@@ -63,8 +69,8 @@ dependencies = [
     # facade install (measured: `import dspy` in model code failed after a restart before this,
     # while the prompt still offered sub-agents). `RLMConfig.sandbox_sub_agents` turns the
     # capability off for a consumer who wants the sandbox boundary unchanged.
-    "dspy>=3.4.0,<3.5.0",
-    # 2.11 is dspy 3.4.0's own floor. Declaring less would be a floor the kit cannot run on.
+    "dspy>=3.4.1,<3.5.0",
+    # 2.11 is dspy 3.4.1's own floor (and 3.4.0's). Declaring less would be a floor the kit cannot run on.
     "pydantic>=2.11.0",
 ]
 
