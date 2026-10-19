@@ -1289,32 +1289,42 @@ def test_the_interpreter_factory_the_kit_supplies_is_the_one_it_can_read_back():
     )
 
 
-_LITELLM_AFTER_DSPY = (
+# Whether `import dspy` leaves openai as a lazy proxy depends on the environment: measured on macOS
+# with numpy installed it did, and on Linux CI with the same locked versions it did not. So both
+# tests below put the proxy back themselves, with dspy's own `require`, instead of relying on the
+# environment to leave one; that reproduces the defect on every platform.
+_LITELLM_UNDER_A_PROXY = (
+    "import sys\n"
     "import dspy\n"
+    "from dspy.utils.lazy_import import require\n"
+    "for name in [m for m in sys.modules if m == 'openai' or m.startswith(('openai.', 'litellm'))]:\n"
+    "    del sys.modules[name]\n"
+    "require('openai')\n"
+    "assert type(sys.modules['openai']).__name__ == '_LazyModule', type(sys.modules['openai'])\n"
     "{shim}"
     "import litellm\n"
     "print('ok')\n"
 )
 
 
-def test_litellm_imports_after_dspy_once_the_openai_proxy_is_loaded():
-    """`configure` imports litellm after dspy; with numpy installed that import used to fail and be
-    swallowed, silently skipping the transport setting. `load_lazy_module` is the fix."""
-    shim = "from rlm_harness._dspy_compat import load_lazy_module\nload_lazy_module('openai')\n"
-    proc = subprocess.run([sys.executable, "-c", _LITELLM_AFTER_DSPY.format(shim=shim)],
+def _under_a_proxy(shim: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-c", _LITELLM_UNDER_A_PROXY.format(shim=shim)],
                           capture_output=True, text=True, check=False)
+
+
+def test_litellm_imports_under_an_openai_proxy_once_the_proxy_is_loaded():
+    """`configure` imports litellm after dspy; under a proxied openai that import fails and was
+    swallowed, silently skipping the transport setting. `load_lazy_module` is the fix."""
+    proc = _under_a_proxy("from rlm_harness._dspy_compat import load_lazy_module\n"
+                          "load_lazy_module('openai')\n")
     assert proc.returncode == 0, proc.stderr[-2000:]
 
 
 def test_the_lazy_proxy_bug_load_lazy_module_works_around_is_still_upstream():
-    """The control for the test above: without the shim the import still fails on this dspy when
-    numpy is installed (numpy is a dev dependency, so it is). When this goes red, upstream fixed
-    the proxy; `load_lazy_module` and its call in `configure` can then go."""
-    import importlib.util
-
-    assert importlib.util.find_spec("numpy") is not None, "the failure needs numpy installed"
-    proc = subprocess.run([sys.executable, "-c", _LITELLM_AFTER_DSPY.format(shim="")],
-                          capture_output=True, text=True, check=False)
+    """The control for the test above: without the shim, importing a submodule under dspy's proxy
+    still fails on this dspy. When this goes red, upstream fixed the proxy, and `load_lazy_module`
+    and its call in `configure` can go."""
+    proc = _under_a_proxy("")
     assert proc.returncode != 0 and "circular import" in proc.stderr, (
-        "import dspy; import litellm now works without the shim: the dspy lazy-proxy bug is fixed "
-        "upstream, so remove _dspy_compat.load_lazy_module")
+        "litellm now imports under a dspy lazy proxy for openai without the shim: the proxy bug is "
+        "fixed upstream, so remove _dspy_compat.load_lazy_module")
