@@ -252,6 +252,9 @@ def test_public_surface_includes_the_consumer_contract():
         "subprocess_step_runner", "align_pending", "AlignReport", "AlignEntities", "EntityMerges",
         "Topic", "TopicSuggestion", "TopicGraph", "suggest_topics", "topic_graph", "organize_pending",
         "OrganizeReport", "OrganiseBatch", "OrganisePlan",
+        "render_run", "run_sources", "RunSource", "consolidate_run", "ConsolidateReport",
+        "ConsolidateRun", "MemoryProposal", "MemoryProposals", "MemoryUse", "compute_memory_use",
+        "compute_memory_use_by_run",
     }
     assert must_export <= set(rlm_harness.__all__)
     # ...and each is actually REACHABLE. `__all__` membership alone would pass for a name with

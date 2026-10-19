@@ -97,6 +97,16 @@ and entities, written by a person or by a model pass that costs one call per sho
   characters. `download_model` fetches the pinned default, `multilingual-e5-small` int8, only when
   called, and refuses a file that fails its checksum. The vectors are plain BLOBs in
   `<store>.vectors.db`, so `purge` erases them without the extra.
+- **Runs into memory.** `consolidate_run` (lazily exported) asks a model once what a finished run
+  should leave for later runs. A fact is stored as `observed` only when it quotes a source the
+  host trusts, evidence it passed or a result from a tool it named in `trusted_tools`, and the
+  quote is found in that source's full text; the stored text is the source's own span. Every
+  other proposal is `inferred`. REPL output is never a source, a `model:` tool's result, another
+  model's words, never counts, and neither does a call that recorded `ok=False`. `render_run`
+  and `run_sources` are its dspy-free half.
+- **`compute_memory_use`** (`metrics.py`): the ids a run read, wrote, and read without naming
+  again, an upper bound on what it read for nothing. The memory tools now record a `memory_op`
+  field (`read` or `write`), an additive trace field, so the count survives renamed tools.
 - `tools.grounding._find_span`, the literal half of `verify_quote`, returns the source's own span
   and refuses a quote under 20 characters. It is private, shared by the passes that store what a
   model quoted.
@@ -112,7 +122,8 @@ and entities, written by a person or by a model pass that costs one call per sho
 
 ### Not yet
 
-Memory written automatically from finished runs is later work.
+A recall metric for `optimize.compile_task` is not built; the guide says how to build one
+on `consolidate_run`.
 
 ## [1.20.1] - 2026-10-17
 

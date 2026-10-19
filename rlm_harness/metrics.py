@@ -15,7 +15,9 @@ the trace contract needs to change for. dspy-free at module top: :func:`compute_
 
 from __future__ import annotations
 
+import json
 import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
@@ -26,6 +28,7 @@ from .trace import (
     CAUSE_OK,
     EVENT_FINAL,
     EVENT_MAIN_STEP,
+    EVENT_RESULT,
     EVENT_SUB_CALL,
     EVENT_TOOL_CALL,
     group_by_run,
@@ -452,3 +455,98 @@ def _budget_exhausted(events: list[dict]) -> bool | None:
     if reasoning is None:
         return None
     return reasoning == _dspy_compat.forced_final_marker()
+
+
+# ---- memory -------------------------------------------------------------------------------------
+
+#: A memory id as the store writes it, bounded by ASCII word characters only: Python's ``\w``
+#: includes CJK, so ``(?<!\w)`` would miss the ``m3`` in ``根據m3的內容``.
+_NAMED_ID = re.compile(r"(?<![A-Za-z0-9_])m[1-9][0-9]{0,18}(?![A-Za-z0-9_])")
+
+
+def _number(value) -> float:
+    """An event's ``ts`` or ``step_id`` as a sort key; anything unreadable sorts first."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if math.isfinite(number) else 0.0
+
+
+@dataclass(frozen=True)
+class MemoryUse:
+    """What one run did with memory. Reward-free: ids, never a score.
+
+    ``read`` and ``written`` are the ids memory tools returned or wrote, in the order first seen.
+    ``unreferenced`` are the read ids that nothing AFTER their first read names: no ``main_step``'s
+    code or reasoning, no later tool call's arguments, not the final output.
+
+    **An upper bound on waste, not a measurement of it.** A model can use what an item says without
+    ever writing its id, so an unreferenced read may still have shaped the answer; a referenced one
+    was at least looked at again. "After" is by ``ts``, the time an event was recorded, not when the
+    model acted: the kit records ``main_step`` events after the run, each stamped with its turn's
+    live time when that was captured and with the flush time otherwise, so a step without live
+    timing sorts after every read and its references count. ``step_id`` only breaks a tie.
+    """
+
+    read: tuple[str, ...] = ()
+    written: tuple[str, ...] = ()
+    unreferenced: tuple[str, ...] = ()
+
+    @property
+    def unreferenced_share(self) -> float | None:
+        """``len(unreferenced) / len(read)``, or ``None`` when nothing was read."""
+        return len(self.unreferenced) / len(self.read) if self.read else None
+
+
+def _text_of(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def compute_memory_use(events: Iterable[dict]) -> MemoryUse:
+    """Pure function over ONE run's events. A memory call is a ``tool_call`` whose payload has
+    ``memory_op`` (``"read"`` or ``"write"``) and a ``memory_ids`` list, which is what
+    :mod:`rlm_harness.tools.memory` records, whatever the tools were named. An id counts as named
+    only on a word boundary, so ``m1`` is not found inside ``m12``; a CJK character next to it is a
+    boundary. An event whose ``ts`` or ``step_id`` is not a number sorts first rather than raising."""
+    ordered = sorted((e for e in events if isinstance(e, dict)),
+                     key=lambda e: (_number(e.get("ts")), _number(e.get("step_id"))))
+    first_read: dict[str, int] = {}
+    written: dict[str, None] = {}
+    mentions: list[tuple[int, set[str]]] = []
+    for position, event in enumerate(ordered):
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        etype = event.get("type")
+        if etype == EVENT_TOOL_CALL:
+            ids = [i for i in payload.get("memory_ids") or [] if isinstance(i, str)]
+            if payload.get("memory_op") == "read":
+                for item_id in ids:
+                    first_read.setdefault(item_id, position)
+            elif payload.get("memory_op") == "write":
+                for item_id in ids:
+                    written.setdefault(item_id, None)
+            text = _text_of(payload.get("args"))
+        elif etype == EVENT_MAIN_STEP:
+            text = f"{_text_of(payload.get('code'))}\n{_text_of(payload.get('reasoning'))}"
+        elif etype == EVENT_RESULT:
+            text = _text_of(payload.get("output"))
+        else:
+            continue
+        found = {m.group(0) for m in _NAMED_ID.finditer(text)}
+        if found:
+            mentions.append((position, found))
+    unreferenced = tuple(i for i, at in first_read.items()
+                         if not any(pos > at and i in ids for pos, ids in mentions))
+    return MemoryUse(read=tuple(first_read), written=tuple(written), unreferenced=unreferenced)
+
+
+def compute_memory_use_by_run(events: Iterable[dict]) -> dict[str, MemoryUse]:
+    """:func:`compute_memory_use` for each run in ``events``, keyed by ``run_id``."""
+    return {run_id: compute_memory_use(run_events) for run_id, run_events in group_by_run(events).items()}

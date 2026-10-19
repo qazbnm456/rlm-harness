@@ -1792,6 +1792,12 @@ class MemoryStore:
                 "ORDER BY id", (int(chars), time.time())).fetchall()
         return [(f"m{r[0]}", r[1]) for r in rows]
 
+    def _has_live_text(self, text: str) -> bool:
+        """Whether an item not retired already holds exactly this text."""
+        with self._connect() as conn:
+            return conn.execute("SELECT 1 FROM items WHERE text = ? AND (valid_to IS NULL OR "
+                                "valid_to > ?) LIMIT 1", (text, time.time())).fetchone() is not None
+
     def _live_ids(self) -> set[str]:
         """The ids of every item not retired."""
         with self._connect() as conn:

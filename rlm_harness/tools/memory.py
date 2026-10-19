@@ -18,7 +18,9 @@ returned to every later run whose search matches it. Each returned item carries 
 
 **Every call records exactly one ``tool_call``** through
 :func:`~rlm_harness.trace.record_tool_call`, failures included, with a ``memory_ids`` field listing
-the ids the call returned or wrote. The arguments are the RAW values the model passed, before any
+the ids the call returned or wrote and a ``memory_op`` field, ``"read"`` or ``"write"``, so a reader
+such as :func:`~rlm_harness.metrics.compute_memory_use` need not know the tools' names, which
+``name=`` can change. The arguments are the RAW values the model passed, before any
 clamp, with one bound: an argument longer than its cap (the note's ``max_chars`` for its text,
 ``_TRACE_ARG_CHARS`` for anything else; a non-string measured by its JSON form) is recorded cut,
 with ``<name>_len`` beside it, so one oversized argument cannot write megabytes into the JSONL. A
@@ -149,10 +151,10 @@ def make_memory_search_tool(
             empty = not items and not q and store.count() == 0
             titles = {i.id: store.labels(i.id) for i in items}
         except sqlite3.Error as exc:
-            record_tool_call(name, args=args, ok=False, memory_ids=[],
+            record_tool_call(name, args=args, memory_op="read", ok=False, memory_ids=[],
                              note=f"error: {type(exc).__name__}", **lengths)
             return f"Memory error: {type(exc).__name__}"
-        record_tool_call(name, args=args, ok=True, memory_ids=[i.id for i in items], **lengths)
+        record_tool_call(name, args=args, memory_op="read", ok=True, memory_ids=[i.id for i in items], **lengths)
         if not items:
             if q:
                 return f"No memories match {_echo(q)}."
@@ -200,13 +202,13 @@ def make_memory_get_tool(
             item = store.get(key)
             revised_by = [] if item is None else [r.id for r in store.revisions(item.id)]
         except sqlite3.Error as exc:
-            record_tool_call(name, args=args, ok=False, memory_ids=[],
+            record_tool_call(name, args=args, memory_op="read", ok=False, memory_ids=[],
                              note=f"error: {type(exc).__name__}", **lengths)
             return f"Memory error: {type(exc).__name__}"
         if item is None:
-            record_tool_call(name, args=args, ok=False, memory_ids=[], **lengths)
+            record_tool_call(name, args=args, memory_op="read", ok=False, memory_ids=[], **lengths)
             return f"Not found: {_echo(key)}."
-        record_tool_call(name, args=args, ok=True, memory_ids=[item.id], **lengths)
+        record_tool_call(name, args=args, memory_op="read", ok=True, memory_ids=[item.id], **lengths)
         row = item.to_dict()
         row["text"] = _cut(item.text, width)
         row["revised_by"] = revised_by
@@ -249,7 +251,7 @@ def make_memory_note_tool(
         target = _as_text(revises).strip()
 
         def refuse(note: str, message: str) -> str:
-            record_tool_call(name, args=args, ok=False, memory_ids=[], note=note, **lengths)
+            record_tool_call(name, args=args, memory_op="write", ok=False, memory_ids=[], note=note, **lengths)
             return message
 
         if not body:
@@ -273,7 +275,7 @@ def make_memory_note_tool(
             return refuse("store refused", f"Refused: {_cut(str(exc), _ECHO_CHARS)}")
         except sqlite3.Error as exc:
             return refuse(f"error: {type(exc).__name__}", f"Memory error: {type(exc).__name__}")
-        record_tool_call(name, args=args, ok=True, memory_ids=[item.id], **lengths)
+        record_tool_call(name, args=args, memory_op="write", ok=True, memory_ids=[item.id], **lengths)
         return f"Noted: {item.id}"
 
     memory_note.__doc__ = (memory_note.__doc__ or "").replace("{cap}", str(width))
