@@ -20,21 +20,23 @@ searches for it, which is a PERSISTENT prompt-injection path, and the ``inferred
 only thing that lets a later reader discount it rather than cite it.
 
 **What is written is never changed, an id never names different text, and only the host erases.**
-Three ways exist to change what a reader sees, and none rewrites a row:
+Four ways exist to change what a reader sees, and none rewrites a row:
 
 - :meth:`MemoryStore.revise` adds a NEW item that points at the old one (``revises``).
 - :meth:`MemoryStore.retire` sets ``valid_to`` once, from NULL to a time. It is the only UPDATE in
   this module.
 - :meth:`MemoryStore.label` adds a label row; the latest one shows, and a person's (``said``)
   outranks a model's (``inferred``) whatever the order.
+- :meth:`MemoryStore.merge` and :meth:`MemoryStore.unmerge` add alias rows, which every reader
+  applies to entity names; a person's decision about a name stands, an unmerge included.
 
 :meth:`MemoryStore.purge` is the one way anything leaves the file, and it is the host's alone: no
 tool and no model-facing path reaches it. It exists because a person may want back out what they
 put in. An id is never reused, so a purged id in an old trace names nothing rather than something
 else, and a ``purged`` record keeps when and why, never what.
 
-SQLite triggers refuse a stray ``UPDATE``, ``DELETE`` or ``INSERT OR REPLACE`` against the item and
-label tables, so a host's own SQL cannot quietly rewrite history either; ``purge`` passes them by a
+SQLite triggers refuse a stray ``UPDATE``, ``DELETE`` or ``INSERT OR REPLACE`` against every table
+that holds a row (items, labels, failures, purge records, aliases, seen names), so a host's own SQL cannot quietly rewrite history either; ``purge`` passes them by a
 flag row only its own transaction can see. They are not a security boundary against someone with
 the file: ``DROP TRIGGER`` still works. The search indexes are contentless FTS5 tables built with
 ``contentless_delete=1`` (SQLite 3.43 or newer), and a purge merges them afterwards, because a
@@ -64,6 +66,7 @@ will not run it again.
 from __future__ import annotations
 
 import contextlib
+import itertools
 import json
 import logging
 import math
@@ -72,6 +75,7 @@ import re
 import sqlite3
 import time
 import unicodedata
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -104,6 +108,15 @@ _LABEL_ITEMS = 8
 _MIN_SQLITE = (3, 43, 0)
 
 _UNSET: Any = object()
+
+#: Current tag or entity label values of non-retired items with how many items carry each, most
+#: used first. Parameters: kind, now.
+_COUNT_SQL = (
+    "SELECT j.value AS name, COUNT(*) AS n FROM current_labels cl "
+    "JOIN items ON items.id = cl.item_id, json_each(cl.value_json) j "
+    "WHERE cl.kind = ? AND (items.valid_to IS NULL OR items.valid_to > ?) "
+    "GROUP BY j.value ORDER BY n DESC, name"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +290,52 @@ _MIGRATIONS: tuple[tuple[str | Callable[[sqlite3.Connection], None], ...], ...] 
                 WHERE i.item_id = l.item_id AND i.kind = l.kind AND i.provenance = 'inferred'
                 ORDER BY i.id DESC LIMIT 1))""",
     ),
+    # Step 3: names that mean the same thing. Aliases are store-wide vocabulary, not tied to one
+    # item, so a purge does not remove them.
+    (
+        """CREATE TABLE entity_aliases (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id > 0),
+            alias      TEXT NOT NULL,
+            canonical  TEXT,
+            provenance TEXT NOT NULL CHECK (provenance IN ('said', 'inferred')),
+            run_id     TEXT,
+            created_at REAL NOT NULL
+        )""",
+        "CREATE INDEX entity_aliases_key ON entity_aliases(alias, provenance, id)",
+        """CREATE TRIGGER entity_aliases_no_replace BEFORE INSERT ON entity_aliases
+           WHEN NEW.id > 0 AND EXISTS (SELECT 1 FROM entity_aliases WHERE id = NEW.id)
+           BEGIN SELECT RAISE(ABORT, 'entity aliases are append-only: this id already exists'); END""",
+        """CREATE TRIGGER entity_aliases_no_update BEFORE UPDATE ON entity_aliases
+           BEGIN SELECT RAISE(ABORT, 'entity aliases are append-only: a change is a new row'); END""",
+        """CREATE TRIGGER entity_aliases_no_delete BEFORE DELETE ON entity_aliases
+           BEGIN SELECT RAISE(ABORT, 'entity aliases are append-only: unmerge writes a new row'); END""",
+        # No UNIQUE on `name`: INSERT OR REPLACE against a UNIQUE column deletes without firing a
+        # DELETE trigger. "Insert if absent" is a WHERE NOT EXISTS instead.
+        """CREATE TABLE entity_seen (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id > 0),
+            name       TEXT NOT NULL,
+            created_at REAL NOT NULL
+        )""",
+        "CREATE INDEX entity_seen_name ON entity_seen(name)",
+        """CREATE TRIGGER entity_seen_no_replace BEFORE INSERT ON entity_seen
+           WHEN NEW.id > 0 AND EXISTS (SELECT 1 FROM entity_seen WHERE id = NEW.id)
+           BEGIN SELECT RAISE(ABORT, 'seen names are append-only: this id already exists'); END""",
+        """CREATE TRIGGER entity_seen_no_update BEFORE UPDATE ON entity_seen
+           BEGIN SELECT RAISE(ABORT, 'seen names are append-only'); END""",
+        """CREATE TRIGGER entity_seen_no_delete BEFORE DELETE ON entity_seen
+           BEGIN SELECT RAISE(ABORT, 'seen names are append-only'); END""",
+        # The alias each name has now. Unlike a label, a `said` row decides whenever one exists,
+        # a NULL canonical included: a person's unmerge must stay unmerged, never let a model's
+        # earlier merge show through again. Only with no `said` row does the latest `inferred` one
+        # decide. A NULL canonical means "not an alias".
+        """CREATE VIEW current_aliases AS
+           SELECT a.alias, a.canonical, a.provenance FROM entity_aliases a
+           WHERE a.canonical IS NOT NULL AND a.id = COALESCE(
+               (SELECT MAX(s.id) FROM entity_aliases s
+                WHERE s.alias = a.alias AND s.provenance = 'said'),
+               (SELECT MAX(i.id) FROM entity_aliases i
+                WHERE i.alias = a.alias AND i.provenance = 'inferred'))""",
+    ),
 )
 
 _SCHEMA_VERSION = len(_MIGRATIONS)
@@ -372,6 +431,13 @@ def _reindex_items(conn: sqlite3.Connection) -> None:
 def _fold(text: Any) -> str:
     """How two labels are compared for sameness: NFKC, then casefolded, whitespace collapsed."""
     return " ".join(unicodedata.normalize("NFKC", text if isinstance(text, str) else "").casefold().split())
+
+
+def _name_group(name: str, aliases: dict[str, str]) -> set[str]:
+    """The folded names ``name`` is known by: itself, its canonical, and every alias of that."""
+    key = _fold(name)
+    canonical = _fold(aliases.get(key, name))
+    return {key, canonical} | {alias for alias, target in aliases.items() if _fold(target) == canonical}
 
 
 def _oneline(value: Any, cap: int) -> str:
@@ -821,7 +887,11 @@ class MemoryStore:
         return self.labels(item_id)
 
     def labels(self, item_id: str) -> MemoryLabels:
-        """The current labels of ``item_id``: empty for an unlabelled, unknown or malformed id."""
+        """The current labels of ``item_id``: empty for an unlabelled, unknown or malformed id.
+
+        Entities are read through the alias table: a merged name shows as its canonical. The stored
+        label is unchanged, so an unmerge shows the name as written again.
+        """
         target = _rowid(item_id)
         if target is None:
             return MemoryLabels()
@@ -829,10 +899,14 @@ class MemoryStore:
             rows = conn.execute(
                 "SELECT kind, value_json, provenance FROM current_labels WHERE item_id = ?", (target,)
             ).fetchall()
+            aliases = self._readings(conn)
         values: dict[str, Any] = {}
         origin: dict[str, str | None] = dict.fromkeys(LABEL_KINDS)
         for row in rows:
             value = json.loads(row["value_json"])
+            if row["kind"] == "entities":
+                # Read through the alias table: a merged name shows as the name it was merged into.
+                value = list(dict.fromkeys(aliases.get(_fold(v), v) for v in value))
             values[row["kind"]] = tuple(value) if isinstance(value, list) else value
             origin[row["kind"]] = row["provenance"]
         return MemoryLabels(provenance=origin, **values)
@@ -883,21 +957,212 @@ class MemoryStore:
         return [self._item(row) for row in rows]
 
     def label_counts(self, kind: str, *, limit: int = 80) -> list[tuple[str, int]]:
-        """The most used tags or entities across current labels of non-retired items, with counts.
+        """The most used tags or entities across current labels of non-retired items, with how many
+        items carry each.
 
-        This is the list a summariser is shown so that related items converge on one label.
+        Entities are read through the alias table, so a merged group counts as one name, once per
+        item. This is the list a summariser is shown so that related items converge on one label.
         """
         if kind not in ("tags", "entities"):
             raise ValueError("label_counts counts 'tags' or 'entities'")
+        limit = max(1, int(limit))
+        if kind == "tags":
+            with self._connect() as conn:
+                return [(row["name"], int(row["n"])) for row in conn.execute(
+                    _COUNT_SQL + " LIMIT ?", ("tags", time.time(), limit)).fetchall()]
+        # Entities are counted by the name they resolve to, once per item: an item labelled with
+        # two names of one group carries that entity once.
+        totals: Counter[str] = Counter()
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT j.value AS name, COUNT(*) AS n FROM current_labels cl "
-                "JOIN items ON items.id = cl.item_id, json_each(cl.value_json) j "
-                "WHERE cl.kind = ? AND (items.valid_to IS NULL OR items.valid_to > ?) "
-                "GROUP BY j.value ORDER BY n DESC, name LIMIT ?",
-                (kind, time.time(), max(1, int(limit))),
-            ).fetchall()
-        return [(row["name"], int(row["n"])) for row in rows]
+            aliases = self._readings(conn)
+            for row in conn.execute(
+                "SELECT cl.value_json FROM current_labels cl JOIN items ON items.id = cl.item_id "
+                "WHERE cl.kind = 'entities' AND (items.valid_to IS NULL OR items.valid_to > ?)",
+                (time.time(),),
+            ).fetchall():
+                totals.update({aliases.get(_fold(n), n) for n in json.loads(row[0])})
+        return sorted(totals.items(), key=lambda pair: (-pair[1], pair[0]))[:limit]
+
+    # ---- names that mean the same thing --------------------------------------------------
+
+    @staticmethod
+    def _alias_map(conn: sqlite3.Connection) -> dict[str, str]:
+        return {row["alias"]: row["canonical"]
+                for row in conn.execute("SELECT alias, canonical FROM current_aliases").fetchall()}
+
+    @classmethod
+    def _readings(cls, conn: sqlite3.Connection) -> dict[str, str]:
+        """What every reader maps a folded name to: each live alias to its canonical, and each case
+        or width variant of a canonical to the canonical's own spelling, so one group is one name."""
+        aliases = cls._alias_map(conn)
+        readings = {_fold(canonical): canonical for canonical in aliases.values()}
+        readings.update(aliases)
+        return readings
+
+    def aliases(self) -> dict[str, str]:
+        """Every live alias, as ``folded alias name -> canonical name``.
+
+        Alias names are kept folded (NFKC, casefolded, whitespace collapsed), so ``Postgres`` and
+        ``postgres`` are one alias. The map never holds a chain: a canonical is never an alias.
+        """
+        with self._connect() as conn:
+            return self._alias_map(conn)
+
+    def resolve(self, name: str) -> str:
+        """The name ``name`` is read as: its canonical if it is a live alias or a case variant of a
+        canonical, else itself."""
+        with self._connect() as conn:
+            return self._readings(conn).get(_fold(name), name)
+
+    def entity_names(self) -> dict[str, int]:
+        """Every entity name in the current labels of non-retired items, as written, with counts.
+
+        These are the names alignment may merge; an alias must be one of them.
+        """
+        with self._connect() as conn:
+            return {row["name"]: int(row["n"]) for row in conn.execute(
+                _COUNT_SQL, ("entities", time.time())).fetchall()}
+
+    def merge(
+        self,
+        alias: str,
+        canonical: str,
+        *,
+        provenance: str = "said",
+        batch: Iterable[str] | None = None,
+        run_id: str | None = None,
+    ) -> str:
+        """Read ``alias`` as ``canonical`` from now on, and return the canonical recorded.
+
+        Refused with ``ValueError`` (the message is the reason) unless all of these hold:
+
+        - ``alias`` is an entity name in use (``entity_names``), compared folded, and ``canonical``
+          is one too or is already the canonical of a live alias;
+        - after following ``canonical`` to its own canonical, the two differ;
+        - ``alias`` is not already a canonical (that would leave a chain) or a live alias;
+        - an ``inferred`` merge names a ``batch`` holding ``alias``: a model may only merge a name
+          it was asked about;
+        - an ``inferred`` merge touches no name a person decided about (any ``said`` row, merged or
+          unmerged), whether as the alias, the canonical given, or the canonical it resolves to.
+
+        The canonical is recorded in the spelling its group already has, else its most used one.
+        ``TypeError`` for a name that is not a str.
+        """
+        if provenance not in LABEL_PROVENANCES:
+            raise ValueError(f"provenance must be one of {LABEL_PROVENANCES}, got {provenance!r}")
+        if not isinstance(alias, str) or not isinstance(canonical, str):
+            raise TypeError("alias and canonical must be str")
+        key = _fold(alias)
+        if not key or not _fold(canonical):
+            raise ValueError("alias and canonical must be non-empty")
+        if provenance == "inferred" and (
+            batch is None or key not in {_fold(b) for b in batch if isinstance(b, str)}
+        ):
+            raise ValueError(f"{alias!r} was not among the names this run was asked about")
+        with self._write() as conn:
+            names = {row["name"]: int(row["n"]) for row in conn.execute(
+                _COUNT_SQL, ("entities", time.time())).fetchall()}
+            spellings: dict[str, str] = {}
+            for name, _ in sorted(names.items(), key=lambda pair: (-pair[1], pair[0])):
+                spellings.setdefault(_fold(name), name)
+            aliases = self._alias_map(conn)
+            # A live canonical keeps the spelling it was first recorded in, so every alias of one
+            # group names it the same way; and it can be merged into even when no item names it
+            # any more, since it is still the name the store shows.
+            live = {_fold(c): c for c in aliases.values()}
+            canon_key = _fold(canonical)
+            if key not in spellings:
+                raise ValueError("both names must be entity names in use")
+            if canon_key in aliases:
+                target = aliases[canon_key]
+            elif canon_key in live:
+                target = live[canon_key]
+            elif canon_key in spellings:
+                target = spellings[canon_key]
+            else:
+                raise ValueError("both names must be entity names in use")
+            if _fold(target) == key:
+                raise ValueError(f"{alias!r} and {canonical!r} are already one name")
+            if key in {_fold(c) for c in aliases.values()}:
+                raise ValueError(f"{alias!r} is already the canonical of another name")
+            if key in aliases:
+                raise ValueError(f"{alias!r} is already an alias of {aliases[key]!r}")
+            if provenance == "inferred":
+                # Every name the merge touches, in either role: checking the alias alone let a model
+                # rejoin a pair a person separated by merging it the other way round.
+                for name in sorted({key, canon_key, _fold(target)}):
+                    if conn.execute("SELECT 1 FROM entity_aliases WHERE alias = ? AND provenance = 'said'",
+                                    (name,)).fetchone():
+                        raise ValueError(f"a person already decided about {name!r}")
+            conn.execute(
+                "INSERT INTO entity_aliases (alias, canonical, provenance, run_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?)", (key, target, provenance, run_id, time.time()))
+        return target
+
+    def unmerge(self, alias: str, *, provenance: str = "said", run_id: str | None = None) -> None:
+        """Stop reading ``alias`` as another name.
+
+        A ``said`` unmerge is always recorded, even for a name that is not an alias now: it is a
+        person's "keep these apart", and no later ``inferred`` merge can override it. An
+        ``inferred`` unmerge is refused (``ValueError``) for a name that is not a live alias or
+        that a person already decided about.
+        """
+        if provenance not in LABEL_PROVENANCES:
+            raise ValueError(f"provenance must be one of {LABEL_PROVENANCES}, got {provenance!r}")
+        key = _fold(alias) if isinstance(alias, str) else ""
+        if not key:
+            raise ValueError("alias must be a non-empty str")
+        with self._write() as conn:
+            if provenance == "inferred":
+                if conn.execute("SELECT 1 FROM entity_aliases WHERE alias = ? AND provenance = 'said'",
+                                (key,)).fetchone():
+                    raise ValueError(f"a person already decided about {alias!r}")
+                if key not in self._alias_map(conn):
+                    raise ValueError(f"{alias!r} is not an alias")
+            conn.execute(
+                "INSERT INTO entity_aliases (alias, canonical, provenance, run_id, created_at) "
+                "VALUES (?, NULL, ?, ?, ?)", (key, provenance, run_id, time.time()))
+
+    def unseen_entities(self, *, limit: int = 100) -> list[str]:
+        """Entity names in use that alignment has not been asked about yet, most used first."""
+        with self._connect() as conn:
+            seen = {row[0] for row in conn.execute("SELECT name FROM entity_seen").fetchall()}
+            rows = conn.execute(_COUNT_SQL, ("entities", time.time())).fetchall()
+        fresh = [row["name"] for row in rows if _fold(row["name"]) not in seen]
+        return fresh[: max(1, int(limit))]
+
+    def mark_seen(self, names: Iterable[str]) -> None:
+        """Record that alignment has considered ``names``, so it is not asked about them again."""
+        if isinstance(names, str):
+            raise TypeError("mark_seen takes a list of names, not a str")
+        keys = sorted({_fold(n) for n in names if isinstance(n, str) and _fold(n)})
+        if not keys:
+            return
+        now = time.time()
+        with self._write() as conn:
+            for key in keys:
+                conn.execute(
+                    "INSERT INTO entity_seen (name, created_at) SELECT ?, ? "
+                    "WHERE NOT EXISTS (SELECT 1 FROM entity_seen WHERE name = ?)", (key, now, key))
+
+    def entity_graph(self, *, limit: int = 200) -> list[tuple[str, str, int]]:
+        """Pairs of entities named together by one item, with how many items do, strongest first.
+
+        Read from the current entity labels of non-retired items, through the alias table, so a
+        merged pair is one node. It is data to draw, not a drawing.
+        """
+        pairs: Counter[tuple[str, str]] = Counter()
+        with self._connect() as conn:
+            aliases = self._readings(conn)
+            for row in conn.execute(
+                "SELECT cl.value_json FROM current_labels cl JOIN items ON items.id = cl.item_id "
+                "WHERE cl.kind = 'entities' AND (items.valid_to IS NULL OR items.valid_to > ?)",
+                (time.time(),),
+            ).fetchall():
+                names = sorted({aliases.get(_fold(n), n) for n in json.loads(row[0])})
+                pairs.update(itertools.combinations(names, 2))
+        ranked = sorted(pairs.items(), key=lambda pair: (-pair[1], pair[0]))
+        return [(a, b, n) for (a, b), n in ranked[: max(1, int(limit))]]
 
     def note_distill_failure(self, item_id: str, error: str) -> None:
         """Record that summarising ``item_id`` failed, so a pass can stop retrying it forever."""
@@ -956,7 +1221,9 @@ class MemoryStore:
         that frees pages, ordinary adds and labels included. If ``VACUUM`` cannot get the lock, the
         purge has still committed: a warning is logged and the purged ids are returned.
 
-        ``reason`` is kept up to 500 characters. ``include_revisions`` also purges every item that
+        Aliases and the names alignment has considered are store-wide vocabulary, not tied to an
+        item, so a purge leaves them: a name only a purged item used stays there. ``reason`` is kept
+        up to 500 characters. ``include_revisions`` also purges every item that
         revises a purged one, transitively; otherwise a revision survives and its ``revises`` names
         an id that no longer exists. Unknown and malformed ids are ignored.
         """
@@ -1095,7 +1362,9 @@ class MemoryStore:
         - ``tags`` keeps only items carrying ALL of them, each found among the item's own tags or
           its current tag labels (compared casefolded there, as tag labels are stored).
         - ``entities`` keeps only items whose current entity labels name ALL of them, compared
-          NFKC-normalised and casefolded (``postgresql`` finds ``PostgreSQL``).
+          NFKC-normalised and casefolded (``postgresql`` finds ``PostgreSQL``), each matched by
+          every name in its alias group.
+        - A query that is itself an entity name also searches every other name in its alias group.
         - Items retired as of now are left out unless ``include_retired`` is true. One retired at
           a future time stays visible until then, and one whose ``valid_from`` lies in the future
           is NOT left out either.
@@ -1121,12 +1390,14 @@ class MemoryStore:
                 "WHERE cl.item_id = items.id AND cl.kind = 'tags' AND j.value = ?))"
             )
             params.extend([tag, tag.casefold()])
+        aliases = self.aliases() if wanted_entities or (query and query.strip()) else {}
         for entity in wanted_entities:
             where.append(
                 "EXISTS (SELECT 1 FROM current_labels cl, json_each(cl.value_json) j "
-                "WHERE cl.item_id = items.id AND cl.kind = 'entities' AND rlm_fold(j.value) = ?)"
+                "WHERE cl.item_id = items.id AND cl.kind = 'entities' "
+                "AND rlm_fold(j.value) IN (SELECT value FROM json_each(?)))"
             )
-            params.append(_fold(entity))
+            params.append(json.dumps(sorted(_name_group(entity, aliases))))
         if at is not None:
             when = _timestamp(at, "at")
             where.append("items.valid_from <= ? AND (items.valid_to IS NULL OR items.valid_to > ?)")
@@ -1147,6 +1418,13 @@ class MemoryStore:
             return [self._item(row) for row in rows]
 
         terms = _query_terms(query)
+        # A query that IS an entity name searches every name it is known by, so `k8s` finds an
+        # item that only ever says `Kubernetes`.
+        group = _name_group(query, aliases)
+        if len(group) > 1:
+            for name in sorted(group):
+                terms.extend(t for t in _query_terms(name) if t not in terms)
+            terms = terms[:_MAX_QUERY_TERMS]
         if not terms:
             return []
         expression = _match_expression(terms)

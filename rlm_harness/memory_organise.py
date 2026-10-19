@@ -144,7 +144,10 @@ def known_listing(store: MemoryStore) -> tuple[str, dict[str, str]]:
     on one subject do not end up as ``databases`` and ``database systems``. The folded entity names
     are what entity grounding accepts besides the item's own text: a summary told to reuse a known
     name may write it in another script than the text uses. They map to the name as it is in use,
-    so an entity the model wrote as ``postgresql`` is stored as the known ``PostgreSQL``. Tags are not
+    so an entity the model wrote as ``postgresql`` is stored as the known ``PostgreSQL``. A live alias
+    of a name in use is accepted too and kept as written (its value is its in-use spelling, or ""
+    for "keep the model's"), so readers resolve it and an unmerge undoes it. Aliases are accepted,
+    not shown: the text lists each name in use once. Tags are not
     in that map; a tag another item carries is no evidence that this item names it as an entity.
     """
     tags = store.label_counts("tags", limit=KNOWN_TAGS)
@@ -160,4 +163,15 @@ def known_listing(store: MemoryStore) -> tuple[str, dict[str, str]]:
         lines.append("Tags in use: " + ", ".join(name for name, _ in tags))
     if known:
         lines.append("Entities in use: " + ", ".join(known.values()))
+    # An alias grounds too, while some item still names its group (the canonical itself or any of
+    # its aliases; an alias left behind after its whole group was purged grounds nothing), and is
+    # kept AS WRITTEN: readers resolve it at read time, so an unmerge restores every label written
+    # while the merge was live. Writing the canonical instead froze a wrong merge into those labels
+    # for good. The most used spelling wins, as above; "" means "keep the model's spelling".
+    written: dict[str, str] = {}
+    for name in store.entity_names():
+        written.setdefault(fold(name), name)
+    for alias, canonical in store.aliases().items():
+        if fold(canonical) in known:
+            known.setdefault(alias, written.get(alias, ""))
     return "\n".join(lines), known
