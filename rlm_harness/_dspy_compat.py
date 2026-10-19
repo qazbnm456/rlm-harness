@@ -59,11 +59,11 @@ def load_lazy_module(name: str) -> None:
     still executing. So ``import openai._models`` under a proxied ``openai`` runs
     ``openai/__init__.py`` midway, which imports ``openai._models`` again and finds it half built.
     litellm starts with exactly that import. Measured on dspy 3.4.0, litellm 1.88.1 and openai
-    2.41.0, ``import dspy; import litellm`` raised a circular ``ImportError`` on macOS with numpy
-    installed; without numpy, and on Linux CI with the same versions, ``import dspy`` happened to
-    import openai for real and the import worked. So whether the proxy is still there depends on
-    the environment, and the tests put one back themselves. Loading the proxy first makes the parent
-    real, so the submodule import never touches the proxy.
+    2.41.0, ``import dspy; import litellm`` raised a circular ``ImportError`` with numpy installed
+    (without numpy, ``import dspy`` happened to import openai for real). dspy 3.4.1 keeps proxies
+    out of ``sys.modules``, so the defect cannot arise there and this finds nothing to load; it is
+    kept while the floor allows 3.4.0, and a test reds once the floor moves past it. Loading the
+    proxy first makes the parent real, so the submodule import never touches the proxy.
     """
     module = sys.modules.get(name)
     if module is not None and "_dspy_lazy_spec" in vars(module):

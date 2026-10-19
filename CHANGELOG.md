@@ -113,13 +113,12 @@ and entities, written by a person or by a model pass that costs one call per sho
 
 ### Fixed
 
-- **`configure` sets litellm's transport even when dspy left openai as a lazy proxy.** dspy 3.4.0's
-  proxy loads the real module midway through importing a submodule, and litellm's first import is
-  `openai._models`, so `import litellm` then raises a circular `ImportError`, which `configure`
-  swallowed, skipping the setting. Whether `import dspy` leaves the proxy depends on the
-  environment: it did on macOS with numpy installed, and not on Linux CI with the same versions.
-  `_dspy_compat.load_lazy_module` loads the proxy first; the tests install a proxy themselves, and
-  a control test reds once upstream fixes it.
+- **`configure` sets litellm's transport on dspy 3.4.0 with numpy installed.** That dspy leaves
+  openai in `sys.modules` as a lazy proxy, which loads the real module midway through importing a
+  submodule; litellm's first import is `openai._models`, so `import litellm` raised a circular
+  `ImportError`, which `configure` swallowed, skipping the setting. dspy 3.4.1 keeps its proxies
+  out of `sys.modules` and fixes it. `_dspy_compat.load_lazy_module` loads the proxy first on
+  3.4.0 and does nothing on 3.4.1; a test reds once the dspy floor moves past 3.4.0, when it can go.
 
 ### Not yet
 
