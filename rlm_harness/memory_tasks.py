@@ -33,8 +33,9 @@ this process; a short item's single ``Predict`` call records no event, so its ru
 ``run_start`` and ``run_end``. A recorder the caller entered around the whole pass would put every
 item in one run; nothing here relies on one.
 
-There is no claim mechanism: two passes running at once may label one item twice. That is harmless,
-since the latest label wins, but it costs a call, so a consumer keeps one pass at a time.
+There is no claim mechanism: two passes running at once may label one item twice, or align one batch
+of names twice. That is harmless, since the latest label wins and a second merge of one name is
+refused, but it costs a call, so a consumer keeps one pass of each kind at a time.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
+import json
 import logging
 import re
 import sqlite3
@@ -187,9 +189,69 @@ class DistillLongItem(RLMTask):
         super().__init__(config=config, **kw)
 
 
+class EntityMerge(BaseModel):
+    """Two names for one thing: ``alias`` is read as ``canonical`` from now on."""
+
+    alias: str
+    canonical: str
+
+
+class EntityMerges(BaseModel):
+    """What :class:`AlignEntities` SUBMITs."""
+
+    merges: list[EntityMerge] = Field(default_factory=list)
+
+
+_ALIGN_INSTRUCTIONS = """\
+Decide which of the NEW entity names are the same entity as one already KNOWN, or as another new
+name.
+
+`known` is a REPL variable: every entity name already in use, one per line, with how many items
+name it. Search it with Python (`.find()`, splitting lines); do not print all of it. `new_names` is
+a JSON list of names written by recent labels.
+
+Merge two names ONLY when they name the same thing: a spelling or capitalisation variant, a
+translation or transliteration (Tokyo and 東京), an abbreviation and its expansion (k8s and
+Kubernetes), or a name with and without a title or suffix. Never merge things that are merely
+related (a database and its query language), a part and its whole, a product and its maker, or a
+person and their work. When unsure, do not merge: an unmerged pair costs nothing, a wrong merge
+hides a real distinction.
+
+For each merge give `alias` (the new name) and `canonical` (the name to keep, usually the known one,
+or the more common spelling), each copied EXACTLY as written in `known` or `new_names`. When nothing
+should be merged, that is still an answer given from code: `SUBMIT(merges={"merges": []})`.
+
+Before you SUBMIT, pass your answer as a JSON string to `validate_entitymerges`, and SUBMIT on a
+LATER turn, only after it reports "Validation successful.". Never SUBMIT in the same turn as the
+validation call."""
+
+
+class AlignEntities(RLMTask):
+    """Merge newly written entity names into the ones already known.
+
+    Without ``config`` the active one is used with ``max_iterations`` set to :attr:`STEPS`.
+    """
+
+    #: A lookup, a decision and a validated SUBMIT on a later turn: three turns when it goes well;
+    #: eight leaves room for a correction.
+    STEPS = 8
+
+    signature = "known: str, new_names: str -> merges: EntityMerges"
+    output_field = "merges"
+    output_model = EntityMerges
+    instructions = _ALIGN_INSTRUCTIONS
+
+    def __init__(self, *, config: Any = None, **kw: Any) -> None:
+        if config is None:
+            config = dataclasses.replace(get_config(), max_iterations=self.STEPS)
+        kw.setdefault("tools", [make_schema_validator(EntityMerges)])
+        super().__init__(config=config, **kw)
+
+
 _STEPS: dict[str, tuple[Callable[[], Any], tuple[str, ...]]] = {
     "summarise_short": (SummariseShort, ("text", "language", "known")),
     "distill_long": (DistillLongItem, ("text", "section_map", "language", "known")),
+    "align_entities": (AlignEntities, ("known", "new_names")),
 }
 
 
@@ -314,7 +376,7 @@ def _grounded_entities(raw: Any, text: str, known: dict[str, str], *, long: bool
             where = folded_text
         key = fold(name)
         if key in known:
-            kept.append(known[key])
+            kept.append(known[key] or name)
         elif key and contains_name(where, key):
             kept.append(name)
     return kept
@@ -408,4 +470,128 @@ async def distill_pending(
                     logger.warning("could not record the distill failure of %s: %s", item.id, note_exc)
         if on_progress is not None:
             on_progress({"item_id": item.id, "ok": not error, "error": error})
+    return report
+
+
+def _dependency_order(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """``pairs`` with every pair whose alias is another pair's canonical moved ahead of that pair.
+
+    For a chained answer (``k8s -> kube``, ``kube -> Kubernetes``) the second link goes first, and
+    ``store.merge`` then follows ``kube`` as a live alias when the first is applied. The answer is
+    never resolved here, ahead of the store: doing that let a link the store refuses (a name a
+    person keeps apart) be skipped over, merging past it. A cycle falls back to the given order.
+    """
+    by_alias: dict[str, list[int]] = {}
+    for index, (alias, _) in enumerate(pairs):
+        by_alias.setdefault(fold(alias), []).append(index)
+    ordered: list[int] = []
+    state: dict[int, str] = {}
+
+    def visit(index: int) -> None:
+        if state.get(index):
+            return   # done, or on the current path: a cycle, left in the given order
+        state[index] = "visiting"
+        for before in by_alias.get(fold(pairs[index][1]), []):
+            visit(before)
+        state[index] = "done"
+        ordered.append(index)
+
+    for index in range(len(pairs)):
+        visit(index)
+    return [pairs[index] for index in ordered]
+
+
+@dataclass
+class AlignReport:
+    """What one :func:`align_pending` pass did.
+
+    ``asked`` are the names the model was shown; ``accepted`` the merges recorded, as
+    ``(alias, canonical)``; ``refused`` the merges the store turned down, as
+    ``(alias, canonical, reason)``. ``error`` is set when the call itself failed, in which case
+    nothing was marked seen and the same names are asked about next time. ``stopped`` is true when
+    ``should_stop`` ended the pass before the call.
+    """
+
+    asked: list[str] = field(default_factory=list)
+    accepted: list[tuple[str, str]] = field(default_factory=list)
+    refused: list[tuple[str, str, str]] = field(default_factory=list)
+    error: str = ""
+    stopped: bool = False
+
+
+async def align_pending(
+    store: MemoryStore,
+    *,
+    limit: int = 100,
+    run: Callable[[dict], Awaitable[dict]] | None = None,
+    recorder_for: Callable[[str], Any] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    on_progress: Callable[[dict], None] | None = None,
+) -> AlignReport:
+    """Ask once which of the entity names not yet considered mean the same thing as another.
+
+    Nothing runs unless the host calls this. Up to ``limit`` unseen names (clamped to
+    ``[1, 500]``) go to ONE :class:`AlignEntities` call, with every name in use and its count in
+    the REPL. With no unseen names, no call is made. Each merge it returns goes through
+    ``store.merge(..., provenance="inferred", batch=...)``, so a model can only merge a name it was
+    asked about and never overrides a person's decision; a refused merge is reported with the
+    store's reason. A chained answer is applied link by link, so the store judges every link. The batch is then
+    marked seen, merged or not, unless the call itself failed; a name whose merge hit a database
+    error stays unseen, so it is asked about again.
+    ``recorder_for("align")`` traces the call; the alias rows carry its run id. ``should_stop`` is
+    checked before the call and ``on_progress`` receives ``{"batch", "ok", "error"}`` after it.
+    """
+    run = run or arun_step
+    report = AlignReport()
+    batch = store.unseen_entities(limit=max(1, min(int(limit), MAX_PASS_ITEMS)))
+    if not batch:
+        return report
+    if should_stop is not None and should_stop():
+        report.stopped = True
+        return report
+    report.asked = list(batch)
+    known = "\n".join(f"{name}\t{count}" for name, count in store.entity_names().items())
+    recorder = recorder_for("align") if recorder_for is not None else None
+    run_id = getattr(recorder, "run_id", None)
+    payload = {"step": "align_entities", "known": known, "new_names": json.dumps(batch),
+               "run_id": run_id}
+    try:
+        if recorder is not None:
+            with recorder:
+                result = await run(payload)
+        else:
+            result = await run(payload)
+        if not isinstance(result, dict):
+            raise TypeError(f"run returned {type(result).__name__}, not a dict")
+    except Exception as exc:
+        report.error = f"{type(exc).__name__}: {exc}"[:2000]
+        if on_progress is not None:
+            on_progress({"batch": len(batch), "ok": False, "error": report.error})
+        return report
+    merges = result.get("merges")
+    pairs: list[tuple[str, str]] = []
+    for entry in merges if isinstance(merges, list) else []:
+        alias = entry.get("alias") if isinstance(entry, dict) else None
+        canonical = entry.get("canonical") if isinstance(entry, dict) else None
+        if not isinstance(alias, str) or not isinstance(canonical, str):
+            report.refused.append((str(alias), str(canonical), "not a pair of names"))
+            continue
+        pairs.append((alias, canonical))
+    failed_names: set[str] = set()
+    for alias, canonical in _dependency_order(pairs):
+        try:
+            target = store.merge(alias, canonical, provenance="inferred", batch=batch, run_id=run_id)
+            report.accepted.append((alias, target))
+        except ValueError as exc:
+            report.refused.append((alias, canonical, str(exc)))
+        except sqlite3.Error as exc:
+            # The store failed, not the answer: this name is asked about again next time.
+            failed_names.add(fold(alias))
+            report.refused.append((alias, canonical, f"database error: {type(exc).__name__}"))
+    try:
+        store.mark_seen([name for name in batch if fold(name) not in failed_names])
+    except sqlite3.Error as exc:
+        logger.warning("could not mark %d aligned names seen: %s", len(batch), exc)
+    if on_progress is not None:
+        on_progress({"batch": len(batch), "ok": True, "error": ""})
     return report

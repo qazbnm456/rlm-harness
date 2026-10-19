@@ -199,6 +199,11 @@ __all__ = [
     "run_step",
     "arun_step",
     "subprocess_step_runner",
+    "align_pending",
+    "AlignReport",
+    "AlignEntities",
+    "EntityMerge",
+    "EntityMerges",
 ]
 
 __version__ = "1.21.0"
@@ -244,4 +249,5 @@ def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import
 _MEMORY_TASK_NAMES = frozenset({
     "distill_pending", "DistillReport", "DistillLongItem", "SummariseShort", "ShortLabels",
     "LongLabels", "EntityMention", "run_step", "arun_step", "subprocess_step_runner",
+    "align_pending", "AlignReport", "AlignEntities", "EntityMerge", "EntityMerges",
 })

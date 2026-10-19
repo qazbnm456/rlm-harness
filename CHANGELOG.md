@@ -71,14 +71,22 @@ and entities, written by a person or by a model pass that costs one call per sho
   step in a fresh process through `run_in_subprocess`), `recorder_for` traces each item as its own
   run, and `should_stop` and `on_progress` make a pass stoppable and observable. A failing item
   stops heading the queue after three failures.
+- **Aliases.** `merge`, `unmerge`, `resolve`, `aliases`, `entity_names`, `unseen_entities`,
+  `mark_seen` and `entity_graph` on the store, and `align_pending` with its `AlignEntities` task.
+  One entity written under several names (a variant, a translation, an abbreviation) is read as one
+  everywhere: in labels, counts, the entities filter, and a query that is an entity name, which
+  searches all its names. A person's decision about a name stands, an unmerge included, and a
+  model's merge must name something it was asked about; a refusal says why. The pass makes one call
+  per batch of names nobody has considered yet and marks them seen, so a growing store pays only
+  for what is new.
 - `tools.grounding._find_span`, the literal half of `verify_quote`, returns the source's own span
   and refuses a quote under 20 characters. It is private, shared by the passes that store what a
   model quoted.
 
 ### Not yet
 
-Merging names that mean the same thing, grouping items into topics, similarity search over
-embeddings, and memory written automatically from finished runs are later work.
+Grouping items into topics, similarity search over embeddings, and memory written automatically
+from finished runs are later work.
 
 ## [1.20.1] - 2026-10-17
 

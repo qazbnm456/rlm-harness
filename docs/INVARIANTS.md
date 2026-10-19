@@ -529,7 +529,7 @@ reason is in the rule.
   (`rlm_harness/README.md`) "Skills (progressive disclosure)".
 - **Memory is never rewritten, a model writes only `inferred`, and only the host erases.**
   `MemoryStore` (`memory.py`) labels every item with one of `PROVENANCES`: `observed` (taken from a
-  source by the host), `said` (written by a person) and `inferred` (written by a model). Four
+  source by the host), `said` (written by a person) and `inferred` (written by a model). Five
   properties hold and must keep holding:
   1. **The model's only write path cannot name a provenance.** `memory_note(text, revises)` has
      no such argument and stores `inferred`, so the guarantee comes from the tool's SHAPE, the way
@@ -539,7 +539,8 @@ reason is in the rule.
      label is the only thing that lets a reader discount it.
   2. **Nothing written is changed, and an id never names different text.** `revise` adds a new row
      pointing at the old one, and `retire` sets `valid_to` once; that is the module's only UPDATE.
-     Triggers on the item, label and failure tables refuse a stray
+     Triggers on every row table (items, labels, failures, purge records, aliases, seen names)
+     refuse a stray
      `UPDATE`, `DELETE` or `INSERT OR REPLACE` (REPLACE deletes without firing a DELETE trigger,
      which is why an INSERT trigger refuses an existing id; it guards on `NEW.id > 0` because an
      auto-assigned id reads as -1 there, and `CHECK (id > 0)` keeps a stray row at -1 from turning
@@ -560,7 +561,9 @@ reason is in the rule.
      later purge cannot reach (measured). A test scans the file's bytes for a purged word, because
      a search-only test passed while the words were still on disk. It passes the delete triggers through a
      `purge_flag` row inserted and removed inside its own transaction, which no other connection can
-     see; the table is ordinary rather than TEMP because a main-schema trigger cannot read the temp
+     see. Aliases and seen names are store-wide vocabulary and purge leaves them, so a name only a
+     purged item used stays there (stated in the purge docstring). The table is ordinary rather
+     than TEMP because a main-schema trigger cannot read the temp
      schema, so every open clears a row a host's stray SQL may have committed there. Do not add another
      way past the triggers, and do not expose `purge` to a model. Ids stay AUTOINCREMENT, so a purged
      id names nothing rather than something else: that, not "nothing is ever deleted", is what keeps
@@ -572,13 +575,28 @@ reason is in the rule.
      model carries its own provenance (`memory_search` rows have `title_provenance`): a review found
      a model-written title riding in a row whose only provenance said `observed`, which is the
      mislabelling rule 1 exists to prevent.
+  5. **A person's decision about a name stands, an unmerge included.** Aliases are event rows read
+     through the `current_aliases` view, and the rule differs from labels on purpose: for a label a
+     `said` NULL lets the model's label show through, for an alias a `said` row decides whenever
+     one exists, NULL meaning "not an alias". Written the label way, a person's unmerge of a model's
+     merge would bring the merge straight back. An `inferred` merge or unmerge is refused for any
+     name with a `said` row in ANY role it plays (alias, canonical given, canonical resolved to):
+     checking the alias alone let a model rejoin a separated pair the other way round. It also
+     needs the name in the batch the model was asked about. A label is never written with a name
+     the alias table would give it: grounding keeps an alias as written and readers resolve it, so
+     an unmerge undoes the merge in every label written while it was live. A canonical
+     that is itself an alias is followed before a merge is recorded, and a name that is already a
+     canonical or a live alias is refused, so the table never holds a chain and no later merge
+     silently repoints an alias. `entity_seen` has no UNIQUE column: INSERT OR REPLACE against one
+     deletes without firing the delete trigger, so "insert if absent" is a `WHERE NOT EXISTS`.
 
   What the kit cannot verify is the host's choice between `observed` and `said`; the host's code
   path assigns it, and the docs say so rather than implying a check. The schema changes only by
   appending to `memory._MIGRATIONS`, counted in `PRAGMA user_version`, and a shipped step is never
   edited. A memory call records an ordinary `tool_call` with an optional `memory_ids` field; it
   does not add an event type. Pinned by `tests/test_memory.py`, `tests/test_memory_tools.py`,
-  `tests/test_memory_labels.py`, `tests/test_memory_purge.py` and `tests/test_memory_tasks.py`.
+  `tests/test_memory_labels.py`, `tests/test_memory_purge.py`, `tests/test_memory_tasks.py` and
+  `tests/test_memory_aliases.py`.
 
   The labelling pass (`memory_tasks.distill_pending`) makes no model call the host did not ask for,
   caps a pass at 500 items, and keeps a short item to ONE `dspy.Predict` call; only a text past

@@ -18,7 +18,7 @@ pitch, the quickstart, and installation: start at the
 | `atomic.py` | `atomic_write_text` / `atomic_write_stream`: a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write; `atomic_write_stream` takes an iterable of `bytes` chunks instead of one in-memory blob, aborting once a running total exceeds an optional `max_bytes`. dspy-free. |
 | `memory.py` | `MemoryStore` / `MemoryItem` / `MemoryLabels` / `PurgeRecord` / `PROVENANCES` / `MemoryUnavailable`: a provenance-typed memory in one SQLite file that outlives a run, with labels, CJK-aware full-text search and a host-only `purge` (see "Memory" below). dspy-free, stdlib only. |
 | `memory_organise.py` | The model-free half of organising a store: `section_map`, `clean_language`, `known_listing`. dspy-free. |
-| `memory_tasks.py` | The model-backed half: `SummariseShort` (one `dspy.Predict` call), `DistillLongItem` (an `RLMTask`), `run_step` / `arun_step` / `subprocess_step_runner`, and `distill_pending`. Lazily exported, since it imports dspy. |
+| `memory_tasks.py` | The model-backed half: `SummariseShort` (one `dspy.Predict` call), `DistillLongItem` and `AlignEntities` (`RLMTask`s), `run_step` / `arun_step` / `subprocess_step_runner`, `distill_pending` and `align_pending`. Lazily exported, since it imports dspy. |
 | `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` / `RUN_FACT_KEYS` / `compute_run_facts` / `compute_run_facts_by_run` (the generic half of a rubric's facts): reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded trace events. dspy-free. |
 | `isolation.py` | `run_in_subprocess`: a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
 | `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema: the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` (see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths`) a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` (safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `make_extract_archive_tool`) safe `zip`/tar extraction in `tools/archive.py` (see below), `verify_quote` (a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool`) a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool`: the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), the memory tools `make_memory_search_tool` / `make_memory_get_tool` / `make_memory_note_tool` in `tools/memory.py` (see "Memory" below), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
@@ -788,17 +788,19 @@ prompt-injection path. `inferred` is how a reader, or a later task's instruction
 own words from a source and declines to cite them.
 
 **What is written is never changed, an id never names different text, and only the host erases.**
-Three calls change what a reader sees, and none rewrites a row:
+Four calls change what a reader sees, and none rewrites a row:
 
 - `revise(item_id, text, *, origin, provenance="inferred")` adds a new item whose `revises` points
   at the old one. Pass `provenance="said"` when the revision is a person's correction.
 - `retire(item_id, *, at=None)` sets `valid_to` once. It is the only UPDATE the module issues.
 - `label(item_id, ...)` adds label rows (below); the latest shows, and a person's outranks a model's.
+- `merge` / `unmerge` add alias rows that every reader applies to entity names (see "Merging
+  names").
 
 `purge` is the one way anything leaves the file; see "Removing data" below.
 
-SQLite triggers refuse a stray `UPDATE`, `DELETE` or `INSERT OR REPLACE` against the item and label
-tables. This protects history from a host's own SQL mistakes; it is not a security boundary against
+SQLite triggers refuse a stray `UPDATE`, `DELETE` or `INSERT OR REPLACE` against every table that
+holds a row (items, labels, failures, purge records, aliases, seen names). This protects history from a host's own SQL mistakes; it is not a security boundary against
 someone holding the file, since `DROP TRIGGER` still works. An index row deleted by other means only
 makes search miss that item; it never changes the item.
 
@@ -902,6 +904,48 @@ memory.labels("m12")   # MemoryLabels(title=..., summary=..., tags=(...), entiti
 - `optimize.compile_task` compiles `DistillLongItem`; compile `SummariseShort`'s `Predict` with
   `dspy.GEPA` directly.
 
+### Merging names (`aliases`)
+
+Labels are written one item at a time, so one entity arrives under several names: `Kubernetes`,
+`k8s`, a translation. An alias table says which are the same, and every reader applies it, so no
+label is ever rewritten and a merge is undone by a new row.
+
+```python
+memory.merge("k8s", "Kubernetes")          # a person's merge: said
+report = await align_pending(memory)       # a model's merges: inferred, one call per batch
+memory.resolve("K8S")                      # "Kubernetes"
+memory.unmerge("k8s")                      # and apart again; no model can merge it back
+```
+
+- **Who decides.** A person's (`said`) decision about a name stands whenever one exists, an
+  unmerge included: the model's earlier merge does not show through it, and no later `inferred`
+  merge or unmerge can touch that name, in either role, so a model cannot rejoin a separated pair by
+  merging it the other way round. `unmerge` on a name that is not an alias yet records "keep
+  these apart" ahead of time.
+- **What a merge may do.** Both names must be entity names in use (`entity_names()`); a canonical
+  that is itself an alias is followed first, so the table never holds a chain; a name that is
+  already a canonical or a live alias is refused; and a model's merge must name something it was
+  asked about. A refusal is a `ValueError` whose message is the reason. Names are compared folded
+  (NFKC, casefolded). A canonical keeps the spelling its group already has (else its most used
+  one), and stays mergeable into even after the last item naming it is gone.
+- **Who reads it.** `labels()` shows merged names as their canonical, `label_counts("entities")`
+  counts a merged group as one name, once per item, `search(entities=...)` matches every name in the group, and a query
+  that is an entity name searches all of its names, so `k8s` finds an item that only ever says
+  `Kubernetes`. The labelling pass accepts an alias of a name in use as grounding and stores it as
+  written, so readers resolve it and an unmerge restores every label written while the merge was
+  live; the pass is not shown aliases, only each name in use once.
+- **The pass.** `align_pending` runs only when you await it. It takes up to `limit` names nobody has
+  considered yet (`unseen_entities()`, capped at 500) to ONE `AlignEntities` call (an `RLMTask`,
+  with every name in use and its count in the REPL), applies what comes back through
+  `merge(..., provenance="inferred", batch=...)`, and marks the batch seen whether or not anything
+  merged, so a store that grows by ten names pays to align ten names. A failed call marks nothing
+  seen, and a name whose merge hit a database error stays unseen. A chained answer is applied link
+  by link, so a link the store refuses stops the chain there. `AlignReport` lists what was asked, accepted and refused (with reasons). It takes `run=`,
+  `recorder_for` (called with `"align"`) and `should_stop` like the labelling pass; since it makes
+  one call per batch, `on_progress` receives `{"batch", "ok", "error"}` once, after that call.
+- `entity_graph(limit=200)` returns pairs of canonical entities named together by one item, with
+  counts, strongest first: data to draw, not a drawing.
+
 ### Removing data (`purge`)
 
 `purge(item_ids, *, reason="", include_revisions=False, secure=False)` erases items for good. It is
@@ -921,6 +965,8 @@ exists because a person may want back out what they put in.
   else; `get` returns `None` and `memory_get` says `Not found`.
 - `include_revisions=True` also purges every item that revises a purged one; otherwise a revision
   survives, with a `revises` naming an id that no longer exists.
+- Aliases and the names alignment has considered are store-wide vocabulary, not tied to an item, so
+  a purge leaves them; a name that only a purged item used stays in that vocabulary.
 - `secure=True` also runs `VACUUM` to shrink the file. Last, the WAL is checkpointed. If another
   connection is reading at that moment the checkpoint cannot finish and a warning is logged; the old
   pages then leave the main file and the WAL at the next full checkpoint, which SQLite runs when the
@@ -944,9 +990,8 @@ exists because a person may want back out what they put in.
 - Timestamps (`valid_from`, `at`) must be finite numbers: SQLite stores NaN as NULL, which would
   read as "never retired".
 
-**Not built yet.** Merging names that mean the same thing, grouping items into topics, similarity
-search over embeddings, and writing memory automatically from finished runs are later work, and none
-of it is implied by anything above.
+**Not built yet.** Grouping items into topics, similarity search over embeddings, and writing memory
+automatically from finished runs are later work, and none of it is implied by anything above.
 
 ## Environment interpreter (`interpreter="container"`)
 
