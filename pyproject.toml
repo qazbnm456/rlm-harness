@@ -113,6 +113,17 @@ grep = [
 gitignore = [
     "pathspec>=0.12.0",
 ]
+# Local similarity for a memory store (rlm_harness.memory_vectors): an embedding model run on the
+# CPU through onnxruntime, its tokenizer, and numpy for the comparison. Floors lifted from the
+# application this was taken from; no upper bound, the same posture as the other extras. The
+# vectors are plain BLOBs in their own SQLite file, so no SQLite extension is needed, and a purge
+# can erase them with the standard library alone. Opt-in: the model is ~135 MB and downloaded only
+# when the host calls download_model.
+memory-vectors = [
+    "onnxruntime>=1.17",
+    "tokenizers>=0.19",
+    "numpy>=2",
+]
 
 [project.urls]
 Homepage = "https://github.com/qazbnm456/rlm-harness"
@@ -124,6 +135,9 @@ Issues = "https://github.com/qazbnm456/rlm-harness/issues"
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    # The comparison half of the memory-vectors extra, so CI runs the real similarity code; the
+    # model runtime (onnxruntime, tokenizers) is faked in the tests and never installed there.
+    "numpy>=2",
 ]
 
 [tool.pytest.ini_options]

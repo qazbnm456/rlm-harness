@@ -13,9 +13,11 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from typing import Any
 
 from .memory import _UNSPACED, MemoryStore
 from .memory import _fold as fold
+from .memory_vectors import NEIGHBOURS
 
 #: Scripts written without spaces between words that the index does NOT split (it only pairs the
 #: CJK class in `memory._UNSPACED`): Thai, Lao, Myanmar and Khmer. A name in one of them cannot
@@ -190,16 +192,24 @@ SUGGEST_THRESHOLD = 3
 #: in the design this was taken from; a per-topic one keeps each topic connected.
 BRIDGES_PER_TOPIC = 3
 
+#: How many of the newest unlabelled items one ``suggest_topics`` call compares by similarity. Each
+#: costs at most ``NEIGHBOURS + 1`` comparisons against the filed items, from one load of the vectors.
+SIMILAR_CANDIDATES = 30
+
 
 @dataclass(frozen=True)
 class TopicSuggestion:
-    """The best topic for an item in none, and why: the entities and tags it shares with members."""
+    """The best topic for an item in none, and why: the entities and tags it shares with members,
+    or, for a suggestion by similarity, the member it is most like (``similar_to``) and the cosine
+    (``similarity``)."""
 
     item_id: str
     topic_id: str
     score: int
     shared_entities: tuple[str, ...]
     shared_tags: tuple[str, ...]
+    similar_to: str | None = None
+    similarity: float | None = None
 
 
 @dataclass(frozen=True)
@@ -222,7 +232,13 @@ def _current_sets(store: MemoryStore) -> tuple[dict[str, set[str]], dict[str, se
     return entities, tags
 
 
-def suggest_topics(store: MemoryStore, *, limit: int = 50, landing: str | None = None) -> list[TopicSuggestion]:
+def suggest_topics(
+    store: MemoryStore,
+    *,
+    limit: int = 50,
+    landing: str | None = None,
+    vectors: Any = None,
+) -> list[TopicSuggestion]:
     """The best live topic for each item that is in none, strongest first. No model call.
 
     An item scores against a topic by what its current labels share with the topic's members:
@@ -230,6 +246,12 @@ def suggest_topics(store: MemoryStore, *, limit: int = 50, landing: str | None =
     only a score of ``SUGGEST_THRESHOLD`` or more is offered. A pair the item was dismissed from,
     or that a person took apart, is never offered. ``landing`` names a catch-all topic: being in it
     alone still counts as being in none, and it is never suggested.
+
+    With ``vectors`` (a :class:`~rlm_harness.memory_vectors.MemoryVectors`), up to
+    ``SIMILAR_CANDIDATES`` of the newest items that have no entities or tags yet are also offered
+    the topic of the filed item they are most like (a mutual near neighbour above the model's
+    threshold). Similarity is the weaker signal, so such a suggestion is scored at
+    ``SUGGEST_THRESHOLD`` and sorts after any label match of the same score.
     """
     entities, tags = _current_sets(store)
     topics = [t for t in store.topics() if t.id != landing]
@@ -253,8 +275,33 @@ def suggest_topics(store: MemoryStore, *, limit: int = 50, landing: str | None =
                 best = TopicSuggestion(item_id, topic.id, score, shared, common)
         if best is not None:
             out.append(best)
-    out.sort(key=lambda s: (-s.score, s.item_id))
+    if vectors is not None:
+        out.extend(_by_similarity(store, vectors, members, blocked, filed, skip=set(entities)))
+    out.sort(key=lambda s: (-s.score, s.similar_to is not None, s.item_id))
     return out[: max(1, int(limit))]
+
+
+def _by_similarity(store: MemoryStore, vectors: Any, members: dict[str, set[str]],
+                   blocked: set[tuple[str, str]], filed: set[str], *, skip: set[str]) -> list[TopicSuggestion]:
+    topics_of: dict[str, list[str]] = {}
+    for topic_id in sorted(members, key=lambda t: int(t[1:])):
+        for item_id in members[topic_id]:
+            topics_of.setdefault(item_id, []).append(topic_id)
+    candidates = [item_id for item_id in sorted(store._live_ids(), key=lambda i: -int(i[1:]))
+                  if item_id not in filed and item_id not in skip][:SIMILAR_CANDIDATES]
+    if not candidates or not filed:
+        return []
+    # One load of the vectors for every candidate, never one per comparison.
+    snapshot = vectors._snapshot()
+    out: list[TopicSuggestion] = []
+    for item_id in candidates:
+        for other, score in snapshot.similar(item_id, k=NEIGHBOURS, among=filed):
+            topic_id = next((t for t in topics_of.get(other, []) if (item_id, t) not in blocked), None)
+            if topic_id is not None:
+                out.append(TopicSuggestion(item_id, topic_id, SUGGEST_THRESHOLD, (), (),
+                                           similar_to=other, similarity=score))
+                break
+    return out
 
 
 def topic_graph(store: MemoryStore, *, per_topic: int = BRIDGES_PER_TOPIC) -> TopicGraph:
