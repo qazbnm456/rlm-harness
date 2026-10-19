@@ -529,7 +529,7 @@ reason is in the rule.
   (`rlm_harness/README.md`) "Skills (progressive disclosure)".
 - **Memory is never rewritten, a model writes only `inferred`, and only the host erases.**
   `MemoryStore` (`memory.py`) labels every item with one of `PROVENANCES`: `observed` (taken from a
-  source by the host), `said` (written by a person) and `inferred` (written by a model). Seven
+  source by the host), `said` (written by a person) and `inferred` (written by a model). Eight
   properties hold and must keep holding:
   1. **The model's only write path cannot name a provenance.** `memory_note(text, revises)` has
      no such argument and stores `inferred`, so the guarantee comes from the tool's SHAPE, the way
@@ -627,14 +627,28 @@ reason is in the rule.
      times (`text_weight`), so a Chinese note is compared from about 14 characters. A similarity
      suggestion scores at `SUGGEST_THRESHOLD`, below any label match of the same score. numpy is a
      dev dependency so CI runs the real comparison; onnxruntime and tokenizers are faked.
+  8. **A run reaches `observed` only through bytes the host holds: the host verifies the bytes,
+     the model chose them.** `consolidate_run` stores a model's `fact` as `observed` only when its
+     named source is trusted and `_find_span` finds the quote in that source's full text, and it
+     stores the source's span, never the model's wording, with `meta.selected_by = "model"`.
+     REPL output is never a source. A recorded tool result is trusted only for a tool the host
+     names in `trusted_tools`, and a `model:` tool never: `model_as_tool` records another model's
+     answer as its `result`, and a consumer's tools may too, so trusting every recorded result
+     would let a model's words pass for a source, the mislabelling rule 1 exists to prevent. For
+     the same reason a call that recorded `ok=False` is never trusted, and the docs tell the host
+     to name only a tool whose result cannot echo the model's arguments; the kit cannot check that.
+     Everything else a run proposes is `inferred`, with the reason a fact fell back in its
+     `meta`. `compute_memory_use` reads the memory tools' `memory_op` field rather than their
+     names, and calls an unreferenced read an upper bound on waste, never a measurement.
 
   What the kit cannot verify is the host's choice between `observed` and `said`; the host's code
   path assigns it, and the docs say so rather than implying a check. The schema changes only by
   appending to `memory._MIGRATIONS`, counted in `PRAGMA user_version`, and a shipped step is never
-  edited. A memory call records an ordinary `tool_call` with an optional `memory_ids` field; it
-  does not add an event type. Pinned by `tests/test_memory.py`, `tests/test_memory_tools.py`,
+  edited. A memory call records an ordinary `tool_call` with optional `memory_ids` and `memory_op`
+  fields; it does not add an event type. Pinned by `tests/test_memory.py`, `tests/test_memory_tools.py`,
   `tests/test_memory_labels.py`, `tests/test_memory_purge.py`, `tests/test_memory_tasks.py`,
-  `tests/test_memory_aliases.py`, `tests/test_memory_topics.py` and `tests/test_memory_vectors.py`.
+  `tests/test_memory_aliases.py`, `tests/test_memory_topics.py`, `tests/test_memory_vectors.py` and
+  `tests/test_memory_consolidate.py`.
 
   The labelling pass (`memory_tasks.distill_pending`) makes no model call the host did not ask for,
   caps a pass at 500 items, and keeps a short item to ONE `dspy.Predict` call; only a text past

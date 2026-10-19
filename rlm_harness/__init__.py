@@ -46,11 +46,22 @@ from .memory import (
     PurgeRecord,
     Topic,
 )
-from .memory_organise import TopicGraph, TopicSuggestion, suggest_topics, topic_graph
+from .memory_organise import (
+    RunSource,
+    TopicGraph,
+    TopicSuggestion,
+    render_run,
+    run_sources,
+    suggest_topics,
+    topic_graph,
+)
 from .metrics import (
     RUN_FACT_KEYS,
+    MemoryUse,
     RunUtilization,
     ToolWaste,
+    compute_memory_use,
+    compute_memory_use_by_run,
     compute_run_facts,
     compute_run_facts_by_run,
     compute_run_utilization,
@@ -215,6 +226,18 @@ __all__ = [
     "OrganizeReport",
     "OrganiseBatch",
     "OrganisePlan",
+    # a finished run into memory, and what a run did with memory
+    "render_run",
+    "run_sources",
+    "RunSource",
+    "consolidate_run",
+    "ConsolidateReport",
+    "ConsolidateRun",
+    "MemoryProposal",
+    "MemoryProposals",
+    "MemoryUse",
+    "compute_memory_use",
+    "compute_memory_use_by_run",
 ]
 
 __version__ = "1.21.0"
@@ -262,4 +285,5 @@ _MEMORY_TASK_NAMES = frozenset({
     "LongLabels", "EntityMention", "run_step", "arun_step", "subprocess_step_runner",
     "align_pending", "AlignReport", "AlignEntities", "EntityMerge", "EntityMerges",
     "organize_pending", "OrganizeReport", "OrganiseBatch", "OrganisePlan",
+    "consolidate_run", "ConsolidateReport", "ConsolidateRun", "MemoryProposal", "MemoryProposals",
 })

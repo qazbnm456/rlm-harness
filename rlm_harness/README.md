@@ -17,10 +17,10 @@ pitch, the quickstart, and installation: start at the
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
 | `atomic.py` | `atomic_write_text` / `atomic_write_stream`: a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write; `atomic_write_stream` takes an iterable of `bytes` chunks instead of one in-memory blob, aborting once a running total exceeds an optional `max_bytes`. dspy-free. |
 | `memory.py` | `MemoryStore` / `MemoryItem` / `MemoryLabels` / `Topic` / `PurgeRecord` / `PROVENANCES` / `MemoryUnavailable`: a provenance-typed memory in one SQLite file that outlives a run, with labels, CJK-aware full-text search and a host-only `purge` (see "Memory" below). dspy-free, stdlib only. |
-| `memory_organise.py` | The model-free half of organising a store: `section_map`, `clean_language`, `known_listing`, `suggest_topics` / `TopicSuggestion`, `topic_graph` / `TopicGraph`. dspy-free. |
+| `memory_organise.py` | The model-free half of organising a store: `section_map`, `clean_language`, `known_listing`, `suggest_topics` / `TopicSuggestion`, `topic_graph` / `TopicGraph`, `run_sources` / `RunSource` / `render_run` (a finished run as text a model can read). dspy-free. |
 | `memory_vectors.py` | Local similarity for a store (the `memory-vectors` extra): `EmbeddingModel` / `DEFAULT_MODEL`, `download_model`, `OnnxEmbedder`, `MemoryVectors` (`sync`, `similar`, `similar_pairs`, `forget`). dspy-free; numpy and the model runtime are imported on use. Imported explicitly, not re-exported. |
-| `memory_tasks.py` | The model-backed half: `SummariseShort` (one `dspy.Predict` call), `OrganiseBatch` (one `dspy.Predict` call), `DistillLongItem` and `AlignEntities` (`RLMTask`s), `run_step` / `arun_step` / `subprocess_step_runner`, `distill_pending`, `align_pending` and `organize_pending`. Lazily exported, since it imports dspy. |
-| `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` / `RUN_FACT_KEYS` / `compute_run_facts` / `compute_run_facts_by_run` (the generic half of a rubric's facts): reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded trace events. dspy-free. |
+| `memory_tasks.py` | The model-backed half: `SummariseShort` (one `dspy.Predict` call), `OrganiseBatch` (one `dspy.Predict` call), `DistillLongItem`, `AlignEntities` and `ConsolidateRun` (`RLMTask`s), `run_step` / `arun_step` / `subprocess_step_runner`, `distill_pending`, `align_pending`, `organize_pending` and `consolidate_run`. Lazily exported, since it imports dspy. |
+| `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` / `RUN_FACT_KEYS` / `compute_run_facts` / `compute_run_facts_by_run` (the generic half of a rubric's facts) / `MemoryUse` / `compute_memory_use` / `compute_memory_use_by_run` (what a run read from and wrote to memory): reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded trace events. dspy-free. |
 | `isolation.py` | `run_in_subprocess`: a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
 | `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema: the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` (see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths`) a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` (safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `make_extract_archive_tool`) safe `zip`/tar extraction in `tools/archive.py` (see below), `verify_quote` (a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool`) a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool`: the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), the memory tools `make_memory_search_tool` / `make_memory_get_tool` / `make_memory_note_tool` in `tools/memory.py` (see "Memory" below), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
 | `optimize.py` | GEPA harness: `compile_task`, `audit_instruction`, `trainset_from_traces`. |
@@ -1045,6 +1045,51 @@ suggest_topics(memory, vectors=vectors)
   weaker signal, so such a suggestion scores 3 and sorts after any label match of the same score;
   it names the item it resembles (`similar_to`) and the cosine (`similarity`).
 
+### Runs into memory (`consolidate_run`, `compute_memory_use`)
+
+A run's REPL forgets everything when it ends. `consolidate_run` asks a model once what a finished
+run should leave for a later run on a related task, and stores what the host can stand by.
+
+```python
+events = group_by_run(load_events("traces/run.jsonl"))[run_id]
+report = await consolidate_run(memory, events,
+                               evidence={"page": page_text},     # texts the host kept
+                               trusted_tools=["fetch_page"])      # your tools that record result=
+report.observed, report.inferred, report.downgraded              # ids, and why a fact fell back
+```
+
+- **What the model sees.** `render_run` gives the run's meta, the final output, the evidence, and
+  each tool call with its arguments and the head of any recorded result, each source labelled
+  `step:<n>` or `evidence:<key>` and marked trusted or not. Past 60,000 characters the tool calls
+  are cut first; evidence too large for the budget on its own is cut as well. The model's own REPL
+  turns are left out, and REPL output is never a source: the model wrote it. Up to 40 related items
+  already in memory are shown too, found by searching for the run's output, so it does not propose
+  them again.
+- **The host verifies the bytes; the model chose them.** A `fact` proposal names one source and
+  quotes it. It is stored as `observed` only when that source is trusted and its full text
+  contains the quote (whitespace aside, at least 20 non-space characters); the stored text is
+  then the source's own span, the origin `trace:<run_id>#<step>` or `evidence:<key>`, and `meta`
+  says `selected_by: model`. Every other fact, and every `note`, is stored as `inferred` in the
+  model's words, and a downgraded fact's reason is in the report and in its `meta`.
+- **Which sources are trusted.** Evidence you pass is, unless you pass it as a `(text, trusted)`
+  pair whose flag is not `True`. A recorded tool result is only when its tool is in `trusted_tools`,
+  because a result may be another model's words (`model_as_tool` records one, and so may a
+  consumer's own tools) and the kit cannot tell; a `model:` tool never is, and neither is a call
+  that recorded `ok=False`. Name a tool only if its result can never contain text the model
+  supplied: one that echoes its arguments ("no page at <url>") would let a model quote its own words
+  back as a source. Most of the kit's tools record no result at all, so in practice `evidence` is
+  how a run's sources reach `observed`.
+- **Limits.** One call per run, at most `limit` (20) proposals kept, each at most 2,000
+  characters, and a text an item not retired already holds is skipped. `recorder_for` is called
+  with `"consolidate:<run_id>"` and every stored row carries its run id; `should_stop` is
+  checked before the call and before each proposal.
+- **What a run did with memory.** `compute_memory_use(events)` returns the ids a run read, the
+  ids it wrote, and the ids it read but never named afterwards, in a later step's code or
+  reasoning, a later tool call's arguments or the final output (on a word boundary, so `m1` is not
+  inside `m12`). It reads the `memory_op` field the memory tools record, so renamed tools still
+  count. An unreferenced read is an upper bound on waste, not a measurement of it: a model can
+  use what an item says without writing its id.
+
 ### Removing data (`purge`)
 
 `purge(item_ids, *, reason="", include_revisions=False, secure=False)` erases items for good. It is
@@ -1091,8 +1136,10 @@ exists because a person may want back out what they put in.
 - Timestamps (`valid_from`, `at`) must be finite numbers: SQLite stores NaN as NULL, which would
   read as "never retired".
 
-**Not built yet.** Writing memory automatically from finished runs is later work, and nothing
-above implies it.
+**Not built yet.** No metric scores recall for `optimize.compile_task`: its metric sees an example
+and a prediction, not a run's events, and a write-then-ask metric doubles the rollouts. One can be
+built on `consolidate_run` and `compute_memory_use`; the kit will ship one once a consumer's real
+metric exists to generalise from.
 
 ## Environment interpreter (`interpreter="container"`)
 

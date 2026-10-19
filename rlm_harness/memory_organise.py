@@ -10,8 +10,10 @@ model: the best topic for an item (``suggest_topics``) and the bridges between t
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -334,3 +336,136 @@ def topic_graph(store: MemoryStore, *, per_topic: int = BRIDGES_PER_TOPIC) -> To
             kept_per[b] += 1
     omitted = {t: seen_per[t] - kept_per[t] for t in topics if seen_per[t] > kept_per[t]}
     return TopicGraph(tuple(kept), omitted)
+
+
+
+# ---- a finished run, as text a model can read ---------------------------------------------------
+
+#: The longest rendering of one run, and the head kept of each source in it. Lifted from the plan's
+#: review: a run's sources are what a later run needs, and their heads are enough to choose a quote
+#: from; the whole text stays with the host, which checks the quote against it.
+RUN_CHARS = 60_000
+SOURCE_HEAD = 2_000
+
+#: A tool name the kit gives a model-backed tool (``sub_lm.model_as_tool``): its result is another
+#: model's words, so it is never host bytes, whatever the host lists as trusted.
+_MODEL_TOOL_PREFIX = "model:"
+
+
+@dataclass(frozen=True)
+class RunSource:
+    """One text a fact may quote: a tool result the trace holds, or evidence the host passed.
+    ``trusted`` says whether a quote from it may be stored as ``observed``."""
+
+    label: str
+    text: str
+    trusted: bool
+    tool: str = ""
+
+
+def run_sources(
+    events: Iterable[dict],
+    *,
+    evidence: Mapping[str, Any] | None = None,
+    trusted_tools: Iterable[str] = (),
+) -> dict[str, RunSource]:
+    """The texts in one run that a fact may quote, by label.
+
+    A ``tool_call`` whose payload has a string ``result`` is ``step:<step_id>``; it is trusted only
+    when its tool is in ``trusted_tools``, is not a model-backed ``model:`` tool and did not record
+    ``ok=False``, because a recorded result may be another model's words and the kit cannot tell; a
+    call with no ``step_id`` is left out. A host names a tool only when its result can never contain
+    text the model supplied: a tool that echoes its arguments ("no page at <url>") would let a model
+    quote its own words back as a source. Each ``evidence`` entry is ``evidence:<key>``: a string is trusted, and
+    a ``(text, trusted)`` pair is trusted only when ``trusted is True``. REPL output never appears:
+    the model wrote it.
+    """
+    allowed = {str(name) for name in trusted_tools}
+    out: dict[str, RunSource] = {}
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") != "tool_call":
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        result, tool = payload.get("result"), str(payload.get("tool", ""))
+        # With no step id there is no label to tell two results apart, and one would replace another.
+        if isinstance(result, str) and result.strip() and event.get("step_id") is not None:
+            label = f"step:{event.get('step_id')}"
+            # A failed call's result is usually an error message, the likeliest place a tool echoes
+            # the arguments the model wrote; it is never trusted.
+            trusted = (tool in allowed and not tool.startswith(_MODEL_TOOL_PREFIX)
+                       and payload.get("ok") is not False)
+            out[label] = RunSource(label, result, trusted, tool)
+    for key, value in (evidence or {}).items():
+        text, trusted = value if isinstance(value, tuple) and len(value) == 2 else (value, True)
+        if isinstance(text, str) and text.strip():
+            label = f"evidence:{key}"
+            out[label] = RunSource(label, text, trusted is True)   # "false" is not trust
+    return out
+
+
+def _clip(text: str, chars: int) -> str:
+    """``text`` in at most ``chars`` characters, the note saying what was cut included."""
+    if len(text) <= chars:
+        return text
+    keep = max(0, chars - len(f"... [{len(text)} more characters]"))
+    note = f"... [{len(text) - keep} more characters]"
+    return (text[:keep] + note) if keep else text[:chars]
+
+
+def _compact(value: Any, chars: int) -> str:
+    try:
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        text = repr(value)
+    return _clip(text, chars)
+
+
+def render_run(
+    events: Iterable[dict],
+    *,
+    evidence: Mapping[str, Any] | None = None,
+    trusted_tools: Iterable[str] = (),
+    max_chars: int = RUN_CHARS,
+) -> str:
+    """One finished run as compact text: its meta, the final output, each piece of evidence, and
+    each tool call with its arguments and the head of any recorded result. Every source carries the
+    label a fact names it by and whether it is trusted (:func:`run_sources`). The model's own REPL
+    turns are left out. dspy-free.
+
+    Cut to ``max_chars``, and the tool calls are cut first: the meta, the output and the evidence
+    come before them, since the evidence the host passed is usually the only route to ``observed``
+    and a run with many tool calls would otherwise push it out of view. Evidence past the budget on
+    its own is cut too; the model then cannot see it, though a quote from it is still checked
+    against the full text.
+    """
+    events = [e for e in events if isinstance(e, dict)]
+    sources = run_sources(events, evidence=evidence, trusted_tools=trusted_tools)
+    run_id = next((e.get("run_id") for e in events if e.get("run_id")), None)
+    head: list[str] = [f"# run {run_id or '(unknown)'}"]
+    calls: list[str] = []
+    for event in events:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        kind = event.get("type")
+        if kind == "run_start" and payload.get("meta"):
+            head.append(f"meta: {_compact(payload['meta'], SOURCE_HEAD)}")
+        elif kind == "tool_call":
+            calls.append(f"\n## tool call {payload.get('tool', '?')} (ok={payload.get('ok')})")
+            if payload.get("args"):
+                calls.append(f"args: {_compact(payload['args'], SOURCE_HEAD)}")
+            label = f"step:{event.get('step_id')}"
+            if event.get("step_id") is not None and label in sources:
+                source = sources[label]
+                calls.append(f"[{label}] ({'trusted' if source.trusted else 'untrusted'}) result:")
+                calls.append(_clip(source.text, SOURCE_HEAD))
+        elif kind == "result":
+            head.append(f"\n## final output\n{_compact(payload.get('output'), SOURCE_HEAD * 2)}")
+    for label, source in sources.items():
+        if label.startswith("evidence:"):
+            head.append(f"\n## evidence\n[{label}] ({'trusted' if source.trusted else 'untrusted'}):")
+            head.append(_clip(source.text, SOURCE_HEAD))
+    budget = max(1, int(max_chars))
+    first = _clip("\n".join(head), budget)
+    room = budget - len(first) - 1
+    if not calls or room <= 0:
+        return first
+    return first + "\n" + _clip("\n".join(calls), room)
