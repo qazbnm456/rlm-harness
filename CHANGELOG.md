@@ -87,6 +87,14 @@ and entities, written by a person or by a model pass that costs one call per sho
   person dismissed or took apart, opens a new topic only for two or more items and never under the
   name of a topic a person retired, and remembers what it left so the same leftovers are not paid
   for again until the topics change.
+- **Store lookups for a host.** With `MemoryStore(index_origins=True)`, `search` also matches an
+  item's origin, so an address or a file name (CJK included) finds the item; it is off by default,
+  because the kit's own origins (`model`, `run:<id>`) would otherwise answer everyday words;
+  `MemoryStore(max_index_chars=)` caps how much of each text the index reads while the item keeps
+  all of it; `find_meta(key, value)` finds the items carrying a host's own key in `meta`, for
+  recovering after a crash between adding an item and recording it; and `checkpoint()` retries the
+  WAL checkpoint a purge could not finish and says whether it did. Migration step 5 rebuilds the
+  item index for the first two.
 - **Local similarity** (`rlm_harness/memory_vectors.py`, the `memory-vectors` extra).
   `MemoryVectors` embeds each item's title, summary and the head of its text on this machine
   and finds mutual near neighbours above a threshold; `suggest_topics(vectors=)` offers an item
