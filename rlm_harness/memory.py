@@ -155,7 +155,13 @@ _MAX_ROWID = 2**63 - 1
 # Each step is a tuple of single statements rather than one script: `executescript` COMMITs any
 # open transaction before it runs, which would let two stores opening one new file both run a step.
 # A step may also hold a callable taking the connection, for work SQL cannot do (re-gramming text).
-_MIGRATIONS: tuple[tuple[str | Callable[[sqlite3.Connection], None], ...], ...] = (
+#: Marks the point in a migration step where the store rebuilds ``items_fts`` from ``items``
+#: with its own ``max_index_chars``. A step callable receives only the connection, and this
+#: rebuild needs the instance's cap, so ``_migrate`` recognises the marker by identity. A ladder
+#: cut short never reaches it.
+_REINDEX_ITEMS = object()
+
+_MIGRATIONS: tuple[tuple[str | Callable[[sqlite3.Connection], None] | object, ...], ...] = (
     (
         """CREATE TABLE items (
             id         INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id > 0),
@@ -459,6 +465,18 @@ _MIGRATIONS: tuple[tuple[str | Callable[[sqlite3.Connection], None], ...], ...] 
            SELECT t.id, t.provenance, t.created_at FROM topics t
            WHERE COALESCE((SELECT r.retired FROM topic_retired r WHERE r.topic_id = t.id
                            ORDER BY r.id DESC LIMIT 1), 0) = 0""",
+    ),
+    # Step 5: the item index covers an item's origin too, so searching for an address or a file
+    # name finds the item, and it is rebuilt with the store's own `max_index_chars`. Still
+    # contentless with `contentless_delete=1`, which purge's delete by rowid depends on.
+    (
+        "DROP TABLE items_fts",
+        (
+            "CREATE VIRTUAL TABLE items_fts USING fts5("
+            "tags, text, origin, content='', contentless_delete=1, "
+            "tokenize='unicode61 remove_diacritics 2')"
+        ),
+        _REINDEX_ITEMS,
     ),
 )
 
@@ -791,15 +809,39 @@ class MemoryStore:
     ``max_item_chars`` (default ``200_000``) caps one item's text. A longer text raises rather
     than being cut, so nothing is stored that the caller did not mean to store.
 
+    ``max_index_chars`` (default ``None``, everything) caps how much of an item's text the
+    search index reads: the item keeps its whole text, and a word past the cap is not found by
+    ``search``. It bounds the index of a store that keeps book-length texts.
+
+    ``index_origins`` (default ``False``) also indexes each item's ``origin``, so a search finds
+    an item by its address or file name. Off by default because the kit writes origins of its own
+    (``model``, ``run:<id>``, ``trace:<run>#<step>``) and every query word is ORed: a search for
+    "model" would return every note a model wrote. Turn it on for a store whose origins are
+    addresses and file names a reader might search by.
+
+    Neither setting is stored in the file. Each applies to the items written from then on, and to
+    the one reindex migration step 5 runs; reopening with another value does not reindex.
+
     Raises :class:`MemoryUnavailable` at construction when this SQLite has no FTS5 or is older
     than 3.43.
     """
 
-    def __init__(self, path: str | os.PathLike[str], *, max_item_chars: int = 200_000) -> None:
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        max_item_chars: int = 200_000,
+        max_index_chars: int | None = None,
+        index_origins: bool = False,
+    ) -> None:
         if str(path).strip() in ("", ":memory:") or str(path).startswith("file::memory:"):
             raise ValueError("MemoryStore needs a file path; an in-memory database would not persist")
         if max_item_chars < 1:
             raise ValueError("max_item_chars must be at least 1")
+        if max_index_chars is not None and (isinstance(max_index_chars, bool)
+                                            or not isinstance(max_index_chars, int)
+                                            or max_index_chars < 1):
+            raise ValueError("max_index_chars must be None or an int of at least 1")
         if sqlite3.sqlite_version_info < _MIN_SQLITE:
             raise MemoryUnavailable(
                 f"this Python's SQLite is {sqlite3.sqlite_version}; a memory store needs 3.43 or "
@@ -807,6 +849,9 @@ class MemoryStore:
             )
         self.path = Path(path)
         self.max_item_chars = max_item_chars
+        # Both set before _migrate: step 5 reindexes with them.
+        self.max_index_chars = max_index_chars
+        self.index_origins = bool(index_origins)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._migrate()
 
@@ -877,7 +922,9 @@ class MemoryStore:
                         )
                     for step in _MIGRATIONS[version:]:
                         for statement in step:
-                            if callable(statement):
+                            if statement is _REINDEX_ITEMS:
+                                self._reindex(conn)
+                            elif callable(statement):
                                 statement(conn)
                             else:
                                 conn.execute(statement)
@@ -946,11 +993,22 @@ class MemoryStore:
              meta_json),
         )
         rowid = cursor.lastrowid
-        conn.execute(
-            "INSERT INTO items_fts (rowid, tags, text) VALUES (?, ?, ?)",
-            (rowid, _grams(" ".join(clean_tags), unigrams=True), _grams(text, unigrams=True)),
-        )
+        conn.execute("INSERT INTO items_fts (rowid, tags, text, origin) VALUES (?, ?, ?, ?)",
+                     (rowid, *self._index_terms(clean_tags, text, origin)))
         return rowid
+
+    def _index_terms(self, tags: Iterable[str], text: str, origin: str) -> tuple[str, str, str]:
+        """What the item index holds for one item: its tags, its text up to ``max_index_chars``,
+        and its origin when ``index_origins`` is on, each as the grams search matches against."""
+        head = text if self.max_index_chars is None else text[: self.max_index_chars]
+        return (_grams(" ".join(tags), unigrams=True), _grams(head, unigrams=True),
+                _grams(origin, unigrams=True) if self.index_origins else "")
+
+    def _reindex(self, conn: sqlite3.Connection) -> None:
+        """Fill a freshly created ``items_fts`` from ``items`` (migration step 5)."""
+        for row in conn.execute("SELECT id, tags_json, text, origin FROM items").fetchall():
+            conn.execute("INSERT INTO items_fts (rowid, tags, text, origin) VALUES (?, ?, ?, ?)",
+                         (row[0], *self._index_terms(json.loads(row[1]), row[2], row[3])))
 
     def add(
         self,
@@ -1728,26 +1786,59 @@ class MemoryStore:
                     conn.execute("INSERT INTO items_fts (items_fts) VALUES ('optimize')")
                     conn.execute("INSERT INTO labels_fts (labels_fts) VALUES ('optimize')")
         if done:
-            with self._connect() as conn:
+            if secure:
                 # VACUUM before the checkpoint: in WAL mode VACUUM writes into the WAL, so the
                 # checkpoint is what carries the rewritten file into the main database.
-                if secure:
+                with self._connect() as conn:
                     try:
                         conn.execute("VACUUM")
                     except sqlite3.OperationalError as exc:
                         # The purge committed above; a raise here would read as if it had not.
                         logger.warning("%s: purge committed, but VACUUM failed (%s); free pages "
                                        "stay until a later VACUUM", self.path, exc)
-                # No waiting: a TRUNCATE checkpoint otherwise sits out the whole busy timeout behind
-                # any open reader, and the purge has already committed by now.
-                conn.execute("PRAGMA busy_timeout = 0")
-                busy, _, _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-                if busy:
-                    logger.warning("%s: purge committed, but another connection kept the WAL "
-                                   "checkpoint from finishing; the old pages leave the main file "
-                                   "at the next full checkpoint", self.path)
+            if not self.checkpoint():
+                logger.warning("%s: purge committed, but another connection kept the WAL "
+                               "checkpoint from finishing; the old pages leave the main file "
+                               "at the next full checkpoint (or a later checkpoint())", self.path)
             _erase_vectors(self.path, done, secure=secure)
         return [f"m{rowid}" for rowid in done]
+
+    def checkpoint(self) -> bool:
+        """Run a TRUNCATE WAL checkpoint without waiting, and return whether it finished.
+
+        ``purge`` runs one itself; this is for a host that wants to try again later, since only a
+        connection inside a read transaction keeps it from finishing. Returns the result rather
+        than recording it on the store, which several threads may share.
+        """
+        with self._connect() as conn:
+            # No waiting: a TRUNCATE checkpoint otherwise sits out the whole busy timeout behind
+            # any open reader.
+            conn.execute("PRAGMA busy_timeout = 0")
+            busy, _, _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        return not busy
+
+    def find_meta(self, key: str, value: str | float) -> list[MemoryItem]:
+        """The items whose top-level ``meta[key]`` equals ``value``, oldest first, retired ones
+        included.
+
+        For a host that keeps its own key for an item in ``meta`` and must find the item again,
+        for example after a crash between adding it and recording its id. A str matches only a
+        JSON string and a number only a JSON number (``7`` finds ``7.0``); a JSON ``true``, a list
+        or a nested object never matches. The key is compared as written, so a dot or a quote in it
+        is part of the key, not a path. A scan of every item's ``meta`` (no index on a host's
+        key), meant for occasional lookups, not a hot path.
+        """
+        if not isinstance(key, str) or not key:
+            raise ValueError("key must be a non-empty str")
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            raise TypeError("value must be a str, int or float")
+        types = ("text",) if isinstance(value, str) else ("integer", "real")
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT items.* FROM items, json_each(items.meta_json) AS je WHERE je.key = ? "
+                "AND je.type IN (SELECT value FROM json_each(?)) AND je.value = ? ORDER BY items.id",
+                (key, json.dumps(types), value)).fetchall()
+        return [self._item(row) for row in rows]
 
     def purged(self, item_id: str) -> PurgeRecord | None:
         """The record of ``item_id``'s purge, or ``None`` if it was never purged."""
@@ -1839,10 +1930,12 @@ class MemoryStore:
     ) -> list[MemoryItem]:
         """Items matching ``query``, best first; with an empty query, the newest first.
 
-        - A query matches an item's text or one of its CURRENT labels (a superseded title is not
-          searched). Ranking is a stated heuristic: an item matching in a label comes before one
-          matching only in its text, because a label says what an item is about; within each
-          group, by ``bm25`` and then newest first.
+        - A query matches an item's text (up to ``max_index_chars``), its origin when the store
+          has ``index_origins`` on, or one of its CURRENT labels (a superseded title is not
+          searched); a match in the origin weighs no more than one in the text. Ranking is a
+          stated heuristic: an item matching in a label comes before one matching only in its
+          text, because a label says what an item is about; within each group, by ``bm25`` and
+          then newest first.
         - A non-empty query that reduces to no terms (punctuation, a lone letter or digit) matches
           nothing, rather than falling back to the newest items.
         - ``provenance`` keeps only the given label or labels.
@@ -1933,7 +2026,7 @@ class MemoryStore:
         body_sql = (
             "SELECT items.* FROM items_fts JOIN items ON items.id = items_fts.rowid "
             "WHERE items_fts MATCH ?" + filters
-            + f" ORDER BY bm25(items_fts, {_TAG_WEIGHT}, 1.0), items.id DESC LIMIT ?"
+            + f" ORDER BY bm25(items_fts, {_TAG_WEIGHT}, 1.0, 1.0), items.id DESC LIMIT ?"
         )
         with self._connect() as conn:
             labelled = conn.execute(label_sql, [expression, *params, limit]).fetchall()

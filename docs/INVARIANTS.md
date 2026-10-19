@@ -645,11 +645,16 @@ reason is in the rule.
   What the kit cannot verify is the host's choice between `observed` and `said`; the host's code
   path assigns it, and the docs say so rather than implying a check. The schema changes only by
   appending to `memory._MIGRATIONS`, counted in `PRAGMA user_version`, and a shipped step is never
-  edited. A memory call records an ordinary `tool_call` with optional `memory_ids` and `memory_op`
-  fields; it does not add an event type. Pinned by `tests/test_memory.py`, `tests/test_memory_tools.py`,
+  edited: step 5 rebuilds the item index with an `origin` column rather than changing step 2's
+  rebuild, which still writes the two columns that step created. A step that needs the opening
+  store's settings (step 5 reindexes with its `max_index_chars` and `index_origins`) carries the
+  `_REINDEX_ITEMS` marker, matched by identity, because a step's code receives only the connection;
+  a version comparison would also fire on a test that cuts the ladder short. A memory call records
+  an ordinary `tool_call` with optional `memory_ids` and `memory_op` fields; it does not add an
+  event type. Pinned by `tests/test_memory.py`, `tests/test_memory_tools.py`,
   `tests/test_memory_labels.py`, `tests/test_memory_purge.py`, `tests/test_memory_tasks.py`,
-  `tests/test_memory_aliases.py`, `tests/test_memory_topics.py`, `tests/test_memory_vectors.py` and
-  `tests/test_memory_consolidate.py`.
+  `tests/test_memory_aliases.py`, `tests/test_memory_topics.py`, `tests/test_memory_vectors.py`,
+  `tests/test_memory_consolidate.py` and `tests/test_memory_lookups.py`.
 
   The labelling pass (`memory_tasks.distill_pending`) makes no model call the host did not ask for,
   caps a pass at 500 items, and keeps a short item to ONE `dspy.Predict` call; only a text past

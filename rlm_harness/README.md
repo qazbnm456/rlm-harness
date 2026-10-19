@@ -808,11 +808,12 @@ makes search miss that item; it never changes the item.
 **Search** (`search(query="", *, limit=10, provenance=None, tags=(), entities=(), at=None,
 include_retired=False)`):
 
-- A query matches an item's text or one of its current labels. An item that matches in a label
-  ranks above one that matches only in its text, because a label says what an item is about; within
-  each group, by `bm25` and then newest first (among text-only matches, a hit in the item's own
-  tags outranks one in its body). A superseded label is not
-  searched.
+- A query matches an item's text, its origin when the store was opened with `index_origins=True` (so
+  an address or a file name is searchable), or one of its current labels. An item that matches in a
+  label ranks above one that matches only in its text or origin, because a label says what an item
+  is about; within each group, by `bm25` and then newest first (among those matches, a hit in the
+  item's own tags outranks one in its body, and one in its origin weighs no more than one in its
+  body). A superseded label is not searched.
 - A query is split into terms the way the index's tokenizer splits text (letters, digits and
   combining marks, so a Hindi or pointed Hebrew word stays whole). Thai, Lao, Khmer and Myanmar are
   written without spaces and are not split into words, so a query in them matches only a whole
@@ -1114,10 +1115,11 @@ exists because a person may want back out what they put in.
 - Aliases and the names alignment has considered are store-wide vocabulary, not tied to an item, so
   a purge leaves them; a name that only a purged item used stays in that vocabulary.
 - `secure=True` also runs `VACUUM` to shrink the file. Last, the WAL is checkpointed. If another
-  connection is reading at that moment the checkpoint cannot finish and a warning is logged; the old
-  pages then leave the main file and the WAL at the next full checkpoint, which SQLite runs when the
-  last connection closes. A `VACUUM` that cannot get the lock is logged too, and the purge, already
-  committed, still returns its ids.
+  connection is inside a read transaction at that moment the checkpoint cannot finish and a warning
+  is logged; the old pages then leave the main file and the WAL at the next full checkpoint, which
+  SQLite runs when the last connection closes. `checkpoint()` runs one again without waiting and
+  returns whether it finished, so a host can retry it after a purge. A `VACUUM` that cannot get the
+  lock is logged too, and the purge, already committed, still returns its ids.
 
 **Operational notes.**
 
@@ -1127,12 +1129,28 @@ exists because a person may want back out what they put in.
   VM-shared filesystem is unreliable for it.
 - `":memory:"` is refused, because a per-operation connection would lose everything between calls.
 - `max_item_chars` (default 200,000) caps one item, and a longer text raises rather than being cut.
+- `max_index_chars` (default `None`, everything) caps how much of each item's text the search index
+  reads: the item keeps its whole text, and a word past the cap is not found by `search`. It bounds
+  the index of a store that keeps book-length texts.
+- `index_origins` (default `False`) indexes each item's origin as well. It is off by default because
+  the kit writes origins of its own (`model`, `run:<id>`, `trace:<run>#<step>`) and query words are
+  ORed, so a search for "model" would return every note a model wrote; turn it on for a store whose
+  origins are addresses and file names a reader searches by. Neither setting is stored in the file:
+  each applies to items written from then on and to migration step 5's one reindex, and reopening
+  with another value does not reindex.
+- `find_meta(key, value)` returns the items whose top-level `meta[key]` equals `value` (a str only a
+  JSON string, a number only a JSON number), oldest first and retired ones included, for a host that
+  keeps its own key for an item in `meta` and must find it again (after a crash between adding an
+  item and recording its id, for example). It scans every item's `meta`, so it suits occasional
+  lookups, not a hot path.
 - A Python whose SQLite lacks FTS5, or is older than 3.43, raises `MemoryUnavailable` when the store
   is constructed, for a new file and an existing one alike. Every Python the kit's CI uses ships a
   newer one.
 - The schema changes only by appending a step to `memory._MIGRATIONS`, counted in
   `PRAGMA user_version`. A file whose schema is newer than this kit knows is refused rather than
-  opened.
+  opened. Step 5 rebuilds the item index with the origin column; it reindexes with the opening
+  store's `max_index_chars` and `index_origins` (a marker in the step, since a step's own code sees only the
+  connection).
 - Timestamps (`valid_from`, `at`) must be finite numbers: SQLite stores NaN as NULL, which would
   read as "never retired".
 

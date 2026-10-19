@@ -177,12 +177,26 @@ def test_a_stray_statement_cannot_rewrite_a_topic_row(store, table, columns, val
     assert store.topic(topic.id).name == "T" and store.topic_items(topic.id)[0].id == item
 
 
+def _write_old_item(path, text, *, tags=()):
+    """An item written the way the code of an earlier step did. `add` now indexes the origin as
+    well, a column a ladder cut short of step 5 does not have, so an older file's rows are written
+    here, in the shape that step stored them."""
+    with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as conn:
+        cursor = conn.execute(
+            "INSERT INTO items (text, provenance, origin, tags_json, created_at, valid_from, meta_json)"
+            " VALUES (?, 'observed', 'o', ?, 0, 0, '{}')", (text, json.dumps(list(tags))))
+        conn.execute("INSERT INTO items_fts (rowid, tags, text) VALUES (?, ?, ?)",
+                     (cursor.lastrowid, memory_module._grams(" ".join(tags), unigrams=True),
+                      memory_module._grams(text, unigrams=True)))
+
+
 def test_a_step_three_database_is_upgraded(tmp_path, monkeypatch):
     path = tmp_path / "m.db"
     with monkeypatch.context() as patch:
         patch.setattr(memory_module, "_MIGRATIONS", _MIGRATIONS[:3])
         patch.setattr(memory_module, "_SCHEMA_VERSION", 3)
-        MemoryStore(path).add("x", provenance="observed", origin="o")
+        MemoryStore(path)
+    _write_old_item(path, "x")
     upgraded = MemoryStore(path)
     upgraded.place("m1", upgraded.create_topic("T").id)
     with contextlib.closing(sqlite3.connect(path)) as conn:

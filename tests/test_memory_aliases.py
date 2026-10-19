@@ -215,17 +215,30 @@ def test_a_canonical_no_item_names_any_more_is_still_mergeable_into(store):
     assert store.merge("A one", "Alpha") == "Alpha"
 
 
+def _write_old_item(path, text, *, tags=()):
+    """An item written the way the code of an earlier step did. `add` now indexes the origin as
+    well, a column a ladder cut short of step 5 does not have, so an older file's rows are written
+    here, in the shape that step stored them."""
+    with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as conn:
+        cursor = conn.execute(
+            "INSERT INTO items (text, provenance, origin, tags_json, created_at, valid_from, meta_json)"
+            " VALUES (?, 'observed', 'o', ?, 0, 0, '{}')", (text, json.dumps(list(tags))))
+        conn.execute("INSERT INTO items_fts (rowid, tags, text) VALUES (?, ?, ?)",
+                     (cursor.lastrowid, memory_module._grams(" ".join(tags), unigrams=True),
+                      memory_module._grams(text, unigrams=True)))
+
+
 def test_a_step_two_database_is_upgraded(tmp_path, monkeypatch):
     path = tmp_path / "m.db"
     with monkeypatch.context() as patch:
         patch.setattr(memory_module, "_MIGRATIONS", _MIGRATIONS[:2])
         patch.setattr(memory_module, "_SCHEMA_VERSION", 2)
         old = MemoryStore(path)
-        old.add("x", provenance="observed", origin="o")
-        # Written as step-2 code would: `label()` now reads the alias table, which step 2 lacks.
-        with _raw(old) as conn:
-            conn.execute("INSERT INTO labels (item_id, kind, value_json, provenance, created_at) "
-                         "VALUES (1, 'entities', '[\"Kubernetes\", \"k8s\"]', 'inferred', 0)")
+    _write_old_item(path, "x")
+    # Written as step-2 code would: `label()` now reads the alias table, which step 2 lacks.
+    with _raw(old) as conn:
+        conn.execute("INSERT INTO labels (item_id, kind, value_json, provenance, created_at) "
+                     "VALUES (1, 'entities', '[\"Kubernetes\", \"k8s\"]', 'inferred', 0)")
     upgraded = MemoryStore(path)
     assert upgraded.merge("k8s", "Kubernetes") == "Kubernetes"
     with contextlib.closing(sqlite3.connect(path)) as conn:

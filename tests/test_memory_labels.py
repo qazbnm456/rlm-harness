@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import sqlite3
 
 import pytest
@@ -266,6 +267,19 @@ def test_entities_filter_reads_current_entity_labels(store):
 
 # ---- schema -------------------------------------------------------------------------------------
 
+
+def _write_old_item(path, text, *, tags=()):
+    """An item written the way the code of an earlier step did. `add` now indexes the origin as
+    well, a column a ladder cut short of step 5 does not have, so an older file's rows are written
+    here, in the shape that step stored them."""
+    with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as conn:
+        cursor = conn.execute(
+            "INSERT INTO items (text, provenance, origin, tags_json, created_at, valid_from, meta_json)"
+            " VALUES (?, 'observed', 'o', ?, 0, 0, '{}')", (text, json.dumps(list(tags))))
+        conn.execute("INSERT INTO items_fts (rowid, tags, text) VALUES (?, ?, ?)",
+                     (cursor.lastrowid, memory_module._grams(" ".join(tags), unigrams=True),
+                      memory_module._grams(text, unigrams=True)))
+
 def test_a_step_one_database_is_upgraded_and_reindexed(tmp_path, monkeypatch):
     """A file written before labels existed opens, gains the new tables, and its items are still
     found: the index was rebuilt from `items` when it was recreated."""
@@ -274,7 +288,8 @@ def test_a_step_one_database_is_upgraded_and_reindexed(tmp_path, monkeypatch):
         patch.setattr(memory_module, "_MIGRATIONS", _MIGRATIONS[:1])
         patch.setattr(memory_module, "_SCHEMA_VERSION", 1)
         patch.setattr(memory_module, "_FTS_PROBE", "SELECT 1 FROM items_fts LIMIT 0")
-        MemoryStore(path).add("a distinctive phrase", provenance="observed", origin="o", tags=["kept"])
+        MemoryStore(path)
+    _write_old_item(path, "a distinctive phrase", tags=["kept"])
     upgraded = MemoryStore(path)
     assert [i.id for i in upgraded.search("distinctive")] == ["m1"]
     assert [i.id for i in upgraded.search("kept")] == ["m1"]
@@ -309,7 +324,8 @@ def test_a_failed_step_two_leaves_a_step_one_file_as_it_was(tmp_path, monkeypatc
     with monkeypatch.context() as patch:
         patch.setattr(memory_module, "_MIGRATIONS", _MIGRATIONS[:1])
         patch.setattr(memory_module, "_SCHEMA_VERSION", 1)
-        MemoryStore(path).add("kept", provenance="observed", origin="o")
+        MemoryStore(path)
+    _write_old_item(path, "kept")
 
     def boom(conn):
         raise RuntimeError("step two failed half way")
