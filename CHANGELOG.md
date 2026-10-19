@@ -79,14 +79,22 @@ and entities, written by a person or by a model pass that costs one call per sho
   model's merge must name something it was asked about; a refusal says why. The pass makes one call
   per batch of names nobody has considered yet and marks them seen, so a growing store pays only
   for what is new.
+- **Topics.** `create_topic`, `rename_topic`, `retire_topic`, `place`, `unplace`, `dismiss` and their
+  readers on the store, `suggest_topics` and `topic_graph` (local, no model call), and
+  `organize_pending` with its `OrganiseBatch` step (one `dspy.Predict` per round). A person's name
+  for a topic outranks a model's, and a person's decision about an item and a topic stands, a
+  removal included. The host judges every placement the model proposes, never files into a pair a
+  person dismissed or took apart, opens a new topic only for two or more items and never under the
+  name of a topic a person retired, and remembers what it left so the same leftovers are not paid
+  for again until the topics change.
 - `tools.grounding._find_span`, the literal half of `verify_quote`, returns the source's own span
   and refuses a quote under 20 characters. It is private, shared by the passes that store what a
   model quoted.
 
 ### Not yet
 
-Grouping items into topics, similarity search over embeddings, and memory written automatically
-from finished runs are later work.
+Similarity search over embeddings and memory written automatically from finished runs are later
+work.
 
 ## [1.20.1] - 2026-10-17
 

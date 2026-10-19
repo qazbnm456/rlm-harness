@@ -529,7 +529,7 @@ reason is in the rule.
   (`rlm_harness/README.md`) "Skills (progressive disclosure)".
 - **Memory is never rewritten, a model writes only `inferred`, and only the host erases.**
   `MemoryStore` (`memory.py`) labels every item with one of `PROVENANCES`: `observed` (taken from a
-  source by the host), `said` (written by a person) and `inferred` (written by a model). Five
+  source by the host), `said` (written by a person) and `inferred` (written by a model). Six
   properties hold and must keep holding:
   1. **The model's only write path cannot name a provenance.** `memory_note(text, revises)` has
      no such argument and stores `inferred`, so the guarantee comes from the tool's SHAPE, the way
@@ -589,14 +589,29 @@ reason is in the rule.
      canonical or a live alias is refused, so the table never holds a chain and no later merge
      silently repoints an alias. `entity_seen` has no UNIQUE column: INSERT OR REPLACE against one
      deletes without firing the delete trigger, so "insert if absent" is a `WHERE NOT EXISTS`.
+  6. **A person's decision about an item and a topic stands, a removal included.** Topic
+     membership is read through `current_members` with the alias rule, not the label rule, for the
+     same reason: a person's `unplace` of a model's placement must not let it show through again.
+     A topic's name follows the label rule (a person's name outranks a model's). The organising
+     pass is one `dspy.Predict` call per round, as in the design it was taken from, and the host
+     judges every placement (`plan_from`): only items shown, each once, only live topics, an
+     existing topic only with a "subject" or "part" fit, a new topic only for two or more items and
+     never into a pair a person dismissed or took apart, and never under the name of a topic a
+     PERSON retired (a retirement row carries provenance, so a pass retiring its own underfilled
+     topic does not burn the name). Items shown but not placed are recorded against the topic
+     set the model was SHOWN (taken before the call, so the next round re-checks them against the
+     topics this one opened), and come back only beside a new arrival or after the topics change:
+     a lone item gets its topic when a second item on its subject arrives, and an unchanged store
+     asks nothing. Dropping the re-gather half left every lone item out for good. Rows that name an
+     item go with it on purge; a topic and its names stay.
 
   What the kit cannot verify is the host's choice between `observed` and `said`; the host's code
   path assigns it, and the docs say so rather than implying a check. The schema changes only by
   appending to `memory._MIGRATIONS`, counted in `PRAGMA user_version`, and a shipped step is never
   edited. A memory call records an ordinary `tool_call` with an optional `memory_ids` field; it
   does not add an event type. Pinned by `tests/test_memory.py`, `tests/test_memory_tools.py`,
-  `tests/test_memory_labels.py`, `tests/test_memory_purge.py`, `tests/test_memory_tasks.py` and
-  `tests/test_memory_aliases.py`.
+  `tests/test_memory_labels.py`, `tests/test_memory_purge.py`, `tests/test_memory_tasks.py`,
+  `tests/test_memory_aliases.py` and `tests/test_memory_topics.py`.
 
   The labelling pass (`memory_tasks.distill_pending`) makes no model call the host did not ask for,
   caps a pass at 500 items, and keeps a short item to ONE `dspy.Predict` call; only a text past

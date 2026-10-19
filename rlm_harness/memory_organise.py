@@ -3,13 +3,16 @@
 What lives here is everything a summarising or organising pass needs that is not a model call, so
 it can be tested and reused without dspy: the section map a long item is read through, the
 language guard every prompt input passes, and the list of labels already in use that a summary is
-shown so related items converge on one label.
+shown so related items converge on one label. It also holds the local organising reads that need no
+model: the best topic for an item (``suggest_topics``) and the bridges between topics
+(``topic_graph``).
 """
 
 from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass, field
 
 from .memory import _UNSPACED, MemoryStore
 from .memory import _fold as fold
@@ -175,3 +178,112 @@ def known_listing(store: MemoryStore) -> tuple[str, dict[str, str]]:
         if fold(canonical) in known:
             known.setdefault(alias, written.get(alias, ""))
     return "\n".join(lines), known
+
+
+#: How a suggestion is scored, and the least score worth offering. Lifted from the local filing
+#: suggestions this design was taken from: a shared entity says more than a shared tag.
+ENTITY_WEIGHT = 2
+TAG_WEIGHT = 1
+SUGGEST_THRESHOLD = 3
+
+#: How many bridges each topic keeps in `topic_graph`. A global cap cut every link of a small topic
+#: in the design this was taken from; a per-topic one keeps each topic connected.
+BRIDGES_PER_TOPIC = 3
+
+
+@dataclass(frozen=True)
+class TopicSuggestion:
+    """The best topic for an item in none, and why: the entities and tags it shares with members."""
+
+    item_id: str
+    topic_id: str
+    score: int
+    shared_entities: tuple[str, ...]
+    shared_tags: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TopicGraph:
+    """Pairs of live topics whose members name the same entities, and how many bridges each topic
+    had beyond the ones kept."""
+
+    bridges: tuple[tuple[str, str, tuple[str, ...]], ...]
+    omitted: dict = field(default_factory=dict, hash=False)
+
+
+def _current_sets(store: MemoryStore) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Each non-retired, labelled item's resolved entities and its tags, by item id, in one read."""
+    entities: dict[str, set[str]] = {}
+    tags: dict[str, set[str]] = {}
+    for item_id, labels in store._labels_by_item().items():
+        if labels.entities or labels.tags:
+            entities[item_id] = set(labels.entities)
+            tags[item_id] = set(labels.tags)
+    return entities, tags
+
+
+def suggest_topics(store: MemoryStore, *, limit: int = 50, landing: str | None = None) -> list[TopicSuggestion]:
+    """The best live topic for each item that is in none, strongest first. No model call.
+
+    An item scores against a topic by what its current labels share with the topic's members:
+    ``ENTITY_WEIGHT`` per entity (read through the alias table) and ``TAG_WEIGHT`` per tag, and
+    only a score of ``SUGGEST_THRESHOLD`` or more is offered. A pair the item was dismissed from,
+    or that a person took apart, is never offered. ``landing`` names a catch-all topic: being in it
+    alone still counts as being in none, and it is never suggested.
+    """
+    entities, tags = _current_sets(store)
+    topics = [t for t in store.topics() if t.id != landing]
+    members = {t.id: {i.id for i in store.topic_items(t.id)} for t in topics}
+    blocked = store.dismissed() | store.removed_pairs()
+    topic_entities = {tid: set().union(*(entities.get(i, set()) for i in ids)) for tid, ids in members.items()}
+    topic_tags = {tid: set().union(*(tags.get(i, set()) for i in ids)) for tid, ids in members.items()}
+    filed = {i for ids in members.values() for i in ids}
+    out: list[TopicSuggestion] = []
+    for item_id in entities:
+        if item_id in filed:
+            continue
+        best: TopicSuggestion | None = None
+        for topic in topics:
+            if (item_id, topic.id) in blocked:
+                continue
+            shared = tuple(sorted(entities[item_id] & topic_entities[topic.id]))
+            common = tuple(sorted(tags[item_id] & topic_tags[topic.id]))
+            score = ENTITY_WEIGHT * len(shared) + TAG_WEIGHT * len(common)
+            if score >= SUGGEST_THRESHOLD and (best is None or score > best.score):
+                best = TopicSuggestion(item_id, topic.id, score, shared, common)
+        if best is not None:
+            out.append(best)
+    out.sort(key=lambda s: (-s.score, s.item_id))
+    return out[: max(1, int(limit))]
+
+
+def topic_graph(store: MemoryStore, *, per_topic: int = BRIDGES_PER_TOPIC) -> TopicGraph:
+    """Pairs of live topics bridged by entities their members both name, strongest first. A bridge
+    is kept when it is among the ``per_topic`` strongest of EITHER of its topics, so every topic keeps
+    at least its strongest bridges and a busy one may keep more; ``omitted`` counts, per topic, the
+    bridges dropped. No model call."""
+    entities, _ = _current_sets(store)
+    topics = [t.id for t in store.topics()]
+    named = {tid: set().union(*(entities.get(i.id, set()) for i in store.topic_items(tid))) for tid in topics}
+    pairs: list[tuple[str, str, tuple[str, ...]]] = []
+    for index, a in enumerate(topics):
+        for b in topics[index + 1:]:
+            shared = tuple(sorted(named[a] & named[b]))
+            if shared:
+                pairs.append((a, b, shared))
+    pairs.sort(key=lambda p: (-len(p[2]), p[0], p[1]))
+    kept_per: dict[str, int] = {t: 0 for t in topics}
+    seen_per: dict[str, int] = {t: 0 for t in topics}
+    kept: list[tuple[str, str, tuple[str, ...]]] = []
+    cap = max(1, int(per_topic))
+    for a, b, shared in pairs:
+        seen_per[a] += 1
+        seen_per[b] += 1
+        # A bridge is kept when it is among the strongest for EITHER end, so no topic loses all
+        # its links to busier neighbours.
+        if kept_per[a] < cap or kept_per[b] < cap:
+            kept.append((a, b, shared))
+            kept_per[a] += 1
+            kept_per[b] += 1
+    omitted = {t: seen_per[t] - kept_per[t] for t in topics if seen_per[t] > kept_per[t]}
+    return TopicGraph(tuple(kept), omitted)

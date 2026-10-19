@@ -16,9 +16,9 @@ pitch, the quickstart, and installation: start at the
 | `_retry.py` | Validation + retry engine (dspy-free, unit-tested). Mostly private, but `short_error` is public: head-and-tail elision for a caught exception, so a giant `AdapterParseError` (which embeds the whole raw completion) becomes one readable log line instead of thousands. |
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
 | `atomic.py` | `atomic_write_text` / `atomic_write_stream`: a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write; `atomic_write_stream` takes an iterable of `bytes` chunks instead of one in-memory blob, aborting once a running total exceeds an optional `max_bytes`. dspy-free. |
-| `memory.py` | `MemoryStore` / `MemoryItem` / `MemoryLabels` / `PurgeRecord` / `PROVENANCES` / `MemoryUnavailable`: a provenance-typed memory in one SQLite file that outlives a run, with labels, CJK-aware full-text search and a host-only `purge` (see "Memory" below). dspy-free, stdlib only. |
-| `memory_organise.py` | The model-free half of organising a store: `section_map`, `clean_language`, `known_listing`. dspy-free. |
-| `memory_tasks.py` | The model-backed half: `SummariseShort` (one `dspy.Predict` call), `DistillLongItem` and `AlignEntities` (`RLMTask`s), `run_step` / `arun_step` / `subprocess_step_runner`, `distill_pending` and `align_pending`. Lazily exported, since it imports dspy. |
+| `memory.py` | `MemoryStore` / `MemoryItem` / `MemoryLabels` / `Topic` / `PurgeRecord` / `PROVENANCES` / `MemoryUnavailable`: a provenance-typed memory in one SQLite file that outlives a run, with labels, CJK-aware full-text search and a host-only `purge` (see "Memory" below). dspy-free, stdlib only. |
+| `memory_organise.py` | The model-free half of organising a store: `section_map`, `clean_language`, `known_listing`, `suggest_topics` / `TopicSuggestion`, `topic_graph` / `TopicGraph`. dspy-free. |
+| `memory_tasks.py` | The model-backed half: `SummariseShort` (one `dspy.Predict` call), `OrganiseBatch` (one `dspy.Predict` call), `DistillLongItem` and `AlignEntities` (`RLMTask`s), `run_step` / `arun_step` / `subprocess_step_runner`, `distill_pending`, `align_pending` and `organize_pending`. Lazily exported, since it imports dspy. |
 | `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` / `RUN_FACT_KEYS` / `compute_run_facts` / `compute_run_facts_by_run` (the generic half of a rubric's facts): reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded trace events. dspy-free. |
 | `isolation.py` | `run_in_subprocess`: a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
 | `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema: the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` (see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths`) a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` (safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `make_extract_archive_tool`) safe `zip`/tar extraction in `tools/archive.py` (see below), `verify_quote` (a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool`) a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool`: the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), the memory tools `make_memory_search_tool` / `make_memory_get_tool` / `make_memory_note_tool` in `tools/memory.py` (see "Memory" below), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
@@ -946,13 +946,59 @@ memory.unmerge("k8s")                      # and apart again; no model can merge
 - `entity_graph(limit=200)` returns pairs of canonical entities named together by one item, with
   counts, strongest first: data to draw, not a drawing.
 
+### Topics (`create_topic`, `suggest_topics`, `organize_pending`)
+
+A topic is a named group of items a reader goes back to together. Topics, their names, their
+retirement and their members are all event rows, so nothing is rewritten.
+
+```python
+topic = memory.create_topic("Container orchestration")      # said
+memory.place("m12", topic.id)                                 # said
+for s in suggest_topics(memory):                              # local, no model call
+    print(s.item_id, s.topic_id, s.score, s.shared_entities)
+report = await organize_pending(memory, max_new_topics=10)    # a model, inferred
+```
+
+- **Who decides.** A topic's name follows the label rule: a person's name outranks any model's.
+  Membership follows the alias rule: a person's decision about an item and a topic stands whenever
+  one exists, a removal included, so `unplace` keeps that pair apart for good and no later model
+  placement can undo a person's. A retired topic leaves listings and suggestions and takes no new
+  members; its old members stay readable, and `restore_topic` brings it back.
+- **Reading.** `topics()`, `topic(id)`, `topic_items(id)`, `item_topics(id)`, `search(topic=...)`
+  and `entity_graph(topic=...)`. `topic_graph()` returns pairs of live topics whose members name the
+  same entities; a bridge stays when it is among the three strongest of either topic, so every topic
+  keeps its strongest links, a small one is never cut off by a busy one, and the dropped bridges are
+  counted per topic.
+- **Local suggestions.** `suggest_topics` offers each item in no topic its best live topic, scored
+  2 per entity and 1 per tag it shares with the topic's members (entities read through aliases),
+  from a score of 3. A dismissed pair (`dismiss`) or one a person took apart is never offered.
+  `landing=` names a catch-all topic that still counts as none and is never suggested. It reads
+  every item's labels in one query and joins them in Python, so it is meant for stores of thousands
+  of items, not millions.
+- **The organising pass.** `organize_pending` runs only when you await it. Each round shows up to
+  `limit` (40) labelled items in no topic, with the live topics and a few member titles each, to
+  ONE `OrganiseBatch` call (a `dspy.Predict`), and the host decides what the answer may do: only
+  items it was shown, each once; only live topics; an existing topic only with a fit of "subject"
+  or "part"; a new topic only for two or more items, at most `max_new_topics` (10), never under the
+  name of a topic a person retired; and never a pair a person dismissed or took apart (the item's
+  next usable placement in the answer may still apply). Items shown but not placed are left
+  against the topic set they were shown (`left_items`) and come back only beside a new arrival or
+  after the topics change: a lone item on a subject gets its topic when a second one comes, and an
+  unchanged store asks nothing. A topic the round opened that ends up with fewer than two members
+  (its other placements refused) is retired again by the pass itself, which leaves the name free for
+  a later pass, and its placements are reported as refused. It runs up to `rounds` (3) and stops
+  after a round that placed nothing.
+  `recorder_for` is called with `"organize:round<N>"`, and `on_progress` receives
+  `{"round", "ok", "error"}` after each round.
+
 ### Removing data (`purge`)
 
 `purge(item_ids, *, reason="", include_revisions=False, secure=False)` erases items for good. It is
 the host's deliberate exception to append-only: no tool and no model-facing path reaches it, and it
 exists because a person may want back out what they put in.
 
-- It deletes each item, its labels, its recorded failures and its search-index entries, and writes a
+- It deletes each item, its labels, its recorded failures, its topic memberships, dismissals and
+  leftovers, and its search-index entries, and writes a
   `purged` record with the time and `reason`, never the text (`purged(item_id)` reads it back).
 - Deleting from the index only writes a tombstone; the words stay in its segments until they are
   merged. So every purge merges both indexes, which rewrites them and costs time in proportion to
@@ -990,8 +1036,8 @@ exists because a person may want back out what they put in.
 - Timestamps (`valid_from`, `at`) must be finite numbers: SQLite stores NaN as NULL, which would
   read as "never retired".
 
-**Not built yet.** Grouping items into topics, similarity search over embeddings, and writing memory
-automatically from finished runs are later work, and none of it is implied by anything above.
+**Not built yet.** Similarity search over embeddings and writing memory automatically from finished
+runs are later work, and none of it is implied by anything above.
 
 ## Environment interpreter (`interpreter="container"`)
 
