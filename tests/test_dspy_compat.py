@@ -24,6 +24,8 @@ rename loud.
 from __future__ import annotations
 
 import inspect
+import subprocess
+import sys
 
 import pytest
 
@@ -1129,6 +1131,7 @@ def test_the_kits_own_LMs_are_off_the_interface_dspy_removes_in_3_5():
     import asyncio
     import warnings
 
+    _dspy_compat.load_lazy_module("openai")
     import litellm
 
     class _Legacy(dspy.BaseLM):
@@ -1284,3 +1287,34 @@ def test_the_interpreter_factory_the_kit_supplies_is_the_one_it_can_read_back():
         "dspy no longer renders the factory's execution_instructions into the action prompt, so "
         "fingerprinting it guards text the model never sees"
     )
+
+
+_LITELLM_AFTER_DSPY = (
+    "import dspy\n"
+    "{shim}"
+    "import litellm\n"
+    "print('ok')\n"
+)
+
+
+def test_litellm_imports_after_dspy_once_the_openai_proxy_is_loaded():
+    """`configure` imports litellm after dspy; with numpy installed that import used to fail and be
+    swallowed, silently skipping the transport setting. `load_lazy_module` is the fix."""
+    shim = "from rlm_harness._dspy_compat import load_lazy_module\nload_lazy_module('openai')\n"
+    proc = subprocess.run([sys.executable, "-c", _LITELLM_AFTER_DSPY.format(shim=shim)],
+                          capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+
+
+def test_the_lazy_proxy_bug_load_lazy_module_works_around_is_still_upstream():
+    """The control for the test above: without the shim the import still fails on this dspy when
+    numpy is installed (numpy is a dev dependency, so it is). When this goes red, upstream fixed
+    the proxy; `load_lazy_module` and its call in `configure` can then go."""
+    import importlib.util
+
+    assert importlib.util.find_spec("numpy") is not None, "the failure needs numpy installed"
+    proc = subprocess.run([sys.executable, "-c", _LITELLM_AFTER_DSPY.format(shim="")],
+                          capture_output=True, text=True, check=False)
+    assert proc.returncode != 0 and "circular import" in proc.stderr, (
+        "import dspy; import litellm now works without the shim: the dspy lazy-proxy bug is fixed "
+        "upstream, so remove _dspy_compat.load_lazy_module")

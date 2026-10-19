@@ -37,6 +37,7 @@ import contextlib
 import copy
 import dataclasses
 import inspect
+import sys
 from functools import lru_cache
 from typing import Any
 
@@ -47,6 +48,24 @@ _BUDGET_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("max_llm_calls", ("max_llm_calls",)),
     ("max_output_chars", ("max_output_chars",)),
 )
+
+
+def load_lazy_module(name: str) -> None:
+    """Load a module dspy left in ``sys.modules`` as a lazy proxy, before anything imports one of
+    its submodules. A real module, or none at all, is left alone.
+
+    dspy 3.4.0's proxy (``dspy.utils.lazy_import._LazyModule``) loads the real module from its
+    ``__setattr__``, and the import system sets a submodule on its parent while that submodule is
+    still executing. So ``import openai._models`` under a proxied ``openai`` runs
+    ``openai/__init__.py`` midway, which imports ``openai._models`` again and finds it half built.
+    litellm starts with exactly that import, and measured on dspy 3.4.0, litellm 1.88.1 and openai
+    2.41.0, ``import dspy; import litellm`` raised a circular ``ImportError`` whenever numpy was
+    installed (without numpy, ``import dspy`` happens to import openai for real). Loading the proxy
+    first makes the parent real, so the submodule import never touches the proxy.
+    """
+    module = sys.modules.get(name)
+    if module is not None and "_dspy_lazy_spec" in vars(module):
+        module._load()
 
 
 @lru_cache(maxsize=1)

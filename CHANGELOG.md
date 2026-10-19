@@ -87,14 +87,32 @@ and entities, written by a person or by a model pass that costs one call per sho
   person dismissed or took apart, opens a new topic only for two or more items and never under the
   name of a topic a person retired, and remembers what it left so the same leftovers are not paid
   for again until the topics change.
+- **Local similarity** (`rlm_harness/memory_vectors.py`, the `memory-vectors` extra).
+  `MemoryVectors` embeds each item's title, summary and the head of its text on this machine
+  and finds mutual near neighbours above a threshold; `suggest_topics(vectors=)` offers an item
+  with no entities or tags the topic of the filed item it is most like, ranked below any label
+  match. Two Chinese, Japanese or Korean texts must reach 0.90 rather than 0.86, because
+  unrelated Chinese texts sit as close as 0.892 on the default model; in a mixed store that
+  removed all 13 wrong links one threshold drew. A short CJK note is compared from about 14
+  characters. `download_model` fetches the pinned default, `multilingual-e5-small` int8, only when
+  called, and refuses a file that fails its checksum. The vectors are plain BLOBs in
+  `<store>.vectors.db`, so `purge` erases them without the extra.
 - `tools.grounding._find_span`, the literal half of `verify_quote`, returns the source's own span
   and refuses a quote under 20 characters. It is private, shared by the passes that store what a
   model quoted.
 
+### Fixed
+
+- **`configure` sets litellm's transport again when numpy is installed.** dspy 3.4.0 leaves openai
+  in `sys.modules` as a lazy proxy, and its proxy loads the real module midway through importing a
+  submodule. litellm's first import is `openai._models`, so `import dspy; import litellm` raised a
+  circular `ImportError` whenever numpy was installed, and `configure` swallowed it and skipped the
+  setting. `_dspy_compat.load_lazy_module` loads the proxy first; a control test reds once
+  upstream fixes the proxy.
+
 ### Not yet
 
-Similarity search over embeddings and memory written automatically from finished runs are later
-work.
+Memory written automatically from finished runs is later work.
 
 ## [1.20.1] - 2026-10-17
 

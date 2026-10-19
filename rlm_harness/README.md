@@ -18,6 +18,7 @@ pitch, the quickstart, and installation: start at the
 | `atomic.py` | `atomic_write_text` / `atomic_write_stream`: a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write; `atomic_write_stream` takes an iterable of `bytes` chunks instead of one in-memory blob, aborting once a running total exceeds an optional `max_bytes`. dspy-free. |
 | `memory.py` | `MemoryStore` / `MemoryItem` / `MemoryLabels` / `Topic` / `PurgeRecord` / `PROVENANCES` / `MemoryUnavailable`: a provenance-typed memory in one SQLite file that outlives a run, with labels, CJK-aware full-text search and a host-only `purge` (see "Memory" below). dspy-free, stdlib only. |
 | `memory_organise.py` | The model-free half of organising a store: `section_map`, `clean_language`, `known_listing`, `suggest_topics` / `TopicSuggestion`, `topic_graph` / `TopicGraph`. dspy-free. |
+| `memory_vectors.py` | Local similarity for a store (the `memory-vectors` extra): `EmbeddingModel` / `DEFAULT_MODEL`, `download_model`, `OnnxEmbedder`, `MemoryVectors` (`sync`, `similar`, `similar_pairs`, `forget`). dspy-free; numpy and the model runtime are imported on use. Imported explicitly, not re-exported. |
 | `memory_tasks.py` | The model-backed half: `SummariseShort` (one `dspy.Predict` call), `OrganiseBatch` (one `dspy.Predict` call), `DistillLongItem` and `AlignEntities` (`RLMTask`s), `run_step` / `arun_step` / `subprocess_step_runner`, `distill_pending`, `align_pending` and `organize_pending`. Lazily exported, since it imports dspy. |
 | `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` / `RUN_FACT_KEYS` / `compute_run_facts` / `compute_run_facts_by_run` (the generic half of a rubric's facts): reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded trace events. dspy-free. |
 | `isolation.py` | `run_in_subprocess`: a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
@@ -991,6 +992,59 @@ report = await organize_pending(memory, max_new_topics=10)    # a model, inferre
   `recorder_for` is called with `"organize:round<N>"`, and `on_progress` receives
   `{"round", "ok", "error"}` after each round.
 
+### Similarity (`memory_vectors.py`, the `memory-vectors` extra)
+
+Labels need a summary, and a summary is a model call. An embedding is the free route: a small
+model on this machine gives every item a vector, so an item nobody has summarised can still be
+linked to what it is like. Install `rlm-harness[memory-vectors]` (onnxruntime, tokenizers,
+numpy).
+
+```python
+from rlm_harness.memory_vectors import DEFAULT_MODEL, MemoryVectors, download_model
+
+download_model(DEFAULT_MODEL, "models/e5")                 # ~135 MB, once, when you call it
+vectors = MemoryVectors(memory, "models/e5")
+vectors.sync(limit=200)                                      # local, no model call
+vectors.similar("m12")                                       # [("m40", 0.91), ...]
+suggest_topics(memory, vectors=vectors)
+```
+
+- **The model.** `DEFAULT_MODEL` is `multilingual-e5-small` quantised to int8, pinned to one
+  upstream revision with each file's size and SHA-256. It is this kit's choice, made for
+  multilingual text; pass your own `EmbeddingModel` to use another, and to run it with your own
+  code, any object with an `embed(texts) -> vectors` method as `embedder=` (which then needs
+  `model=`, since a vector's model key and similarity threshold come from it). `download_model` runs
+  only when you call it, fetches only `https` addresses, resumes a partial file, keeps a file
+  already in place only if it still matches, and deletes a file that does not match its size and
+  checksum instead of installing it. On a CPU it embeds an item in roughly 70 to 100 milliseconds.
+- **What is embedded.** An item's current title, its summary and the first 1,500 characters of
+  its text. `sync` embeds, newest first and at most `limit` (clamped to 500) per call, the live
+  items with no vector or whose text or model changed since theirs was made, and drops the
+  vectors of retired and purged items. Text that weighs under 40 (`MIN_TEXT`, with each Chinese,
+  Japanese or Korean character counting 3) is recorded as skipped and not read again until it
+  changes: a vector of almost nothing sits near everything. A Chinese note is compared from about
+  14 characters, the length from which, measured, it starts to link to its own subject.
+- **Where it lives.** `<store path>.vectors.db`, a separate file of plain float32 BLOBs compared
+  with numpy. It is a derived cache that `sync` can rebuild, so it has no append-only triggers;
+  its schema has its own numbered steps. No SQLite extension is involved, which is why a purge
+  erases a purged item's vector with the standard library alone, whether or not a
+  `MemoryVectors` is open.
+- **What similar means.** Two items are similar only at or above the pair's threshold AND when
+  each is among the other's four nearest. The default model holds a pair of mostly Chinese,
+  Japanese or Korean texts (`is_cjk`) to 0.90 and every other pair, a Chinese and an English text
+  included, to 0.86, because unrelated Chinese texts sit much closer together than unrelated
+  English ones: measured over eight topics, unrelated Chinese pairs reached 0.892, unrelated
+  English pairs 0.819. In a store of those texts in both languages, one 0.86 threshold drew 13
+  wrong links beside 15 right ones; the pair rule drew 14 right and none wrong. A missing link
+  still means nothing. `similar(item_id, among=...)` counts only those items, both as candidates
+  and as the crowd each side's nearest are counted in; `similar_pairs(ids)` returns every such
+  pair among `ids`, strongest first. `forget(ids)` erases vectors and keeps those items out until
+  their text changes.
+- **Suggestions.** `suggest_topics(memory, vectors=...)` also offers up to 30 of the newest items
+  with no entities or tags the topic of the filed item they are most like. Similarity is the
+  weaker signal, so such a suggestion scores 3 and sorts after any label match of the same score;
+  it names the item it resembles (`similar_to`) and the cosine (`similarity`).
+
 ### Removing data (`purge`)
 
 `purge(item_ids, *, reason="", include_revisions=False, secure=False)` erases items for good. It is
@@ -998,8 +1052,9 @@ the host's deliberate exception to append-only: no tool and no model-facing path
 exists because a person may want back out what they put in.
 
 - It deletes each item, its labels, its recorded failures, its topic memberships, dismissals and
-  leftovers, and its search-index entries, and writes a
-  `purged` record with the time and `reason`, never the text (`purged(item_id)` reads it back).
+  leftovers, its search-index entries and its vector (an embedding can be partly turned back
+  into its text), and writes a `purged` record with the time and `reason`, never the text
+  (`purged(item_id)` reads it back).
 - Deleting from the index only writes a tombstone; the words stay in its segments until they are
   merged. So every purge merges both indexes, which rewrites them and costs time in proportion to
   the store's size, holding the write lock throughout: other writers, a model's `memory_note`
@@ -1036,8 +1091,8 @@ exists because a person may want back out what they put in.
 - Timestamps (`valid_from`, `at`) must be finite numbers: SQLite stores NaN as NULL, which would
   read as "never retired".
 
-**Not built yet.** Similarity search over embeddings and writing memory automatically from finished
-runs are later work, and none of it is implied by anything above.
+**Not built yet.** Writing memory automatically from finished runs is later work, and nothing
+above implies it.
 
 ## Environment interpreter (`interpreter="container"`)
 

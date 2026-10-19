@@ -140,8 +140,8 @@ reason is in the rule.
 - **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`, `tools/`,
   `trace.py`, `skills.py`, `replay.py`, `dataset.py`, `serving.py`, `harness_serve.py`,
   `_dspy_compat.py`, `metrics.py`, `rubric.py`, `_toolname.py`, `atomic.py`, `isolation.py`,
-  `memory.py`, `memory_organise.py` must NOT import `dspy` at module top: that keeps their logic
-  testable without dspy. Only `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`,
+  `memory.py`, `memory_organise.py`, `memory_vectors.py` must NOT import `dspy` at module top:
+  that keeps their logic testable without dspy. Only `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`,
   `container_interpreter.py`, `testing.py`, `claude_agent_lm.py` and `memory_tasks.py` touch dspy:
   the last five live outside the dspy-free set and are lazily imported (by `__getattr__` / by
   `sandbox.build_interpreter`'s `"container"` branch / inside `testing.py`'s functions), so
@@ -529,7 +529,7 @@ reason is in the rule.
   (`rlm_harness/README.md`) "Skills (progressive disclosure)".
 - **Memory is never rewritten, a model writes only `inferred`, and only the host erases.**
   `MemoryStore` (`memory.py`) labels every item with one of `PROVENANCES`: `observed` (taken from a
-  source by the host), `said` (written by a person) and `inferred` (written by a model). Six
+  source by the host), `said` (written by a person) and `inferred` (written by a model). Seven
   properties hold and must keep holding:
   1. **The model's only write path cannot name a provenance.** `memory_note(text, revises)` has
      no such argument and stores `inferred`, so the guarantee comes from the tool's SHAPE, the way
@@ -553,8 +553,8 @@ reason is in the rule.
      docs must not claim otherwise.
   3. **Only `purge` erases, and only the host calls it.** A person may want back out what they put
      in, so erasure exists, but as one deliberate host-side method with no tool and no model-facing
-     path. It deletes the item, its labels, failures and index rows and writes a content-free
-     `purged` record. A `contentless_delete` index keeps a deleted row's words in its segments
+     path. It deletes the item, its labels, failures, index rows and vector and writes a
+     content-free `purged` record. A `contentless_delete` index keeps a deleted row's words in its segments
      behind a tombstone, so purge then merges both indexes (FTS5 `'optimize'`). Every store
      connection runs with `secure_delete` on, not only purge's: an ordinary write merges index
      segments too, and without it leaves an old copy of the text as slack in a live page that a
@@ -604,6 +604,29 @@ reason is in the rule.
      a lone item gets its topic when a second item on its subject arrives, and an unchanged store
      asks nothing. Dropping the re-gather half left every lone item out for good. Rows that name an
      item go with it on purge; a topic and its names stay.
+  7. **Vectors are a derived cache that a purge erases, and similarity stays a weak signal.**
+     `memory_vectors.py` keeps plain float32 BLOBs in `<store path>.vectors.db`, compared with
+     numpy, with its own migration ladder and no append-only triggers (every row can be rebuilt by
+     `sync`, like the FTS indexes). No SQLite extension: with one, only a connection that loaded it
+     could delete a vector, and `purge` erases a purged item's vector with the standard library
+     alone, open index or not, because an embedding can be partly turned back into its text. `sync`
+     re-checks the store AFTER writing a batch, so a purge that commits mid-batch leaves no vector.
+     The vector file is a second database, so a crash between the store's commit and that erase
+     leaves the vector until the next `sync` drops it, and a reader open on the file keeps freed
+     pages in its WAL until the last connection closes (logged). A row keeps the SHA-256 of the
+     model key and the exact text embedded, so a changed label, text or model re-embeds and a short
+     item is not re-read until it changes. `DEFAULT_MODEL` (multilingual-e5-small int8, pinned
+     revision, sizes and SHA-256 values) is the KIT's own choice for multilingual text, not a
+     consumer's; `download_model` is never called implicitly and installs nothing that fails its
+     checksum. Two items are similar only at or above the pair's threshold AND as mutual near
+     neighbours. A pair of mostly CJK texts is held to `cjk_threshold` (0.90 for the default) and
+     every other pair to `similar_threshold` (0.86): measured on the default model, unrelated
+     Chinese pairs reached 0.892 while unrelated English pairs peaked at 0.819, and in a mixed store
+     one 0.86 threshold drew 13 wrong links beside 15 right ones where the pair rule drew 14 right
+     and none wrong. Do not fold the two back into one number. `MIN_TEXT` counts a CJK character 3
+     times (`text_weight`), so a Chinese note is compared from about 14 characters. A similarity
+     suggestion scores at `SUGGEST_THRESHOLD`, below any label match of the same score. numpy is a
+     dev dependency so CI runs the real comparison; onnxruntime and tokenizers are faked.
 
   What the kit cannot verify is the host's choice between `observed` and `said`; the host's code
   path assigns it, and the docs say so rather than implying a check. The schema changes only by
@@ -611,7 +634,7 @@ reason is in the rule.
   edited. A memory call records an ordinary `tool_call` with an optional `memory_ids` field; it
   does not add an event type. Pinned by `tests/test_memory.py`, `tests/test_memory_tools.py`,
   `tests/test_memory_labels.py`, `tests/test_memory_purge.py`, `tests/test_memory_tasks.py`,
-  `tests/test_memory_aliases.py` and `tests/test_memory_topics.py`.
+  `tests/test_memory_aliases.py`, `tests/test_memory_topics.py` and `tests/test_memory_vectors.py`.
 
   The labelling pass (`memory_tasks.distill_pending`) makes no model call the host did not ask for,
   caps a pass at 500 items, and keeps a short item to ONE `dspy.Predict` call; only a text past

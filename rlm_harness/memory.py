@@ -472,6 +472,9 @@ _FTS_PROBE = "SELECT 1 FROM items_fts LIMIT 0"
 #: How long a connection waits on another writer before giving up, in seconds.
 _BUSY_TIMEOUT_S = 30.0
 
+#: The companion file :mod:`rlm_harness.memory_vectors` keeps its vectors in, next to the store.
+VECTORS_SUFFIX = ".vectors.db"
+
 
 class MemoryUnavailable(RuntimeError):
     """This Python's SQLite cannot hold a memory store: it lacks FTS5, or predates 3.43."""
@@ -553,6 +556,52 @@ class PurgeRecord:
     item_id: str
     reason: str
     purged_at: float
+
+
+def vectors_path(store_path: str | os.PathLike[str]) -> Path:
+    """Where a store's vectors live: its own path plus ``VECTORS_SUFFIX``."""
+    return Path(str(store_path) + VECTORS_SUFFIX)
+
+
+def _erase_vectors(store_path: Path, rowids: list[int], *, secure: bool) -> None:
+    """Delete these items' vectors from the companion file, if there is one.
+
+    Plain SQL on a plain table, so it needs neither the ``memory-vectors`` extra nor an open
+    :class:`~rlm_harness.memory_vectors.MemoryVectors`: an embedding can be partly turned back
+    into its text, so a purge that left it would not have erased the item. A failure is logged,
+    never raised, because the purge itself has committed; the next ``sync`` drops every vector
+    whose item is gone.
+    """
+    path = vectors_path(store_path)
+    if not rowids or not path.is_file():
+        return
+    try:
+        conn = sqlite3.connect(path, timeout=_BUSY_TIMEOUT_S, isolation_level=None)
+        try:
+            conn.execute("PRAGMA secure_delete = ON")
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vectors'"
+                            ).fetchone() is None:
+                return
+            conn.execute("DELETE FROM vectors WHERE item_id IN (SELECT value FROM json_each(?))",
+                         (json.dumps(sorted(rowids)),))
+            if secure:
+                try:
+                    conn.execute("VACUUM")
+                except sqlite3.OperationalError as exc:
+                    # The delete above has committed; a raise here would read as if it had not.
+                    logger.warning("%s: vectors erased, but VACUUM failed (%s); free pages stay until "
+                                   "a later VACUUM", path, exc)
+            conn.execute("PRAGMA busy_timeout = 0")
+            busy, _, _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if busy:
+                logger.warning("%s: vectors erased, but another connection kept the WAL checkpoint "
+                               "from finishing; the old pages leave the file at the next full "
+                               "checkpoint", path)
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.warning("%s: purge committed, but its vectors could not be erased (%s); the next "
+                       "sync drops them", path, exc)
 
 
 def _reindex_items(conn: sqlite3.Connection) -> None:
@@ -1612,9 +1661,9 @@ class MemoryStore:
 
         This is the host's deliberate exception to append-only, and the only one: no tool and no
         model-facing path reaches it. For each item it deletes the row, its labels, its recorded
-        failures, its topic memberships, dismissals and leftovers, and its search-index entries,
-        and writes a ``purged`` record holding the time and
-        ``reason``, never the text. Ids are never reused, so an id in an old trace names nothing
+        failures, its topic memberships, dismissals and leftovers, its search-index entries and
+        its vector in the companion file (``VECTORS_SUFFIX``) when there is one, and writes a
+        ``purged`` record holding the time and ``reason``, never the text. Ids are never reused, so an id in an old trace names nothing
         rather than something else.
 
         **Getting the words out, not only the row.** Deleting from a ``contentless_delete`` index
@@ -1697,6 +1746,7 @@ class MemoryStore:
                     logger.warning("%s: purge committed, but another connection kept the WAL "
                                    "checkpoint from finishing; the old pages leave the main file "
                                    "at the next full checkpoint", self.path)
+            _erase_vectors(self.path, done, secure=secure)
         return [f"m{rowid}" for rowid in done]
 
     def purged(self, item_id: str) -> PurgeRecord | None:
@@ -1732,6 +1782,22 @@ class MemoryStore:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM items WHERE id = ?", (rowid,)).fetchone()
         return self._item(row)
+
+    def _live_heads(self, chars: int) -> list[tuple[str, str]]:
+        """``(id, the first ``chars`` characters of its text)`` for every item not retired,
+        oldest first: what the vector index embeds, read without loading whole texts."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, substr(text, 1, ?) FROM items WHERE valid_to IS NULL OR valid_to > ? "
+                "ORDER BY id", (int(chars), time.time())).fetchall()
+        return [(f"m{r[0]}", r[1]) for r in rows]
+
+    def _live_ids(self) -> set[str]:
+        """The ids of every item not retired."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT id FROM items WHERE valid_to IS NULL OR valid_to > ?",
+                                (time.time(),)).fetchall()
+        return {f"m{r[0]}" for r in rows}
 
     def get(self, item_id: str) -> MemoryItem | None:
         """The item with this id, or ``None``. A malformed id is ``None`` too, never an error."""
