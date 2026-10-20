@@ -4,7 +4,7 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
-## [1.21.0] - 2026-10-19
+## [1.21.0] - 2026-10-21
 
 **A run can remember.** The REPL forgets everything when a run ends, and until now a consumer that
 wanted memory across runs had to bring a third-party package and wire it in as a tool.
