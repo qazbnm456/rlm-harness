@@ -128,8 +128,8 @@ and entities, written by a person or by a model pass that costs one call per sho
   again, an upper bound on what it read for nothing. The memory tools now record a `memory_op`
   field (`read` or `write`), an additive trace field, so the count survives renamed tools.
 - `tools.grounding._find_span`, the literal half of `verify_quote`, returns the source's own span
-  and refuses a quote under 20 characters. It is private, shared by the passes that store what a
-  model quoted.
+  and refuses a quote under 20 non-space characters. It is private, shared by the passes that
+  store what a model quoted.
 
 ### Changed
 
@@ -142,8 +142,8 @@ and entities, written by a person or by a model pass that costs one call per sho
 
 ### Not yet
 
-A recall metric for `optimize.compile_task` is not built; the guide says how to build one
-on `consolidate_run`.
+A recall metric for `optimize.compile_task` is not built; the guide names what one would be
+built on, `consolidate_run` and `compute_memory_use`, and why none ships yet.
 
 ## [1.20.1] - 2026-10-17
 

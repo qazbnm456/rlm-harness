@@ -887,7 +887,7 @@ memory.labels("m12")   # MemoryLabels(title=..., summary=..., tags=(...), entiti
   whether `should_stop` ended the pass early.
 - **What a label may say.** Coordinate markers are stripped. An entity is kept only when its name
   occurs in the item as a whole word (for a long item, in the span its quote was found at, the quote
-  checked like `verify_quote` and at least 20 characters), or when it is an entity name already in
+  checked like `verify_quote` and at least 20 non-space characters), or when it is an entity name already in
   use that the call was shown, which is what lets a text in one script carry a name other items
   write in another. A name matched that way is stored in the spelling already in use, so one entity
   keeps one name.

@@ -660,7 +660,7 @@ reason is in the rule.
   caps a pass at 500 items, and keeps a short item to ONE `dspy.Predict` call; only a text past
   `SHORT_LIMIT` pays for an RLM run. An entity label is kept only when its name occurs in the item,
   in the span its quote was found at (`tools.grounding._find_span`, which returns the source's own
-  bytes and refuses a quote under 20 characters), or among the names in use the call was shown. Do
+  bytes and refuses a quote under 20 non-space characters), or among the names in use the call was shown. Do
   not drop that last clause: a summary told to reuse a known name writes it in another script than
   the text uses, and grounding on the text alone would delete exactly the convergence it exists for.
   The labelling rules tell the model to write an entity exactly as the text or a known name writes

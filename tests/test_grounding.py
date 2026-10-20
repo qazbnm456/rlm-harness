@@ -456,7 +456,7 @@ def test_find_span_refuses_what_verify_quote_refuses_and_short_quotes():
     source = "alpha beta gamma delta epsilon zeta eta theta\n     2\tline two text here and more"
     assert _find_span(source, "") is None and _find_span(source, "   ") is None
     assert _find_span(source, " 7 ") is None, "digits only"
-    assert _find_span(source, "alpha beta") is None, f"under {MIN_QUOTE_CHARS} characters"
+    assert _find_span(source, "alpha beta") is None, f"under {MIN_QUOTE_CHARS} non-space characters"
     assert _find_span(source, "not anywhere in the source at all") is None
     # A guttered quote has no span in the source: there is no line-number path here.
     assert _find_span("first line\nsecond line of text that is long enough",

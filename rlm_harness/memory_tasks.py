@@ -150,8 +150,8 @@ read, then read those parts with Python slicing (`text[a:b]`); never print the w
 summary is about the whole item, not only its opening.
 
 {_LABEL_RULES}
-- For each entity give `name` and `quote`: at least 20 characters copied VERBATIM from the text,
-  naming that entity. An entity you cannot quote is left out.
+- For each entity give `name` and `quote`: at least {MIN_QUOTE_CHARS} non-space characters copied
+  VERBATIM from the text, naming that entity. An entity you cannot quote is left out.
 
 Before you SUBMIT, pass your answer as a JSON string to `validate_longlabels`, and SUBMIT on a
 LATER turn, only after it reports "Validation successful.". Never SUBMIT in the same turn as the
@@ -355,7 +355,7 @@ and its reason, a fact a source established, a dead end worth not repeating. Ski
 work itself. Each proposal is one self-contained statement that reads correctly with no context.
 
 - `kind: "fact"` when a source states it. Copy `quote` VERBATIM from that one source, at least
-  {MIN_QUOTE_CHARS} characters, enough to carry the fact; put the source's label in `source`
+  {MIN_QUOTE_CHARS} non-space characters, enough to carry the fact; put the source's label in `source`
   exactly as it appears, for example `step:7`; `text` is the fact in a sentence. The host checks
   the quote against the source's full text and stores the source's own words.
 - `kind: "note"` for your own conclusion, judgement or summary; leave `quote` and `source` empty.
@@ -1242,7 +1242,7 @@ async def consolidate_run(
                 elif not source.trusted:
                     reason = f"{label} is not a source the host trusts"
                 elif _non_space(quote) < MIN_QUOTE_CHARS:
-                    reason = f"quote under {MIN_QUOTE_CHARS} characters"
+                    reason = f"quote under {MIN_QUOTE_CHARS} non-space characters"
                 else:
                     reason = f"quote not found in {label}"
                 text = text or " ".join(quote.split())   # a fact with no sentence keeps its quote
