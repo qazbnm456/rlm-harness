@@ -576,3 +576,13 @@ def test_every_pass_reports_a_not_counted_failure_by_its_original_text(store):
     store.label(a.id, entities=["PostgreSQL", "Postgres"], provenance="inferred")
     report = asyncio.run(align_pending(store, run=_run(raises=StepNotCounted("ConnectionError: down"))))
     assert report.error == "ConnectionError: down"
+
+
+def test_the_label_rules_keep_entities_in_the_texts_own_spelling():
+    """An entity is checked against the text (`_grounded_entities`), so one translated into the
+    requested language could never be kept: the rules say to write it as the text does."""
+    from rlm_harness.memory_tasks import _LABEL_RULES
+
+    assert "exactly as the text writes it" in _LABEL_RULES
+    assert "translated and never glossed" in _LABEL_RULES and "Entities are the exception" in _LABEL_RULES
+    assert "or as `known` spells it" in _LABEL_RULES  # a known name in another script is still kept

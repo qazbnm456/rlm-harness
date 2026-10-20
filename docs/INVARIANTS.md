@@ -663,6 +663,10 @@ reason is in the rule.
   bytes and refuses a quote under 20 characters), or among the names in use the call was shown. Do
   not drop that last clause: a summary told to reuse a known name writes it in another script than
   the text uses, and grounding on the text alone would delete exactly the convergence it exists for.
+  The labelling rules tell the model to write an entity exactly as the text or a known name writes
+  it, even when `language` asks for another one. Do not let entities follow `language`: measured
+  on an English text labelled in Chinese, every translated name failed grounding and the item kept
+  no entities.
 - **The trace is a VERSIONED wire format: additive-only within a version.** `SCHEMA =
   "rlm-harness/trace/v2"` + every `EVENT_*` type string + the `{schema, run_id, step_id, ts, type,
   payload}` envelope + the dataset-exporter record shapes are a CONTRACT that offline readers build
