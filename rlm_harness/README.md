@@ -892,7 +892,8 @@ memory.labels("m12")   # MemoryLabels(title=..., summary=..., tags=(...), entiti
   write in another. A name matched that way is stored in the spelling already in use, so one entity
   keeps one name.
 - **Running the model elsewhere.** `run=` replaces the default step runner. It receives a
-  JSON-serialisable payload and returns a dict, so a consumer that isolates model calls passes
+  JSON-serialisable payload, which names the item it labels in `item_id` (never passed to the
+  model), and returns a dict, so a consumer that isolates model calls passes
   `run=subprocess_step_runner(timeout_s=300)`, which runs each step in a fresh process through
   `run_in_subprocess`, configured with this process's `RLMConfig`. Cancelling the pass does not stop
   a child already running (it runs until done or `timeout_s`), and a long item's steps run in the
@@ -1143,6 +1144,9 @@ exists because a person may want back out what they put in.
   keeps its own key for an item in `meta` and must find it again (after a crash between adding an
   item and recording its id, for example). It scans every item's `meta`, so it suits occasional
   lookups, not a hot path.
+- `search_ids(query, ...)` takes `search`'s query and filters and returns the ids `search` would, in
+  its order, without loading any text. Its `limit` defaults to `None`, every match, for a host that
+  bounds what it reads itself.
 - A Python whose SQLite lacks FTS5, or is older than 3.43, raises `MemoryUnavailable` when the store
   is constructed, for a new file and an existing one alike. Every Python the kit's CI uses ships a
   newer one.

@@ -156,3 +156,34 @@ def test_meta_json_round_trips_through_find_meta(store):
     item = store.add("x", provenance="said", origin="o", meta={"node_id": "nd-0123", "kind": "web"})
     found = store.find_meta("node_id", "nd-0123")
     assert found[0].meta == json.loads(json.dumps(item.meta))
+
+
+# ---- search_ids ---------------------------------------------------------------------------------
+
+
+def test_search_ids_returns_what_search_returns_in_the_same_order(store):
+    """An order that is not newest first: a label match on the OLDEST item comes first, then the
+    body matches by `bm25`, where an older item that says the word three times outranks a newer one
+    that says it once in a longer text."""
+    label_only = store.add("Sourdough starter feeding", provenance="observed", origin="o")
+    store.label(label_only.id, title="Vacuum-packed bread", entities=["Sourdough"], provenance="inferred")
+    strong = store.add("vacuum vacuum vacuum", provenance="observed", origin="o", tags=["db"])
+    weak = store.add("a long note that mentions a vacuum once among many other ordinary words here",
+                     provenance="said", origin="o")
+    expected = [label_only.id, strong.id, weak.id]
+    assert [i.id for i in store.search("vacuum")] == expected, "the fixture is not newest first"
+    assert store.search_ids("vacuum") == expected
+    for query, filters in (("vacuum", {}), ("", {}), ("vacuum", {"provenance": "observed"}),
+                           ("vacuum", {"tags": ["db"]}), ("vacuum", {"entities": ["sourdough"]}),
+                           ("vacuum", {"limit": 2})):
+        limit = filters.pop("limit", 10)
+        assert store.search_ids(query, limit=limit, **filters) == \
+            [i.id for i in store.search(query, limit=limit, **filters)], (query, filters)
+
+
+def test_search_ids_without_a_limit_returns_every_match(store):
+    made = [store.add(f"a note about tides {n}", provenance="said", origin="o").id for n in range(15)]
+    assert sorted(store.search_ids("tides")) == sorted(made)
+    assert len(store.search("tides")) == 10, "search keeps its default limit"
+    assert store.search_ids("tides", limit=3) == [i.id for i in store.search("tides", limit=3)]
+    assert store.search_ids("!!") == [] and store.search_ids("no such word") == []

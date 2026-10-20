@@ -11,7 +11,8 @@ the long path needs the Deno sandbox. ``optimize.compile_task`` compiles :class:
 a ``Predict`` step is compiled with ``dspy.GEPA`` directly.
 
 **The ``run=`` contract.** A pass takes ``run: Callable[[dict], Awaitable[dict]]``. It receives a
-JSON-serialisable payload, the step's input fields plus ``"step"`` and ``"run_id"``, and returns a
+JSON-serialisable payload, the step's input fields plus ``"step"`` and ``"run_id"`` (and, from
+:func:`distill_pending`, ``"item_id"``, the item the call labels), and returns a
 JSON-serialisable dict of the step's output model. The default, :func:`arun_step`, runs the step
 in-process. :func:`run_step` is its synchronous, picklable twin for a child process, and
 :func:`subprocess_step_runner` builds the ``run`` a consumer that isolates model calls passes::
@@ -563,7 +564,10 @@ async def distill_pending(
         if n % max(1, int(known_refresh)) == 0:
             known_text, known_names = known_listing(store)
         long = len(item.text) > SHORT_LIMIT
-        payload: dict[str, Any] = {"text": item.text, "language": lang, "known": known_text}
+        # `item_id` names the item for a `run` wrapper (a host showing it busy, say); the step's
+        # own fields are the others, and `arun_step` passes only those to the model.
+        payload: dict[str, Any] = {"text": item.text, "language": lang, "known": known_text,
+                                   "item_id": item.id}
         payload.update({"step": "distill_long", "section_map": section_map(item.text)} if long
                        else {"step": "summarise_short"})
         recorder = recorder_for(item.id) if recorder_for is not None else None

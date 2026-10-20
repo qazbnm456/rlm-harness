@@ -68,7 +68,8 @@ and entities, written by a person or by a model pass that costs one call per sho
   occurs in the item (for a long item, in the span its quote was found at), or when it is one of the
   names in use, so a text in one script can carry a name other items write in another. `run=` takes
   a JSON-in, JSON-out step runner (the default is `arun_step`; `subprocess_step_runner` runs each
-  step in a fresh process through `run_in_subprocess`), `recorder_for` traces each item as its own
+  step in a fresh process through `run_in_subprocess`) whose payload names the item it labels
+  (`item_id`), so a wrapper can show that item busy; `recorder_for` traces each item as its own
   run, and `should_stop` and `on_progress` make a pass stoppable and observable. A failing item
   stops heading the queue after three failures.
 - **Aliases.** `merge`, `unmerge`, `resolve`, `aliases`, `entity_names`, `unseen_entities`,
@@ -92,9 +93,11 @@ and entities, written by a person or by a model pass that costs one call per sho
   because the kit's own origins (`model`, `run:<id>`) would otherwise answer everyday words;
   `MemoryStore(max_index_chars=)` caps how much of each text the index reads while the item keeps
   all of it; `find_meta(key, value)` finds the items carrying a host's own key in `meta`, for
-  recovering after a crash between adding an item and recording it; and `checkpoint()` retries the
+  recovering after a crash between adding an item and recording it; `search_ids` returns the ids
+  `search` would, in its order and under its filters, without loading any text, and with no limit
+  by default (`limit=None`), for a host that bounds a scope itself; and `checkpoint()` retries the
   WAL checkpoint a purge could not finish and says whether it did. Migration step 5 rebuilds the
-  item index for the first two.
+  item index for `index_origins` and `max_index_chars`.
 - **Local similarity** (`rlm_harness/memory_vectors.py`, the `memory-vectors` extra).
   `MemoryVectors` embeds each item's title, summary and the head of its text on this machine
   and finds mutual near neighbours above a threshold; `suggest_topics(vectors=)` offers an item
