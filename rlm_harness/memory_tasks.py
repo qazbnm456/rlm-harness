@@ -112,7 +112,8 @@ Write:
   "Document" or "Notes".
 - summary: two or three sentences on what this says and why it is worth keeping. Start with the
   subject itself. No preamble in any language ("This document...", "This text describes...",
-  "本文介紹"), no closing "In summary", and no dashes; use a comma or a full stop.
+  "本文件為", "本文介紹", "這份文件", "本文介绍", "这份文件"), no closing "In summary", "總的來說"
+  or "总的来说", and no dashes (— or –); use a comma or a full stop.
 - tags: up to 6 lowercase topic labels: broad subjects someone would search by and other items
   could share (databases, security, cooking), not phrases unique to this text.
 - entities: up to 6 specific things this is ABOUT: people, organisations, products, places, and
@@ -520,6 +521,26 @@ def _grounded_entities(raw: Any, text: str, known: dict[str, str], *, long: bool
     return kept
 
 
+def _error_text(exc: BaseException) -> str:
+    """How every pass reports a failed call: ``"Type: message"``, except a :class:`StepNotCounted`,
+    whose message already is the original error's text, so one ``run=`` wrapper reads the same in
+    every pass. Never empty, so a failure is never mistaken for a success."""
+    if isinstance(exc, StepNotCounted):
+        return str(exc) or type(exc).__name__
+    return f"{type(exc).__name__}: {exc}"
+
+
+class StepNotCounted(Exception):
+    """Raised by a ``run=`` for a failure that says nothing about the item: the host stopped the
+    call, the model could not be reached, the host is misconfigured. :func:`distill_pending`
+    reports it like any failure (``report.failed``, ``report.errors``, ``on_progress``) but records
+    no failure row, so it never counts toward ``max_failures``.
+
+    Its message is what is reported, so raise it with the original error's text,
+    ``StepNotCounted(f"{type(exc).__name__}: {exc}")``, not a description of its own.
+    """
+
+
 async def distill_pending(
     store: MemoryStore,
     *,
@@ -542,8 +563,9 @@ async def distill_pending(
     in one transaction; a failure records a failure row and the item stays queued, until it has
     failed ``max_failures`` times (``item_ids`` still reaches it). ``should_stop`` is checked before
     every call and ``on_progress`` receives ``{"item_id", "ok", "error"}`` after every item. A
-    database error while writing (a lock held past the store's timeout) fails that item without
-    counting toward ``max_failures``, and never ends the pass. The store calls are synchronous and
+    database error while writing (a lock held past the store's timeout), or a ``StepNotCounted``
+    the ``run`` raises, fails that item without counting toward ``max_failures``, and never ends the
+    pass. The store calls are synchronous and
     run on the event loop; each is milliseconds, but one can wait out a long purge's lock.
     ``language`` passes through ``clean_language``; the labels already in use are re-read every
     ``known_refresh`` items.
@@ -596,13 +618,16 @@ async def distill_pending(
             if not summary.strip():
                 report.skipped_empty.append(item.id)
         except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"[:2000]
+            # A `StepNotCounted` carries the original error's text as its message, so a host that
+            # recognises a failure by its text (an unreachable model, say) still does.
+            error = _error_text(exc)[:2000]
             report.failed.append(item.id)
             report.errors[item.id] = error
             # A database error (a lock held past the timeout, say) is the store's, not the model's,
-            # so it is not counted toward `max_failures`; and recording a failure can hit the same
-            # lock, which must not end the pass and lose this report.
-            if not isinstance(exc, sqlite3.Error):
+            # so it is not counted toward `max_failures`, and neither is a failure the host says is
+            # not the item's (`StepNotCounted`); and recording a failure can hit the same lock,
+            # which must not end the pass and lose this report.
+            if not isinstance(exc, (sqlite3.Error, StepNotCounted)):
                 try:
                     store.note_distill_failure(item.id, error)
                 except KeyError:   # purged while it was being labelled
@@ -705,7 +730,7 @@ async def align_pending(
         if not isinstance(result, dict):
             raise TypeError(f"run returned {type(result).__name__}, not a dict")
     except Exception as exc:
-        report.error = f"{type(exc).__name__}: {exc}"[:2000]
+        report.error = _error_text(exc)[:2000]
         if on_progress is not None:
             on_progress({"batch": len(batch), "ok": False, "error": report.error})
         return report
@@ -942,7 +967,7 @@ async def organize_pending(
             if not isinstance(result, dict):
                 raise TypeError(f"run returned {type(result).__name__}, not a dict")
         except Exception as exc:
-            report.error = f"{type(exc).__name__}: {exc}"[:2000]
+            report.error = _error_text(exc)[:2000]
             if on_progress is not None:
                 on_progress({"round": round_no, "ok": False, "error": report.error})
             break
@@ -1110,7 +1135,7 @@ async def consolidate_run(
         if not isinstance(result, dict):
             raise TypeError(f"run returned {type(result).__name__}, not a dict")
     except Exception as exc:
-        report.error = f"{type(exc).__name__}: {exc}"[:2000]
+        report.error = _error_text(exc)[:2000]
         return report
     proposals = result.get("proposals")
     proposals = proposals if isinstance(proposals, list) else []

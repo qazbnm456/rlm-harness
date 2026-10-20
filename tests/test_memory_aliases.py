@@ -503,3 +503,28 @@ def test_a_cycle_that_skips_the_alias_still_ends(store):
     _labelled(store, ["n-a"], ["n-b"], ["n-c"])
     report = _align(store, run=_answer(("n-a", "n-b"), ("n-b", "n-c"), ("n-c", "n-b")))
     assert len(report.accepted) + len(report.refused) == 3
+
+
+# ---- readings and fold_name ---------------------------------------------------------------------
+
+
+def test_readings_is_the_map_every_reader_applies(tmp_path):
+    from rlm_harness import MemoryStore, fold_name
+
+    store = MemoryStore(tmp_path / "m.db")
+    a = store.add("PostgreSQL vacuum notes", provenance="said", origin="o")
+    b = store.add("Postgres replication notes", provenance="said", origin="o")
+    store.label(a.id, entities=["PostgreSQL"], provenance="inferred")
+    store.label(b.id, entities=["Postgres"], provenance="inferred")
+    store.merge("Postgres", "PostgreSQL")
+    readings = store.readings()
+    for spelling in ("Postgres", "POSTGRES", "postgresql", "ＰｏｓｔｇｒｅＳＱＬ"):
+        assert readings.get(fold_name(spelling), spelling) == store.resolve(spelling) == "PostgreSQL"
+    assert readings.get(fold_name("MySQL"), "MySQL") == store.resolve("MySQL") == "MySQL"
+    assert fold_name("  Ａ  b ") == "a b"
+
+
+def test_readings_is_public_store_api():
+    from rlm_harness import MemoryStore
+
+    assert callable(MemoryStore.readings)

@@ -524,3 +524,55 @@ def test_known_labels_are_reread_every_known_refresh_items(store):
     seen = []
     _pass(other, run=run, known_refresh=10)
     assert "introduced" not in seen[1], "read once at the start of the batch"
+
+
+# ---- StepNotCounted -----------------------------------------------------------------------------
+
+
+def test_a_failure_the_host_says_is_not_the_items_never_counts_toward_the_cap(store):
+    from rlm_harness.memory_tasks import StepNotCounted
+
+    a = store.add("A note that will not be reached", provenance="said", origin="o")
+    seen: list = []
+    for _ in range(5):
+        report = _pass(store, run=_run(raises=StepNotCounted("ConnectionError: model unreachable")),
+                       on_progress=seen.append)
+        assert report.failed == [a.id]
+        assert report.errors[a.id] == "ConnectionError: model unreachable", "the original text"
+    assert seen[-1] == {"item_id": a.id, "ok": False, "error": "ConnectionError: model unreachable"}
+    assert store.last_distill_error(a.id) is None, "no failure row written"
+    assert [i.id for i in store.unlabelled()] == [a.id], "still queued after five passes"
+
+
+def test_the_item_s_own_failures_still_count(store):
+    a = store.add("A note the model cannot label", provenance="said", origin="o")
+    for _ in range(3):
+        _pass(store, run=_run(raises=ValueError("unusable reply")))
+    assert store.unlabelled() == [], "capped after three of its own failures"
+    assert store.last_distill_error(a.id)[0] == "ValueError: unusable reply"
+
+
+def test_the_label_rules_name_the_preambles_and_dashes_they_forbid():
+    from rlm_harness.memory_tasks import _LABEL_RULES
+
+    for phrase in ("本文件為", "本文介紹", "這份文件", "總的來說", "—", "–"):
+        assert phrase in _LABEL_RULES, phrase
+
+
+def test_a_not_counted_failure_is_never_reported_as_a_success(store):
+    from rlm_harness.memory_tasks import StepNotCounted
+
+    a = store.add("A note", provenance="said", origin="o")
+    seen: list = []
+    report = _pass(store, run=_run(raises=StepNotCounted()), on_progress=seen.append)
+    assert report.failed == [a.id] and report.errors[a.id] == "StepNotCounted"
+    assert seen == [{"item_id": a.id, "ok": False, "error": "StepNotCounted"}]
+
+
+def test_every_pass_reports_a_not_counted_failure_by_its_original_text(store):
+    from rlm_harness.memory_tasks import StepNotCounted, align_pending
+
+    a = store.add("PostgreSQL and Postgres notes", provenance="said", origin="o")
+    store.label(a.id, entities=["PostgreSQL", "Postgres"], provenance="inferred")
+    report = asyncio.run(align_pending(store, run=_run(raises=StepNotCounted("ConnectionError: down"))))
+    assert report.error == "ConnectionError: down"

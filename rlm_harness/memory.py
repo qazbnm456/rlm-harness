@@ -636,6 +636,12 @@ def _fold(text: Any) -> str:
     return " ".join(unicodedata.normalize("NFKC", text if isinstance(text, str) else "").casefold().split())
 
 
+def fold_name(name: str) -> str:
+    """How the store compares two entity or tag names: NFKC, casefolded, whitespace collapsed. The
+    keys of :meth:`MemoryStore.readings` and :meth:`MemoryStore.aliases` are in this form."""
+    return _fold(name)
+
+
 def _name_group(name: str, aliases: dict[str, str]) -> set[str]:
     """The folded names ``name`` is known by: itself, its canonical, and every alias of that."""
     key = _fold(name)
@@ -1282,6 +1288,14 @@ class MemoryStore:
         readings = {_fold(canonical): canonical for canonical in aliases.values()}
         readings.update(aliases)
         return readings
+
+    def readings(self) -> dict[str, str]:
+        """How every name is read, as ``folded name -> the name it is read as``: each live alias to
+        its canonical, and each case or width variant of a canonical to the canonical's own
+        spelling. The map every label reader here applies; look a name up by
+        ``fold_name(name)``, and a name it lacks is read as itself."""
+        with self._connect() as conn:
+            return self._readings(conn)
 
     def aliases(self) -> dict[str, str]:
         """Every live alias, as ``folded alias name -> canonical name``.
