@@ -45,6 +45,7 @@ from .memory import (
     MemoryUnavailable,
     PurgeRecord,
     Topic,
+    fold_name,
 )
 from .memory_organise import (
     RunSource,
@@ -201,6 +202,7 @@ __all__ = [
     "LABEL_KINDS",
     "LABEL_PROVENANCES",
     "SHORT_LIMIT",
+    "fold_name",
     # labelling passes (rlm_harness.memory_tasks): imported lazily, they touch dspy
     "distill_pending",
     "DistillReport",
@@ -212,6 +214,7 @@ __all__ = [
     "run_step",
     "arun_step",
     "subprocess_step_runner",
+    "StepNotCounted",
     "align_pending",
     "AlignReport",
     "AlignEntities",
@@ -282,7 +285,7 @@ def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import
 
 _MEMORY_TASK_NAMES = frozenset({
     "distill_pending", "DistillReport", "DistillLongItem", "SummariseShort", "ShortLabels",
-    "LongLabels", "EntityMention", "run_step", "arun_step", "subprocess_step_runner",
+    "LongLabels", "EntityMention", "run_step", "arun_step", "subprocess_step_runner", "StepNotCounted",
     "align_pending", "AlignReport", "AlignEntities", "EntityMerge", "EntityMerges",
     "organize_pending", "OrganizeReport", "OrganiseBatch", "OrganisePlan",
     "consolidate_run", "ConsolidateReport", "ConsolidateRun", "MemoryProposal", "MemoryProposals",

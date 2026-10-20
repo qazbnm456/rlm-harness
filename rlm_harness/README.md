@@ -902,8 +902,10 @@ memory.labels("m12")   # MemoryLabels(title=..., summary=..., tags=(...), entiti
   `recorder_for(item_id)` gives each item its own trace run, and the labels it writes carry that
   run's id. `should_stop` and `on_progress` make a long pass stoppable and observable. A database
   error while writing (a lock held past the timeout, as behind a long purge) fails that item without
-  counting toward its three failures and never ends the pass. Two passes at once may label one item
-  twice; keep one running.
+  counting toward its three failures and never ends the pass. So does a `StepNotCounted` that a
+  `run=` raises for a failure that is not the item's (a stopped call, an unreachable model); raise it
+  with the original error's text as its message, which every pass reports as given. Two passes at
+  once may label one item twice; keep one running.
 - `optimize.compile_task` compiles `DistillLongItem`; compile `SummariseShort`'s `Predict` with
   `dspy.GEPA` directly.
 
@@ -937,6 +939,9 @@ memory.unmerge("k8s")                      # and apart again; no model can merge
   `Kubernetes`. The labelling pass accepts an alias of a name in use as grounding and stores it as
   written, so readers resolve it and an unmerge restores every label written while the merge was
   live; the pass is not shown aliases, only each name in use once.
+- **Reading names yourself.** `readings()` is the map those readers apply, `folded name -> the name
+  it is read as` (aliases, and case or width variants of a canonical); look a name up by
+  `fold_name(name)`, the form the store compares names in. `resolve(name)` is one lookup of it.
 - **The pass.** `align_pending` runs only when you await it. It takes up to `limit` names nobody has
   considered yet (`unseen_entities()`, capped at 500) to ONE `AlignEntities` call (an `RLMTask`,
   with every name in use and its count in the REPL), applies what comes back through
