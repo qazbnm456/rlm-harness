@@ -158,6 +158,34 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["rlm_harness"]
 
+[tool.hatch.build.targets.sdist]
+# hatchling's sdist default is every file git does not ignore, so anything lying in the working tree
+# goes to PyPI. Three stray `tmp*/m.db` test stores reached a commit here that way, and a local
+# build made while two review worktrees existed would have carried 268 files more. Naming the top
+# level shuts that door: an untracked directory beside `docs/` or `tests/` is no longer a candidate.
+# It is not a sandbox and does not pretend to be, because an untracked stray INSIDE a named
+# directory still ships. What a list costs is the opposite failure, a path silently left OUT, which
+# `tests/test_packaging.py` turns into a failing test rather than a thin sdist nobody notices.
+
+include = [
+    "/.githooks",
+    "/.github",
+    "/.gitignore",
+    "/AGENTS.md",
+    "/CHANGELOG.md",
+    "/CODE_OF_CONDUCT.md",
+    "/CONTRIBUTING.md",
+    "/LICENSE",
+    "/README.md",
+    "/SECURITY.md",
+    "/docs",
+    "/examples",
+    "/pyproject.toml",
+    "/rlm_harness",
+    "/tests",
+    "/uv.lock",
+]
+
 [tool.ruff]
 line-length = 110
 target-version = "py311"
