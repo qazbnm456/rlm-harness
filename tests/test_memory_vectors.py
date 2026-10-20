@@ -604,6 +604,31 @@ def test_among_limits_the_crowd_each_side_is_counted_in(store):
         vectors.similar(ids["gamma"], among=ids["alpha"])
 
 
+def test_similar_each_is_similar_for_every_id_from_one_load(store, monkeypatch):
+    ids, vectors = _indexed(store)
+    every = list(ids.values())
+    narrowed = [ids["alpha"], ids["gamma"]]
+    # A pool that changes the answer, so a `similar_each` ignoring `among` would fail here.
+    assert vectors.similar(ids["alpha"], k=1, among=narrowed) != vectors.similar(ids["alpha"], k=1)
+    for k, among in ((1, None), (1, narrowed), (0, narrowed), (2, None)):
+        got = vectors.similar_each([*every, ids["alpha"], "m999"], k=k, among=among)
+        assert list(got) == [*every, "m999"], "each id once, in the order given"
+        assert got["m999"] == [], "an id with no vector has no matches"
+        for item_id in every:
+            assert got[item_id] == vectors.similar(item_id, k=k, among=among), (k, among, item_id)
+    from_generator = vectors.similar_each(every, k=1, among=(i for i in narrowed))
+    assert from_generator == vectors.similar_each(every, k=1, among=narrowed), "a generator is read once"
+    loads = []
+    real = vectors._snapshot
+    monkeypatch.setattr(vectors, "_snapshot", lambda: loads.append(1) or real())
+    vectors.similar_each(every, k=1)
+    assert len(loads) == 1, "one load per call, not one per id"
+    with pytest.raises(TypeError):
+        vectors.similar_each(ids["alpha"])
+    with pytest.raises(TypeError):
+        vectors.similar_each(every, among=ids["alpha"])
+
+
 def test_similar_pairs_are_mutual_strongest_first_and_ordered_by_id(store):
     ids, vectors = _indexed(store)
     pairs = vectors.similar_pairs(list(ids.values()))

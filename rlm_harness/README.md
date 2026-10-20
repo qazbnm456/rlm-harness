@@ -18,7 +18,7 @@ pitch, the quickstart, and installation: start at the
 | `atomic.py` | `atomic_write_text` / `atomic_write_stream`: a same-directory temp file + `fsync` + `os.replace`, so a concurrent reader never sees a partial write; `atomic_write_stream` takes an iterable of `bytes` chunks instead of one in-memory blob, aborting once a running total exceeds an optional `max_bytes`. dspy-free. |
 | `memory.py` | `MemoryStore` / `MemoryItem` / `MemoryLabels` / `Topic` / `PurgeRecord` / `PROVENANCES` / `MemoryUnavailable`: a provenance-typed memory in one SQLite file that outlives a run, with labels, CJK-aware full-text search and a host-only `purge` (see "Memory" below). dspy-free, stdlib only. |
 | `memory_organise.py` | The model-free half of organising a store: `section_map`, `clean_language`, `known_listing`, `suggest_topics` / `TopicSuggestion`, `topic_graph` / `TopicGraph`, `run_sources` / `RunSource` / `render_run` (a finished run as text a model can read). dspy-free. |
-| `memory_vectors.py` | Local similarity for a store (the `memory-vectors` extra): `EmbeddingModel` / `DEFAULT_MODEL`, `download_model`, `OnnxEmbedder`, `MemoryVectors` (`sync`, `similar`, `similar_pairs`, `forget`). dspy-free; numpy and the model runtime are imported on use. Imported explicitly, not re-exported. |
+| `memory_vectors.py` | Local similarity for a store (the `memory-vectors` extra): `EmbeddingModel` / `DEFAULT_MODEL`, `download_model`, `OnnxEmbedder`, `MemoryVectors` (`sync`, `similar`, `similar_each`, `similar_pairs`, `forget`). dspy-free; numpy and the model runtime are imported on use. Imported explicitly, not re-exported. |
 | `memory_tasks.py` | The model-backed half: `SummariseShort` (one `dspy.Predict` call), `OrganiseBatch` (one `dspy.Predict` call), `DistillLongItem`, `AlignEntities` and `ConsolidateRun` (`RLMTask`s), `run_step` / `arun_step` / `subprocess_step_runner`, `distill_pending`, `align_pending`, `organize_pending` and `consolidate_run`. Lazily exported, since it imports dspy. |
 | `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` / `RUN_FACT_KEYS` / `compute_run_facts` / `compute_run_facts_by_run` (the generic half of a rubric's facts) / `MemoryUse` / `compute_memory_use` / `compute_memory_use_by_run` (what a run read from and wrote to memory): reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded trace events. dspy-free. |
 | `isolation.py` | `run_in_subprocess`: a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
@@ -1044,9 +1044,10 @@ suggest_topics(memory, vectors=vectors)
   English pairs 0.819. In a store of those texts in both languages, one 0.86 threshold drew 13
   wrong links beside 15 right ones; the pair rule drew 14 right and none wrong. A missing link
   still means nothing. `similar(item_id, among=...)` counts only those items, both as candidates
-  and as the crowd each side's nearest are counted in; `similar_pairs(ids)` returns every such
-  pair among `ids`, strongest first. `forget(ids)` erases vectors and keeps those items out until
-  their text changes.
+  and as the crowd each side's nearest are counted in; `similar_each(ids, among=...)` answers it
+  for many items from one load of the vectors, which a per-item loop would read once per call;
+  `similar_pairs(ids)` returns every such pair among `ids`, strongest first. `forget(ids)` erases
+  vectors and keeps those items out until their text changes.
 - **Suggestions.** `suggest_topics(memory, vectors=...)` also offers up to 30 of the newest items
   with no entities or tags the topic of the filed item they are most like. Similarity is the
   weaker signal, so such a suggestion scores 3 and sorts after any label match of the same score;
