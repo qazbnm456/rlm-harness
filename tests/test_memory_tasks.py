@@ -112,7 +112,8 @@ def test_a_pass_labels_each_queued_item_as_inferred(store):
     assert got.entities == ("PostgreSQL",), "Oracle is named nowhere in the text"
     assert got.provenance["title"] == "inferred"
     assert seen[0]["step"] == "summarise_short" and seen[0]["run_id"] is None
-    assert set(seen[0]) == {"step", "text", "language", "known", "run_id"}
+    assert set(seen[0]) == {"step", "text", "language", "known", "run_id", "item_id"}
+    assert seen[0]["item_id"] == a.id, "a `run` wrapper is told which item it labels"
 
 
 def test_a_known_name_in_another_script_is_kept(store):

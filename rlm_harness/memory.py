@@ -1956,10 +1956,49 @@ class MemoryStore:
 
         ``limit`` is clamped to at least 1. Raises ``ValueError`` for an unknown provenance.
         """
+        return [self._item(row) for row in self._search(
+            query, select="items.*", limit=max(1, int(limit)), provenance=provenance, tags=tags,
+            entities=entities, topic=topic, at=at, include_retired=include_retired)]
+
+    def search_ids(
+        self,
+        query: str = "",
+        *,
+        limit: int | None = None,
+        provenance: str | Iterable[str] | None = None,
+        tags: Iterable[str] | str = (),
+        entities: Iterable[str] | str = (),
+        topic: str | None = None,
+        at: float | None = None,
+        include_retired: bool = False,
+    ) -> list[str]:
+        """The ids of the items :meth:`search` would return, in the same order, without loading
+        their text: the same query and filters, run by the same code with only the selected
+        columns changed. ``limit=None`` returns every match, which is what a host bounding a
+        scope itself needs; otherwise it is clamped to at least 1."""
+        cap = -1 if limit is None else max(1, int(limit))
+        return [f"m{row['id']}" for row in self._search(
+            query, select="items.id", limit=cap, provenance=provenance, tags=tags,
+            entities=entities, topic=topic, at=at, include_retired=include_retired)]
+
+    def _search(
+        self,
+        query: str,
+        *,
+        select: str,
+        limit: int,
+        provenance: str | Iterable[str] | None,
+        tags: Iterable[str] | str,
+        entities: Iterable[str] | str,
+        topic: str | None,
+        at: float | None,
+        include_retired: bool,
+    ) -> list[sqlite3.Row]:
+        """The one query behind :meth:`search` and :meth:`search_ids`: ``select`` is the column
+        list (``items.*`` or ``items.id``), ``limit`` -1 for no limit (SQLite's own convention)."""
         kinds = _provenance_set(provenance)
         wanted_tags = _normalise_tags(tags)
         wanted_entities = _normalise_tags(entities)
-        limit = max(1, int(limit))
         where: list[str] = []
         params: list[Any] = []
         if kinds is not None:
@@ -1995,13 +2034,12 @@ class MemoryStore:
 
         if not (query and query.strip()):
             sql = (
-                "SELECT items.* FROM items"
+                f"SELECT {select} FROM items"
                 + (" WHERE " + " AND ".join(where) if where else "")
                 + " ORDER BY items.id DESC LIMIT ?"
             )
             with self._connect() as conn:
-                rows = conn.execute(sql, [*params, limit]).fetchall()
-            return [self._item(row) for row in rows]
+                return conn.execute(sql, [*params, limit]).fetchall()
 
         terms = _query_terms(query)
         # A query that IS an entity name searches every name it is known by, so `k8s` finds an
@@ -2019,12 +2057,12 @@ class MemoryStore:
         label_sql = (
             "WITH hits AS MATERIALIZED (SELECT rowid AS label_id, bm25(labels_fts) AS score "
             "FROM labels_fts WHERE labels_fts MATCH ?) "
-            "SELECT items.*, MIN(hits.score) AS score FROM hits "
+            f"SELECT {select}, MIN(hits.score) AS score FROM hits "
             "JOIN current_labels cl ON cl.id = hits.label_id JOIN items ON items.id = cl.item_id "
             "WHERE 1" + filters + " GROUP BY items.id ORDER BY score, items.id DESC LIMIT ?"
         )
         body_sql = (
-            "SELECT items.* FROM items_fts JOIN items ON items.id = items_fts.rowid "
+            f"SELECT {select} FROM items_fts JOIN items ON items.id = items_fts.rowid "
             "WHERE items_fts MATCH ?" + filters
             + f" ORDER BY bm25(items_fts, {_TAG_WEIGHT}, 1.0, 1.0), items.id DESC LIMIT ?"
         )
@@ -2032,9 +2070,10 @@ class MemoryStore:
             labelled = conn.execute(label_sql, [expression, *params, limit]).fetchall()
             seen = {row["id"] for row in labelled}
             # Over-fetched by the label hits, which may repeat here and are dropped.
-            body = conn.execute(body_sql, [expression, *params, limit + len(seen)]).fetchall()
+            fetch = -1 if limit < 0 else limit + len(seen)
+            body = conn.execute(body_sql, [expression, *params, fetch]).fetchall()
         rows = list(labelled) + [row for row in body if row["id"] not in seen]
-        return [self._item(row) for row in rows[:limit]]
+        return rows if limit < 0 else rows[:limit]
 
     def count(self) -> int:
         """How many items the store holds, retired ones included and purged ones not."""
