@@ -998,6 +998,16 @@ report = await organize_pending(memory, max_new_topics=10)    # a model, inferre
   after a round that placed nothing.
   `recorder_for` is called with `"organize:round<N>"`, and `on_progress` receives
   `{"round", "ok", "error"}` after each round.
+- **A host's say in each placement.** A host that keeps its own copy of where things are filed (a
+  folder per topic, say) passes `on_place(item_id, topic_id, new_topic)`, called before each
+  placement once any new topic is open; False declines it: nothing is placed, `refused` says it was
+  declined by the host, and the item is left like any other, so it is not asked about at every
+  pass. A hook that raises gave no answer, so that item is not recorded as left.
+  `on_unplace(item_id, topic_id)` hears of a placement the pass has taken back (a new topic left
+  with one member, or a write that failed after the host accepted) and `on_retire(topic_id)` of a
+  topic it retires. `should_stop` is checked before each placement too, hooks or not, and what the
+  plan had not reached is not recorded as left, since nothing was decided about it; nor is a
+  placement taken back because its new topic's sibling got no decision.
 
 ### Similarity (`memory_vectors.py`, the `memory-vectors` extra)
 

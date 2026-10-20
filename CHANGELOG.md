@@ -93,7 +93,10 @@ and entities, written by a person or by a model pass that costs one call per sho
   removal included. The host judges every placement the model proposes, never files into a pair a
   person dismissed or took apart, opens a new topic only for two or more items and never under the
   name of a topic a person retired, and remembers what it left so the same leftovers are not paid
-  for again until the topics change.
+  for again until the topics change. `should_stop` is checked before each placement as well as
+  before each call, and what a stop leaves unreached is not recorded as left. A host that keeps its
+  own copy of where things are filed is asked before each placement (`on_place`, which may
+  decline) and told what the pass takes back (`on_unplace`, `on_retire`).
 - **Store lookups for a host.** With `MemoryStore(index_origins=True)`, `search` also matches an
   item's origin, so an address or a file name (CJK included) finds the item; it is off by default,
   because the kit's own origins (`model`, `run:<id>`) would otherwise answer everyday words;

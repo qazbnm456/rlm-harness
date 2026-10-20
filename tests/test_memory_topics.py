@@ -400,6 +400,168 @@ def test_organize_rows_carry_the_run_id(store, tmp_path):
         assert conn.execute("SELECT run_id FROM topics").fetchone()[0] == "run-organize:round1"
 
 
+def test_on_place_is_asked_before_each_placement_and_a_decline_is_left(store):
+    a, b, c = _item(store), _item(store), _item(store)
+    existing = store.create_topic("Databases")
+    store.place(_item(store), existing.id)
+    asked: list = []
+
+    def on_place(item_id, topic_id, new_topic):
+        asked.append((item_id, topic_id, new_topic, store.topic(topic_id) is not None))
+        return item_id != c
+
+    report = _organize(store, rounds=1, on_place=on_place, run=_answer([
+        {"item": a, "new_topic": "Containers"}, {"item": b, "new_topic": "Containers"},
+        {"item": c, "topic": existing.id, "fit": "subject"},
+    ]))
+    new = report.created[0]
+    assert asked == [(a, new, True, True), (b, new, True, True), (c, existing.id, False, True)], \
+        "asked before each placement, the new topic already open"
+    assert sorted(report.placed) == sorted([(a, new), (b, new)])
+    assert (c, existing.id, "declined by the host") in report.refused
+    assert report.left == [c] and c in store.left_items(), "a declined item is not asked about again"
+    assert store.item_topics(c) == []
+
+
+def test_a_hook_that_raises_gave_no_answer_and_the_pass_goes_on(store, caplog):
+    a, b = _item(store), _item(store)
+    asked = []
+
+    def on_place(item_id, topic_id, new_topic):
+        asked.append(item_id)
+        if item_id == a:
+            raise RuntimeError("host down")
+        return True
+
+    with caplog.at_level("WARNING"):
+        report = _organize(store, rounds=1, on_place=on_place, run=_answer([
+            {"item": a, "new_topic": "G"}, {"item": b, "new_topic": "G"}]))
+    topic = report.created[0]
+    assert asked == [a, b], "the pass went on to b"
+    assert (a, topic, "the host failed: RuntimeError: host down") in report.refused
+    assert report.retired == [topic], "G kept one member, so it was retired"
+    assert "host down" in caplog.text
+    assert store.left_items() == [], "a failure is no decision, and b lost its topic for want of a"
+
+
+def test_an_underfilled_new_topic_tells_the_host_what_it_undid(store):
+    a, b = _item(store), _item(store)
+    unplaced, retired = [], []
+    report = _organize(store, rounds=1, run=_answer([
+        {"item": a, "new_topic": "Pair"}, {"item": b, "new_topic": "Pair"}]),
+        on_place=lambda item_id, topic_id, new: item_id == a,
+        on_unplace=lambda item_id, topic_id: unplaced.append((item_id, topic_id)),
+        on_retire=retired.append)
+    topic = report.created[0]
+    assert unplaced == [(a, topic)] and retired == [topic] == report.retired
+    assert report.placed == [] and store.topic(topic).retired
+
+
+def test_a_new_topic_every_placement_declined_is_retired_with_nothing_to_undo(store):
+    a, b = _item(store), _item(store)
+    unplaced, retired = [], []
+    report = _organize(store, rounds=1, run=_answer([
+        {"item": a, "new_topic": "Pair"}, {"item": b, "new_topic": "Pair"}]),
+        on_place=lambda item_id, topic_id, new: False,
+        on_unplace=lambda item_id, topic_id: unplaced.append((item_id, topic_id)),
+        on_retire=retired.append)
+    assert retired == report.created == report.retired and unplaced == []
+
+
+@pytest.mark.parametrize("failure", [ValueError("decided meanwhile"), sqlite3.OperationalError("locked")])
+def test_a_place_that_fails_after_the_host_accepted_is_undone_for_the_host(store, monkeypatch, failure):
+    a, b = _item(store), _item(store)
+    existing = store.create_topic("T")
+    store.place(_item(store), existing.id)
+    real = store.place
+
+    def place(item_id, topic_id, **kw):
+        if item_id == a:
+            raise failure
+        return real(item_id, topic_id, **kw)
+
+    monkeypatch.setattr(store, "place", place)
+    unplaced = []
+    report = _organize(store, rounds=1, on_place=lambda *args: True,
+                       on_unplace=lambda item_id, topic_id: unplaced.append((item_id, topic_id)),
+                       run=_answer([{"item": a, "topic": existing.id, "fit": "subject"},
+                                    {"item": b, "topic": existing.id, "fit": "subject"}]))
+    assert unplaced == [(a, existing.id)] and report.placed == [(b, existing.id)]
+
+
+def test_an_item_purged_before_its_placement_is_never_offered_to_the_host(store):
+    a, b, c = _item(store), _item(store), _item(store)
+    asked, unplaced = [], []
+    run = _answer([{"item": a, "new_topic": "Trio"}, {"item": b, "new_topic": "Trio"},
+                   {"item": c, "new_topic": "Trio"}])
+
+    async def purge_then_answer(payload):
+        store.purge([a])   # gone between the call and its plan being applied
+        return await run(payload)
+
+    report = _organize(store, rounds=1, run=purge_then_answer,
+                       on_place=lambda item_id, *rest: asked.append(item_id) or True,
+                       on_unplace=lambda *args: unplaced.append(args))
+    assert asked == [b, c] and unplaced == []
+    assert sorted(p[0] for p in report.placed) == [b, c]
+
+
+def test_a_stop_after_a_host_failure_keeps_both_undecided(store):
+    a, b, c = _item(store), _item(store), _item(store)
+    existing = store.create_topic("T")
+    store.place(_item(store), existing.id)
+    calls = []
+
+    def should_stop():
+        calls.append(1)
+        return len(calls) == 4   # call, a, b, then stop before c
+
+    def on_place(item_id, topic_id, new_topic):
+        if item_id == a:
+            raise RuntimeError("host down")
+        return True
+
+    report = _organize(store, rounds=1, should_stop=should_stop, on_place=on_place, run=_answer([
+        {"item": a, "topic": existing.id, "fit": "subject"},
+        {"item": b, "topic": existing.id, "fit": "subject"},
+        {"item": c, "topic": existing.id, "fit": "subject"}]))
+    assert report.stopped and report.placed == [(b, existing.id)]
+    assert store.left_items() == [], "neither the failure nor the unreached item was decided"
+
+
+def test_a_stop_between_placements_leaves_the_rest_undecided(store):
+    a, b, c = _item(store), _item(store), _item(store)
+    existing = store.create_topic("T")
+    store.place(_item(store), existing.id)
+    calls = []
+
+    def should_stop():
+        calls.append(1)
+        return len(calls) == 3   # 1: before the call, 2: before a's placement, 3: before b's
+
+    report = _organize(store, rounds=3, should_stop=should_stop, run=_answer([
+        {"item": a, "topic": existing.id, "fit": "subject"},
+        {"item": b, "topic": existing.id, "fit": "subject"}]))
+    assert report.stopped and report.placed == [(a, existing.id)]
+    assert report.rounds == 1 and len(calls) == 3, "no second round after a stop"
+    assert report.left == [c] and b not in store.left_items() and c in store.left_items(), \
+        "b was not reached, so nothing was decided about it; c was shown and not placed"
+
+
+def test_a_stop_that_leaves_a_new_topic_half_made_decides_nothing_about_it(store):
+    a, b = _item(store), _item(store)
+    calls = []
+
+    def should_stop():
+        calls.append(1)
+        return len(calls) == 3   # stops before b, a's sibling in the new topic
+
+    report = _organize(store, rounds=1, should_stop=should_stop, run=_answer([
+        {"item": a, "new_topic": "Pair"}, {"item": b, "new_topic": "Pair"}]))
+    assert report.retired == report.created and report.placed == []
+    assert store.left_items() == [], "neither a nor b was decided against"
+
+
 def test_organize_treats_landing_as_unfiled(store):
     landing = store.create_topic("Inbox")
     a = _item(store)

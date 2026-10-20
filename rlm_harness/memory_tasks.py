@@ -915,6 +915,9 @@ async def organize_pending(
     recorder_for: Callable[[str], Any] | None = None,
     should_stop: Callable[[], bool] | None = None,
     on_progress: Callable[[dict], None] | None = None,
+    on_place: Callable[[str, str, bool], bool] | None = None,
+    on_unplace: Callable[[str, str], None] | None = None,
+    on_retire: Callable[[str], None] | None = None,
 ) -> OrganizeReport:
     """Sort labelled items that are in no topic into topics, one model call per round.
 
@@ -929,6 +932,22 @@ async def organize_pending(
     rounds, after a round that placed nothing, or when ``should_stop`` says so (checked before each
     call). ``recorder_for("organize:round<N>")`` traces each call and the rows it writes carry its
     run id; ``on_progress`` receives ``{"round", "ok", "error"}`` after each round.
+
+    Three hooks give a host that keeps its own copy of where things are filed a say in each write.
+    ``on_place(item_id, topic_id, new_topic)`` is called before each placement (``new_topic`` when
+    the topic is one this round opened, which happens before its first placement); returning False
+    declines it: nothing is placed, it is reported in ``refused`` as declined by the host, and the
+    item is recorded as left, since asking again at every pass would pay for the same answer. A
+    hook that raises gave no answer: the item is reported refused and NOT recorded as left.
+    ``on_unplace(item_id, topic_id)`` is called when the pass has taken back a placement it made (a
+    new topic left with too few members, or a write that failed after the host accepted), and
+    ``on_retire(topic_id)`` after it retires such a topic.
+
+    ``should_stop`` is checked before each placement as well as before each call, with or without
+    hooks: what the plan had not reached is not recorded as left, since nothing was decided about
+    it; topics the round opened are still cleaned up, and no further round runs. A placement taken
+    back because its new topic's sibling got no decision (a stop before it, or a hook that raised)
+    is not recorded as left either.
     """
     run = run or arun_step
     report = OrganizeReport()
@@ -982,8 +1001,20 @@ async def organize_pending(
                          max_new=max(0, int(max_new_topics)))
         opened: dict[str, str] = {}
         placed_now: set[str] = set()
+        undecided: set[str] = set()
+        # New topics a member was meant for that nothing was decided about: their siblings are
+        # undecided too if the topic is taken back for want of members.
+        half_decided: set[str] = set()
         filled: dict[str, int] = {}
-        for item_id, kind, target in plan:
+        for index, (item_id, kind, target) in enumerate(plan):
+            if should_stop is not None and should_stop():
+                report.stopped = True
+                for entry in plan[index:]:
+                    undecided.add(entry[0])
+                    if entry[1] == "new" and fold(entry[2]) in opened:
+                        half_decided.add(opened[fold(entry[2])])
+                break
+            accepted = False
             try:
                 if kind == "new":
                     if store.get(item_id) is None:
@@ -993,14 +1024,31 @@ async def organize_pending(
                         opened[fold(target)] = topic.id
                         report.created.append(topic.id)
                     target = opened[fold(target)]
+                if on_place is not None:
+                    try:
+                        accepted = bool(on_place(item_id, target, kind == "new"))
+                    except Exception as exc:  # a host's failure is no answer; it never ends the pass
+                        logger.warning("on_place(%s, %s) raised: %s", item_id, target, exc)
+                        report.refused.append((item_id, target, f"the host failed: {_error_text(exc)}"[:500]))
+                        undecided.add(item_id)   # asked again next time, not recorded as left
+                        if kind == "new":
+                            half_decided.add(target)
+                        continue
+                    if not accepted:
+                        report.refused.append((item_id, target, "declined by the host"))
+                        continue
                 store.place(item_id, target, provenance="inferred", run_id=run_id)
                 report.placed.append((item_id, target))
                 placed_now.add(item_id)
                 filled[target] = filled.get(target, 0) + 1
             except (KeyError, ValueError) as exc:
                 report.refused.append((item_id, target, str(exc)))
+                if accepted:
+                    _host_hook(on_unplace, item_id, target)
             except sqlite3.Error as exc:
                 report.refused.append((item_id, target, f"database error: {type(exc).__name__}"))
+                if accepted:
+                    _host_hook(on_unplace, item_id, target)
         # A topic this round opened that ended up with fewer than two members (its other
         # placements refused) is retired rather than left behind half made. The retirement is the
         # pass's own (`inferred`), so the name stays free for a later pass to open properly, and a
@@ -1012,18 +1060,24 @@ async def organize_pending(
                     report.placed.remove(pair)
                     placed_now.discard(pair[0])
                     report.refused.append((pair[0], topic_id, "its new topic was retired with too few members"))
+                    if topic_id in half_decided:
+                        undecided.add(pair[0])   # a sibling got no decision, so neither does it
                     # Taken out first, so restoring the topic later does not bring back a
                     # membership the pass gave up on. One purged meanwhile has nothing to undo.
                     try:
                         store.unplace(pair[0], topic_id, provenance="inferred", run_id=run_id)
                     except (KeyError, ValueError, sqlite3.Error) as exc:
                         logger.warning("could not take %s out of %s: %s", pair[0], topic_id, exc)
+                    else:
+                        _host_hook(on_unplace, pair[0], topic_id)
                 try:
                     store.retire_topic(topic_id, provenance="inferred", run_id=run_id)
                     report.retired.append(topic_id)
                 except (KeyError, ValueError, sqlite3.Error) as exc:
                     logger.warning("could not retire the underfilled topic %s: %s", topic_id, exc)
-        left_now = sorted(shown - placed_now)
+                else:
+                    _host_hook(on_retire, topic_id)
+        left_now = sorted(shown - placed_now - undecided)
         try:
             store.record_left(left_now, signature)
             # One entry per item, and none for an item a later round placed.
@@ -1033,9 +1087,19 @@ async def organize_pending(
             logger.warning("could not record %d organised items as left: %s", len(left_now), exc)
         if on_progress is not None:
             on_progress({"round": round_no, "ok": True, "error": ""})
-        if not placed_now:
+        if report.stopped or not placed_now:
             break
     return report
+
+
+def _host_hook(hook: Callable[..., Any] | None, *args: str) -> None:
+    """Call a host's notification hook; what it raises is logged, never the pass's failure."""
+    if hook is None:
+        return
+    try:
+        hook(*args)
+    except Exception as exc:  # the pass has already done its own part
+        logger.warning("%s%s raised: %s", getattr(hook, "__name__", "hook"), args, exc)
 
 
 # ---- a finished run, into memory -----------------------------------------------------------------
