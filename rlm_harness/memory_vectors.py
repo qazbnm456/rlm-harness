@@ -682,7 +682,20 @@ class MemoryVectors:
         yet has no matches; an empty result means nothing."""
         if isinstance(among, str):
             raise TypeError("among takes a list of ids, not a str")
-        return self._snapshot().similar(item_id, k=max(1, int(k)), among=among)
+        return self.similar_each([item_id], k=k, among=among)[item_id]
+
+    def similar_each(self, item_ids: Iterable[str], *, k: int = NEIGHBOURS,
+                     among: Iterable[str] | None = None) -> dict[str, list[tuple[str, float]]]:
+        """:meth:`similar` for each of ``item_ids``, from ONE load of the vectors: each id maps to
+        exactly what ``similar(id, k=k, among=among)`` returns. For a host comparing many items
+        against one pool, where a load per call would read the whole vector file each time."""
+        if isinstance(item_ids, str) or isinstance(among, str):
+            raise TypeError("similar_each takes lists of ids, not a str")
+        # The one place `k` is clamped and the pool is read: `similar` is this for one id.
+        wanted = list(dict.fromkeys(item_ids))
+        among = None if among is None else list(among)
+        snapshot = self._snapshot()
+        return {item_id: snapshot.similar(item_id, k=max(1, int(k)), among=among) for item_id in wanted}
 
     def similar_pairs(self, item_ids: Iterable[str]) -> list[SimilarPair]:
         """Every pair among ``item_ids`` at or above the threshold whose two items are each among

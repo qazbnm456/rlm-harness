@@ -105,15 +105,15 @@ and entities, written by a person or by a model pass that costs one call per sho
   WAL checkpoint a purge could not finish and says whether it did. Migration step 5 rebuilds the
   item index for `index_origins` and `max_index_chars`.
 - **Local similarity** (`rlm_harness/memory_vectors.py`, the `memory-vectors` extra).
-  `MemoryVectors` embeds each item's title, summary and the head of its text on this machine
-  and finds mutual near neighbours above a threshold; `suggest_topics(vectors=)` offers an item
-  with no entities or tags the topic of the filed item it is most like, ranked below any label
-  match. Two Chinese, Japanese or Korean texts must reach 0.90 rather than 0.86, because
-  unrelated Chinese texts sit as close as 0.892 on the default model; in a mixed store that
-  removed all 13 wrong links one threshold drew. A short CJK note is compared from about 14
-  characters. `download_model` fetches the pinned default, `multilingual-e5-small` int8, only when
-  called, and refuses a file that fails its checksum. The vectors are plain BLOBs in
-  `<store>.vectors.db`, so `purge` erases them without the extra.
+  `MemoryVectors` embeds each item's title, summary and the head of its text on this machine and
+  finds mutual near neighbours above a threshold (`similar_each` answers for many items from one
+  load of the vectors); `suggest_topics(vectors=)` offers an item with no entities or tags the topic
+  of the filed item it is most like, ranked below any label match. Two Chinese, Japanese or Korean
+  texts must reach 0.90 rather than 0.86, because unrelated Chinese texts sit as close as 0.892 on
+  the default model; in a mixed store that removed all 13 wrong links one threshold drew. A short
+  CJK note is compared from about 14 characters. `download_model` fetches the pinned default,
+  `multilingual-e5-small` int8, only when called, and refuses a file that fails its checksum. The
+  vectors are plain BLOBs in `<store>.vectors.db`, so `purge` erases them without the extra.
 - **Runs into memory.** `consolidate_run` (lazily exported) asks a model once what a finished run
   should leave for later runs. A fact is stored as `observed` only when it quotes a source the
   host trusts, evidence it passed or a result from a tool it named in `trusted_tools`, and the
