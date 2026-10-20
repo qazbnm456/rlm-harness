@@ -74,6 +74,9 @@ and entities, written by a person or by a model pass that costs one call per sho
   stops heading the queue after three failures; a `run=` that raises `StepNotCounted` (a stopped
   call, an unreachable model) reports the failure without counting it. The labelling rules name the
   preambles they forbid in English and in Traditional and Simplified Chinese, and the dash glyphs.
+  Title, summary and new tags follow `language`; an entity keeps the text's own spelling or a
+  known name's, never translated and never glossed with a second name in brackets, because a
+  translated name is not in the text and grounding would drop it.
 - **Aliases.** `merge`, `unmerge`, `resolve`, `readings`, `aliases`, `entity_names`,
   `unseen_entities`, `mark_seen` and `entity_graph` on the store, with `fold_name` for the form names
   are compared in, and `align_pending` with its `AlignEntities` task.

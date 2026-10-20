@@ -119,10 +119,14 @@ Write:
 - entities: up to 6 specific things this is ABOUT: people, organisations, products, places, and
   named concepts such as a method, a standard, a theory or a component (PostgreSQL, the TCP
   handshake). Narrower than a tag, each one something another item could name too. Not every name
-  that appears.
+  that appears. Write each exactly as the text writes it, in the text's own language and script,
+  or exactly as a `known` name writes it, even when everything else is in another language: never
+  translated and never glossed with a second name in brackets, so it can be found.
 
 Rules:
-- Write title and summary in the requested `language`. If none is given, use the text's own.
+- Write title, summary and new tags in the requested `language`. If none is given, use the text's
+  own. Entities are the exception: one is spelled as the text spells it, or as `known` spells it,
+  whatever the language.
   Never translate a proper noun that has no established translation.
 - `known` lists the tags and entities other items already use. When one of them means what you
   would write, write it exactly as it appears there, so related items connect. Add a new one only
