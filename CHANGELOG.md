@@ -4,6 +4,60 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.21.1] - 2026-10-21
+
+### Fixed
+
+- **A failed parse quoted text the kit had written, not the model.** `_LenientJSONAdapter.parse`
+  retries a brace-less body as `"{" + body + "}"`, and when that retry failed too, the error that
+  escaped was the retry's, carrying the kit's own braces. A consumer read a quoted reply beginning
+  `{We need answer with JSON` as a model emitting broken JSON; the brace was the kit's. The error
+  now carries the reply as the model wrote it and says what was attempted. Reproduced offline, and
+  the test goes red without the fix.
+- **"The turn produced no answer" and "the answer was malformed" read identically.** When a
+  reasoning model leaves `content` empty, the adapter promotes `reasoning_content` so the turn can
+  parse at all. Free-form thinking promoted that way then fails to parse, and the resulting error
+  described a malformed answer, which is a different event with a different cause. The promoted
+  text is now marked, and when it is what failed the error says the reply carried no content. The
+  marker is a `str` subclass rather than adapter state, because one adapter instance serves
+  concurrent calls; a test pins the hop into `parse`, which is where the marker would be lost if
+  dspy stopped passing the text through untouched.
+
+Both of the above are diagnostics. Neither changes which replies parse. A consumer counted the
+failures they surface at 2 runs in 890, 2 planner turns in 5303, which is the case for getting the
+message right rather than against it: whoever meets this next meets it once, with no pattern to
+lean on. The same corpus had 4 turns reach the generation cap and parse cleanly, so reaching the
+cap is not the signal it looks like.
+
+### Changed
+
+- **The `subscription` extra's floor is `claude-agent-sdk>=0.1.61`.** The reason is the floor
+  itself, not anything the kit needs: 0.1.60 is yanked on PyPI, and its yank reason says the file
+  would be deleted on or after 2026-09-19 to free project storage. 0.1.59 is yanked too, so 0.1.61
+  is the nearest version that is not, and the suite passes on it. It also carries `RateLimitEvent`,
+  `RateLimitInfo`, `RateLimitStatus`, `RateLimitType` and `ClaudeAgentOptions.max_budget_usd`.
+- **The `jsonschema` extra's floor is `jsonschema>=4.0.1`.** 4.0 is yanked, for publishing an
+  empty `requires-python`, which is also its yank reason. 4.0.1 declares `>=3.7` and the four
+  tests that exercise this extra pass on it. Found by the check below rather than by hand.
+
+### Added
+
+- A test that `pyproject.toml` `[project].version` and `rlm_harness.__version__` agree. Both
+  `AGENTS.md` and `docs/CONVENTIONS.md` state the rule and nothing enforced it, so a release could
+  publish an artifact that misreported its own version, invisibly until someone compared a trace
+  against an install.
+- **A weekly check that every declared dependency floor is still published**
+  (`.github/workflows/floors.yml`, `.github/scripts/check_declared_floors.py`). A yank is
+  invisible to every install this repo performs: range resolution skips a yanked version silently,
+  so a stale floor stays green until PyPI DELETES the file, months later and on a consumer's
+  machine. The check reads the index per declared floor instead of installing anything, so the
+  yank is the early notice. It found both floor changes above, one of them the day it was written.
+  It reads the base dependencies, every extra and every dependency group, so a floor added later
+  is covered without editing it; two offline tests pin that half, since a parser that quietly
+  stops seeing a table would leave the job green and looking at nothing. A red is not urgent and
+  never a rollback: resolution has already moved past the yanked version, so what is broken is the
+  claim.
+
 ## [1.21.0] - 2026-10-21
 
 **A run can remember.** The REPL forgets everything when a run ends, and until now a consumer that

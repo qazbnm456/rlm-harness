@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -2288,7 +2288,7 @@ wheels = [
 
 [[package]]
 name = "rlm-harness"
-version = "1.21.0"
+version = "1.21.1"
 source = { editable = "." }
 dependencies = [
     { name = "dspy" },
@@ -2332,9 +2332,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "claude-agent-sdk", marker = "extra == 'subscription'", specifier = ">=0.1.60" },
+    { name = "claude-agent-sdk", marker = "extra == 'subscription'", specifier = ">=0.1.61" },
     { name = "dspy", specifier = ">=3.4.1,<3.5.0" },
-    { name = "jsonschema", marker = "extra == 'jsonschema'", specifier = ">=4.0" },
+    { name = "jsonschema", marker = "extra == 'jsonschema'", specifier = ">=4.0.1" },
     { name = "langfuse", marker = "extra == 'observe'", specifier = ">=4.6.1" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.8.1" },
     { name = "numpy", marker = "extra == 'memory-vectors'", specifier = ">=2" },
