@@ -116,7 +116,8 @@ def test_model_tool_circuit_breaker_resets_on_ok():
 
 
 def test_model_tool_endpoint_error_does_not_trip_breaker():
-    # An endpoint error is infra flakiness, not a content decline. It must not advance the breaker.
+    # An UNCLASSIFIED endpoint error is infra flakiness, not a content decline, and must not advance
+    # the breaker. One the caller's `is_fast_fail` claims will repeat does; see below.
     state = {"fail": True}
     def chat(spec):
         if state["fail"]:
@@ -133,6 +134,90 @@ def test_model_tool_circuit_breaker_off_by_default():
     call = make_model_tool(lambda s: "x", lambda raw: _V(ok=False), )  # no max_consecutive_invalid
     for _ in range(10):
         assert call("x").circuit_broken is False   # default None = breaker disabled
+
+
+def _doomed_tool(predicate, cap=None, retries=1):
+    """A chat_fn that always raises the same way, which is the failure `is_fast_fail` is for."""
+    attempts = []
+
+    def chat(spec):
+        attempts.append(spec)
+        raise RuntimeError("HTTP 404 no such model")
+
+    call = make_model_tool(chat, lambda raw: _V(ok=True), transient_retries=retries,
+                           max_consecutive_invalid=cap, is_fast_fail=predicate)
+    return call, attempts
+
+
+def test_a_fast_failed_call_is_not_retried_and_the_control_shows_it():
+    # PAIRED, because "1 attempt" means nothing without the number it is being compared against.
+    repeats = lambda exc: isinstance(exc, RuntimeError)
+
+    call, attempts = _doomed_tool(None)                   # control: no predicate
+    assert call("x").cause == "endpoint"
+    assert len(attempts) == 2                             # the doomed call was paid for twice
+
+    call, attempts = _doomed_tool(repeats)
+    result = call("x")
+    assert len(attempts) == 1                             # paid for once
+    assert result.cause == "endpoint"                     # still an endpoint failure, not `invalid`
+    assert result.validator_ran is False                  # the validator never saw anything
+    assert result.endpoint_error == "HTTP 404 no such model"
+
+
+def test_a_fast_failed_call_advances_the_breaker_and_an_unclassified_one_does_not():
+    # The whole point of the report: a tool whose every call fails the same way never stopped.
+    repeats = lambda exc: isinstance(exc, RuntimeError)
+
+    call, attempts = _doomed_tool(repeats, cap=2)
+    assert call("a").cause == "endpoint"
+    assert call("b").cause == "endpoint"
+    broken = call("c")
+    assert broken.circuit_broken is True and broken.cause == "circuit_broken"
+    assert len(attempts) == 2                             # the third call never reached the model
+
+    # Same cap, same exception, no predicate: it never stops, which is today's behaviour.
+    call, attempts = _doomed_tool(None, cap=2)
+    assert [call(s).circuit_broken for s in "abcde"] == [False] * 5
+
+
+def test_a_predicate_that_raises_is_read_as_no_opinion():
+    # The factory promises it never raises. A caller's broken predicate must not break that, and
+    # must land on exactly the behaviour of passing no predicate at all.
+    def explodes(exc):
+        raise ValueError("predicate itself is broken")
+
+    call, attempts = _doomed_tool(explodes, cap=2)
+    assert call("x").cause == "endpoint"
+    assert len(attempts) == 2                             # retried, as with no predicate
+    assert [call(s).circuit_broken for s in "abcd"] == [False] * 4   # and never trips
+
+
+def test_a_validator_ok_still_resets_the_streak_a_fast_fail_built():
+    # One counter serves both kinds, so the reset has to cover the mixed streak too.
+    state = {"raise": True}
+    attempts = []
+
+    def chat(spec):
+        attempts.append(spec)
+        if state["raise"]:
+            raise RuntimeError("doomed")
+        return "fine"
+
+    call = make_model_tool(chat, lambda raw: _V(ok=True), transient_retries=0,
+                           max_consecutive_invalid=3, is_fast_fail=lambda e: True)
+    assert call("a").cause == "endpoint"
+    assert call("b").cause == "endpoint"
+    state["raise"] = False
+    assert call("c").ok is True                           # resets the streak at 2
+    state["raise"] = True
+    assert call("d").cause == "endpoint"
+    assert call("e").cause == "endpoint"
+    # Both halves have to be asserted or the test passes whether or not the counter moves at all:
+    # the third fast-fail AFTER the reset is what proves the streak was rebuilt from zero, and the
+    # call that reaches the cap is itself still a real call, so the break lands on the one after.
+    assert call("f").circuit_broken is False              # the third since the reset: streak hits 3
+    assert call("f").cause == "circuit_broken"            # and only now does it stop calling
 
 
 class Finding(BaseModel):

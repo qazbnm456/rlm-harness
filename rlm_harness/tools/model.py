@@ -105,6 +105,7 @@ def make_model_tool(
     *,
     transient_retries: int = 1,
     max_consecutive_invalid: int | None = None,
+    is_fast_fail: Callable[[BaseException], bool] | None = None,
 ) -> Callable[[str], ModelToolResult]:
     """Build the generic call: chat (retrying transient errors) → validate → ModelToolResult.
 
@@ -113,18 +114,35 @@ def make_model_tool(
     re-spec and call again). On exhausted retries the result has ``endpoint_error`` set and
     ``ok=False``.
 
+    ``is_fast_fail(exc)`` says an exception will REPEAT on the same input, so retrying it pays
+    twice for one doomed call: an HTTP 400/401/404 from a wrong model name or key, a reply the
+    endpoint cut at a fixed budget, a context-length refusal. A match returns at once, consuming
+    no further attempt, and it also counts toward ``max_consecutive_invalid`` below, because a
+    call the HOST has classified as repeating is not the infra flakiness that exemption was
+    written for. Without this predicate nothing changes: every exception is retried as before, so
+    the widening is reached only by opting in.
+
+    The name and the shape are `_retry.run_with_retry`'s ``is_fast_fail``, deliberately, so the
+    kit has one concept for "this will repeat" rather than two. A PREDICATE rather than an
+    exception type to raise or a type tuple to pass, for the reason that invariant gives: the
+    judgement cannot be written as a static ``except (A, B, C):``, and ``tools/`` must stay
+    dspy-free, so the caller supplies it. A consumer running on a dspy LM can pass
+    ``rlm_harness._dspy_compat.is_fast_fail_lm_error``, which mirrors dspy's own classification;
+    one with its own client passes its own.
+
     Three of the four outcomes carry ``ok=False`` and they are NOT interchangeable: read
     ``result.cause`` (or ``result.validator_ran``) before attributing a failure to the model's
     output. See ``ModelToolResult``.
 
     ``max_consecutive_invalid`` (default ``None`` = off) is a run-scoped CIRCUIT BREAKER: once the
-    validator has returned ``ok=False`` that many times in a ROW, the next call SHORT-CIRCUITS.
+    validator has returned ``ok=False``, or ``is_fast_fail`` has matched, that many times in a
+    ROW, the next call SHORT-CIRCUITS.
     it does NOT invoke the model and returns ``circuit_broken=True`` (``ok=False``, empty ``raw``).
     A productive repair loop recovers within a couple of declines, so a long unbroken decline run
     means the model cannot satisfy specs of this shape; short-circuiting caps wasted model calls and
     lets the caller redirect the root LM (escalate / finalize) instead of letting it thrash. The
-    counter RESETS on any validator-``ok``; an endpoint error does NOT count (it is infra, not a
-    content decline). This factory only FLAGS the break: the caller owns the user-facing message,
+    counter RESETS on any validator-``ok``; an UNCLASSIFIED endpoint error still does NOT count (it
+    is infra, not a content decline). This factory only FLAGS the break: the caller owns the user-facing message,
     same split as the rest. The factory is sync and side-effect-free (no tracing, no message
     templating): wrap the result in your project's tool with its own name/messages/tracing.
 
@@ -132,7 +150,9 @@ def make_model_tool(
     resets naturally for the next run.
     """
     retries = max(0, transient_retries)
-    consecutive_invalid = 0
+    # One counter for both kinds the breaker now stops, because the breaker's job is capping calls
+    # that cannot produce a usable result, and a host-classified repeating failure is one of those.
+    consecutive_unproductive = 0
 
     def call_model(spec: str) -> ModelToolResult:
         """Send `spec` to the configured model and validate what comes back. Returns a result
@@ -140,12 +160,15 @@ def make_model_tool(
         artifact when it did and `errors` saying why when it did not. Never raises: a failed
         endpoint sets `endpoint_error`, and too many invalid outputs in a row set
         `circuit_broken` and stop calling the model."""
-        nonlocal consecutive_invalid
-        if max_consecutive_invalid is not None and consecutive_invalid >= max_consecutive_invalid:
+        nonlocal consecutive_unproductive
+        if max_consecutive_invalid is not None and consecutive_unproductive >= max_consecutive_invalid:
+            broke = (
+                f"circuit breaker: {consecutive_unproductive} consecutive calls that could not "
+                "produce a usable result"
+            )
             return ModelToolResult(
                 ok=False, raw="", reasoning=None,
-                errors=[f"circuit breaker: {consecutive_invalid} consecutive invalid outputs"],
-                validated=None, circuit_broken=True,
+                errors=[broke], validated=None, circuit_broken=True,
             )
         raw, reasoning = "", None
         for attempt in range(retries + 1):
@@ -153,8 +176,23 @@ def make_model_tool(
                 raw, reasoning = _split(chat_fn(spec))
                 break
             except Exception as exc:
-                if attempt >= retries:
-                    # endpoint error: infra flakiness, NOT a content decline → does not trip the breaker
+                # The predicate is the caller's code and this function promises never to raise, so
+                # a predicate that itself blows up is read as "no opinion" rather than allowed to
+                # escape: the retry then behaves exactly as it did before this argument existed.
+                fast = False
+                if is_fast_fail is not None:
+                    try:
+                        fast = bool(is_fast_fail(exc))
+                    except Exception:
+                        fast = False
+                if fast or attempt >= retries:
+                    if fast:
+                        consecutive_unproductive += 1
+                    # Either way this is an endpoint error, never a content decline, so `cause`
+                    # stays `endpoint` and `validator_ran` stays False: the validator never saw a
+                    # thing. What the two cases differ in is the breaker, counted above. An
+                    # exhausted retry is infra flakiness and still does not count; a fast-fail is
+                    # the caller saying this call repeats, which is what the breaker caps.
                     #
                     # `str(exc) or type(exc).__name__`, because `str(exc)` is the EMPTY STRING for
                     # `httpx.ConnectTimeout` / `ReadTimeout` / `ConnectError`, `TimeoutError`,
@@ -172,7 +210,7 @@ def make_model_tool(
                     )
         validated = validate(raw)
         ok = bool(getattr(validated, "ok", False))
-        consecutive_invalid = 0 if ok else consecutive_invalid + 1
+        consecutive_unproductive = 0 if ok else consecutive_unproductive + 1
         return ModelToolResult(
             ok=ok,
             raw=raw,

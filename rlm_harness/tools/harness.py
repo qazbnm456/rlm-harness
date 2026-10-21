@@ -102,6 +102,7 @@ def make_harness_tool(
     *,
     transient_retries: int = 1,
     max_consecutive_invalid: int | None = None,
+    is_fast_fail: Callable[[BaseException], bool] | None = None,
 ) -> Callable[[str], HarnessToolResult]:
     """Build the generic delegation call: invoke the child harness on one long text (retrying transient
     transport errors) → validate its artifact → circuit-break → :class:`HarnessToolResult`.
@@ -110,7 +111,9 @@ def make_harness_tool(
     exceptions from ``invoke_fn`` (a dead/slow child is infra flakiness); a validator ``ok=False`` is
     NOT retried (that is the caller's re-spec / escalate / finalize loop); ``max_consecutive_invalid``
     (default off) is a run-scoped circuit breaker that short-circuits after that many consecutive
-    invalid artifacts WITHOUT invoking the child. So a hung, crashing, or looping child degrades to
+    invalid artifacts WITHOUT invoking the child; ``is_fast_fail(exc)`` marks a transport failure
+    that will repeat (a child that is absent rather than slow, say), which returns at once instead
+    of retrying and counts toward that breaker. So a hung, crashing, or looping child degrades to
     ``endpoint_error`` / ``circuit_broken`` (``ok=False``), never an exception, and the parent run
     completes. Sync and side-effect-free (no tracing, no messages): wrap the result in your project's
     tool with its own name / messages / tracing, and record the parent→child link from the returned
@@ -135,6 +138,9 @@ def make_harness_tool(
         _chat, validate,
         transient_retries=transient_retries,
         max_consecutive_invalid=max_consecutive_invalid,
+        # Forwarded, not reinterpreted: this docstring promises make_model_tool's semantics
+        # VERBATIM, and a knob that existed on one and not the other would make that false.
+        is_fast_fail=is_fast_fail,
     )
 
     def call_harness(source: str) -> HarnessToolResult:
