@@ -141,7 +141,7 @@ reason is in the rule.
 - **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`, `tools/`,
   `trace.py`, `skills.py`, `replay.py`, `dataset.py`, `serving.py`, `harness_serve.py`,
   `_dspy_compat.py`, `metrics.py`, `rubric.py`, `_toolname.py`, `atomic.py`, `isolation.py`,
-  `memory.py`, `memory_organise.py`, `memory_vectors.py` must NOT import `dspy` at module top:
+  `memory.py`, `memory_organise.py`, `memory_vectors.py`, `large_text.py` must NOT import `dspy` at module top:
   that keeps their logic testable without dspy. Only `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`,
   `container_interpreter.py`, `testing.py`, `claude_agent_lm.py` and `memory_tasks.py` touch dspy:
   the last five live outside the dspy-free set and are lazily imported (by `__getattr__` / by

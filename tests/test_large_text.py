@@ -119,11 +119,19 @@ def test_no_staged_input_means_no_grant_and_no_added_instruction():
 
 
 def test_the_instruction_names_the_path_the_size_and_what_to_do():
+    """The instruction says SEEK TO AN OFFSET, not "read in slices", and that distinction is measured.
+
+    A consumer pointed `make_read_file_tool` at a staged file and got no gain at all, the same tree
+    peak as passing the text as a variable: it slices by LINE, and their context was effectively one
+    very long line, so a single call returned the whole thing. Line-based paging cannot page one
+    long line, so telling a model to "read in slices" is not enough to avoid the cost.
+    """
     with LargeText("alpha beta gamma " * 10) as staged:
         text = staged_instructions({"log": staged}, preview_chars=11)
         assert "`log` holds the PATH" in text
         assert f"{staged.chars:,} characters" in text
-        assert "in slices" in text
+        assert "seek to an offset" in text
+        assert "splitting it into lines" in text   # named as the thing NOT to do
         assert "alpha beta" in text          # the head, so the model can recognise the shape
         assert staged.host_path not in text  # never the host location
 
@@ -163,3 +171,35 @@ def test_build_rlm_stays_callable_with_no_arguments():
         "signature, so a new parameter breaks them, and a caller that swallows exceptions makes "
         "that break silent."
     )
+
+
+def test_preview_reads_only_the_head():
+    """The whole point of the class is not copying the text, so its preview must not copy it.
+
+    `read_text()[:max_chars]` pulled the entire file back to show a few hundred characters: for a
+    20 MB text that measured a 40 MB allocation peak, two copies. A consumer found it in 1.22.0.
+    """
+    import tracemalloc
+
+    big = "x" * 4_000_000
+    with LargeText(big) as staged:
+        tracemalloc.start()
+        try:
+            head = staged.preview(500)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+    assert head == big[:500]
+    assert peak < 200_000, (
+        f"preview allocated {peak} bytes for a 500-character head of a 4 MB file, so it is reading "
+        "more than the head"
+    )
+
+
+def test_preview_cuts_on_a_character_not_a_byte():
+    """`read(n)` on a text stream counts CHARACTERS, which is what the caller asked for."""
+    with LargeText("ab" + "漢字" * 4096) as staged:
+        assert staged.preview(6) == "ab漢字漢字"
+    with LargeText("short") as staged:
+        assert staged.preview(500) == "short"
+        assert staged.preview(0) == ""

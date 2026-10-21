@@ -110,9 +110,17 @@ class LargeText:
         return self._chars
 
     def preview(self, max_chars: int = PREVIEW_CHARS) -> str:
-        """The head of the text, for the variable description the model reads."""
-        head = self._path.read_text(encoding="utf-8")[: max(0, max_chars)]
-        return head
+        """The head of the text, for the variable description the model reads.
+
+        Reads only the head. `read_text()[:max_chars]` pulled the WHOLE file back into Python to
+        show its first few hundred characters, which for a 20 MB text measured a 40 MB allocation
+        peak, two copies of a file this class exists to avoid copying. A consumer found it. A text
+        stream's `read(n)` consumes only the bytes those n characters need.
+        """
+        if max_chars <= 0:
+            return ""
+        with self._path.open(encoding="utf-8") as handle:
+            return handle.read(max_chars)
 
     def close(self) -> None:
         """Delete the staged file. Safe to call twice.
@@ -187,7 +195,8 @@ def staged_instructions(staged: dict[str, LargeText], *, preview_chars: int = PR
         head = value.preview(preview_chars).replace("\n", " ")
         lines.append(
             f"`{name}` holds the PATH to a file of {value.chars:,} characters, not the text itself. "
-            f"Open it and read the part you need, in slices, rather than reading it whole. "
+            f"Open it and read only the part you need: seek to an offset and read a slice, rather "
+            f"than reading the file whole or splitting it into lines. It may be one long line. "
             f"It begins: {head!r}"
         )
     return "\n".join(lines)

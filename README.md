@@ -90,6 +90,10 @@ keeps that text in `RLMTaskError`'s own message rather than only on `__cause__`.
   `fetch_url`, provider-agnostic web search, the generic model-as-tool core, a
   `run_command` seam over your isolated runner, an MCP client bridge, and
   skills-as-tools progressive disclosure.
+- **A multi-megabyte input, without paying for it.** An input field normally reaches the
+  sandbox as an inline literal rebuilt every turn, which for a large text costs tens of
+  copies' worth of memory. `LargeText` stages it as a file the sandbox reads instead, and a
+  consumer measured its worst case dropping from 5.2 GB of process tree to about 0.8 GB.
 - **A bounded local directory, no shell.** Read, write, edit, and regex-search files under a
   root you scope, plus safe archive extraction and `git clone`. Every path resolves inside
   that root (no subprocess, no `rg` on `PATH`), and `verify_quote` checks a model's citation

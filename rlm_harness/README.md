@@ -21,6 +21,7 @@ pitch, the quickstart, and installation: start at the
 | `memory_vectors.py` | Local similarity for a store (the `memory-vectors` extra): `EmbeddingModel` / `DEFAULT_MODEL`, `download_model`, `OnnxEmbedder`, `MemoryVectors` (`sync`, `similar`, `similar_each`, `similar_pairs`, `forget`). dspy-free; numpy and the model runtime are imported on use. Imported explicitly, not re-exported. |
 | `memory_tasks.py` | The model-backed half: `SummariseShort` (one `dspy.Predict` call), `OrganiseBatch` (one `dspy.Predict` call), `DistillLongItem`, `AlignEntities` and `ConsolidateRun` (`RLMTask`s), `run_step` / `arun_step` / `subprocess_step_runner`, `distill_pending`, `align_pending`, `organize_pending` and `consolidate_run`. Lazily exported, since it imports dspy. |
 | `metrics.py` | `RunUtilization` / `compute_run_utilization` / `compute_utilization_by_run` / `ToolWaste` / `compute_tool_waste` / `compute_tool_waste_by_run` / `RUN_FACT_KEYS` / `compute_run_facts` / `compute_run_facts_by_run` (the generic half of a rubric's facts) / `MemoryUse` / `compute_memory_use` / `compute_memory_use_by_run` (what a run read from and wrote to memory): reward-free trace utilization metrics (how a run's activity split across root-LM turns, tool calls, sub-LM escalations), a pure derived read over already-recorded trace events. dspy-free. |
+| `large_text.py` | `LargeText`: a long input staged as a file the run's sandbox is granted, addressed by `sandbox_path`, instead of an inline literal rebuilt every turn. Measured at 0.71x the payload in peak RSS against the variable path's 66x (see "A long input as a file" below). The only thing that opens a sandbox read grant, and host code is the only place one can be built. dspy-free, stdlib only. |
 | `isolation.py` | `run_in_subprocess`: a safe, isolated-subprocess primitive for a web-facing consumer: run one picklable callable in a fresh OS process, get its result or a clear error back, bounded by a timeout (see below). dspy-free. |
 | `tools/` | `make_schema_validator` (pydantic) + `make_json_schema_validator` (validate a parsed object against a vendored JSON Schema: the base for the "validate against an official, version-pinned upstream schema" pattern; needs `rlm-harness[jsonschema]`), SSRF-guarded `make_fetch_tool`, its filesystem-side analogue `make_read_file_tool` / `make_grep_files_tool` / `resolve_within_root` (needs `rlm-harness[grep]` for a wall-clock-bounded `grep_files` (see below) plus the write side `make_write_file_tool` / `make_edit_file_tool` in `tools/edit.py` (see below), `list_candidate_paths`) a safe, `.gitignore`-aware default for building `candidate_paths` in `tools/discover.py` (needs `rlm-harness[gitignore]`; see below), `make_git_clone_tool` (safe git clone with fallback auth over a consumer-supplied isolated `cloner` in `tools/git_clone.py` (see below), `make_extract_archive_tool`) safe `zip`/tar extraction in `tools/archive.py` (see below), `verify_quote` (a deterministic quote/citation grounding check in `tools/grounding.py` (see "Grounded completeness" below), provider-agnostic `make_web_search_tool`, `make_command_tool`) a traced `run_command` over a consumer-supplied *isolated* runner (the kit ships no executor) with an optional `refuse_broad_git_history` guard, `make_model_tool`: the generic "model-as-tool + transient-retry + validate" core (a project wraps it with its own endpoint/validator/messages), the memory tools `make_memory_search_tool` / `make_memory_get_tool` / `make_memory_note_tool` in `tools/memory.py` (see "Memory" below), and the harness-delegation pieces `make_harness_tool` / `harness_from_endpoint` / `pointer_to_invocation` / `run_isolated` (see "Delegate to another harness" below). |
 | `optimize.py` | GEPA harness: `compile_task`, `audit_instruction`, `trainset_from_traces`. |
@@ -647,6 +648,76 @@ finding = MyTask(tools=[git_clone]).run(...)
 - **Accepted, disclosed gap**: no cleanup of a partially-cloned directory on failure, making the
   whole clone atomic would require dictating how the `cloner` itself writes to disk, contradicting
   the base/wrap split this design is built on.
+
+## A long input as a file, not a variable (`LargeText`)
+
+An input field reaches the sandbox as an inline Python literal, rebuilt on every turn. For a
+multi-megabyte text that is the most expensive thing a run does, and it is invisible until a host
+runs out of memory. `LargeText` stages the text as a file the run's sandbox is granted instead.
+
+```python
+from rlm_harness import LargeText
+
+with LargeText(huge_log) as log:
+    answer = await Investigate().arun(log=log, question="What happened at 04:12?")
+```
+
+Pass one where the signature declares a `str`. The kit substitutes the path before dspy sees it,
+adds a line to that run's instructions saying the variable is a path to a file of N characters and
+to seek and read a slice, and grants the sandbox that one file. `examples/large_text_run.py` is the
+whole shape on a live model.
+
+**Measured, by a consumer on Linux aarch64 in its own deployed image**, peak RSS of the whole
+process tree in MB, medians of three runs, a 20 ms sampler whose Deno peak equalled the kernel's
+`VmHWM`:
+
+| context | as a variable (1 / 4 turns) | as a file, read whole | as a file, read in 64 KiB slices |
+|---|---|---|---|
+| tiny | 496 | 481 | 456 |
+| 11.6 MB plain text | 1194 / 1311 | 516 / 540 | 492 / 517 |
+| 50 MB of control bytes | 2843 / 5189 | 795 / 889 | 671 / 712 |
+
+Their worst case went from 5.2 GB to about 0.8 GB. Every run submitted the staged file's length
+and SHA-256 and every one matched the host's, so the cheap rows are reading the payload and not
+reading nothing.
+
+**The bytes still reach the sandbox.** dspy's Deno side reads the file and writes it into Pyodide's
+filesystem, so the payload materialises once. The saving is one copy against tens, not one against
+none, and anyone restating this as "the context never enters the sandbox" has it wrong.
+
+**Model code must open the path it is given**, which is `/sandbox/<generated name>`. The host
+location does not resolve inside the sandbox, so sandbox code handed `host_path` finds no file and
+reads nothing. The failure is quiet and it looks like a win: a run that reads nothing costs
+nothing, which is how the first attempt at measuring this approach reported no cost at all.
+
+**`make_read_file_tool` is the wrong tool for a staged text.** Pointed at the permitted path it
+showed no gain at all, about the same tree peak as the variable path. Two structural reasons. It
+slices by LINE, so a context that is effectively one very long line comes back whole from a single
+call. And it reads the file on the HOST per call, which pays the copy the staging exists to avoid.
+Offset reads inside the sandbox are what the table above measures, and they need no tool.
+
+**The one opening in the sandbox boundary.** Granting read access to a host file widens the
+boundary this kit's invariants open with, so every part of the path is owned here. The filename is
+generated; there is no name, prefix, directory or path argument, so no caller value and no model
+output becomes part of it, and the text is the file's content rather than any part of its location.
+The grant is that one file, read-only, and only for a run whose inputs carry one of these objects.
+Constructing one takes host Python, so no model reply, no tool result and no string that looks like
+a path can open a grant or widen one. A comma in the resolved path is refused outright, because
+Deno's permission list is comma-separated and misparses an entry containing one. Any other
+interpreter kind refuses a read path rather than accepting one it cannot honour, and a run that
+stages nothing grants nothing, which is every run that existed before this.
+
+**Deleting the staged file is the caller's**, through `close()` or the context manager. The kit does
+not, because the same object can serve a second run. The file is created read-only and the delete
+clears that bit first, which matters on Windows, where a read-only file cannot be unlinked and the
+removal would otherwise be skipped in silence.
+
+**Where this has run.** The staging, the type-only discovery and every refusal are tested offline on
+every platform CI covers. The MOUNT needs Deno: it was exercised by hand on macOS, and by a
+consumer on Linux aarch64 including a `sudo` path where the staging and the sandbox share a uid.
+A Windows host has not been through it, and `0400` plus a container that switches users is the case
+to watch, since Deno reading as a different user than the one that staged the file would present as
+a mount failure rather than a permission error.
 
 ## Writing and editing a bounded local directory (`tools/edit.py`)
 
