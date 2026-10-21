@@ -677,7 +677,11 @@ process tree in MB, medians of three runs, a 20 ms sampler whose Deno peak equal
 | 11.6 MB plain text | 1194 / 1311 | 516 / 540 | 492 / 517 |
 | 50 MB of control bytes | 2843 / 5189 | 795 / 889 | 671 / 712 |
 
-Their worst case went from 5.2 GB to about 0.8 GB. Every run submitted the staged file's length
+Their worst case went from 5.2 GB to about 0.8 GB. The same consumer then measured the same
+arms on an **x86_64** host through the same deployed path: 551 MB for the 11.6 MB text read whole
+over four turns, within 2% of aarch64, and LOWER on both 50 MB rows, 835 MB read whole against 889
+and 611 MB sliced against 712. So the ordering and the magnitude hold on both architectures, and
+the sliced row is the cheapest on each. Every run submitted the staged file's length
 and SHA-256 and every one matched the host's, so the cheap rows are reading the payload and not
 reading nothing.
 
@@ -731,10 +735,11 @@ removal would otherwise be skipped in silence.
 
 **Where this has run.** The staging, the type-only discovery and every refusal are tested offline on
 every platform CI covers. The MOUNT needs Deno: it was exercised by hand on macOS, and by a
-consumer on Linux aarch64 including a `sudo` path where the staging and the sandbox share a uid.
-A Windows host has not been through it, and `0400` plus a container that switches users is the case
-to watch, since Deno reading as a different user than the one that staged the file would present as
-a mount failure rather than a permission error.
+consumer in production on Linux **aarch64 and x86_64**, through a `sudo` path where the staging and
+the sandbox share a uid. No permission problem appeared there, which is one image rather than a
+general result: `0400` plus a container that runs the sandbox as a different user than the one that
+staged the file would still present as a mount failure rather than a permission error. A Windows
+host has not been through it at all.
 
 ## Writing and editing a bounded local directory (`tools/edit.py`)
 
