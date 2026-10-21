@@ -21,9 +21,18 @@ name: declared floors
 # Exit codes from the script, so a reader can tell a verdict from a transport failure: 1 means a
 # floor is unresolvable, 2 means the index could not be reached and the floors were NOT judged.
 #
-# NOT here, deliberately: running the suite against `--resolution lowest-direct`, which is the
-# other half of "a floor is only meaningful if the suite passes on it" and is queued for 1.22.0.
-# It needs a matrix decision (which interpreters, which extras) that this job does not.
+# The second job is the other half of the same claim. Reading the index says a floor can be
+# RESOLVED; it says nothing about whether the kit works on it, and every floor comment in
+# `pyproject.toml` asserts that it does. `uv run --resolution lowest-direct` pins each direct
+# dependency to its floor and leaves transitive ones alone, which is exactly the claim's scope.
+# Measured before this job existed: the suite passes that way on Python 3.11, the same count
+# it passes at resolved versions, so the floors are not a weaker configuration than CI's.
+#
+# A LIMIT, stated rather than discovered: `on:` is workflow-scoped, so both jobs run weekly, on
+# demand, and on a push that touches `pyproject.toml` or this workflow's own files. A code change
+# that breaks ONLY the floor run therefore waits for the cron rather than reddening its own PR.
+# That is the trade for not running a second full suite on every push; `ci.yml` covers the three
+# interpreters at their resolved versions on every PR, which is where a code break shows first.
 #
 # NOTE: GitHub disables scheduled workflows after 60 days with no repository activity. If this
 # stops ticking, a push (or a manual `workflow_dispatch`) re-arms it.
@@ -64,3 +73,28 @@ jobs:
       # this job cannot be reddened by the very resolution it exists to judge.
       - name: Check every declared floor against the index
         run: python .github/scripts/check_declared_floors.py
+
+  suite:
+    name: the suite on the declared floors
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      # ONE leg, and 3.11 because that is the `requires-python` floor: lowest dependencies on the
+      # lowest interpreter is the strongest single form of the claim. The extras are the project's
+      # own verify command's, so the floors this exercises are the ones the suite actually reaches;
+      # `memory-vectors` is left out because the suite fakes that model runtime anyway, so adding
+      # it would cost a 135 MB download and prove nothing more.
+      #
+      # `lowest-direct`, never `lowest`: pinning TRANSITIVE dependencies to their floors tests a
+      # combination nobody ships and goes red on other people's history.
+      - name: Run the suite with every direct dependency at its floor
+        run: >
+          uv run --resolution lowest-direct
+          --group dev --extra mcp --extra grep --extra gitignore
+          python -m pytest -q
