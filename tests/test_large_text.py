@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import tempfile
 
 import pytest
@@ -44,11 +45,24 @@ def test_hostile_content_reaches_the_file_body_and_never_the_file_name():
         assert "," not in staged.host_path
 
 
-def test_the_staged_file_is_read_only_and_close_removes_it():
+def test_the_staged_file_is_not_writable_and_close_removes_it():
+    """Asserted as "not writable", not as an octal, because `chmod` means different things.
+
+    POSIX records the exact mode; Windows has only a read-only bit, so `0o400` reads back as
+    `0o444` there and an exact comparison fails for a reason that is not about this file at all.
+    The DELETION is the half that matters on every platform, and it is the half a Windows run had
+    never reached: the mode assertion failed first, and `rmtree(ignore_errors=True)` would have
+    left a read-only file behind in silence.
+    """
     staged = LargeText("x" * 64)
-    assert oct(os.stat(staged.host_path).st_mode & 0o777) == "0o400"
+    mode = os.stat(staged.host_path).st_mode
+    assert mode & stat.S_IRUSR, oct(mode)
+    assert not mode & stat.S_IWUSR, oct(mode)
+    with pytest.raises(OSError), open(staged.host_path, "a", encoding="utf-8"):
+        pass
     staged.close()
     assert not os.path.exists(staged.host_path)
+    assert not os.path.exists(os.path.dirname(staged.host_path))
     staged.close()  # idempotent: a consumer closing twice is not an error
 
 

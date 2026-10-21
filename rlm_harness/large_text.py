@@ -27,6 +27,11 @@ the path is owned here and none of it is reachable by anything a model or an inp
   tool argument, or in a model reply can produce an instance, so the model can neither open a new
   grant nor widen an existing one. It can only read the file the host already decided to give it,
   whose content it would otherwise have received in full as a variable.
+* **Where this has actually been exercised.** The staging, the type-only discovery and every
+  refusal above are tested offline on every platform CI runs. The MOUNT itself needs Deno, so it
+  was exercised by hand on macOS and never in CI, and a Windows host has not been through it: a
+  drive letter and backslashes reach Deno's `--allow-read` there and nothing here has watched that
+  happen.
 * A comma anywhere in the resolved path is REFUSED rather than tolerated. Deno's `--allow-read`
   takes a comma-separated list and silently misparses an entry containing one (dspy's own note,
   and `stanfordnlp/dspy#9749`), which would turn one grant into two of something else. The
@@ -35,9 +40,12 @@ the path is owned here and none of it is reachable by anything a model or an inp
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import secrets
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 from types import TracebackType
@@ -46,6 +54,8 @@ from typing import Self
 #: What the sandbox sees. dspy mounts a read path at `/sandbox/<basename>` and the host path is
 #: NOT visible inside the sandbox, so this prefix, not the host location, is what model code opens.
 SANDBOX_MOUNT_DIR = "/sandbox"
+
+logger = logging.getLogger(__name__)
 
 #: How much of the text the model is shown up front. Enough to recognise the shape of the thing
 #: (a log, a diff, a transcript) without paying for the whole of it in the prompt.
@@ -105,8 +115,28 @@ class LargeText:
         return head
 
     def close(self) -> None:
-        """Delete the staged file. Safe to call twice."""
+        """Delete the staged file. Safe to call twice.
+
+        The staged file is read-only, and on Windows a read-only file cannot be unlinked, so the
+        bit is cleared before the remove. `shutil.rmtree(ignore_errors=True)` alone LEFT THE FILE
+        THERE and said nothing, which for a file holding the payload is the wrong kind of quiet;
+        the Windows CI leg is what opened that question, and only because the assertion above it
+        had already failed for a different reason and never reached this.
+
+        Still best-effort, because this runs from `__exit__` where raising would mask whatever
+        sent us here, but a leftover is logged rather than swallowed.
+        """
+
+        # No `rmtree` error callback: `onexc` is 3.12+ and `onerror` is deprecated there, and
+        # this package's floor is 3.11. Clearing the one file's read-only bit before the remove
+        # covers the one case that needed a callback.
+        with contextlib.suppress(OSError):
+            os.chmod(self._path, stat.S_IWRITE | stat.S_IREAD)
         shutil.rmtree(self._dir, ignore_errors=True)
+        if self._dir.exists():
+            logger.warning(
+                "could not delete the staged file at %s; it holds this run's input text", self._dir
+            )
 
     def __enter__(self) -> Self:
         return self
