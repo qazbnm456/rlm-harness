@@ -214,25 +214,43 @@ filter on `cause == "invalid"` if you mean rejections. And an endpoint error del
 trip the breaker, so `circuit_broken` counts and endpoint counts never overlap with each other.
 
 **Across the trace boundary the same distinction is `trace.payload_cause(payload)`**, reading the
-same four words off a recorded `tool_call`. It exists because `ok` is often ABSENT on an endpoint
-payload (consumers record `error=` alone there), so `payload.get("ok")` returns `None`: falsy,
-and every `not payload.get("ok")` counter downstream absorbs infrastructure failures as content
-declines without a word of warning. In the worst measured case that put 113 endpoint failures into
-a metric named `generator_declines`, fed it to a scored rubric criterion about the planner's spec
-quality, and printed "113 partial/retry" in a delivered report: for a run whose validator ran zero
-times, and whose planner had correctly concluded the endpoint was unreachable.
+same four words off a recorded `tool_call`, plus a fifth the live side cannot produce. It exists
+because `ok` is often ABSENT on an endpoint payload (consumers record `error=` alone there), so
+`payload.get("ok")` returns `None`: falsy, and every `not payload.get("ok")` counter downstream
+absorbs infrastructure failures as content declines without a word of warning. In the worst
+measured case that put 113 endpoint failures into a metric named `generator_declines`, fed it to a
+scored rubric criterion about the planner's spec quality, and printed "113 partial/retry" in a
+delivered report: for a run whose validator ran zero times, and whose planner had correctly
+concluded the endpoint was unreachable.
+
+A payload carrying no `ok` at all is the fifth word, `"unknown"`, since 1.24.0. It used to read as
+a decline, so a writer that forgot the field produced a confident wrong answer rather than an
+unknown: three of this kit's own writers had, and a consumer measured its own `tool_declines` at 60
+against a real 12. Those writers are fixed and `tests/test_record_tool_call_sites.py` holds them to
+it; your own `record_tool_call` calls are not covered by that, and this is where an omission in one
+becomes visible. Reading an older corpus therefore moves numbers: calls that counted as declines
+now count as unknown. That is the correction rather than a regression, so split a corpus by kit
+version before comparing a rate across one.
 
 `export_actions` now carries `outcome.cause` and `outcome.error` for exactly this reason: that
 record is what reaches a trainer, and it previously carried neither, so the split could not be
 reconstructed downstream even by hand.
 
-Two write-side hazards worth stating, both observed:
+Three write-side hazards worth stating, all observed:
 
 - **Record the outcome ONCE, AFTER the branch.** A consumer that emits its event before checking
   `endpoint_error` destroys the distinction at write time, and no read-side fix recovers it.
 - **Do not omit `ok` on the endpoint path.** Recording only `error=` is what makes
-  `payload.get("ok")` return `None`. Passing `cause=result.cause` explicitly is the cheapest
-  insurance: the derivation is then done once, by the code that knows.
+  `payload.get("ok")` return `None`. Record `ok=` alongside the endpoint string and the breaker
+  flag: those three keys are what `payload_cause` reads, and a `cause=` keyword is not among them.
+  This paragraph recommended passing one until 1.24.0, which read as a decline and now reads as
+  unknown, so a writer following that advice declared an outcome nothing would ever see.
+- **The OUTERMOST callable the model invokes owns the event.** Every tool here records under its
+  own name, so wrapping one and then deciding a different verdict writes two events for one call,
+  the inner one contradicting what the model was told. The kit's composable pieces therefore record
+  nothing and say so: `make_model_tool`, `make_harness_tool` and `make_schema_validator`. If you
+  wrap a tool that does record, such as `read_file`, your wrapper's verdict is the one the trace
+  needs, and the inner event is a second row under a name the model never called.
 
 ## Skills (progressive disclosure)
 
@@ -2089,6 +2107,7 @@ per_criterion = criteria_facts(my_criteria, facts, MY_LENS)
 |---|---|
 | `main_steps`, `tool_calls`, `sub_calls`, `tool_call_rate`, `sub_call_rate` | what the run did |
 | `tool_declines`, `tool_endpoint_errors`, `tool_circuit_breaks`, `tool_ok` | the four outcomes, summed |
+| `tool_unknown` | calls whose writer declared no outcome, so the four above are a SUBSET of `tool_calls` |
 | `tool_wasted_seconds`, `tool_total_seconds`, `tool_measured_calls` | wall-clock OCCUPIED by tool calls, and how much of it was measurable |
 | `fence_refused_turns` | turns dspy refused over a fence tag: read the note below |
 | `budget_exhausted` | `True`/`False`/`None`; the ITERATION cap only |
@@ -2567,7 +2586,9 @@ Two things it refuses to do, both deliberate:
 - **It never reads `ok` directly.** Outcomes come from `payload_cause`, because `ok` is frequently
   ABSENT on an endpoint-failure payload: `payload.get("ok")` then returns `None`, which is falsy,
   so a naive counter silently absorbs infrastructure failures as content declines. That mistake has
-  shipped four times. `invalid_rate` is likewise denominated over the calls that actually reached a
+  shipped four times. The four outcome counts can therefore sum to less than `tool_calls`: a
+  payload with no `ok` and no endpoint string is `tool_unknown` rather than a decline.
+  `invalid_rate` is likewise denominated over the calls that actually reached a
   validator, not over every call: a circuit break ran no validator and an endpoint failure produced
   no output to judge.
 - **It never infers a duration from the gap between events.** `*_seconds` is `None`: meaning "not

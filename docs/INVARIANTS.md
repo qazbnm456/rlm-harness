@@ -460,7 +460,13 @@ reason is in the rule.
   consumers who did it right. **A consumer with its OWN recording wrapper opts out by declaring
   `records_sub_call = True`** on it; the probe is `is True`, never truthiness, because `getattr` on
   a mock manufactures a truthy attribute for any name and would silently skip it: the same
-  absent-event failure one layer up.
+  absent-event failure one layer up. **An absent FIELD is not a measurement either**:
+  `payload_cause` read a payload with no `ok` as a decline until 1.24.0, so three writers that
+  omitted the field produced declines rather than unknowns and a consumer's `tool_declines` read 60
+  against a real 12. `CAUSE_UNKNOWN` makes that absence loud now, and
+  `tests/test_record_tool_call_sites.py` holds every writer to declaring an outcome and every
+  shipped factory to recording one, so what still needs this half of the rule is a field neither
+  gate covers.
 - **Before believing a count, ask what the reader would report if the writer were perfect, and
   whether the thing being counted is still moving.** The `sub_call` bullet above is one instance of
   a failure that has now cost this project and its consumers TEN times, and the general form is
