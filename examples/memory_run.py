@@ -13,6 +13,12 @@ arc on one live run, because the pieces only mean anything together:
   stores as `observed` only a fact whose quote the host finds in a source it trusts,
 - `purge` takes something back out, which no tool and no model-facing path can reach.
 
+**Where each text comes from decides whether the run has anything to learn.** The store is seeded
+with a sentence that sits near the question without answering it, and the answer arrives with the
+run, as a document. Seed the answer into memory instead and a note is correctly redundant: a
+first draft of this example did exactly that, and the model found the answer already stored, said
+so in as many words, and wrote nothing, so the one path most worth showing never ran.
+
 **What the model cannot do is the point.** `memory_note(text, revises)` takes no argument that
 names a provenance, so a model's words arrive as `inferred` whatever the prompt, the plan, or a
 page the model read says. That label is what makes a note safe to keep: a note written after
@@ -22,7 +28,9 @@ to tell a model's own words from a source.
 The store is written OUTSIDE the checkout by default, under `$TMPDIR`, because a database in a
 working tree is a stray waiting to be committed (1.21.0 shipped a fix for three of them). Point
 `RLM_MEMORY_DIR` at a directory you keep to watch memory carry across runs: run this twice and
-the second run searches what the first one left.
+the second run searches what the first one left, the consolidated items included. A fresh store
+is what shows the whole arc, though, because on the second run the answer is already in memory
+and a note is correctly redundant.
 
 Illustrative. Needs real model creds and a sandbox, so it is NOT imported by the test suite.
 (`tests/test_memory*.py` and `tests/test_tool_descriptions.py` cover the store, the tools and the
@@ -59,24 +67,36 @@ from rlm_harness.tools import (
     make_memory_search_tool,
 )
 
-# The text the host holds. The seeded item below is taken FROM it, which is what makes that item
-# `observed`, and passing it to consolidate_run as evidence is what lets a fact quoting it be
-# stored as `observed` too. Nothing the model produces is ever a source for itself.
-HANDBOOK = (
+# Two texts from two places, and the split is what makes the example work. The first is already
+# in memory when the run starts, and it is NOT the answer: it is near enough to be found and to
+# prove the search works. The second arrives with the run, carries the answer, and is the host's
+# evidence at the end. Seed the answer into memory instead and there is nothing left for the run
+# to learn, so a note is correctly redundant and the write path never fires.
+OPERATIONS_NOTE = (
+    "The sandbox has no network access, and a turn that exceeds its wall-clock budget is "
+    "restarted once before the run is abandoned."
+)
+# More in it than the answer, deliberately, and the task asks for a note in the model's OWN words
+# about the one fact it answered with. Both halves of that matter: the consolidation afterwards is
+# shown what memory already holds so it does not propose it again, so a note that copies the whole
+# document verbatim leaves nothing to quote and the `observed` path never runs. Measured, not
+# guessed: an earlier draft asked for "whatever the document establishes", the model copied all
+# three sentences into one note, and the consolidation correctly proposed nothing at all.
+POLICY_NOTE = (
     "Every piece of model-authored code runs inside the Deno sandbox, which is the security "
-    "boundary: an allowlist of commands is not a substitute for it. The sandbox has no network "
-    "access, and a turn that exceeds its wall-clock budget is restarted once before the run is "
-    "abandoned."
+    "boundary. An allowlist of commands is not a substitute for it, because the model chooses "
+    "the command and an allowlist only narrows the choice. The sandbox image is pinned, so a "
+    "change to the boundary takes effect on the next build rather than the next run."
 )
 
 
 class Answer(RLMTask):
-    signature = "question: str -> answer: str"
+    signature = "document: str, question: str -> answer: str"
     output_field = "answer"
     instructions = (
-        "Call memory_search to look for what is already known before answering, and memory_get "
-        "to read a promising item in full. Answer from what you find. When the answer rests on "
-        "something worth keeping for a later run, call memory_note once with it."
+        "Call memory_search to see what is already known, and memory_get to read a promising "
+        "item in full. Read the document too, and answer from both. Call memory_note once, with "
+        "the one fact your answer rests on, in your own words rather than the document's."
     )
 
 
@@ -110,9 +130,9 @@ async def main() -> None:
     seeded = store.search(provenance=["observed", "said"], limit=5)
     if not seeded:
         store.add(
-            HANDBOOK.split(". ", 1)[0] + ".",   # the handbook's own first sentence, not a summary
+            OPERATIONS_NOTE,                    # the source's own sentence, not a summary of it
             provenance="observed",
-            origin="handbook.md#sandbox-policy",
+            origin="handbook.md#limits",
             tags=["sandbox"],
         )
         store.add(
@@ -137,7 +157,10 @@ async def main() -> None:
     run_id = f"memory-{int(time.time())}"
     trace_path = str(where / "memory_run.jsonl")
     with TraceRecorder(trace_path, run_id=run_id, meta={"task": "answer"}):
-        answer = await task.arun(question="What is the security boundary for model-authored code?")
+        answer = await task.arun(
+            document=POLICY_NOTE,
+            question="What is the security boundary for model-authored code?",
+        )
 
     print("\n=== ANSWER ===")
     print(answer)
@@ -161,7 +184,7 @@ async def main() -> None:
     # One call per run. `evidence` is how a run's sources reach `observed`: a fact is promoted
     # only when its quote is found in a source the host trusts, and what gets stored is then the
     # source's own span rather than the model's paraphrase.
-    report = await consolidate_run(store, events, evidence={"handbook": HANDBOOK})
+    report = await consolidate_run(store, events, evidence={"policy_note": POLICY_NOTE})
     print("\n=== CONSOLIDATED ===")
     print(f"  observed: {report.observed}")
     print(f"  inferred: {report.inferred}")
