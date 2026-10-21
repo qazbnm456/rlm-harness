@@ -179,7 +179,7 @@ jobs:
           # honest owner of that key: what it caches IS the locked dependency set the key names,
           # while this job deliberately resolves fresh without the lockfile.
           save-cache: false
-      - name: Build the wheel and run a task from it
+      - name: Build both artifacts and run a task from the wheel
         run: |
           set -euo pipefail
           LOCKED=$(python3 -c '
@@ -188,7 +188,40 @@ jobs:
           print(m.group(1) if m else "")')
           test -n "$LOCKED" || { echo "could not read dspy's version from uv.lock"; exit 1; }
           echo "pinning dspy==$LOCKED (the locked version) so an upstream release cannot fail a PR"
-          uv build --wheel
+          # BOTH artifacts, not just the wheel. `[tool.hatch.build.targets.sdist]`'s include list
+          # is only exercised when an sdist is built, and until this said `uv build` that first
+          # happened in `release.yml`, after the tag: a malformed entry, or a path renamed without
+          # touching the list, reached a published release before anything built it.
+          uv build
+          # Built is not checked. The suite compares the DECLARED list against git, so it cannot
+          # see what hatchling actually packed. Measured rather than assumed: declaring a path
+          # that `.gitignore` matches leaves the suite green on all seven tests and fails this
+          # audit by name, because hatchling applies `.gitignore` ON TOP of `include` and drops
+          # it. That is the gap this closes.
+          python3 - <<'AUDIT'
+          import pathlib, sys, tarfile, tomllib
+
+          sdist = sorted(pathlib.Path("dist").glob("*.tar.gz"))
+          if len(sdist) != 1:
+              sys.exit(f"expected exactly one sdist in dist/, found {[p.name for p in sdist]}")
+          declared = {
+              path.lstrip("/")
+              for path in tomllib.loads(pathlib.Path("pyproject.toml").read_text())
+              ["tool"]["hatch"]["build"]["targets"]["sdist"]["include"]
+          }
+          with tarfile.open(sdist[0]) as tar:
+              names = [n for n in tar.getnames() if "/" in n]
+          root = names[0].split("/", 1)[0]
+          packed = {n.split("/", 2)[1] for n in names if n.startswith(root + "/")}
+          packed.discard("PKG-INFO")  # hatchling's own, never declared
+          missing = sorted(declared - packed)
+          extra = sorted(packed - declared)
+          if missing:
+              sys.exit(f"declared in the sdist include list but NOT packed: {missing}")
+          if extra:
+              sys.exit(f"packed into the sdist but not declared: {extra}")
+          print(f"sdist top level matches the declared list ({len(declared)} paths)")
+          AUDIT
           uv venv /tmp/fresh
           VIRTUAL_ENV=/tmp/fresh uv pip install dist/*.whl "dspy==$LOCKED"
           /tmp/fresh/bin/python - <<'PY'
