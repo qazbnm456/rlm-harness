@@ -15,6 +15,7 @@ shadow one level down inside the merged namespace.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -105,3 +106,70 @@ def test_no_tracked_file_is_hidden_from_the_sdist_by_gitignore():
         f"tracked but matched by .gitignore, so the sdist will not carry them: {ignored}. "
         "Either stop tracking the path or narrow the pattern in .gitignore."
     )
+
+
+def test_the_two_declared_versions_agree():
+    """`AGENTS.md` and `docs/CONVENTIONS.md` both state this rule and nothing enforced it.
+
+    `pyproject.toml` `[project].version` is what PyPI publishes; `rlm_harness.__version__` is what
+    a consumer reads back at runtime and what a trace records. A release that moves one and not the
+    other ships an artifact that misreports itself, and the mismatch is invisible until someone
+    compares a trace against an install. Writing them by hand is exactly where it goes wrong.
+    """
+    declared = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject_version = declared["project"]["version"]
+
+    # Read the literal rather than importing, so this holds without the package's dependencies.
+    source = (_ROOT / "rlm_harness" / "__init__.py").read_text(encoding="utf-8")
+    match = re.search(r'^__version__\s*=\s*"([^"]+)"', source, re.MULTILINE)
+    assert match, "rlm_harness/__init__.py has no __version__ = \"...\" literal to compare"
+
+    assert match.group(1) == pyproject_version, (
+        f"pyproject.toml says {pyproject_version} and rlm_harness.__version__ says "
+        f"{match.group(1)}; bump both or neither."
+    )
+
+
+def _floor_checker():
+    """Load the floor check by PATH.
+
+    Deliberately not a package: an `__init__.py` under `.github/` would make it an importable
+    top-level module under the editable co-dev overlay, which is the shadowing this file's first
+    test exists to prevent.
+    """
+    import importlib.util
+
+    path = _ROOT / ".github" / "scripts" / "check_declared_floors.py"
+    spec = importlib.util.spec_from_file_location("_floor_check", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_floor_check_reads_every_place_a_floor_can_be_declared():
+    """The network half of that check is a scheduled job; THIS half is what breaks in silence.
+
+    If `declared_floors` stops seeing a table, the job keeps passing and simply stops looking, which
+    is the failure mode the check was written against in the first place. So pin what it reads:
+    base dependencies, every optional-dependency extra, and every dependency group.
+    """
+    floors = _floor_checker().declared_floors("""
+        [project]
+        dependencies = ["alpha>=1.2.3", "beta==4.5.6", "gamma"]
+        [project.optional-dependencies]
+        one = ["delta>=0.1"]
+        two = ["epsilon>=2,<3"]
+        [dependency-groups]
+        dev = ["zeta>=9.9.9"]
+    """)
+    assert floors == {"alpha": "1.2.3", "delta": "0.1", "epsilon": "2", "zeta": "9.9.9"}, floors
+
+
+def test_the_floor_check_sees_this_repo_s_own_floors():
+    """A parser that works on a fixture and not on the real file is the usual way this rots."""
+    floors = _floor_checker().declared_floors(
+        (_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    # Named rather than counted: a count passes while silently reading one table.
+    for name in ("dspy", "pydantic", "mcp", "jsonschema", "claude-agent-sdk", "pytest"):
+        assert name in floors, f"{name} has a >= floor in pyproject.toml but the check misses it"

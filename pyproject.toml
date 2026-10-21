@@ -1,6 +1,6 @@
 [project]
 name = "rlm-harness"
-version = "1.21.0"
+version = "1.21.1"
 description = "A clean, reusable harness for building tasks on DSPy Recursive Language Models (RLMs)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -93,14 +93,29 @@ mcp = [
 ]
 # JSON-Schema validation (make_json_schema_validator): validate a parsed object against a
 # vendored, version-pinned upstream JSON schema. Opt-in: the core scaffold runs without it.
+# FLOOR 4.0.1 since rlm-harness 1.21.1, for the same reason as the subscription extra above and
+# found by the same check: 4.0 is YANKED, its yank reason being "Improper python_requires
+# declaration", and indeed it publishes an EMPTY `requires-python`. 4.0.1 declares `>=3.7` and is
+# not yanked, and the four tests that exercise this extra pass on it.
 jsonschema = [
-    "jsonschema>=4.0",
+    "jsonschema>=4.0.1",
 ]
 # Claude Pro/Max SUBSCRIPTION LM (ClaudeAgentLM): run the planner and/or sub-LM on your own
 # Claude login via the official Claude Agent SDK, injected through configure(main_lm=/sub_lm=).
 # Opt-in: a plain API-key install never pulls the (heavy) SDK wheel.
+#
+# FLOOR 0.1.61 since rlm-harness 1.21.1, and the reason is the declared floor itself rather than
+# anything the kit needs: 0.1.60 is YANKED on PyPI, and its yank reason says the file would be
+# deleted on or after 2026-09-19 to free project storage. A floor nobody can cleanly resolve is
+# not a floor, and a deleted one stops being installable at all. 0.1.59 and 0.1.60 are both
+# yanked, so 0.1.61 is the nearest version that is not, and the kit's suite PASSES on it
+# (142 tests across the three files that touch the SDK), which is the only thing that makes a
+# floor mean anything. It also carries what the overage guard will need: `RateLimitEvent`,
+# `RateLimitInfo`, `RateLimitStatus`, `RateLimitType` and `ClaudeAgentOptions.max_budget_usd` all
+# exist there, so that work needs no further bump. Upper bound deliberately absent, the same
+# posture as the other extras.
 subscription = [
-    "claude-agent-sdk>=0.1.60",
+    "claude-agent-sdk>=0.1.61",
 ]
 # Wall-clock-bounded regex matching (make_grep_files_tool): an LM-controlled pattern is bounded by
 # a real timeout instead of a catastrophic-backtracking pattern hanging the host indefinitely:
