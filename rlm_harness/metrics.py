@@ -26,6 +26,7 @@ from .trace import (
     CAUSE_ENDPOINT,
     CAUSE_INVALID,
     CAUSE_OK,
+    CAUSE_UNKNOWN,
     EVENT_FINAL,
     EVENT_MAIN_STEP,
     EVENT_RESULT,
@@ -140,6 +141,7 @@ class ToolWaste:
     endpoint_errors: int = 0    # the call itself failed; the validator never ran
     circuit_broken: int = 0     # short-circuited; nothing was called at all
     ok: int = 0
+    unknown: int = 0            # the payload declared no outcome; see `trace.payload_cause`
     total_seconds: float | None = None
     wasted_seconds: float | None = None   # spent on invalid + endpoint outcomes
     measured_calls: int = 0     # how many of `calls` carried a duration
@@ -162,6 +164,10 @@ class ToolWaste:
 
         ``None`` when nothing was measured, and also when everything measured summed to exactly
         zero, which is indistinguishable from unmeasured here and would otherwise divide by zero.
+
+        A non-zero ``unknown`` makes this a FLOOR rather than a value: an undeclared call's
+        duration counts in ``total_seconds`` and can never count in ``wasted_seconds``, because
+        nothing recorded whether it was wasted.
         """
         if self.total_seconds is None or not self.total_seconds:
             return None
@@ -207,6 +213,7 @@ def compute_tool_waste(events: Iterable[dict]) -> dict[str, ToolWaste]:
             endpoint_errors=causes.get(CAUSE_ENDPOINT, 0),
             circuit_broken=causes.get(CAUSE_CIRCUIT_BROKEN, 0),
             ok=causes.get(CAUSE_OK, 0),
+            unknown=causes.get(CAUSE_UNKNOWN, 0),
             total_seconds=secs.get(name) if has_time else None,
             wasted_seconds=wasted.get(name, 0.0) if has_time else None,
             measured_calls=measured.get(name, 0),
@@ -237,8 +244,8 @@ def compute_tool_waste_by_run(events: Iterable[dict]) -> dict[str, dict[str, Too
 RUN_FACT_KEYS: tuple[str, ...] = (
     "main_steps", "tool_calls", "sub_calls", "tool_call_rate", "sub_call_rate",
     "tool_declines", "tool_endpoint_errors", "tool_circuit_breaks",
-    "tool_wasted_seconds", "tool_total_seconds", "tool_ok", "tool_measured_calls",
-    "fence_refused_turns", "budget_exhausted",
+    "tool_wasted_seconds", "tool_total_seconds", "tool_ok", "tool_unknown",
+    "tool_measured_calls", "fence_refused_turns", "budget_exhausted",
 )
 
 
@@ -373,6 +380,9 @@ def compute_run_facts(events: Iterable[dict]) -> dict:
         "tool_wasted_seconds": _union_seconds(events, (CAUSE_INVALID, CAUSE_ENDPOINT)),
         "tool_total_seconds": _union_seconds(events),
         "tool_ok": sum(w.ok for w in waste),
+        # Not a fifth OUTCOME: the count of calls whose outcome nobody recorded. Non-zero makes
+        # every other count here a subset, which is why it rides alongside rather than folded in.
+        "tool_unknown": sum(w.unknown for w in waste),
         "tool_measured_calls": sum(w.measured_calls for w in waste),
         "fence_refused_turns": _count_fence_refused(events),
         "budget_exhausted": _budget_exhausted(events),

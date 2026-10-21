@@ -257,6 +257,7 @@ CAUSE_OK = "ok"                          # the validator ran and accepted
 CAUSE_INVALID = "invalid"                # the validator ran and rejected
 CAUSE_ENDPOINT = "endpoint"              # the model call failed after retries; the validator never ran
 CAUSE_CIRCUIT_BROKEN = "circuit_broken"  # short-circuited; no model call, no validator
+CAUSE_UNKNOWN = "unknown"                # the writer declared no outcome; nothing can be inferred
 
 
 def payload_cause(payload: dict) -> str:
@@ -272,8 +273,23 @@ def payload_cause(payload: dict) -> str:
     Reads three keys, in the order that cannot disagree with itself: ``circuit_broken`` (nothing was
     called), then the endpoint string (the model call failed, so nothing was validated), then
     ``ok``. The endpoint string is looked up under BOTH ``endpoint_error`` and ``error`` because the
-    consumer convention has used each; the ``ok`` key is often ABSENT on an endpoint payload, and
-    ``payload.get("ok")`` returning ``None`` is exactly how it silently reads as a decline.
+    consumer convention has used each.
+
+    **A payload with no ``ok`` at all is :data:`CAUSE_UNKNOWN`, the fifth value, added in 1.24.0.**
+    It used to be ``CAUSE_INVALID``, because ``payload.get("ok")`` returns ``None`` and ``None`` is
+    falsy, so a writer that forgot the field did not produce an unknown: it produced a confident
+    wrong answer, counted in ``metrics.compute_run_facts``'s ``tool_declines``. Three kit writers
+    had forgotten it, and a consumer measured its own declines at 60 where the truth was 12. The
+    writers are fixed and gated, but a consumer writes its own ``record_tool_call`` calls too, and
+    this is the only place that can make their version of the omission loud rather than plausible.
+    An absent field is not a measurement, which is already why ``metrics`` reports
+    ``budget_exhausted`` as ``None`` when the answer is unknown and never as ``False``.
+
+    Reading an OLD corpus therefore moves numbers: a payload that read as a decline now reads as
+    unknown, which is the correction, so split a corpus by kit version before comparing any rate
+    across one. ``cause`` is NOT read here: the recorded convention is the three fields above, and
+    a writer with a ``ModelToolResult`` records its ``ok`` / ``circuit_broken`` / endpoint string
+    rather than the derived string.
 
     **The endpoint keys are tested for PRESENCE, not truthiness**, which is what makes this an actual
     mirror of :attr:`rlm_harness.tools.ModelToolResult.cause` rather than a near-copy that disagrees on
@@ -290,7 +306,9 @@ def payload_cause(payload: dict) -> str:
         return CAUSE_CIRCUIT_BROKEN
     if payload.get("endpoint_error") is not None or payload.get("error") is not None:
         return CAUSE_ENDPOINT
-    return CAUSE_OK if payload.get("ok") else CAUSE_INVALID
+    if "ok" not in payload:
+        return CAUSE_UNKNOWN
+    return CAUSE_OK if payload["ok"] else CAUSE_INVALID
 
 
 def record_tool_call(

@@ -1,5 +1,9 @@
 """Reusable tools that RLM tasks can expose to the model inside the REPL."""
 
+# Taken straight from `trace`, where the other four reach this package through `.model` below,
+# because it is a READ-side value that `ModelToolResult.cause` cannot produce: that side has a real
+# `ok` bool, so its outcome is never undeclared. Re-exporting it from `model` would say otherwise.
+from ..trace import CAUSE_UNKNOWN
 from ._async import run_isolated
 from .archive import make_extract_archive_tool
 from .command import CommandResult, make_command_tool, refuse_broad_git_history
@@ -44,6 +48,7 @@ __all__ = [
     "CAUSE_ENDPOINT",
     "CAUSE_INVALID",
     "CAUSE_OK",
+    "CAUSE_UNKNOWN",
     "ModelToolResult",
     "harness_from_endpoint",
     "is_safe_url",

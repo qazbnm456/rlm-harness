@@ -10,6 +10,7 @@ from rlm_harness.trace import (
     CAUSE_ENDPOINT,
     CAUSE_INVALID,
     CAUSE_OK,
+    CAUSE_UNKNOWN,
     EVENT_FINAL,
     EVENT_MAIN_STEP,
     EVENT_RESULT,
@@ -357,6 +358,40 @@ def test_an_endpoint_error_that_STRINGIFIED_TO_NOTHING_is_still_an_endpoint_fail
     assert payload_cause({"ok": False, "endpoint_error": None, "errors": ["schema"]}) == CAUSE_INVALID
 
 
+def test_a_payload_with_no_ok_AT_ALL_is_UNKNOWN_rather_than_a_decline():
+    """1.24.0. The three branches above all find something to read; this one finds nothing.
+
+    It used to return `CAUSE_INVALID`, so a writer that forgot the field did not produce an
+    unknown: it produced a confident wrong answer that `compute_run_facts` counted in
+    `tool_declines`. Three kit writers had forgotten it (`list_skills`, `read_skill`, the sub-model
+    tool), and a consumer measured its own declines at 60 against a real 12. An absent field is not
+    a measurement, which is already why `budget_exhausted` is `None` when unknown, never `False`.
+    """
+    assert payload_cause({"tool": "list_skills", "result": "a, b"}) == CAUSE_UNKNOWN
+    assert payload_cause({}) == CAUSE_UNKNOWN
+    # An explicit null is a declaration that something went wrong, not a missing field.
+    assert payload_cause({"ok": None}) == CAUSE_INVALID
+
+
+def test_unknown_is_the_LAST_resort_and_outranks_nothing():
+    """The precedence is unchanged: a payload that says what happened is read, not shrugged at.
+
+    The guard that matters is the endpoint one, because an endpoint payload legitimately carries no
+    `ok` at all. Were `unknown` checked first, every transport failure in every existing corpus
+    would have become unreadable, which is a worse regression than the bug being fixed.
+    """
+    assert payload_cause({"circuit_broken": True}) == CAUSE_CIRCUIT_BROKEN
+    assert payload_cause({"error": "harness exited 1"}) == CAUSE_ENDPOINT
+    assert payload_cause({"endpoint_error": ""}) == CAUSE_ENDPOINT
+
+
+def test_a_real_decline_is_STILL_a_decline():
+    """The control for the two above: if `ok=False` had drifted into `unknown`, every test here
+    would still pass while `tool_declines` became structurally zero."""
+    assert payload_cause({"ok": False}) == CAUSE_INVALID
+    assert payload_cause({"ok": False, "errors": ["schema"]}) == CAUSE_INVALID
+
+
 def test_payload_cause_agrees_with_ModelToolResult_cause_on_every_shape():
     """The two must not be able to drift: one is documented as the other's read-side mirror, and the
     divergence above existed precisely because nothing compared them."""
@@ -400,9 +435,17 @@ def test_a_circuit_break_outranks_an_endpoint_string():
 
 def test_a_non_model_tool_reads_as_ok_or_invalid_which_is_what_ok_already_said():
     """`payload_cause` is safe to apply to any tool_call: with no breaker and no endpoint string it
-    degrades to exactly the `ok` boolean, so a caller need not branch on tool identity first."""
-    assert payload_cause({"tool": "read_skill", "result_len": 900}) == CAUSE_INVALID
+    degrades to exactly the `ok` boolean, so a caller need not branch on tool identity first.
+
+    The first assertion used to be this test's own counter-example and read `CAUSE_INVALID` for a
+    payload with no `ok` in it, under a docstring claiming the function "degrades to exactly the
+    `ok` boolean": there is no boolean to degrade to, and the shape it chose to demonstrate with was
+    `read_skill`'s real one, which omitted the field until 1.24.0. The test that would have caught
+    that blessed it instead. The claim is tested below where it is actually true.
+    """
+    assert payload_cause({"tool": "read_skill", "result_len": 900}) == CAUSE_UNKNOWN
     assert payload_cause({"tool": "read_skill", "ok": True}) == CAUSE_OK
+    assert payload_cause({"tool": "read_skill", "ok": False}) == CAUSE_INVALID
 
 
 def test_the_live_result_and_the_recorded_payload_agree():

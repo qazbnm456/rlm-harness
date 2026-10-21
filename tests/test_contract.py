@@ -280,8 +280,11 @@ def test_run_fact_keys_are_a_CLOSED_set_pinned_here():
     assert RUN_FACT_KEYS == (
         "main_steps", "tool_calls", "sub_calls", "tool_call_rate", "sub_call_rate",
         "tool_declines", "tool_endpoint_errors", "tool_circuit_breaks",
-        "tool_wasted_seconds", "tool_total_seconds", "tool_ok", "tool_measured_calls",
-        "fence_refused_turns", "budget_exhausted",
+        # 1.24.0: `tool_unknown`, the calls whose writer declared no outcome. A count, not a
+        # score, and it rides ALONGSIDE the four outcomes rather than joining them: non-zero makes
+        # `tool_declines` and the rest a subset of `tool_calls`. See `trace.payload_cause`.
+        "tool_wasted_seconds", "tool_total_seconds", "tool_ok", "tool_unknown",
+        "tool_measured_calls", "fence_refused_turns", "budget_exhausted",
     )
     # ...and what is EMITTED is exactly that set, in that order. The constant is not decorative.
     assert tuple(compute_run_facts([])) == RUN_FACT_KEYS

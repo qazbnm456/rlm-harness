@@ -499,7 +499,32 @@ def test_a_payload_of_None_is_counted_rather_than_raising():
     """`dict.get`'s default fires only on a MISSING key, never on a key whose value is `None`, so
     `event.get("payload", {}).get(...)` raised `AttributeError` in `compute_run_utilization` while
     `compute_tool_waste` handled it correctly with `or {}`. The two now agree: such an event is
-    tool "?" with cause invalid."""
+    tool "?", and its cause is UNKNOWN as of 1.24.0 (it read as a decline before, which claimed a
+    null payload had told us the model's output was rejected). Counting it at all is the subject
+    here; which bucket it lands in is the subject of the test below."""
     facts = _facts([_step(0), {"type": EVENT_TOOL_CALL, "payload": None}])
-    assert facts["tool_calls"] == 1 and facts["tool_declines"] == 1
+    assert facts["tool_calls"] == 1 and facts["tool_unknown"] == 1
+    assert facts["tool_declines"] == 0
     assert facts["tool_total_seconds"] is None
+
+
+def test_an_undeclared_call_is_counted_as_unknown_not_as_a_decline():
+    """1.24.0, from a consumer whose `tool_declines` read 60 against a real 12: every surplus one
+    a SUCCESSFUL call whose writer omitted `ok`. The counters must not absorb it."""
+    from rlm_harness.metrics import compute_run_facts, compute_tool_waste
+
+    events = [
+        {"type": "tool_call", "payload": {"tool": "t", "ok": True}},
+        {"type": "tool_call", "payload": {"tool": "t", "ok": False}},
+        {"type": "tool_call", "payload": {"tool": "t", "result": "fine"}},   # no outcome declared
+    ]
+    w = compute_tool_waste(events)["t"]
+    assert (w.calls, w.ok, w.invalid, w.unknown) == (3, 1, 1, 1)
+    # The four outcomes no longer account for every call, which is the POINT: they are a subset and
+    # `unknown` is how a reader learns that instead of guessing.
+    assert w.ok + w.invalid + w.endpoint_errors + w.circuit_broken == 2
+    assert w.invalid_rate == 0.5, "the undeclared call must not enter the decline denominator"
+
+    facts = compute_run_facts(events)
+    assert facts["tool_declines"] == 1
+    assert facts["tool_unknown"] == 1
