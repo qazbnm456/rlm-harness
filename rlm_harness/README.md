@@ -1375,6 +1375,58 @@ measured, `n=3` was one spawn until 1.16.0 and is three since 1.17.0. The constr
 `n` is above 1. `temperature`, `top_p` and `max_tokens` are tolerated and ignored as the docstring
 says, because the SDK exposes no sampling controls.
 
+### Spending your own credits without meaning to
+
+A subscription run can start costing money mid-flight, and nothing in the call path asks first. If
+your account has usage credits enabled, requests past the plan's included limit switch to
+pay-as-you-go at API rates and keep going. The switch is silent: no prompt, no error, no different
+return value. Read [Anthropic's own page on usage and costs][claude-costs] for the account side,
+because that is where the setting lives and this kit cannot see it.
+
+**What actually bounds the spend, in the order that matters.**
+
+- **The account setting**, which this kit can neither read nor change. Whether usage credits are
+  on, and whether a monthly cap is set, lives on the account, and the page above is where to look.
+  No kit-side control beats it.
+- **`ClaudeAgentOptions.max_budget_usd`**, which the SDK enforces: the query stops and returns an
+  `error_max_budget_usd` result. This kit never passes it, so it is not protecting you today. Build
+  your own options and you can set it.
+- **Fewer calls.** `n=k` is k separate CLI spawns charged to your window, as the paragraph above
+  says, and a long trajectory is a long bill.
+
+**`ANTHROPIC_API_KEY` bills the key, not the subscription.** The CLI silently prefers the key when
+it is set, so a login you believed was running on your plan quietly runs on API billing instead.
+`ClaudeAgentLM` refuses to start when that variable is present, rather than warning, and
+`allow_api_key=True` is how you say you meant it.
+
+**Reading it back off a trace.** Since 1.22.0 a run records the rate-limit reports the SDK makes,
+under `run_end.payload.rate_limits`, so a finished run can answer whether it was being charged past
+the included limit:
+
+```python
+from rlm_harness import load_events
+
+events = load_events("traces/run.jsonl", run_id="run-1")
+end = [e for e in events if e["type"] == "run_end"][0]
+for report in end["payload"].get("rate_limits", []):
+    print(report["status"], report.get("rate_limit_type"), report.get("overage_status"))
+```
+
+A report carries `status` (`allowed` / `allowed_warning` / `rejected`), `rate_limit_type` (the one
+to look for is `overage`), `utilization`, `resets_at`, and the `overage_*` fields when the SDK sets
+them. An absent `rate_limits` key means the SDK reported nothing, which is the ordinary case: it is
+not a promise that nothing was charged. The list is capped per run, with the overflow counted under
+`rate_limits_dropped`, so a long run cannot grow its own trace without bound.
+
+**What this is not.** It records; it does not stop anything. Nothing here refuses a call, raises, or
+ends a run early, and the report arrives while the call that triggered it is already in flight, so
+even a guard built on it later would bound the NEXT call rather than that one. A stop condition also
+needs the real event sequence, which nobody has observed yet: whether the switch arrives as
+`status="allowed"` with `rate_limit_type="overage"`, whether an `allowed_warning` precedes it, and
+whether it repeats per call. Recording them is what makes that observable. Until then, the account
+setting is the control.
+
+
 dspy ships its own subscription providers, and the kit needs no code for them: `configure()` takes a
 pre-built LM verbatim, so they go in through the same seam as any other.
 
@@ -1415,6 +1467,7 @@ and a `CLAUDE_CODE_OAUTH_TOKEN` variant is reported to delete the Keychain crede
 because the CLI reads the Keychain itself.
 
 [claude-plan-sdk]: https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan
+[claude-costs]: https://code.claude.com/docs/en/costs
 [cc-auth]: https://code.claude.com/docs/en/authentication
 [cc-96310]: https://github.com/anthropics/claude-code/issues/96310
 [cc-37512]: https://github.com/anthropics/claude-code/issues/37512

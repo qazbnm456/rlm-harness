@@ -442,6 +442,10 @@ class TraceRecorder:
         # protected. Empty means nothing staged.
         self._dspy_settings: dict = {}
         self._usage: list = []
+        # Staged the same way again, for a question no trace could answer before: did this run
+        # spend money past a subscription's included limit. See `note_rate_limit`.
+        self._rate_limits: list = []
+        self._rate_limits_dropped = 0
         self._abs_path: str | None = None
         self._step = 0
         self._token: Token | None = None
@@ -530,6 +534,10 @@ class TraceRecorder:
                 payload["dspy_settings"] = self._dspy_settings
             if self._usage:
                 payload["usage"] = self._usage
+            if self._rate_limits:
+                payload["rate_limits"] = self._rate_limits
+                if self._rate_limits_dropped:
+                    payload["rate_limits_dropped"] = self._rate_limits_dropped
             if self._record_metrics:
                 # SUPPRESSED and computed into a LOCAL, with `run_end` recorded from the `finally`
                 # below. `__exit__` runs during exception propagation: a raise here would both lose
@@ -666,6 +674,34 @@ class TraceRecorder:
         usage, which is the one number this exists to capture.
         """
         self._usage = list(usage)
+
+    #: How many rate-limit observations one run keeps. A provider that reports one per call would
+    #: otherwise grow the trace without bound on a long run, and the question these answer ("did
+    #: this run go into overage, and when") is settled by the first few plus a count of the rest.
+    MAX_RATE_LIMITS = 50
+
+    def note_rate_limit(self, info: dict) -> None:
+        """Stage one rate-limit observation for `run_end.payload.rate_limits`.
+
+        **What this is for.** A subscription run whose account has usage credits enabled switches
+        to paid usage past the included limit with no prompt, and until this existed a trace could
+        not say afterwards whether that had happened: the host had no record, so a bill was the
+        first notice. These entries are that record.
+
+        It is an OBSERVATION, not a guard. Nothing here stops a run or refuses a call. Reading
+        them after the fact is the only thing they do.
+
+        A plain dict, because this module is dspy-free and SDK-free: the caller names the fields,
+        and `claude_agent_lm` is where an SDK event becomes one. Kept in arrival order, capped at
+        :data:`MAX_RATE_LIMITS` with the overflow counted rather than silently dropped, since
+        "how many times was this reported" is itself one of the things a reader wants.
+        """
+        if not info:
+            return
+        if len(self._rate_limits) >= self.MAX_RATE_LIMITS:
+            self._rate_limits_dropped += 1
+            return
+        self._rate_limits.append(dict(info))
 
     def record_api_rounds(self, model: Any, rounds: dict) -> dict | None:
         """Record ONE LM call's provider-reported per-iteration breakdown, as it happens.

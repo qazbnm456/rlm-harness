@@ -393,6 +393,49 @@ def _translate_response_format(response_format: Any) -> dict[str, Any] | None:
     return None
 
 
+def _note_rate_limit(sdk: Any, message: Any) -> None:
+    """Record a `RateLimitEvent` into the active trace, if that is what this message is.
+
+    **Observation only.** A subscription whose account has usage credits enabled switches to paid
+    usage past the included limit with no prompt, and the SDK announces it here. Nothing in this
+    function stops a call or raises: a guard needs to know the real event sequence (does the switch
+    arrive as `status="allowed"` with `rate_limit_type="overage"`, is there an `allowed_warning`
+    first, does it repeat per call), and nobody has observed one yet. Recording is what makes that
+    observable, and a trace that says afterwards "this run was in overage" is worth having on its
+    own, since until now a bill was the first notice.
+
+    The named fields only, never the SDK's `raw` blob: those fields ARE the shape the open question
+    is about, and an unbounded provider payload in a durable trace is how traces bloat.
+    """
+    event_cls = getattr(sdk, "RateLimitEvent", None)
+    if event_cls is None or not isinstance(message, event_cls):
+        return
+    recorder = current_recorder()
+    note = getattr(recorder, "note_rate_limit", None)
+    if not callable(note):
+        return
+    info = getattr(message, "rate_limit_info", None)
+    if info is None:
+        return
+    fields = (
+        "status",
+        "rate_limit_type",
+        "utilization",
+        "resets_at",
+        "overage_status",
+        "overage_resets_at",
+        "overage_disabled_reason",
+    )
+    observed = {name: getattr(info, name, None) for name in fields}
+    observed = {name: value for name, value in observed.items() if value is not None}
+    if observed:
+        # Best-effort by design: an observation must never be the thing that fails a run.
+        try:
+            note(observed)
+        except Exception:
+            pass
+
+
 def _looks_rate_limited(text: str) -> bool:
     return _RATE_LIMIT_RE.search(text.lower()) is not None
 
@@ -562,6 +605,11 @@ class _ClaudeAgentCall:
         async for message in sdk.query(prompt=user_prompt, options=options):
             if isinstance(message, sdk.ResultMessage):
                 result = message
+            else:
+                # Every other message type used to be dropped here, and one of them says whether
+                # this call is being charged past the subscription's included limit. See
+                # `_note_rate_limit`: it only RECORDS, and never changes what this method returns.
+                _note_rate_limit(sdk, message)
         if result is None:
             raise RuntimeError("claude-agent-sdk produced no ResultMessage")
         if result.is_error or result.subtype != "success":
