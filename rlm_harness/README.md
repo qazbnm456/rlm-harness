@@ -38,6 +38,7 @@ pitch, the quickstart, and installation: start at the
 | `rubric.py` | Reward-free rubric primitives: the `Criterion`/`RubricCriteria`/`CriterionFact` types, `rubric_to_meta`/`rubric_from_meta`, `validate_rubric`, and a pure `criteria_facts(criteria, facts, lens)`. `category` is an OPAQUE caller-defined label, the kit imposes no taxonomy. See "Building a consumer". |
 | `claude_agent_lm.py` | `ClaudeAgentLM`: run rlm-harness on a Claude Pro/Max subscription: a `dspy.LM` over the official Claude Agent SDK. `configure()` now auto-routes a `SUBSCRIPTION_PREFIX`-carrying (`"claude-agent-sdk/"`) `main_model`/`sub_model` string onto it, no explicit `main_lm=`/`sub_lm=` wiring needed unless you're overriding it. Opt-in `rlm-harness[subscription]`; pure completions (no tools), lazily exported so `import rlm_harness` stays dspy/SDK-free. |
 | `examples/mini_run.py` | Minimal end-to-end live run: config + a tiny `RLMTask` through a real `dspy.RLM`, with the trajectory recorded and summarised. |
+| `examples/memory_run.py` | One live run over the whole memory arc: a host seeding `observed` and `said` items, the three tools in a task, `compute_memory_use`, `consolidate_run`, and `purge`. |
 | `examples/claude_agent_lm.py` | Runnable demo of `ClaudeAgentLM`: a tiny `RLMTask` through a real `dspy.RLM` on a subscription login. |
 
 ## RLM as Harness Engineering (sub-LM hook + tracing)
@@ -767,6 +768,9 @@ memory.add("Prefer answers that cite the official documentation", provenance="sa
 tools = [make_memory_search_tool(memory), make_memory_get_tool(memory), make_memory_note_tool(memory)]
 answer = MyTask(tools=tools).run(question=q)
 ```
+
+`examples/memory_run.py` runs that on a live model and carries on through the rest of this
+section: `compute_memory_use` over the finished run, `consolidate_run`, and `purge`.
 
 **Every item carries a provenance, and there are exactly three** (`PROVENANCES`):
 

@@ -130,6 +130,12 @@ and entities, written by a person or by a model pass that costs one call per sho
 - `tools.grounding._find_span`, the literal half of `verify_quote`, returns the source's own span
   and refuses a quote under 20 non-space characters. It is private, shared by the passes that
   store what a model quoted.
+- **`examples/memory_run.py`**: one live run over the whole arc, a host seeding `observed` and
+  `said` items, the three tools in a task, `compute_memory_use` over the finished run,
+  `consolidate_run` promoting a fact whose quote it found in the evidence the host passed, and
+  `purge` taking one back out. It keeps its store outside the checkout, under `$TMPDIR` unless
+  `RLM_MEMORY_DIR` says otherwise, and it prints the note tool's signature, since the absence of
+  a provenance argument is the whole guarantee.
 
 ### Changed
 
