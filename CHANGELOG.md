@@ -4,6 +4,76 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.23.0] - 2026-10-21
+
+**A staged input can keep its text out of the prompt entirely**, its preview no longer copies the
+whole file to show a few hundred characters, and the instruction it adds tells a model to seek to an
+offset rather than to split by line. 1.22.0's `LargeText` was wrong in each of those three ways.
+
+### Added
+
+- **`LargeText(text, preview_chars=…)`, and `preview_chars=0` keeps an untrusted text out of the
+  system message.** A staged input adds a line to that run's instructions, and that line quoted the
+  head of the text, so a context that is a client's raw request put attacker-controlled bytes in a
+  sharper injection position than a variable with no way to turn it off. Zero omits the quoted head
+  entirely rather than quoting an empty string; the path and the character count still tell the
+  model what the variable is. Per OBJECT, because trust belongs to the particular input: one staged
+  input can be 0 while another in the same run shows a preview.
+
+### Fixed
+
+- **`read_file` on a binary file told the model nothing about whether to try again.** It returned
+  `Read error for 'x.png': UnicodeDecodeError`, which reads like a transient fault, and a consumer
+  measured 57 of 30,974 calls failing that way, 43 of them PNGs, with one file retried nine times
+  inside a single run. The decode case is now split from the `OSError` case and says the reply will
+  not change: `Refused: 'x.png' is not utf-8 text, so reading it cannot succeed.` A missing or
+  unreadable file keeps its old wording, because that one can change between calls. The identical
+  line was in `tools/edit.py` as well, found by grepping the shape rather than by a second report,
+  and is fixed there too.
+- **`LargeText.preview()` read the whole file to show its head**, in the one class whose purpose is
+  not copying the text. Measured on a 20 MB text: a 40 MB allocation peak, two copies, against
+  nothing measurable now. It reads from a text stream, which counts characters, so a multi-byte
+  boundary still cuts where it should.
+
+### Changed
+
+- **The instruction a staged input adds says to seek to an offset**, and names splitting into lines
+  as the thing not to do. Pointing `make_read_file_tool` at the permitted path, which this project
+  suggested first, gives no gain at all: about the same peak as passing the text as a variable. Two
+  structural reasons. It slices by LINE, so a context that is effectively one very long line comes
+  back whole from a single call. And it reads the file on the HOST per call, paying the copy the
+  staging exists to avoid. Offset reads inside the sandbox need no tool, which is why none was
+  added.
+- **`staged_instructions` no longer takes a `preview_chars` argument** and reads each object's own
+  setting instead, so one untrusted input and one trusted input in the same run get different
+  treatment. It is importable but was never in `__init__.__all__`.
+- **`packaging` in `ci.yml` builds both artifacts and audits the sdist.** It ran `uv build --wheel`,
+  so the sdist include list was exercised for the first time in `release.yml`, after the tag: a
+  malformed entry reached a published release before anything packed it. The step now compares the
+  sdist's top level against the declared list. What that adds over `tests/test_packaging.py`:
+  declaring a path `.gitignore` matches leaves all of those tests green and fails the audit by
+  name, because hatchling applies `.gitignore` on top of `include`.
+- **`LargeText` is documented where a reader looks.** It shipped in 1.22.0 with a module docstring,
+  a CHANGELOG entry and an example, and nothing in the guide, the layout table, the front page or
+  the dspy-free module list. The guide section carries a consumer's figures: an 11.6 MB
+  text costs 1194 MB of peak process-tree RSS as a variable against 516 MB read whole from a file
+  and 492 MB read in 64 KiB slices, and a 50 MB control-byte payload 2843 MB against 795 and 671.
+  Their worst case went from 5.2 GB to about 0.8 GB.
+- **The staged file's directory mode is documented rather than left to be worked around.**
+  `tempfile.mkdtemp()` already creates it at `0700` with nothing for group or other, and the file
+  inside is `0400`. A consumer was overriding `tempfile.tempdir` process-wide to obtain that, which
+  buys nothing and captures every other thread's temporary file while it is set. There is still no
+  staging-directory argument: that is the shape that lets a caller value reach the granted path.
+
+### Not yet
+
+- **The mount has still not run on Windows or in CI.** It has now run on Linux aarch64, including a
+  `sudo` path where the staging and the sandbox share a uid, and by hand on macOS. A container that
+  runs the sandbox under a different user than the one that staged the file is the case to watch,
+  since `0400` would then present as a mount failure rather than a permission error.
+- **Nothing measures a payload much larger than 50 MB.** The consumer who has the workload tops out
+  there, so the question stays open rather than answered by extrapolation.
+
 ## [1.22.0] - 2026-10-21
 
 ### Added

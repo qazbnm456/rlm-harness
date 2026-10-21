@@ -174,9 +174,26 @@ def make_read_file_tool(
         try:
             with open(resolved, encoding=encoding) as fh:
                 lines = fh.readlines()
-        except (OSError, UnicodeDecodeError) as exc:
+        except UnicodeDecodeError as exc:
+            # SPLIT from the OSError branch because the two differ in what the model should do
+            # next, and the bare class name said nothing about that. A consumer measured 57 of
+            # 30,974 `read_file` calls failing this way, 43 of them PNGs, with one file retried
+            # NINE times inside a single run: "UnicodeDecodeError" reads like a transient fault,
+            # and the bytes are simply not text. `Refused:` is this tool's existing word for an
+            # answer that will not change, and the sentence says what to do instead, per
+            # `docs/PROMPT.md`.
+            record_tool_call(
+                name, args={"path": path}, ok=False, note=f"error: {type(exc).__name__}"
+            )
+            return (
+                f"Refused: {path!r} is not {encoding} text, so reading it cannot succeed. "
+                f"Reading it again will fail the same way. Read a different file."
+            )
+        except OSError as exc:
             # IsADirectoryError is an OSError subclass: a directory-shaped `path` degrades the
-            # same way a missing/unreadable file does, never a raised, unhandled exception.
+            # same way a missing/unreadable file does, never a raised, unhandled exception. This
+            # message is pinned by a test and intentionally still names only the class: a missing
+            # or unreadable file CAN change between calls, so it is not a refusal.
             record_tool_call(
                 name, args={"path": path}, ok=False, note=f"error: {type(exc).__name__}"
             )

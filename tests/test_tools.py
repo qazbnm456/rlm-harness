@@ -1406,3 +1406,34 @@ def test_grep_files_result_count_trace_reflects_matches_not_emitted_rows(tmp_pat
         tool("line5", context_before=2, context_after=2)  # 5 emitted rows, only 1 real match
     tc = [e for e in load_events(trace_path) if e["type"] == EVENT_TOOL_CALL][0]
     assert tc["payload"]["result_count"] == 1  # matches, never 5 (the emitted-row count)
+
+
+def test_reading_a_binary_file_says_retrying_cannot_help(tmp_path):
+    """A bare `UnicodeDecodeError` reads like a transient fault, and the bytes are simply not text.
+
+    A consumer measured 57 of 30,974 `read_file` calls failing this way, 43 of them PNGs, with one
+    file retried NINE times inside a single run, because the message named only the exception class.
+    `Refused:` is this tool's existing word for an answer that will not change.
+    """
+    (tmp_path / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\xff\xfe")
+    out = make_read_file_tool(str(tmp_path))("logo.png")
+    assert out.startswith("Refused:"), out
+    assert "will fail the same way" in out
+    assert "utf-8" in out                      # says WHY, not just that it failed
+    assert "UnicodeDecodeError" not in out     # the class name was the whole problem
+
+
+def test_editing_a_binary_file_says_the_same(tmp_path):
+    """The identical line lived in `tools/edit.py`, found by grepping the shape, not by a report."""
+    from rlm_harness.tools.edit import make_edit_file_tool
+
+    (tmp_path / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe")
+    out = make_edit_file_tool(str(tmp_path))("logo.png", "a", "b")
+    assert out.startswith("Refused:") and "will fail the same way" in out, out
+
+
+def test_a_missing_file_is_still_not_a_refusal(tmp_path):
+    """The OSError branch keeps its wording: a missing or unreadable file CAN change between calls,
+    so telling a model not to try again would be wrong."""
+    out = make_read_file_tool(str(tmp_path))("nope.txt")
+    assert out == "Read error for 'nope.txt': FileNotFoundError"

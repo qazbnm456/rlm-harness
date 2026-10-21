@@ -199,7 +199,18 @@ def make_edit_file_tool(
         try:
             with open(resolved, encoding=encoding) as fh:
                 content = fh.read()
-        except (OSError, UnicodeDecodeError) as exc:
+        except UnicodeDecodeError as exc:
+            # The same split as `tools/fs.py`'s read_file, and found by grepping for that line
+            # rather than by a second report: a binary file cannot be edited as text either, and
+            # the bare class name invited the same useless retry.
+            record_tool_call(
+                name, args={"path": path}, ok=False, note=f"error: {type(exc).__name__}"
+            )
+            return (
+                f"Refused: {path!r} is not {encoding} text, so editing it cannot succeed. "
+                f"Trying again will fail the same way. Edit a different file."
+            )
+        except OSError as exc:
             # IsADirectoryError is an OSError subclass: a directory-shaped `path` degrades the
             # same way a missing/unreadable file does, never a raised, unhandled exception.
             record_tool_call(
