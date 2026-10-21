@@ -707,6 +707,14 @@ Deno's permission list is comma-separated and misparses an entry containing one.
 interpreter kind refuses a read path rather than accepting one it cannot honour, and a run that
 stages nothing grants nothing, which is every run that existed before this.
 
+**`$TMPDIR` decides whether the staged copy is disk or RAM.** The staging goes wherever
+`tempfile` points, and a container's `/tmp` is often a tmpfs, so the one copy this approach costs
+can be a RAM copy rather than a file on a disk. That does not change the saving, which is one copy
+against the tens an inline literal costs, but it does change where the one lands: a consumer moved
+`$TMPDIR` to a real volume for exactly that reason once they were running it in production. Set
+`$TMPDIR` per process at startup rather than reassigning `tempfile.tempdir` mid-run, since that
+setting is process-wide and captures every other thread's temporary file while it is in effect.
+
 **There is no staging-directory argument, and none is needed for isolation.** The staging
 directory comes from `tempfile.mkdtemp()`, which creates it at `0700`: group and other have nothing,
 and the file inside is `0400`. A consumer reached for a process-wide `tempfile.tempdir` override to
