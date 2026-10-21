@@ -1040,3 +1040,67 @@ def test_recording_survives_a_call_from_a_RAW_thread():
         t.start()
         t.join()
     assert len([e for e in load_events(path) if e["type"] == EVENT_SUB_CALL]) == 1
+
+
+def test_a_failed_brace_wrap_reports_the_reply_as_the_model_wrote_it():
+    """The wrap's own error quotes text the KIT built, so it must not be the error that escapes.
+
+    `parse` retries a brace-less body as `"{" + body + "}"`. When that retry also fails, the
+    exception from it carries the wrapped text, so a reader sees a leading `{` the model never
+    emitted and reads the failure as broken JSON. A consumer hit this on a thinking-only turn and
+    reported the quoted reply as starting `{We need answer with JSON...`; the brace was ours.
+    """
+    from dspy.utils.exceptions import AdapterParseError
+
+    sig = dspy.Signature("q: str -> reasoning: str, code: str")
+    body = "We need answer with JSON. Need produce code for next REPL iteration"
+    with pytest.raises(AdapterParseError) as got:
+        rt._LenientJSONAdapter().parse(sig, body)
+    assert got.value.lm_response.startswith("We need answer"), got.value.lm_response
+    assert "{We need answer" not in str(got.value)
+    assert "with nothing added" in str(got.value)
+
+
+def test_a_promoted_reasoning_that_fails_to_parse_says_the_reply_had_no_content():
+    """"Thinking only" and "malformed answer" are different events and must not read alike.
+
+    When `content` is empty the adapter promotes `reasoning_content` so the turn can parse at all.
+    If that free-form text then fails, the turn produced NO answer, which is not what a malformed
+    answer means, and a consumer could not tell them apart from the error.
+    """
+    from dspy.utils.exceptions import AdapterParseError
+
+    sig = dspy.Signature("q: str -> reasoning: str, code: str")
+    a = rt._LenientJSONAdapter()
+    out = [{"text": None, "reasoning_content": "We need answer with JSON. Need produce code"}]
+    with pytest.raises(AdapterParseError) as got:
+        a._call_postprocess(sig, sig, out, lm=None, lm_kwargs={})
+    msg = str(got.value)
+    assert "carried no content" in msg, msg
+    assert "reasoning channel" in msg
+    assert got.value.lm_response.startswith("We need answer"), got.value.lm_response
+    assert "{We need answer" not in msg
+
+
+def test_the_promotion_marker_survives_the_hop_into_parse():
+    """The marker is a `str` subclass because the adapter instance is shared across calls.
+
+    dspy's base `_call_postprocess` passes `output["text"]` to `parse` untouched; if that ever
+    changes, the message above silently degrades to the generic one, so pin the hop itself.
+    """
+    sig = dspy.Signature("q: str -> reasoning: str, code: str")
+    seen = []
+
+    class Probe(rt._LenientJSONAdapter):
+        def parse(self, signature, completion):
+            seen.append(type(completion))
+            return {"reasoning": "r", "code": "c"}
+
+    out = [{"text": None, "reasoning_content": '{"reasoning": "r", "code": "c"}'}]
+    Probe()._call_postprocess(sig, sig, out, lm=None, lm_kwargs={})
+    assert seen == [rt._PromotedReasoning], seen
+    # and a normal reply is NOT marked, so the message stays accurate
+    seen.clear()
+    Probe()._call_postprocess(sig, sig, [{"text": '{"reasoning": "r", "code": "c"}'}],
+                              lm=None, lm_kwargs={})
+    assert seen == [str], seen

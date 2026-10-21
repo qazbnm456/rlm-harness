@@ -29,6 +29,20 @@ class _Runtime:
 _STATE = _Runtime()
 
 
+class _PromotedReasoning(str):
+    """A completion that came from ``reasoning_content`` because ``content`` was empty.
+
+    Carried as a ``str`` SUBCLASS rather than as adapter state, because one adapter instance serves
+    concurrent calls (``configure`` builds it once and puts it in ``dspy.settings``), so an
+    attribute set in ``_call_postprocess`` would be read by a different call's ``parse``. dspy's
+    base ``_call_postprocess`` hands ``output["text"]`` to ``parse`` untouched, so the marker
+    survives that hop; a consumer measured this failure in the other direction, as an error that
+    read like a malformed JSON reply when the turn had in fact produced no answer at all.
+    """
+
+    __slots__ = ()
+
+
 class _LenientJSONAdapter(dspy.JSONAdapter):
     """``JSONAdapter`` for schema-guided servers, with stock dspy's ``json_object`` fallback
     REMOVED and a brace-tolerant parse added.
@@ -79,7 +93,7 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
 
         try:
             return super().parse(signature, completion)
-        except AdapterParseError:
+        except AdapterParseError as original:
             body = (completion or "").strip()
             # The wrap targets a brace-LESS object body ('"a": 1, "b": 2'). A completion that
             # already starts with "{" failed for some other reason (incomplete / missing a
@@ -95,7 +109,37 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
             # is never a recovery, only an invention.
             if not body or body.startswith("{"):
                 raise
-            return super().parse(signature, "{" + body + "}")
+            try:
+                return super().parse(signature, "{" + body + "}")
+            except AdapterParseError:
+                # The RETRY failed too, and its error quotes the text WE built, braces included.
+                # A consumer debugging a 1-in-890 failure read `{We need answer with JSON...` as a
+                # model emitting broken JSON; the brace was this method's. So the error that leaves
+                # here carries the reply as the model wrote it, and says what the kit tried.
+                #
+                # This text can reach the MODEL as well as a reader: with dspy's own handler for an
+                # unparseable turn (stanfordnlp/dspy#10676) the turn's error goes into the REPL
+                # history and the planner sees it. So it names what to do differently and carries no
+                # number, per `docs/PROMPT.md`.
+                if isinstance(completion, _PromotedReasoning):
+                    note = (
+                        "This reply carried no content. The text below is its reasoning channel, "
+                        "promoted so it could be parsed, and it did not parse as the output fields "
+                        "either. Put the answer in the reply itself, as a JSON object with the "
+                        "fields named below."
+                    )
+                else:
+                    note = (
+                        "This reply did not parse as the output fields, and retrying it as a JSON "
+                        "object did not either. The text below is the reply as written, with "
+                        "nothing added."
+                    )
+                raise AdapterParseError(
+                    adapter_name=original.adapter_name,
+                    signature=original.signature,
+                    lm_response=original.lm_response,
+                    message=note,
+                ) from None
 
     def _call_postprocess(self, processed_signature, original_signature, outputs, lm, lm_kwargs):
         """Promote ``reasoning_content`` to the answer when a reasoning root left ``content`` empty.
@@ -109,9 +153,14 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
 
         GUARDED on ``not text``: a well-behaved model (answer in ``content``, chain-of-thought in
         ``reasoning_content``) is untouched, so its native thinking stays discarded as before: we
-        only reach for ``reasoning_content`` when there is otherwise nothing to parse."""
+        only reach for ``reasoning_content`` when there is otherwise nothing to parse.
+
+        The promoted text is marked ``_PromotedReasoning`` so that ``parse``, which is handed the
+        text and nothing else, can SAY SO when it fails. Free-form thinking promoted into the
+        answer slot and then failing to parse is a different event from a malformed answer, and
+        until now both surfaced identically."""
         patched = [
-            ({**o, "text": o["reasoning_content"]}
+            ({**o, "text": _PromotedReasoning(o["reasoning_content"])}
              if isinstance(o, dict) and not o.get("text") and o.get("reasoning_content") else o)
             for o in outputs
         ]
