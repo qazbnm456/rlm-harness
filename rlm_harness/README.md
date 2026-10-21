@@ -707,6 +707,15 @@ Deno's permission list is comma-separated and misparses an entry containing one.
 interpreter kind refuses a read path rather than accepting one it cannot honour, and a run that
 stages nothing grants nothing, which is every run that existed before this.
 
+**There is no staging-directory argument, and none is needed for isolation.** The staging
+directory comes from `tempfile.mkdtemp()`, which creates it at `0700`: group and other have nothing,
+and the file inside is `0400`. A consumer reached for a process-wide `tempfile.tempdir` override to
+get its own `0700` directory, which is both unnecessary and worse, since that setting is global and
+any other thread's temporary file lands there for as long as it is in effect. If you need the
+staging on a PARTICULAR filesystem, that is a different request and worth making; it has not come
+up, and a directory argument is the shape that lets a caller value, and then an attacker-controlled
+value, reach the path the sandbox is granted.
+
 **Deleting the staged file is the caller's**, through `close()` or the context manager. The kit does
 not, because the same object can serve a second run. The file is created read-only and the delete
 clears that bit first, which matters on Windows, where a read-only file cannot be unlinked and the

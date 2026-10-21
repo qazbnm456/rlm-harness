@@ -74,14 +74,30 @@ class LargeText:
     payload. Delete the staged file with `close()`, or use it as a context manager.
     """
 
-    __slots__ = ("_chars", "_dir", "_path")
+    __slots__ = ("_chars", "_dir", "_path", "_preview_chars")
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, *, preview_chars: int = PREVIEW_CHARS) -> None:
+        """Stage `text`. `preview_chars` is how much of it the MODEL is shown up front.
+
+        **Set it to 0 when the text is untrusted.** The preview goes into that run's instructions,
+        which is the system message, so the head of the text sits in a more prominent injection
+        position than a variable does. A consumer whose context is a client's raw request asked for
+        this: their trust boundary held, but the position changed. Zero omits the quoted head
+        entirely rather than quoting an empty string, and the rest of the line, the path and the
+        size, still tells the model what the variable is.
+
+        It is per OBJECT and not per run, because trust is a property of the particular input: a
+        task can take a staged file it fetched itself and another one a caller sent, in the same run.
+        """
         if not isinstance(text, str):
             raise TypeError(f"LargeText takes a str, not {type(text).__name__}")
         self._chars = len(text)
+        self._preview_chars = max(0, preview_chars)
         # mkdtemp, not a shared directory: the grant is per object, and a directory nothing else
-        # writes into cannot have a sibling file appear in it between staging and mounting.
+        # writes into cannot have a sibling file appear in it between staging and mounting. It is
+        # created at 0700 by mkdtemp itself, so there is no isolation reason for a caller to pass a
+        # directory, and no directory argument exists: that is the shape that would let a caller
+        # value reach the granted path.
         self._dir = Path(tempfile.mkdtemp(prefix="rlm-largetext-"))
         self._path = self._dir / f"context_{secrets.token_hex(8)}.txt"
         resolved = str(self._path.resolve())
@@ -108,6 +124,11 @@ class LargeText:
     @property
     def chars(self) -> int:
         return self._chars
+
+    @property
+    def preview_chars(self) -> int:
+        """How much of the text the model is shown. 0 means none of it reaches the prompt."""
+        return self._preview_chars
 
     def preview(self, max_chars: int = PREVIEW_CHARS) -> str:
         """The head of the text, for the variable description the model reads.
@@ -181,22 +202,28 @@ def stage_inputs(inputs: dict[str, object]) -> tuple[dict[str, object], dict[str
     return clean, staged
 
 
-def staged_instructions(staged: dict[str, LargeText], *, preview_chars: int = PREVIEW_CHARS) -> str:
+def staged_instructions(staged: dict[str, LargeText]) -> str:
     """The lines appended to a run's instructions for each field staged as a file.
 
     Prompt text, so it names the mechanism and what to do with it rather than describing the
     kit: the model is told the variable holds a path, that the file is large, and to read it in
     pieces. The character count is the text's own, measured, not a budget the kit imposes.
+
+    How much of each text is quoted comes from that object's own `preview_chars`, NOT from an
+    argument here, so one untrusted input can keep its head out of the system message while a
+    trusted one beside it still shows a preview.
     """
     if not staged:
         return ""
     lines = []
     for name, value in sorted(staged.items()):
-        head = value.preview(preview_chars).replace("\n", " ")
-        lines.append(
+        line = (
             f"`{name}` holds the PATH to a file of {value.chars:,} characters, not the text itself. "
             f"Open it and read only the part you need: seek to an offset and read a slice, rather "
-            f"than reading the file whole or splitting it into lines. It may be one long line. "
-            f"It begins: {head!r}"
+            f"than reading the file whole or splitting it into lines. It may be one long line."
         )
+        if value.preview_chars:
+            head = value.preview(value.preview_chars).replace("\n", " ")
+            line = f"{line} It begins: {head!r}"
+        lines.append(line)
     return "\n".join(lines)
