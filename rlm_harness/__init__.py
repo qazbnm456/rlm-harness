@@ -250,7 +250,7 @@ __all__ = [
     "compute_memory_use_by_run",
 ]
 
-__version__ = "1.23.0"
+__version__ = "1.24.0"
 
 
 def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import

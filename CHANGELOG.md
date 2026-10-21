@@ -4,6 +4,98 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.24.0] - 2026-10-21
+
+**Three of this kit's own `record_tool_call` writers never said whether the call had succeeded**,
+and a payload with no `ok` read as a DECLINE rather than as an unknown, so every successful skills
+listing, skills read and sub-model consultation was recorded as the model's output being rejected.
+A consumer measured its own `tool_declines` at 60 across 25 production runs where the truth was 12.
+The writers and that reading both change here.
+
+### Fixed
+
+- **`list_skills`, `read_skill` and `model:<name>` record their outcome.** Why those three and not
+  the others: `ok=` had only ever been written next to a refusal branch, and `skills.py` and
+  `sub_lm.py` are exactly the two writer files with no `ok=False` site at all, so nothing in either
+  file ever put the question in front of anyone. `read_skill` is the substantive one, because a hit
+  and a miss wrote the same payload shape: a reader could tell neither that the read had succeeded
+  nor that it had failed, and a miss IS a decline while a hit is not.
+- **The guide advised passing `cause=result.cause` as "the cheapest insurance", and `payload_cause`
+  has never read that key.** None of the 107 `record_tool_call` sites across five consumer
+  repositories passes it, so nothing was broken and the fix is the sentence rather than the reader.
+  The guide now names the three fields that are read, and says that a writer holding a
+  `ModelToolResult` records its `ok`, `circuit_broken` and endpoint string rather than the derived
+  word.
+
+### Added
+
+- **`CAUSE_UNKNOWN`, a fifth `payload_cause` value for a payload that declared no outcome.**
+  `payload.get("ok")` returns `None` for a missing key and `None` is falsy, which is the whole
+  mechanism: a writer who forgot the field produced a decline rather than an unknown. The precedence
+  is untouched and unknown outranks nothing: `circuit_broken` still wins, then the endpoint keys by
+  PRESENCE, and the new value is reached only when no `ok` key exists at all. It is exported from
+  `rlm_harness.tools` alongside the other four, and taken straight from `trace` rather than through
+  `tools.model`, because `ModelToolResult.cause` has a real `ok` bool and can never produce it.
+- **`ToolWaste.unknown` and `compute_run_facts`'s `tool_unknown`.** Not a fifth OUTCOME: the count of
+  calls whose outcome nobody recorded, which is why it rides alongside the four rather than folded
+  into them. A non-zero `tool_unknown` makes every other count in that dict a subset of `tool_calls`,
+  and makes `ToolWaste.wasted_share` a FLOOR rather than a value, since an undeclared call's duration
+  counts in `total_seconds` and can never count in `wasted_seconds`. `RUN_FACT_KEYS` gains one name,
+  which is the visible diff that constant exists to force.
+- **Two structural gates in the suite, because the fix for three sites is not a fix for the class.**
+  One asserts that every `record_tool_call` site in the package passes at least one of the keys
+  `payload_cause` actually READS, which is the rule the three writers broke. The other asserts that
+  every `make_*` tool factory either records a `tool_call` event or is listed as exempt with a
+  reason, which is a rule nothing had asked before: the suite's only package-wide factory table asks
+  whether a tool is TIMED, a different question, so one factory's silence had no stated reason at
+  all. Both are AST walks and neither imports dspy.
+
+### Changed
+
+- **Reading an OLD corpus on this version moves numbers, and the movement is the correction.** A
+  payload that counted as a decline now counts as unknown, so split a corpus by kit version before
+  comparing any rate across one.
+- **`make_schema_validator` and `make_json_schema_validator` state why they record nothing**, and
+  the general rule they are instances of: the outermost callable the model invokes owns the
+  `tool_call` event. 1.24.0 made the first of them record its own verdict and reverted inside the
+  same release. It composes, and the common shape is a wrapper that runs the schema check first and
+  then applies checks the schema cannot express, returning "Validation failed" for one of its own
+  while the schema itself passed; a self-recording schema check writes `ok=True` for that call, so
+  the trace would say the validation succeeded on a turn where the model was told it failed. One
+  consumer's wrapper is called in 111 of 113 runs on its deployment and names its tool with the same
+  `f"validate_{model.__name__.lower()}"` formula, so the two events would have merged into one
+  `ToolWaste` with double the calls and a meaningless rate. There is no net code change here against
+  1.23.0: the docstrings carry the reason, and a caller that invokes either one directly is told how
+  to record its own verdict.
+- **The absent-event invariant says the same thing about an absent FIELD.** `docs/INVARIANTS.md`
+  already told a reader that a missing event is not a measured zero. This incident is that rule one
+  layer in, so the existing bullet gained a clause rather than the file gaining a rule.
+
+### Documented
+
+- **`$TMPDIR` decides whether the staged copy is a disk file or a RAM one.** A consumer took 1.23.0
+  into production and moved it to a real volume, because their container's `/tmp` is a tmpfs: the
+  staging goes wherever `tempfile` points. It does not change the saving, one copy against the tens
+  an inline literal costs, but on a memory-bound host, where that copy lands is the point of staging
+  at all. The guide also records the right way to move it, per process at startup, rather than by
+  reassigning `tempfile.tempdir` mid-run, which is process-wide and captures every other thread's
+  temporary file while it is in effect.
+- **The file handoff is measured on x86_64 as well, and the numbers are better there.** The same arms
+  through the same deployed path, with every run's in-sandbox length and SHA-256 matching the host's.
+  The 11.6 MB text read whole over four turns is 551 MB of tree RSS against aarch64's 540, within
+  2%, and both 50 MB rows are LOWER: 835 MB read whole against 889, and 611 MB sliced against 712.
+  The ordering holds on both architectures and the sliced row is cheapest on each, which is the claim
+  that section rests on.
+
+### Not yet
+
+- **`payload_cause` still does not read `cause`.** That is a second change to the same contract in
+  one release, and nothing passes the key, so widening the reader would buy nothing. The field stays
+  unread and the guide says so.
+- **Nothing the kit can run gates a consumer's own `record_tool_call` sites.** The two gates walk
+  this package only. `CAUSE_UNKNOWN` is the whole mechanism for the downstream version of this
+  omission: it makes the gap visible in the numbers instead of plausible.
+
 ## [1.23.0] - 2026-10-21
 
 **A staged input can keep its text out of the prompt entirely**, its preview no longer copies the
