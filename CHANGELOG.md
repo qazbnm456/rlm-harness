@@ -4,6 +4,68 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [1.22.0] - 2026-10-21
+
+### Added
+
+- **`LargeText`, a long input handed to a run as a file instead of a REPL variable.** dspy injects
+  an input field into the sandbox as an inline Python literal and rebuilds it every turn, which for
+  a multi-megabyte text costs tens of copies' worth of allocator and WebAssembly-heap growth: a
+  consumer measured about 66x the payload in peak process-tree RSS for 11.6 MB, and an independent
+  11-run corpus fits peak tree RSS at 446.8 + 81.4 per corpus MB. Staging the same bytes as a file
+  costs about one copy: 318.4 MB of peak Deno RSS for a tiny file against 326.2 MB for the same
+  11.6 MB text, or 0.71x the payload. Pass one where the signature declares a
+  `str`; the model receives `sandbox_path` and reads the file in slices.
+  **The bytes still reach the sandbox.** dspy's Deno side reads the whole file and writes it into
+  Pyodide's filesystem, so the payload materialises once, and the saving is one copy against tens
+  rather than one against none. Read it by `sandbox_path`: the host path does not resolve inside
+  the sandbox, so sandbox code handed that one finds no file.
+- **`make_model_tool(is_fast_fail=…)`, and the same argument on `make_harness_tool`.** The retry
+  loop treated every exception from `chat_fn` as flakiness, so a failure that repeats by
+  construction, an HTTP 400 or 401 from a wrong model or key, a reply cut at a fixed budget, a
+  context-length refusal, was paid for twice and never reached the breaker. A matching exception
+  now returns at once. The name and shape are `_retry.run_with_retry`'s `is_fast_fail`, so the kit
+  has one concept for "this will repeat" rather than two, and it is a PREDICATE because the
+  judgement cannot be written as a static `except (A, B, C):` and because `tools/` stays dspy-free,
+  so the caller supplies it. Without it nothing changes.
+- **`run_end.payload.rate_limits`**, the rate-limit reports the Claude Agent SDK makes during a
+  subscription run. A subscription whose account has usage credits enabled switches to paid usage
+  past the included limit with no prompt, and the SDK announces it on a message type the kit used
+  to drop, so a bill was the first notice a host had. Entries carry `status`, `rate_limit_type`,
+  `utilization`, `resets_at` and the `overage_*` fields, capped per run with the overflow counted
+  under `rate_limits_dropped`. It records and stops nothing: see the guide's "Spending your own
+  credits without meaning to" for what actually bounds the spend.
+- **A second job in `declared floors`: the suite with every direct dependency at its floor**
+  (`uv run --resolution lowest-direct`, Python 3.11). Reading the index says a floor can be
+  resolved; it says nothing about whether the kit works on it, which is what every floor comment in
+  `pyproject.toml` asserts. `lowest-direct` rather than `lowest`, because pinning transitive
+  dependencies to their floors tests a combination nobody ships.
+
+### Changed
+
+- **`build_interpreter(read_paths=…)` grants the pyodide sandbox read access to named files**, and
+  nothing else in the kit can reach it: only a `LargeText` among a run's inputs produces a path,
+  constructing one needs host Python, and the name is generated so no caller value and no model
+  output becomes part of it. A comma in the resolved path is refused rather than granted, because
+  Deno's `--allow-read` takes a comma-separated list and misparses an entry containing one
+  (`stanfordnlp/dspy#9749`). Any other interpreter kind refuses a read path instead of accepting
+  one it cannot honour. A run that stages nothing grants nothing, which is every run before this.
+- **The circuit breaker counts a fast-failed call**, and its message now says it counted calls that
+  could not produce a usable result rather than invalid outputs. An endpoint error the caller has
+  NOT classified still does not count, which is what the old exemption was written for.
+
+### Not yet
+
+- **No overage guard.** Stopping a run when the SDK reports overage needs the real event sequence,
+  and nobody has observed one: whether the switch arrives as `status="allowed"` with
+  `rate_limit_type="overage"`, whether an `allowed_warning` precedes it, whether it repeats per
+  call. Recording them is what makes it observable. The event also arrives while the call
+  that triggered it is in flight, so a guard would bound the next call rather than that one.
+- **The planner parse-failure handler is upstream's, not the kit's.** `stanfordnlp/dspy#10676`
+  catches `AdapterParseError` around both planner calls and records the turn as that turn's error,
+  bounded by `max_iters`. A kit-side subclass would fork a fix that is already proposed, so 1.21.1
+  shipped the diagnostic half and this release adds nothing.
+
 ## [1.21.1] - 2026-10-21
 
 ### Fixed
