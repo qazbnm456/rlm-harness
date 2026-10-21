@@ -141,7 +141,11 @@ def load_skills_as_tools(skill_dir: str, *, discovery: str = "list") -> list[Cal
                 f"- {s.name}: {s.description or '(no description)'}"
                 for s in skills.values()
             )
-        record_tool_call("list_skills", args={}, result=result)
+        # `ok=True` is not decoration: `trace.payload_cause` reads a MISSING `ok` as
+        # CAUSE_INVALID, so an omission here turns every successful listing into a recorded
+        # decline. A consumer measured its own `tool_declines` at 60 where the truth was 12,
+        # entirely from this and `read_skill` below.
+        record_tool_call("list_skills", args={}, result=result, ok=True)
         return result
 
     def read_skill(name: str) -> str:
@@ -153,8 +157,11 @@ def load_skills_as_tools(skill_dir: str, *, discovery: str = "list") -> list[Cal
         result = skill.read() if skill else f"No such skill: {name!r}. Available: {known}."
         # `preview` (a head of the content) is for inspection: a trace reader / replay UI can show
         # WHAT was read, not just how long it was. `result_len` keeps the full size.
+        # `ok` distinguishes a hit from a miss, which the payload otherwise could not: both wrote
+        # the same shape, so a reader could tell neither that the read succeeded nor that it
+        # failed. A miss IS a decline; a hit is not.
         record_tool_call("read_skill", args={"name": name}, result_len=len(result),
-                         preview=result[:_PREVIEW_CHARS])
+                         preview=result[:_PREVIEW_CHARS], ok=skill is not None)
         return result
 
     # The docstring IS the tool description the model reads, and where the NAMES come from differs
