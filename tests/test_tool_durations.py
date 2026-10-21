@@ -81,7 +81,12 @@ _NOT_OUTBOUND = {
     "make_memory_search_tool": "local SQLite read; timed by the task seam",
     "make_memory_get_tool": "local SQLite read; timed by the task seam",
     "make_memory_note_tool": "local SQLite write; timed by the task seam",
-    # Host-side validators, never placed in a `tools=[...]` list and doing no I/O at all.
+    # Host-side validators, doing no I/O. The reason used to read "never placed in a `tools=[...]`
+    # list", which was false for `make_schema_validator`: `validation.py` documents it as a callable
+    # the RLM invokes inside the REPL, and a consumer measured 42 turns of a run that called it.
+    # Whether a factory records an event AT ALL is a separate question this table never asked, which
+    # is how that one's silence went years without a reason; it is asked in
+    # `test_record_tool_call_sites.py` now, and the answer for both of these is still no.
     "make_json_schema_validator": "host-side validator, no I/O",
     "make_schema_validator": "host-side validator, no I/O",
     # Side-effect-free BASES that deliberately record nothing at all: the consumer's own wrapper

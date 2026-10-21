@@ -40,7 +40,9 @@ def make_json_schema_validator(
     This is the GENERIC base for the "validate against an official, vendored, version-pinned
     upstream JSON schema" pattern: a consumer vendors the schema file + a refresh script (the
     provider-specific half), and layers its own bespoke checks on top; the kit owns only this
-    wiring. ``jsonschema`` is an OPTIONAL dependency (``rlm-harness[jsonschema]``): imported lazily
+    wiring. Records no ``tool_call`` event: it takes a parsed object, so a model cannot call it at
+    all, and whatever wraps it into a REPL tool owns the event. ``jsonschema`` is an OPTIONAL
+    dependency (``rlm-harness[jsonschema]``): imported lazily
     so ``import rlm_harness`` and the dspy-free ``tools`` package stay lean.
     """
     try:
@@ -75,6 +77,22 @@ def make_schema_validator(model: type[BaseModel]) -> Callable[[str], str]:
 
     The returned function's name and docstring are set so DSPy surfaces it to the
     model with useful tool metadata.
+
+    **Records NO ``tool_call`` event, and the OUTERMOST callable the model invokes owns that
+    event.** 1.24.0 made this record its own verdict and reverted inside the same release, because
+    this validator composes: the common shape is a wrapper that runs the schema check FIRST and
+    then applies checks the schema cannot express, returning "Validation failed" for one of its own
+    while the schema itself passed. A self-recording schema check writes ``ok=True`` for that call,
+    so the trace says the validation succeeded on a turn where the model was told it failed. That
+    is a confident wrong record where the silence was merely a missing one, and the two are not
+    equally bad. One consumer's wrapper is called in 111 of 113 runs on its deployment, and names
+    its tool with the same ``f"validate_{model.__name__.lower()}"`` formula used below, so the two
+    events would have landed under one name and merged into a single ``ToolWaste`` with double the
+    calls and a meaningless rate.
+
+    A caller that invokes this directly, with nothing wrapping it, therefore records the verdict
+    itself: take the returned string, branch on ``startswith("Validation failed")``, and call
+    :func:`rlm_harness.trace.record_tool_call` with ``ok=`` and this function's ``__name__``.
     """
 
     def validate(data_json_str: str) -> str:
