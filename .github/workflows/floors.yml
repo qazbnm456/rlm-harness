@@ -10,9 +10,8 @@ name: declared floors
 # DELETION, which is months later and lands on a consumer rather than here.
 #
 # So this reads the index instead of installing, per declared floor, and a yank is the early
-# notice that the deletion is coming. It found two on the day it was written: the
-# `claude-agent-sdk>=0.1.60` that prompted it, and `jsonschema>=4.0`, yanked for publishing an
-# empty `requires-python`.
+# notice that the deletion is coming. Two it has caught: `claude-agent-sdk>=0.1.60`, which
+# prompted it, and `jsonschema>=4.0`, yanked for publishing an empty `requires-python`.
 #
 # A red here is NOT urgent and NOT a rollback. The kit keeps working, because resolution already
 # moved past the yanked version; what is broken is the CLAIM, and a claim nobody can test is the
@@ -64,4 +63,4 @@ jobs:
       # No install step and no dependencies: the script is standard library only, on purpose, so
       # this job cannot be reddened by the very resolution it exists to judge.
       - name: Check every declared floor against the index
-        run: python .github/scripts/check_declared_floors.py .
+        run: python .github/scripts/check_declared_floors.py

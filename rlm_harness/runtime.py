@@ -113,7 +113,7 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
                 return super().parse(signature, "{" + body + "}")
             except AdapterParseError:
                 # The RETRY failed too, and its error quotes the text WE built, braces included.
-                # A consumer debugging a 1-in-890 failure read `{We need answer with JSON...` as a
+                # A consumer debugging a rare failure read `{We need answer with JSON...` as a
                 # model emitting broken JSON; the brace was this method's. So the error that leaves
                 # here carries the reply as the model wrote it, and says what the kit tried.
                 #
@@ -132,7 +132,7 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
                     note = (
                         "This reply did not parse as the output fields, and retrying it as a JSON "
                         "object did not either. The text below is the reply as written, with "
-                        "nothing added."
+                        "nothing added. Reply with a JSON object holding the fields named below."
                     )
                 raise AdapterParseError(
                     adapter_name=original.adapter_name,
