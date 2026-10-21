@@ -34,6 +34,7 @@ from .atomic import atomic_write_stream, atomic_write_text
 from .config import RLMConfig
 from .dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
 from .isolation import run_in_subprocess
+from .large_text import LargeText, LargeTextRefused
 from .memory import (
     LABEL_KINDS,
     LABEL_PROVENANCES,
@@ -191,6 +192,12 @@ __all__ = [
     # safe, isolated-subprocess primitive for a web-facing consumer: a host-level orchestration
     # decision, never invoked by the model, so it lives here rather than under rlm_harness.tools
     "run_in_subprocess",
+    # a long input handed to a run as a FILE the sandbox may read, instead of a REPL variable,
+    # which costs about one copy of it rather than the tens an inline literal costs. Constructing
+    # one is the ONLY thing that grants the sandbox a read path, and host code is the only place
+    # it can be constructed: see `rlm_harness/large_text.py`
+    "LargeText",
+    "LargeTextRefused",
     # provenance-typed memory that outlives a run: append-only, and a model writes only `inferred`
     # (the REPL tools are rlm_harness.tools.make_memory_*_tool)
     "MemoryStore",

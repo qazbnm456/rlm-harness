@@ -379,6 +379,13 @@ class RLMTask:
         return self.tools
 
     def _build_rlm(self) -> dspy.RLM:
+        # Reads `self._staged`, set by `arun` for this run: the input fields whose value is a
+        # `LargeText`, so the sandbox is granted those files and the model is told the variable
+        # holds a path. Read off the instance rather than taken as an ARGUMENT because this method
+        # is an override point, and the kit's own tests already subclass it with a zero-argument
+        # signature: adding a parameter broke every one of them with a `TypeError` that a
+        # surrounding `suppress(Exception)` then hid. Absent means nothing was staged, which is
+        # every run before this existed.
         # Resolve a custom output type (e.g. "-> finding: Finding") explicitly via
         # dspy's custom_types. Otherwise dspy.Signature resolves the type *name* by
         # walking the call stack's globals/locals, which works only while a caller
@@ -399,10 +406,20 @@ class RLMTask:
             # call-stack resolution, is unchanged and is exactly what the failing control shows.
             if instructions is None:
                 instructions = ""
+        staged = getattr(self, "_staged", None) or {}
+        if staged:
+            from .large_text import staged_instructions
+
+            extra = staged_instructions(staged)
+            # Appended, never substituted: the task's own instructions are the consumer's and a
+            # per-run note about where an input lives does not get to displace them.
+            instructions = f"{instructions}\n\n{extra}" if instructions else extra
         signature = dspy.Signature(
             self.signature, instructions=instructions, **sig_kwargs
         )
         injected = self._interpreter
+
+        read_paths = tuple(value.host_path for value in staged.values())
 
         def _make_interpreter() -> Any:
             return build_interpreter(
@@ -412,6 +429,7 @@ class RLMTask:
                 turn_timeout_s=self._config.sandbox_turn_timeout_s,
                 cancel_event=self._cancel_event,
                 sandbox_sub_agents=self._config.sandbox_sub_agents,
+                read_paths=read_paths,
             )
 
         # BUILD ONE EAGERLY EVEN THOUGH DSPY WILL CALL THE FACTORY ITSELF. Two reasons, both
@@ -877,6 +895,12 @@ class RLMTask:
         context, the main LM trajectory and the final result are recorded after
         the run (sub-LM and tool events are recorded live during it).
         """
+        # BEFORE `_build_rlm`, because the grant and the instruction note both derive from which
+        # inputs were staged, and before anything else sees `inputs`, so no later step can hand
+        # dspy a `LargeText` it would try to serialise.
+        from .large_text import stage_inputs
+
+        inputs, self._staged = stage_inputs(inputs)
         rlm = self._build_rlm()
         # Two wrappers, and the ORDER is load-bearing.
         #

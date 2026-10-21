@@ -185,6 +185,7 @@ def build_interpreter(
     turn_timeout_s: float | None = None,
     cancel_event: threading.Event | None = None,
     sandbox_sub_agents: bool = True,
+    read_paths: tuple[str, ...] = (),
 ) -> Any | None:
     """Return a dspy ``CodeInterpreter`` for ``kind``, or ``None`` for the default.
 
@@ -213,6 +214,7 @@ def build_interpreter(
         container=container,
         turn_timeout_s=turn_timeout_s,
         cancel_event=cancel_event,
+        read_paths=read_paths,
     )
     if interp is not None and not sandbox_sub_agents:
         return _NoSubAgentInterpreter(interp)
@@ -227,6 +229,7 @@ def _build_interpreter_for_kind(
     container: Any,
     turn_timeout_s: float | None,
     cancel_event: threading.Event | None,
+    read_paths: tuple[str, ...] = (),
 ) -> Any | None:
     """:func:`build_interpreter`'s body, split out so the sub-agent view wraps every kind once
     rather than at each ``return``."""
@@ -237,7 +240,19 @@ def _build_interpreter_for_kind(
         # dspy build its own) only so we can pre-bind the JSON-literal aliases: the
         # isolation is identical. dspy.RLM merges its execution tools (SUBMIT,
         # llm_query, …) onto our instance, and ``RLMTask`` owns its teardown.
-        return _build_sandboxed_interpreter(turn_timeout_s=turn_timeout_s, cancel_event=cancel_event)
+        return _build_sandboxed_interpreter(
+            turn_timeout_s=turn_timeout_s, cancel_event=cancel_event, read_paths=read_paths
+        )
+
+    if read_paths:
+        # The same reasoning as `cancel_event` below: only the pyodide/deno branch can honour
+        # these, and a grant that silently does nothing would leave a caller believing the
+        # sandbox can read a file it cannot. `container` runs with its own mounts and `mock`
+        # has no filesystem at all, so neither is a place to quietly accept one.
+        raise ValueError(
+            f"read_paths is only supported for interpreter kind 'pyodide'/'deno', got {kind!r}: "
+            f"accepting one for another kind would grant nothing while reporting success."
+        )
 
     if cancel_event is not None:
         raise ValueError(
@@ -291,6 +306,7 @@ def _build_sandboxed_interpreter(
     *,
     turn_timeout_s: float | None = None,
     cancel_event: threading.Event | None = None,
+    read_paths: tuple[str, ...] = (),
 ) -> Any:
     """dspy's default deno/pyodide sandbox, wrapped to pre-bind ``true``/``false``/
     ``null`` in the REPL namespace, and, when either knob is set, guarded by a
@@ -530,7 +546,12 @@ def _build_sandboxed_interpreter(
 
         _sandboxed_interpreter_cls = _JsonLiteralInterpreter
 
-    inst = _sandboxed_interpreter_cls()
+    # `enable_read_paths` is a CONSTRUCTOR argument, not an attribute set afterwards like the two
+    # watchdog knobs: dspy reads it when it builds the Deno `--allow-read` list, and the class
+    # itself is cached and shared, so a grant stored on the class would outlive the run that
+    # asked for it and reach the next one. Empty by default, which is every run that does not
+    # stage a file: the list dspy receives is then exactly what it was before this existed.
+    inst = _sandboxed_interpreter_cls(enable_read_paths=list(read_paths) or None)
     inst._turn_timeout_s = turn_timeout_s
     inst._cancel_event = cancel_event
     return inst
