@@ -311,8 +311,9 @@ def model_as_tool(name: str, lm: Any, *, description: str = "") -> Callable[[str
         text = _dspy_compat.sub_lm_response_text(outputs)
         if text is None:
             text = str(outputs)
-        # `ok=True`: see `trace.payload_cause`, which reads a missing `ok` as CAUSE_INVALID, so
-        # omitting it here records every successful sub-model consultation as a decline.
+        # `ok=True`: see `trace.payload_cause`, which without it has no outcome to read, so every
+        # successful sub-model consultation records as CAUSE_UNKNOWN instead of counting in
+        # `tool_ok`. Until 1.24.0 the same omission read as a DECLINE, which is why this exists.
         record_tool_call(f"model:{name}", args={"prompt": prompt},
                          duration_s=time.perf_counter() - t0, result=text, ok=True)
         return text

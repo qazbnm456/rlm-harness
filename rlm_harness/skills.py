@@ -141,10 +141,11 @@ def load_skills_as_tools(skill_dir: str, *, discovery: str = "list") -> list[Cal
                 f"- {s.name}: {s.description or '(no description)'}"
                 for s in skills.values()
             )
-        # `ok=True` is not decoration: `trace.payload_cause` reads a MISSING `ok` as
-        # CAUSE_INVALID, so an omission here turns every successful listing into a recorded
-        # decline. A consumer measured its own `tool_declines` at 60 where the truth was 12,
-        # entirely from this and `read_skill` below.
+        # `ok=True` is not decoration: without it `trace.payload_cause` has no outcome to read,
+        # so every successful listing records as CAUSE_UNKNOWN, lands in `tool_unknown`, and makes
+        # every other count in `compute_run_facts` a subset of `tool_calls`. Until 1.24.0 the same
+        # omission read as a DECLINE, which is how a consumer measured its own `tool_declines` at
+        # 60 where the truth was 12, entirely from this and `read_skill` below.
         record_tool_call("list_skills", args={}, result=result, ok=True)
         return result
 
