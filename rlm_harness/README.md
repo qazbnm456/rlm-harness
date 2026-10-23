@@ -681,8 +681,9 @@ with LargeText(huge_log) as log:
 ```
 
 Pass one where the signature declares a `str`. The kit substitutes the path before dspy sees it,
-adds a line to that run's instructions saying the variable is a path to a file of N characters and
-to seek and read a slice, and grants the sandbox that one file. `examples/large_text_run.py` is the
+adds a line to that run's instructions saying the variable is a path to a file of N characters (and
+M bytes), to keep any text read from it under a new name, and to seek by byte in binary mode and
+read a slice, and grants the sandbox that one file. `examples/large_text_run.py` is the
 whole shape on a live model.
 
 **Measured, by a consumer on Linux aarch64 in its own deployed image**, peak RSS of the whole
@@ -711,6 +712,20 @@ none, and anyone restating this as "the context never enters the sandbox" has it
 location does not resolve inside the sandbox, so sandbox code handed `host_path` finds no file and
 reads nothing. The failure is quiet and it looks like a win: a run that reads nothing costs
 nothing, which is how the first attempt at measuring this approach reported no cost at all.
+
+**If your own prompt treats the input as text, rename it there too.** dspy assigns every input at
+the top of every step, so `log = open(log).read()` holds the text for one step and the path again
+on the next, where `log.find(...)` returns -1 and nothing raises. dspy's own prompt tells the model
+that state persists between steps, which is true of every name except an input's. Write
+`text = open(log, 'rb').read().decode('utf-8')` into your instructions, or a skill, and refer to
+`text` from then on.
+
+**Multi-byte text needs byte offsets.** A text-mode `seek` takes a byte position, so a character
+offset lands short of where it was meant to in Chinese, Japanese or Korean text, and one inside a
+character raises `UnicodeDecodeError` on the next read: 59 of 120 offsets into Chinese text did.
+Read with `'rb'` and decode. A marker that is ASCII can be found in the bytes directly, because no
+byte of a multi-byte UTF-8 character is ever an ASCII byte, so splitting on it always lands on a
+character boundary. None of this shows on an ASCII log, which is all the measurements above used.
 
 **`make_read_file_tool` is the wrong tool for a staged text.** Pointed at the permitted path it
 showed no gain at all, about the same tree peak as the variable path. Two structural reasons. It

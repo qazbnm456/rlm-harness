@@ -4,6 +4,21 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [Unreleased]
+
+### Fixed
+
+- **A staged input's instruction let a model lose the text one step after reading it.** dspy
+  assigns every input at the top of every step, so `log = open(log).read()` held the text for one
+  step and the path again on the next, where `log.find(...)` returned -1 without raising, while
+  dspy's own prompt says state persists between steps. The instruction now says to keep the text
+  under a new name. Reproduced in a real sandbox; not yet seen in a consumer's trace.
+- **The same instruction said to seek to an offset, which breaks on multi-byte text.** A text-mode
+  `seek` takes bytes, so a character offset lands short in Chinese text and 59 of 120 offsets raised
+  `UnicodeDecodeError`. It now says to open with `'rb'`, seek to a byte offset and decode, and gives
+  the size in bytes as well as characters. The 1.23.0 measurements used ASCII only, which is why
+  neither showed.
+
 ## [1.24.0] - 2026-10-21
 
 **Three of this kit's own `record_tool_call` writers never said whether the call had succeeded**,

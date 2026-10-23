@@ -143,7 +143,10 @@ def test_the_instruction_names_the_path_the_size_and_what_to_do():
         text = staged_instructions({"log": staged})
         assert "`log` holds the PATH" in text
         assert f"{staged.chars:,} characters" in text
-        assert "seek to an offset" in text
+        assert "seek to a byte offset" in text
+        assert "'rb'" in text                # text-mode seek breaks inside a multi-byte character
+        assert f"({os.path.getsize(staged.host_path):,} bytes)" in text
+        assert "never `log`" in text         # dspy resets an input's name every step
         assert "splitting it into lines" in text   # named as the thing NOT to do
         assert "alpha beta" in text          # the head, so the model can recognise the shape
         assert staged.host_path not in text  # never the host location
@@ -240,3 +243,43 @@ def test_an_untrusted_text_can_keep_its_head_out_of_the_system_message():
     with LargeText("abc", preview_chars=-5) as clamped:
         assert clamped.preview_chars == 0
         assert "It begins:" not in staged_instructions({"x": clamped})
+
+
+def test_dspy_hands_every_step_the_path_again_so_the_instruction_must_say_use_a_new_name():
+    """The premise behind "never `log`" in the staged instruction, at the RLM layer.
+
+    dspy passes the run's inputs to EVERY `execute`, and the interpreter assigns them at the top of
+    that step's code, so a model's `log = open(log).read()` lasts one step. The Deno half, that the
+    assignment really overwrites the model's own, is `test_large_text_real_deno.py`. If either
+    stops being true, the sentence is wrong and should go.
+    """
+    import asyncio
+
+    pytest.importorskip("dspy")
+    import rlm_harness.runtime as rt
+    from rlm_harness import RLMConfig, RLMTask
+    from rlm_harness.testing import ScriptedInterpreter, scripted_lm, submit
+
+    seen = []
+    rt.configure(
+        RLMConfig(main_model="x", sub_model="x", interpreter="mock", observe=False),
+        main_lm=(lm := scripted_lm([
+            {"reasoning": "r", "code": "log = open(log).read()"},
+            {"reasoning": "r", "code": "print(log.find('x'))"},
+            {"reasoning": "r", "code": "SUBMIT(answer='a')"},
+        ])),
+        sub_lm=lm,
+    )
+
+    def look(_tools, variables):
+        seen.append(variables.get("log"))
+        return ""
+
+    class T(RLMTask):
+        signature = "log: str -> answer: str"
+        output_field = "answer"
+
+    with LargeText("x" * 100) as staged:
+        si = ScriptedInterpreter([look, look, submit({"answer": "a"})])
+        asyncio.run(T(interpreter=si).arun(log=staged))
+        assert seen == [staged.sandbox_path] * 2, "dspy stopped re-sending the input every step"

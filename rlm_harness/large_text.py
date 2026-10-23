@@ -209,6 +209,19 @@ def staged_instructions(staged: dict[str, LargeText]) -> str:
     kit: the model is told the variable holds a path, that the file is large, and to read it in
     pieces. The character count is the text's own, measured, not a budget the kit imposes.
 
+    Two sentences each answer a failure reproduced in a real sandbox, and both are silent:
+
+    * **Keep the text under a NEW name.** dspy re-assigns every input at the top of every step, so
+      `log = open(log).read()` holds the text for one step and the path again on the next, where
+      `log.find(...)` returns -1 rather than raising. dspy's own prompt says "State persists between
+      iterations", which is true of every name except an input's, so the model has every reason to
+      reuse the name unless told otherwise.
+    * **Seek by BYTE, in binary mode.** A text-mode `seek` takes a byte position, so a character
+      offset lands earlier than meant in multi-byte text, and one inside a character raises
+      `UnicodeDecodeError` on the next read: 59 of 120 offsets into Chinese text did. The size is
+      given in both units for the same reason. None of it shows on ASCII, which is all the 1.23.0
+      measurement used.
+
     How much of each text is quoted comes from that object's own `preview_chars`, NOT from an
     argument here, so one untrusted input can keep its head out of the system message while a
     trusted one beside it still shows a preview.
@@ -217,10 +230,14 @@ def staged_instructions(staged: dict[str, LargeText]) -> str:
         return ""
     lines = []
     for name, value in sorted(staged.items()):
+        size = os.path.getsize(value.host_path)
         line = (
-            f"`{name}` holds the PATH to a file of {value.chars:,} characters, not the text itself. "
-            f"Open it and read only the part you need: seek to an offset and read a slice, rather "
-            f"than reading the file whole or splitting it into lines. It may be one long line."
+            f"`{name}` holds the PATH to a UTF-8 file of {value.chars:,} characters "
+            f"({size:,} bytes), not the text itself, and it is reset to that path before every "
+            f"step: keep any text you read under a new name, never `{name}`. Read only the part "
+            f"you need: open it with 'rb', seek to a byte offset, read a slice and decode it with "
+            f"errors='replace', rather than reading the file whole or splitting it into lines. It "
+            f"may be one long line."
         )
         if value.preview_chars:
             head = value.preview(value.preview_chars).replace("\n", " ")
