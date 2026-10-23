@@ -682,8 +682,8 @@ with LargeText(huge_log) as log:
 
 Pass one where the signature declares a `str`. The kit substitutes the path before dspy sees it,
 adds a line to that run's instructions saying the variable is a path to a file of N characters (and
-M bytes), to keep any text read from it under a new name, and to seek by byte in binary mode and
-read a slice, and grants the sandbox that one file. `examples/large_text_run.py` is the
+M bytes), to keep any text read from it under a new name, to read it in slices, and to jump to a
+position by seeking to a byte offset in binary mode, and grants the sandbox that one file. `examples/large_text_run.py` is the
 whole shape on a live model.
 
 **Measured, by a consumer on Linux aarch64 in its own deployed image**, peak RSS of the whole
@@ -723,7 +723,7 @@ that state persists between steps, which is true of every name except an input's
 **Multi-byte text needs byte offsets.** A text-mode `seek` takes a byte position, so a character
 offset lands short of where it was meant to in Chinese, Japanese or Korean text, and one inside a
 character raises `UnicodeDecodeError` on the next read: 59 of 120 offsets into Chinese text did.
-Read with `'rb'` and decode. A marker that is ASCII can be found in the bytes directly, because no
+To jump, read with `'rb'` and decode; reading forward with `read(n)` in text mode is safe. A marker that is ASCII can be found in the bytes directly, because no
 byte of a multi-byte UTF-8 character is ever an ASCII byte, so splitting on it always lands on a
 character boundary. None of this shows on an ASCII log, which is all the measurements above used.
 

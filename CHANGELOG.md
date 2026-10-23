@@ -15,8 +15,10 @@ All notable changes to `rlm-harness`. Format loosely follows
   under a new name. Reproduced in a real sandbox; not yet seen in a consumer's trace.
 - **The same instruction said to seek to an offset, which breaks on multi-byte text.** A text-mode
   `seek` takes bytes, so a character offset lands short in Chinese text and 59 of 120 offsets raised
-  `UnicodeDecodeError`. It now says to open with `'rb'`, seek to a byte offset and decode, and gives
-  the size in bytes as well as characters. The 1.23.0 measurements used ASCII only, which is why
+  `UnicodeDecodeError`. It now says that to jump to a position, open with `'rb'`, seek to a byte
+  offset and decode, and gives the size in bytes as well as characters. Sequential reads in text mode
+  are safe and are left alone, so a task that tells the model to open the file in text mode is not
+  contradicted. The 1.23.0 measurements used ASCII only, which is why
   neither showed.
 
 ## [1.24.0] - 2026-10-21

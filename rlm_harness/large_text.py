@@ -220,7 +220,10 @@ def staged_instructions(staged: dict[str, LargeText]) -> str:
       offset lands earlier than meant in multi-byte text, and one inside a character raises
       `UnicodeDecodeError` on the next read: 59 of 120 offsets into Chinese text did. The size is
       given in both units for the same reason. None of it shows on ASCII, which is all the 1.23.0
-      measurement used.
+      measurement used. It is conditional on JUMPING because sequential `read(n)` in text mode is
+      safe, and a consumer's own instructions already tell the model to open the file in text
+      mode with `newline=""`: an unconditional "open it with 'rb'" contradicted them in the same
+      prompt.
 
     How much of each text is quoted comes from that object's own `preview_chars`, NOT from an
     argument here, so one untrusted input can keep its head out of the system message while a
@@ -235,9 +238,9 @@ def staged_instructions(staged: dict[str, LargeText]) -> str:
             f"`{name}` holds the PATH to a UTF-8 file of {value.chars:,} characters "
             f"({size:,} bytes), not the text itself, and it is reset to that path before every "
             f"step: keep any text you read under a new name, never `{name}`. Read only the part "
-            f"you need: open it with 'rb', seek to a byte offset, read a slice and decode it with "
-            f"errors='replace', rather than reading the file whole or splitting it into lines. It "
-            f"may be one long line."
+            f"you need, in slices, rather than reading the file whole or splitting it into lines; "
+            f"it may be one long line. To jump to a position, open it with 'rb', seek to a byte "
+            f"offset and decode the slice with errors='replace'."
         )
         if value.preview_chars:
             head = value.preview(value.preview_chars).replace("\n", " ")
