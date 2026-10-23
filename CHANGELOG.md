@@ -4,7 +4,13 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
-## [Unreleased]
+## [1.24.1] - 2026-10-23
+
+**The line a staged input adds to the instructions misled a model in two silent ways**: it let the
+model read the text back into the input's own name, which dspy resets every step, and it said to
+seek to an offset, which on multi-byte text lands short or fails inside a character. Both are
+reproduced in a real sandbox and pinned by tests, and a live run on Chinese text followed the new
+wording.
 
 ### Fixed
 
