@@ -194,13 +194,19 @@ cannot see.
   something the release itself can edit, because a character count in a published release goes
   stale the moment someone edits a docstring and nobody re-reads it to fix that. The tag message
   is the bare version; the release title is a sentence.
-- **`tests/test_sandbox_real_deno.py` is the one file that drives a REAL Deno sandbox, and it
+- **`tests/test_sandbox_real_deno.py` drives a REAL Deno sandbox, as does the file below, and it
   skips without `deno` on PATH, which includes CI.** Every other sandbox test monkeypatches
   `PythonInterpreter.execute`, and a fake `execute` can neither exit nor end a dspy session, which
   is how a model's own exception killing Deno, and a turn timeout that never restarted, both
   shipped with the suite green. Run it locally on any change to `sandbox.py` or the runner shim in
   `_dspy_compat.py`, and on a dspy bump: it asserts the BEHAVIOUR, so it stays the guard after
   upstream fixes `runner.js` and the shim stops applying.
+- **`tests/test_large_text_real_deno.py` is the second, and it guards a sentence rather than a
+  code path.** It asserts the two premises behind the line a staged input adds to the
+  instructions: that dspy's per-step assignment overwrites a model's reuse of an input's name, and
+  that a text-mode `seek` breaks inside a multi-byte character. Run it on a dspy bump and on any
+  change to `large_text.py`; if either assertion fails, the matching sentence in that line is now
+  false and should go.
 - **Before writing down a fact about anything OUTSIDE this repo, know which of two kinds it is,
   because only one of them can ever be checked again.** The Deno bound above is the instance this
   rule came from, twice, and it is not the only one: a dspy version a release was verified on, and a
