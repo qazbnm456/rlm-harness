@@ -38,6 +38,7 @@ import contextlib
 import copy
 import dataclasses
 import inspect
+from collections.abc import Mapping
 from functools import lru_cache
 from typing import Any
 
@@ -200,6 +201,63 @@ def rlm_budget_kwargs(
                 resolved[name] = values[canonical]
                 break
     return resolved
+
+
+def rlm_budget_values(rlm: Any) -> dict[str, int]:
+    """The three caps a BUILT ``dspy.RLM`` will actually enforce, under the kit's names.
+
+    Read back off the program rather than echoed from ``RLMConfig``, because ``_build_rlm``'s lossy
+    ``except TypeError`` can drop all three to dspy's defaults and a trace that recorded the
+    configured numbers would then describe a prompt (``iteration: "3/20"``) the model never saw.
+    The attribute dspy stores each under is the constructor's spelling, so the same alias table
+    resolves it. A cap the installed dspy does not expose is absent, never guessed.
+    """
+    out: dict[str, int] = {}
+    for canonical, candidates in _BUDGET_ALIASES:
+        for name in candidates:
+            value = getattr(rlm, name, None)
+            if isinstance(value, int) and not isinstance(value, bool):
+                out[canonical] = value
+                break
+    return out
+
+
+#: Where a ``dspy.RLM`` keeps its two predictors, by the role the trace records them under.
+#: Newest spelling first, the same shape as ``_BUDGET_ALIASES``: the next rename is one entry here.
+_PREDICTOR_ROLES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("action", ("generate_action",)),
+    ("extract", ("extract",)),
+)
+
+
+def rlm_predictor_roles(rlm: Any) -> dict[str, Any]:
+    """``{"action": predictor, "extract": predictor}`` for a built ``dspy.RLM``.
+
+    The trace records each call under its ROLE because the attribute names are dspy's. A role the
+    installed dspy does not expose is absent, so its calls are simply not captured: a thinner
+    trace, never a wrong attribution.
+    """
+    out: dict[str, Any] = {}
+    for role, candidates in _PREDICTOR_ROLES:
+        for name in candidates:
+            predictor = getattr(rlm, name, None)
+            if predictor is not None and hasattr(predictor, "signature"):
+                out[role] = predictor
+                break
+    return out
+
+
+def rlm_user_tools(rlm: Any) -> dict[str, Any]:
+    """The caller's tools as dspy will document them to the model: ``{name: dspy.Tool}``.
+
+    ``RLM.tools`` is dspy's public property for exactly this set (it excludes ``llm_query`` and
+    friends). ``{}`` when the installed dspy has no such property.
+    """
+    try:
+        tools = rlm.tools
+    except Exception:
+        return {}
+    return dict(tools) if isinstance(tools, Mapping) else {}
 
 
 #: Names dspy owns inside the sandbox. The hardcoded floor for

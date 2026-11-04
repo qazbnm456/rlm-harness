@@ -4,6 +4,46 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [Unreleased] (1.25.0)
+
+**The trace now records what each planner call was shown, and `export_sft_turns` can give back
+the exact request.** dspy sends every planner turn as one single-turn request formatted by the
+run's adapter, and the `extract` fallback as one more, but a trace kept only each turn's
+`{reasoning, code, output}`. A downstream converter rendered its own multi-turn chat from those, so
+the model was trained on a format it is never served, and the extract call left no record at all.
+All additions are optional payload within `rlm-harness/trace/v2`.
+
+### Added
+
+- **`rlm_setup` event**, once per recorded trajectory: the adapter and its class, the running dspy
+  version, the budgets read back off the built program, `variables_info` exactly as shown, the
+  task's input and output field names, the documented tools, and both predictors' signatures
+  (instructions, then every field in order with its type facts), so compiled instructions are
+  recorded as the text the model saw.
+- **Per-call fields on `main_step`**: `iteration`, `history_len`, `messages_sha256`,
+  `signature_sha256`, `completion` (the raw content string), `reasoning_content`, `usage` for that
+  call alone, `attempt`, `run_tag`, and `code_raw` when the written code differs from dspy's
+  fence-stripped `code`. A value shared with `rlm_setup` is repeated only when it differs.
+- **`extract` event** when the fallback ran, with the same per-call fields and the parsed
+  `outputs`; `final.extract` says whether it ran.
+- **`export_sft_turns(render="adapter")`**: one record per action and extract call, its `messages`
+  rebuilt by dspy's own `Adapter.format` from the recorded inputs and checked against the recorded
+  hash (`verified`), the raw completion as the assistant side (`assistant_source`), and
+  `reasoning_content` kept separate. `custom_types=`, `adapter=` and `strict=` cover a type or
+  adapter that cannot be rebuilt from the trace. The default export is unchanged.
+- **`RLMTask(run_tag=...)`**, a caller's label stamped on every recorded call.
+- `EVENT_RLM_SETUP` and `EVENT_EXTRACT` in `__all__`; `rlm_harness.prompt_record` (dspy-free at
+  module top); `_dspy_compat.rlm_budget_values`, `rlm_predictor_roles` and `rlm_user_tools`.
+
+### Notes
+
+- A field type with a nested pydantic model (`$defs` in its schema) cannot be replayed from the
+  trace, because pydantic refuses references to definitions it did not generate. Pass the class
+  through `custom_types`; without it the export raises `RenderError` naming the type.
+- The parity tests compare the export with a request captured by an independent callback at the
+  LM boundary, across the json and chat adapters, action and extract calls, compiled instructions,
+  a retry, and two runs under one recorder.
+
 ## [1.24.1] - 2026-10-23
 
 **The line a staged input adds to the instructions misled a model in two silent ways**: it let the

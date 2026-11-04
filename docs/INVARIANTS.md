@@ -141,7 +141,7 @@ reason is in the rule.
 - **Keep the dspy-free modules dspy-free.** `config.py`, `_retry.py`, `sandbox.py`, `tools/`,
   `trace.py`, `skills.py`, `replay.py`, `dataset.py`, `serving.py`, `harness_serve.py`,
   `_dspy_compat.py`, `metrics.py`, `rubric.py`, `_toolname.py`, `atomic.py`, `isolation.py`,
-  `memory.py`, `memory_organise.py`, `memory_vectors.py`, `large_text.py` must NOT import `dspy` at module top:
+  `memory.py`, `memory_organise.py`, `memory_vectors.py`, `large_text.py`, `prompt_record.py` must NOT import `dspy` at module top:
   that keeps their logic testable without dspy. Only `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`,
   `container_interpreter.py`, `testing.py`, `claude_agent_lm.py` and `memory_tasks.py` touch dspy:
   the last five live outside the dspy-free set and are lazily imported (by `__getattr__` / by
@@ -708,6 +708,42 @@ reason is in the rule.
   Re-audit it the same way next time rather than inheriting the conclusion; "no consumer validates
   the version" is a measurement with a date on it, and the first release that asserted it without
   measuring got the cost of a bump backwards.
+- **An SFT example's input is the request the adapter SENT, and the trace keeps what rebuilds it.**
+  A consumer's converter read `main_step`'s `{reasoning, code, output}` and rendered its own
+  multi-turn chat from them, while dspy sends each planner turn as ONE single-turn request
+  formatted by the configured adapter, and expects JSON back under the default `json` adapter. The
+  model was trained on a format it is never served, and nothing in the trace could have told the
+  converter so: the prompt was not recorded, and the `extract` fallback call left no record at all
+  (CHANGELOG 1.25.0). The rules the fix encodes:
+
+  * **Record the INPUTS to `Adapter.format`, not its output.** Signature, demos and per-call values
+    go in once per trajectory (`rlm_setup`) plus what varies per call; the REPL history is rebuilt
+    from the trajectory's own earlier turns. Storing the rendered messages would grow every trace
+    with the square of its turn count, which is what made "store the prompt" look unaffordable.
+  * **Hash what was sent, and check every re-render against it.** `messages_sha256` is taken from
+    the adapter's own output inside the call, and `export_sft_turns(render="adapter")` sets
+    `verified` per record. A re-render nobody checks is a claim, and the two places it can silently
+    drift, a type rebuilt from its schema and a dspy that changes how it formats, are exactly the
+    places a test on today's dspy cannot see.
+  * **An absent field over a wrong one.** Per-call fields attach to a turn only after its
+    `reasoning` matches the captured call's; calls are staged PER ATTEMPT and only the attempt whose
+    turns reached the trace is written (the same last-writer-wins rule `run_end.usage` documents). A
+    prompt beside another attempt's answer is a confident training error.
+  * **The assistant side is the raw completion, verbatim**, with `reasoning_content` kept as its
+    own field. Re-formatting parsed outputs is the fallback for a trace without it, and the record
+    says which it used (`assistant_source`).
+  * **Capture can thin a trace and can never fail a run.** It is a dspy callback (dspy logs and
+    swallows a raising one) whose composition step is suppressed and logged; the predictor
+    attributes and the budgets it reads go through `_dspy_compat.rlm_predictor_roles` /
+    `rlm_budget_values` / `rlm_user_tools`, never a call site.
+  * **The export never imports a class a trace names.** An adapter outside dspy's json/chat/xml
+    families, or an output type pydantic cannot replay from its schema (one with `$defs`), is
+    supplied by the caller (`adapter=`, `custom_types=`). Importing from the trace would execute
+    whatever a trace file says.
+
+  `tests/test_sft_render.py` is the pin, and its reference is a callback of its own at the LM
+  boundary, never the kit's capture: a test comparing the export to the kit's own record passes for
+  a capture and a render that are wrong the same way.
 - **rlm-harness produces TRAJECTORIES, never reward.** The kit runs the RLM, records the trace,
   and turns traces into datasets (`export_sft_turns` / `export_rl` / `export_actions`). It does
   NOT score them: `export_rl` and `export_actions` carry a `reward=` HOOK the downstream trainer

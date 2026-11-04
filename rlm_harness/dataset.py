@@ -295,7 +295,14 @@ def _run_meta(events: list[dict]) -> dict:
     return (rs["payload"].get("meta") or {}) if rs else {}
 
 
-def export_sft_turns(runs: dict[str, list[dict]]) -> list[dict]:
+def export_sft_turns(
+    runs: dict[str, list[dict]],
+    *,
+    render: str | None = None,
+    custom_types: dict[str, Any] | None = None,
+    adapter: Any = None,
+    strict: bool = False,
+) -> list[dict]:
     """Per-root-turn SFT samples: the RLM post-training recipe (arXiv 2512.24601, App. A).
 
     The paper fine-tunes by separating *each root RLM turn* (iteration) into its own SFT
@@ -308,10 +315,48 @@ def export_sft_turns(runs: dict[str, list[dict]]) -> list[dict]:
     "first user input" an RLM trajectory otherwise lacks (the prompt lives in a REPL variable,
     not a chat turn).
 
-    Each record is ``{run_id, turn, input: {initial, history}, output: {reasoning, code}}``:
-    format-agnostic. The trainer renders ``initial + history`` into its chat template and masks
-    the loss to ``output`` only (the assistant-only-loss multi-turn SFT the paper describes).
+    **Default (``render=None``): format-agnostic, unchanged since before 1.25.0.** Each record is
+    ``{run_id, turn, input: {initial, history}, output: {reasoning, code}}``. The trainer renders
+    ``initial + history`` into its chat template and masks the loss to ``output`` only. Note that
+    dspy does NOT send a turn as a multi-turn chat: each turn is one single-turn request, so a
+    template of the trainer's own choosing is a different format from the one the model is served.
+
+    **``render="adapter"`` (1.25.0): the request the run's adapter actually sent.** One record per
+    planner call, ``generate_action`` turns AND the ``extract`` fallback, each rendered by dspy's own
+    ``Adapter.format`` from the signature, demos and inputs the trace recorded (``rlm_setup`` plus
+    the per-call fields on ``main_step`` / ``extract``; see ``trace.EVENT_RLM_SETUP``)::
+
+        {run_id, kind: "action" | "extract", turn, adapter,
+         messages: [{role: "system", ...}, {role: "user", ...}],   # the request, as sent
+         assistant: {role: "assistant", content},
+         assistant_source: "completion" | "rendered",
+         verified: True | False | None,
+         reasoning_content?, usage?, run_tag?, attempt?}
+
+    ``assistant.content`` is the LM's raw content string as returned (``assistant_source:
+    "completion"``), never rewritten; a trace without it falls back to the adapter's own
+    assistant formatter over the parsed outputs (``"rendered"``; for JSON that is
+    ``json.dumps(..., indent=2)`` in signature field order, because dspy's
+    ``JSONAdapter.format_finetune_data`` is unimplemented). ``reasoning_content`` is the provider's
+    separate reasoning channel, kept beside the message rather than merged into it. An extract
+    record's ``turn`` is the number of REPL entries it saw.
+
+    ``verified`` compares the re-rendered ``messages`` with the sha256 of what was actually sent:
+    ``False`` means this record is NOT the request the model saw (most often a nested pydantic output
+    type rendered without ``custom_types``; see ``prompt_record``), ``None`` that no hash was
+    recorded. ``strict=True`` raises instead of emitting a ``False``.
+
+    ``custom_types`` maps a recorded type NAME (``"Article"``, or a whole annotation such as
+    ``"list[Article]"``) to the real type, for a field whose recorded schema cannot be replayed.
+    ``adapter`` is an adapter instance to format with, required only for a run formatted by a class
+    outside dspy's json/chat/xml families. Turns from a trace written before 1.25.0 carry nothing to
+    render from and are skipped, with a warning saying how many. This mode imports dspy; the
+    default does not.
     """
+    if render not in (None, "adapter"):
+        raise ValueError(f"render must be None or 'adapter', not {render!r}")
+    if render == "adapter":
+        return _export_rendered_turns(runs, custom_types=custom_types, adapter=adapter, strict=strict)
     records: list[dict] = []
     for run_id, events in runs.items():
         initial = _run_meta(events)
@@ -333,6 +378,33 @@ def export_sft_turns(runs: dict[str, list[dict]]) -> list[dict]:
                     "output": p.get("output"),
                 }
             )
+    return records
+
+
+def _export_rendered_turns(
+    runs: dict[str, list[dict]], *, custom_types: dict[str, Any] | None, adapter: Any, strict: bool,
+) -> list[dict]:
+    from .prompt_record import RenderError, render_steps
+
+    records: list[dict] = []
+    skipped = 0
+    for run_id, events in runs.items():
+        rendered, missing = render_steps(events, custom_types=custom_types, adapter=adapter)
+        skipped += missing
+        for rec in rendered:
+            if strict and rec["verified"] is False:
+                raise RenderError(
+                    f"run {run_id!r} {rec['kind']} turn {rec['turn']}: the re-rendered request does "
+                    "not match the sha256 of the one that was sent. If an output type nests "
+                    "another model, pass it in custom_types."
+                )
+            records.append({"run_id": run_id, **rec})
+    if skipped:
+        logger.warning(
+            "export_sft_turns(render='adapter') skipped %d turn(s) recorded without an rlm_setup "
+            "(a trace written before rlm-harness 1.25.0): there is no recorded request to render",
+            skipped,
+        )
     return records
 
 

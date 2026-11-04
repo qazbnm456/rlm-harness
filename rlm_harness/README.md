@@ -29,7 +29,8 @@ pitch, the quickstart, and installation: start at the
 | `skills.py` | `load_skills_as_tools`: expose a Skills directory to the RLM as tools. |
 | `trace.py` | `TraceRecorder`: unified append-only JSONL trajectory (main steps + sub-LM + tool calls). |
 | `replay.py` | Reconstruct/replay a recorded run using recorded tool outputs. |
-| `dataset.py` | `export_sft_turns` / `export_rl` / `export_actions` (turn traces into training datasets (`export_sft_turns` = per-root-turn SFT, the RLM recipe of arXiv 2512.24601); `run_label_bundle`) carry per-run LABEL surfaces beside the trajectory. |
+| `dataset.py` | `export_sft_turns` / `export_rl` / `export_actions` (turn traces into training datasets (`export_sft_turns` = per-root-turn SFT, the RLM recipe of arXiv 2512.24601; `render="adapter"` re-renders the exact request each planner call was sent, see "Re-rendering what the model was sent"); `run_label_bundle`) carry per-run LABEL surfaces beside the trajectory. |
+| `prompt_record.py` | What each `generate_action` / `extract` call was shown, as JSON (`describe_signature`, `messages_sha256`), and the re-render behind `export_sft_turns(render="adapter")`. dspy-free at module top. |
 | `mcp.py` | MCP **client** (optional `rlm-harness[mcp]`): `mcp_tools` exposes an external server's tools as SYNC `dspy.Tool`s; `McpCatalog`/`McpConnection` for a progressive multi-server surface. |
 | `testing.py` | Offline forward-path harness: `ScriptedInterpreter`, `scripted_lm`, and the REPL-safety assertions `assert_repl_safe` / `assert_task_repl_safe`. |
 | `serving.py` / `harness_serve.py` | Server side of the harness-delegation contract: turn an `RLMTask` into a process that speaks it. |
@@ -2337,7 +2338,10 @@ Five things to know:
   to the attempt with the turns would have discarded the fatal call's tokens, which is the number
   worth having. A run that never produced a prediction: `main_steps: 0`, the shape of the incident
   behind this. Records every attempt with none flagged.
-- **It is NOT per turn, and that is a limit, not an omission.** `sub_model` falls back to
+- **`run_end.usage` is NOT per turn, and that is a limit, not an omission.** (Planner calls
+  have a per-call figure of their own since 1.25.0: `main_step.payload.usage` and
+  `extract.payload.usage`, the tracker slice taken inside that one call, see "Re-rendering what
+  the model was sent". Sub-LM and tool-LM calls still have none.) `sub_model` falls back to
   `main_model`, and dspy propagates the tracker into `llm_query_batched`'s workers, so planner
   turns, sub-LM escalations and same-model tool-LM calls land in one flat list under one key with
   no call id and no timestamp. Nothing in dspy's tracker can key them apart. For a distribution
@@ -2560,6 +2564,89 @@ deliberately unchanged.
   generating. Prefer a measured field over a gap wherever one exists, and treat a
   NEGATIVE gap as unknown rather than as data (traces written before 1.6.1 can contain them; see
   that entry in `CHANGELOG.md`).
+
+## Re-rendering what the model was sent
+
+dspy does not run the planner as a chat. Each iteration is ONE single-turn request from
+`generate_action`, and when the iteration budget runs out, one more from `extract`, each formatted
+by the configured adapter (`RLM_ADAPTER`, `json` by default) from three inputs: the predictor's
+signature, its demos, and that call's values (`variables_info`, the REPL history, `iteration`). A
+dataset built from `main_step`'s `{reasoning, code, output}` alone has to invent its own chat format
+around those, and that format is not the one the model is served. Since 1.25.0 the trace keeps the
+three inputs, and `export_sft_turns(render="adapter")` gives back the request itself.
+
+**What is recorded.** All of it is optional payload: a trace written before 1.25.0 lacks it, and so
+does a run with no recorder.
+
+- `rlm_setup`, once per recorded trajectory, before its first `main_step`: `adapter` (`json`,
+  `chat`, `xml`, or a class name) and `adapter_class`; `dspy`, the running version;
+  `max_iterations`, `max_llm_calls` and `max_output_chars`, read back off the built program rather
+  than from `RLMConfig`; `variables_info`, the strings exactly as the model saw them (name, type,
+  total length, preview); `input_fields` and `output_fields`; `tools`, each with the `name`, `desc`
+  and `args` dspy documents to the model; `attempt`; `run_tag` when set; and `predictors.action` and
+  `predictors.extract`: each signature's `instructions` and its `fields` in order (`name`, `io`,
+  `type`, the type facts an adapter reads, and `extra` holding `desc`/`prefix`/`constraints`), plus
+  their `sha256`. The instructions are the ones the call used, so a run under
+  `compiled_instructions` records the optimizer's text. The tool documentation dspy renders is part
+  of the action instructions.
+- each `main_step` adds `iteration` (the exact `"k/N"` string), `history_len` (how many REPL entries
+  it was shown: this trajectory's turns before it), `messages_sha256` (of the messages the adapter
+  produced), `signature_sha256`, `completion` (the LM's raw content string, exactly as returned),
+  `reasoning_content` (the provider's separate reasoning channel, when it returned one), `usage`
+  (`{model: [usage]}` for this call alone), `attempt`, `run_tag`, and `code_raw` when the code the
+  model wrote differs from dspy's fence-stripped `code`. `signature`, `variables_info`,
+  `max_output_chars`, `adapter` and `adapter_class` appear on a step only when they differ from the
+  setup's (a ChatAdapter that fell back to JSON for one call shows here).
+- `extract`, after the last `main_step`, when the fallback ran: the same per-call fields without
+  `iteration`, plus `outputs`, the parsed output fields as JSON in signature order.
+- `final.extract`: `true` or `false` when the kit captured the run's calls, absent when it could not
+  tell. Before 1.25.0 the only sign of the fallback was dspy's literal `final_reasoning` string.
+
+A turn the capture could not match to its call (checked on `reasoning`) gets none of the per-call
+fields: an absent field can be skipped, a wrong one becomes a training example. Calls are staged per
+retry attempt, and only the attempt whose turns reached the trace is written.
+
+**Exporting.**
+
+```python
+from rlm_harness import export_sft_turns, group_by_run, load_events
+
+records = export_sft_turns(group_by_run(load_events("trace.jsonl")), render="adapter")
+# {run_id, kind: "action"|"extract", turn, adapter,
+#  messages: [system, user],            # dspy's own Adapter.format over the recorded inputs
+#  assistant: {role: "assistant", content},
+#  assistant_source: "completion"|"rendered",
+#  verified: True|False|None,
+#  reasoning_content?, usage?, run_tag?, attempt?}
+```
+
+- `messages` is rebuilt, not stored: the history is this trajectory's earlier `main_step` entries,
+  truncated by `max_output_chars` the way dspy truncates them, which keeps the trace linear in its
+  turn count. **`verified` then checks the result against `messages_sha256`**, so each record says
+  whether it is the request that was sent: `True`, `False`, or `None` when no hash was recorded.
+  `strict=True` raises on `False` instead.
+- `assistant.content` is the raw completion, not rewritten. When a trace has no `completion`, it
+  falls back to the adapter's own formatter over the parsed outputs and says so with
+  `assistant_source: "rendered"`. For JSON that is `json.dumps(..., indent=2)` in signature field
+  order, because dspy's `JSONAdapter.format_finetune_data` raises `NotImplementedError` (dspy 3.4.1:
+  `uv run python -c "import dspy; dspy.JSONAdapter().format_finetune_data(None, [], {}, {})"`).
+  `reasoning_content` stays a separate field. A reasoning model whose content came back empty
+  (the case `_LenientJSONAdapter` promotes) records `completion: null` and its answer in
+  `reasoning_content`, and renders as `"rendered"`.
+- An extract record's `turn` is the number of REPL entries it saw, which is one past the last action
+  turn.
+- **A field type is rebuilt from what an adapter reads off it**: its name, and for a structured type
+  its JSON schema. pydantic will not replay a schema with `$defs` (a model that nests another) through
+  a stand-in type, so pass the real class: `custom_types={"Article": Article}`. Without it the export
+  raises `RenderError` naming the type. A `dspy.Type` that adds its own description text is in the
+  same position, and there the hash is what tells you: the record comes out `verified: False`.
+- `adapter=` takes an adapter instance, needed only for a run formatted by a class outside dspy's
+  json, chat and xml families. The kit never imports a class a trace names.
+- Turns from a trace written before 1.25.0 are skipped, with a warning saying how many. The default
+  `render=None` export is unchanged.
+
+`RLMTask(run_tag="...")` is stamped on `rlm_setup`, every `main_step` and `extract`, for grouping a
+corpus by model, budget or experiment arm. The kit never reads it.
 
 ## Trace utilization metrics
 

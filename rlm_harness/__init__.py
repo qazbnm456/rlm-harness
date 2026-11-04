@@ -88,9 +88,11 @@ from .sub_lm import SubLMValidationError, intercept_sub_lm, model_as_tool
 from .trace import (
     EVENT_API_ROUNDS,
     EVENT_COMPILED_INSTRUCTIONS,
+    EVENT_EXTRACT,
     EVENT_FINAL,
     EVENT_MAIN_STEP,
     EVENT_RESULT,
+    EVENT_RLM_SETUP,
     EVENT_RUN_END,
     EVENT_RUN_START,
     EVENT_SUB_CALL,
@@ -140,6 +142,9 @@ __all__ = [
     "EVENT_RESULT",
     "EVENT_RUN_END",
     "EVENT_API_ROUNDS",
+    # 1.25.0: what each planner call was shown, so a request can be re-rendered exactly
+    "EVENT_RLM_SETUP",
+    "EVENT_EXTRACT",
     # replay + dataset
     "load_timeline",
     "reconstruct",
