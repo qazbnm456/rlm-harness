@@ -568,3 +568,31 @@ def test_rlm_setup_records_the_main_and_sub_lm(tmp_path):
                      {"document": "d", "n": 1}, name="same.jsonl")
     lm = next(e for e in events if e["type"] == EVENT_RLM_SETUP)["payload"]["lm"]
     assert lm["sub_same_as_main"] is True and "sub" not in lm
+
+
+def test_a_secret_nested_under_an_allowlisted_key_is_never_written():
+    from rlm_harness import _dspy_compat
+
+    lm = dspy.LM("openai/teacher", api_key="k", thinking={"budget_tokens": 5, "api_key": "SECRET2"},
+                 stop=["</a>", {"token": "SECRET4"}],
+                 extra_body={"chat_template_kwargs": {"enable_thinking": True, "token": "SECRET3"}})
+    got = _dspy_compat.lm_settings(lm)
+    assert "SECRET" not in json.dumps(got)
+    assert got["kwargs"]["thinking"] == {"budget_tokens": 5}
+    assert got["kwargs"]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": True}}
+    assert "stop" not in got["kwargs"]
+    assert {"thinking.api_key", "extra_body.chat_template_kwargs.token", "stop"} <= set(
+        got["unrecorded_keys"])
+
+
+def test_one_unhashable_input_loses_only_its_own_digest():
+    from rlm_harness.large_text import LargeText
+    from rlm_harness.task import _inputs_sha256
+
+    class Sub(LargeText):
+        pass
+
+    with Sub("abc") as staged, LargeText("abc") as plain:
+        got = _inputs_sha256({"bad": {1: "a", "b": 2}, "staged": staged, "plain": plain})
+    assert "bad" not in got
+    assert got["staged"] == got["plain"]

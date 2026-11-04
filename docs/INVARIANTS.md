@@ -745,7 +745,10 @@ reason is in the rule.
     token under any name (a header inside `extra_body`, say), so a denylist is one unanticipated key
     from a credential in every trace. `_dspy_compat._LM_SETTING_KEYS` names what is recorded; every
     other key is listed by NAME in `unrecorded_keys`, so "not recorded" stays distinguishable from
-    "not set". The test greps the serialised result for the secret value itself.
+    "not set". The allowlist applies at EVERY depth (`_LM_NESTED_KEYS`): the first version kept an
+    allowlisted key's whole value, so a secret nested under `thinking` or
+    `chat_template_kwargs` was written, which an independent review found. The test greps the
+    serialised result for the secret value itself, top level and nested.
   * **The export never imports a class a trace names.** An adapter outside dspy's json/chat/xml
     families, or an output type pydantic cannot replay from its schema (one with `$defs`), is
     supplied by the caller (`adapter=`, `custom_types=`). And one call that cannot be rendered is

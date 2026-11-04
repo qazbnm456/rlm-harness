@@ -338,7 +338,12 @@ def _compose_capture(
         order = [n for n in setup["input_fields"] if n in inputs_sha256]
         order += [n for n in inputs_sha256 if n not in order]
         setup["inputs_sha256"] = {n: inputs_sha256[n] for n in order}
-    lm_block = _lm_block(lms or {})
+    try:
+        lm_block = _lm_block(lms or {})
+    except Exception:
+        # A setting this cannot serialise loses the `lm` block, never the rest of the capture.
+        logger.warning("could not record the LM settings; rlm_setup omits lm", exc_info=True)
+        lm_block = {}
     if lm_block:
         setup["lm"] = lm_block
     if run_tag is not None:
@@ -431,10 +436,19 @@ def _lm_block(lms: dict[str, Any]) -> dict[str, Any]:
 
 
 def _inputs_sha256(inputs: dict[str, Any]) -> dict[str, str]:
-    """``{field: digest}`` over the values as bound; :func:`_compose_capture` orders them."""
+    """``{field: digest}`` over the values as bound; :func:`_compose_capture` orders them.
+
+    Per value: one that cannot be serialised loses its own digest, not every input's.
+    """
     from .prompt_record import input_sha256
 
-    return {name: input_sha256(value) for name, value in inputs.items()}
+    out: dict[str, str] = {}
+    for name, value in inputs.items():
+        try:
+            out[name] = input_sha256(value)
+        except Exception:
+            logger.warning("could not hash input %r; inputs_sha256 omits it", name, exc_info=True)
+    return out
 
 
 def _applied_dspy_settings(sub_lm: Any) -> dict[str, Any]:

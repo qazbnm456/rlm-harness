@@ -889,13 +889,52 @@ _LM_SETTING_KEYS = frozenset({
     "temperature", "top_p", "top_k", "min_p", "n", "seed", "stop",
     "max_tokens", "max_completion_tokens",
     "presence_penalty", "frequency_penalty", "repetition_penalty",
-    "logprobs", "top_logprobs", "rollout_id",
+    "logprobs", "top_logprobs", "rollout_id", "verbosity", "max_output_tokens",
     "reasoning_effort", "reasoning", "thinking",
     *_THINKING_BUDGET_KEYS,
 })
 #: Read inside ``extra_body`` only: server-side knobs vLLM and similar servers take there.
 _LM_EXTRA_BODY_KEYS = _LM_SETTING_KEYS | {"chat_template_kwargs", "enable_thinking",
                                           "include_reasoning"}
+#: The allowlist goes all the way down. A key above whose value is a MAPPING keeps only these
+#: inner keys; anything else inside it is named in ``unrecorded_keys`` like a top-level key, because
+#: an allowlisted name says nothing about what a caller nested under it.
+_LM_NESTED_KEYS: dict[str, frozenset[str]] = {
+    "thinking": frozenset({"type", "budget_tokens"}),
+    "reasoning": frozenset({"effort", "max_tokens", "summary", "enabled", "exclude"}),
+    "chat_template_kwargs": frozenset({"enable_thinking", "thinking", "reasoning_effort",
+                                       *_THINKING_BUDGET_KEYS}),
+}
+
+
+def _setting_value(path: str, key: str, value: Any, unrecorded: list[str]) -> Any:
+    """``value`` with the nested allowlist applied, or ``_DROP`` when nothing of it may be kept."""
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple)):
+        if all(isinstance(v, (str, int, float, bool)) for v in value):
+            return list(value)
+        unrecorded.append(path)
+        return _DROP
+    if isinstance(value, dict):
+        allowed = _LM_NESTED_KEYS.get(key, frozenset())
+        kept = {}
+        for inner, inner_value in value.items():
+            inner_path = f"{path}.{inner}"
+            if inner_value is None:
+                continue
+            if inner not in allowed:
+                unrecorded.append(inner_path)
+                continue
+            got = _setting_value(inner_path, str(inner), inner_value, unrecorded)
+            if got is not _DROP:
+                kept[inner] = got
+        return kept if kept else _DROP
+    unrecorded.append(path)
+    return _DROP
+
+
+_DROP = object()
 
 
 def lm_settings(lm: Any) -> dict[str, Any] | None:
@@ -907,9 +946,12 @@ def lm_settings(lm: Any) -> dict[str, Any] | None:
     ignores a kwarg (``ClaudeAgentLM`` exposes no sampling controls) still reports it.
 
     ``kwargs`` holds only :data:`_LM_SETTING_KEYS` (and :data:`_LM_EXTRA_BODY_KEYS` under
-    ``extra_body``) whose value is not ``None``. ``unrecorded_keys`` names every other key that was
-    set, as ``"api_key"`` or ``"extra_body.foo"``, so a reader can tell "not recorded" from "not
-    set". ``None`` when ``lm`` is ``None``.
+    ``extra_body``) whose value is not ``None``, and the allowlist applies at every depth: inside an
+    allowlisted mapping only :data:`_LM_NESTED_KEYS` survive, and a list survives only when every
+    item is a scalar. ``unrecorded_keys`` names every other key that was set, as ``"api_key"``,
+    ``"extra_body.foo"`` or ``"thinking.foo"``, so a reader can tell "not recorded" from "not set".
+    The ``model`` string is recorded as given, as ``sub_call.model`` already is. ``None`` when
+    ``lm`` is ``None``.
     """
     if lm is None:
         return None
@@ -926,13 +968,17 @@ def lm_settings(lm: Any) -> dict[str, Any] | None:
                 if inner_value is None:
                     continue
                 if inner in _LM_EXTRA_BODY_KEYS:
-                    body[inner] = inner_value
+                    got = _setting_value(f"extra_body.{inner}", inner, inner_value, unrecorded)
+                    if got is not _DROP:
+                        body[inner] = got
                 else:
                     unrecorded.append(f"extra_body.{inner}")
             if body:
                 kept["extra_body"] = body
         elif key in _LM_SETTING_KEYS:
-            kept[key] = value
+            got = _setting_value(key, key, value, unrecorded)
+            if got is not _DROP:
+                kept[key] = got
         else:
             unrecorded.append(key)
     model = getattr(lm, "model", None)

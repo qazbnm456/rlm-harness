@@ -84,16 +84,23 @@ def input_sha256(value: Any) -> str:
 
     The serialisation, which a reader must reproduce to compare:
 
-    * a ``str``: its UTF-8 bytes (lone surrogates passed through), nothing added;
-    * a staged ``LargeText``: the same, over the text it was built from, so it matches the
-      digest the same text gets when passed inline;
+    * a ``str``: its UTF-8 bytes, with ``errors="surrogatepass"`` so a lone surrogate is encoded
+      rather than raising, nothing added;
+    * a staged ``LargeText`` (or a subclass): the same, over the text it was built from, so it
+      matches the digest the same text gets when passed inline;
     * a pydantic model: ``model_dump(mode="json")``, then as below;
     * anything else: the UTF-8 bytes of
-      ``json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)``.
+      ``json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)``, with json's DEFAULT
+      separators (``", "`` and ``": "``), unlike the compact form :func:`messages_sha256` uses.
+
+    A value with no stable JSON form, such as a plain object (its ``str`` holds a memory address) or
+    a ``set``, hashes through ``str`` and may differ between processes, so it will not dedupe. A
+    ``str`` and the JSON text of a non-string can collide (``"2"`` and ``2``).
     """
-    staged = getattr(value, "_sha256", None)
-    if isinstance(staged, str) and type(value).__name__ == "LargeText":
-        return staged
+    from .large_text import LargeText
+
+    if isinstance(value, LargeText):
+        return value._sha256
     if isinstance(value, str):
         return _sha256(value)
     if hasattr(value, "model_dump"):
