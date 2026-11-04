@@ -11,7 +11,7 @@ pitch, the quickstart, and installation: start at the
 | Module | Responsibility |
 |---|---|
 | `config.py` | Single source of truth; `RLMConfig.from_env()`. No dspy import. |
-| `runtime.py` | `configure()`: wires dspy + optional observability once, including auto-routing a `claude-agent-sdk/`-prefixed model string onto `ClaudeAgentLM`. |
+| `runtime.py` | `configure()`: wires dspy + optional observability once, including auto-routing a `claude-agent-sdk/`-prefixed model string onto `ClaudeAgentLM` and an `agy/`-prefixed one onto `AntigravityLM`. |
 | `task.py` | `RLMTask` base class. |
 | `_retry.py` | Validation + retry engine (dspy-free, unit-tested). Mostly private, but `short_error` is public: head-and-tail elision for a caught exception, so a giant `AdapterParseError` (which embeds the whole raw completion) becomes one readable log line instead of thousands. |
 | `sandbox.py` | Interpreter selection + the insecure-sandbox guard. |
@@ -38,9 +38,11 @@ pitch, the quickstart, and installation: start at the
 | `_dspy_compat.py` | Private. Every cross-version dspy difference (kwarg renames, the interpreter seam, the recoverable/terminal error split) resolved by introspection in ONE place. |
 | `rubric.py` | Reward-free rubric primitives: the `Criterion`/`RubricCriteria`/`CriterionFact` types, `rubric_to_meta`/`rubric_from_meta`, `validate_rubric`, and a pure `criteria_facts(criteria, facts, lens)`. `category` is an OPAQUE caller-defined label, the kit imposes no taxonomy. See "Building a consumer". |
 | `claude_agent_lm.py` | `ClaudeAgentLM`: run rlm-harness on a Claude Pro/Max subscription: a `dspy.LM` over the official Claude Agent SDK. `configure()` now auto-routes a `SUBSCRIPTION_PREFIX`-carrying (`"claude-agent-sdk/"`) `main_model`/`sub_model` string onto it, no explicit `main_lm=`/`sub_lm=` wiring needed unless you're overriding it. Opt-in `rlm-harness[subscription]`; pure completions (no tools), lazily exported so `import rlm_harness` stays dspy/SDK-free. |
+| `antigravity_lm.py` | `AntigravityLM`: run rlm-harness on a Google Antigravity sign-in: a `dspy.LM` whose calls run the `agy` CLI. `configure()` auto-routes an `AGY_PREFIX`-carrying (`"agy/"`) model string onto it. No extra: it needs the `agy` binary, found on PATH or at `~/.local/bin/agy`. Pure completions (no tools, none of the user's rules) through an agent it generates; see "Subscription logins". |
 | `examples/mini_run.py` | Minimal end-to-end live run: config + a tiny `RLMTask` through a real `dspy.RLM`, with the trajectory recorded and summarised. |
 | `examples/memory_run.py` | One live run over the whole memory arc: a host seeding `observed` and `said` items, the three tools in a task, `compute_memory_use`, `consolidate_run`, and `purge`. |
 | `examples/claude_agent_lm.py` | Runnable demo of `ClaudeAgentLM`: a tiny `RLMTask` through a real `dspy.RLM` on a subscription login. |
+| `examples/antigravity_lm.py` | The same demo on `AntigravityLM`, through `configure()`'s `agy/` auto-routing. |
 
 ## RLM as Harness Engineering (sub-LM hook + tracing)
 
@@ -1486,7 +1488,7 @@ yourself via `RLMTask(interpreter=...)`, which bypasses `build_interpreter` enti
 A turn-timeout restart replays the shim install, because a fresh sandbox would otherwise lose it
 while the prompt still offered it.
 
-## Subscription logins: this kit's adapter, and dspy's own providers
+## Subscription logins: this kit's adapters, and dspy's own providers
 
 `ClaudeAgentLM` runs a Claude Pro/Max subscription through the official **Claude Agent SDK**, which
 spawns the `claude` CLI per call. Anthropic's support article covers that path explicitly: "You can
@@ -1552,6 +1554,50 @@ needs the real event sequence, which nobody has observed yet: whether the switch
 whether it repeats per call. Recording them is what makes that observable. Until then, the account
 setting is the control.
 
+### Antigravity (`agy`): `AntigravityLM`
+
+`AntigravityLM` runs a call through `agy`, the Google Antigravity CLI, on the account you signed it
+in with. Install the CLI, run `agy` once to sign in, list the model ids your plan offers with
+`agy models`, and either route by model string or build the LM yourself:
+
+```bash
+export RLM_MAIN_MODEL=agy/<id>   # an id from `agy models`
+export RLM_SUB_MODEL=agy/<id>
+```
+
+```python
+from rlm_harness import AntigravityLM, RLMConfig, configure
+
+lm = AntigravityLM("<id>", timeout_s=300)       # or executable="/path/to/agy"
+configure(RLMConfig.from_env(), main_lm=lm, sub_lm=lm)
+```
+
+`agy` is an agent, not a completion endpoint, and it has no flag that removes its tools or its
+system prompt. So each call runs a custom agent the adapter writes into a private directory, with
+`excludeDefaultComponents: true` and no tools, whose body is the call's system prompt verbatim. That
+was measured against `agy` 1.4.12 with a control for each property: the model can read no file, the
+user's `~/.gemini/GEMINI.md` and a workspace `AGENTS.md` stay out, and dspy's system prompt is the
+one the model follows. A schema-constrained call gets `agy`'s `finish` tool and nothing else,
+because that is how `agy` enforces `--json-schema`. The module docstring lists each probe;
+`docs/INVARIANTS.md` lists which of them a change must not undo.
+
+What it does not control:
+
+- **Every call is saved as an Antigravity conversation** under `~/.gemini/antigravity-cli`, about
+  400 KB each with the prompt in it, measured. `agy` has no option to skip that and the adapter
+  does not delete another program's state, so a long run leaves its transcripts there; the
+  response id is the conversation id.
+- **Whose bill it is.** `GEMINI_API_KEY` (with `modelProvider: "gemini"` in `agy`'s settings) bills
+  an API key, and `AGY_ADC_AUTH` bills a Google Cloud project. The constructor refuses while either
+  variable is set, as `ClaudeAgentLM` does for `ANTHROPIC_API_KEY`; `allow_api_key=True` says you
+  meant it.
+- **Whether a workload is within your plan's terms.** Print mode is a documented `agy` feature, but
+  this guide has not read Google's terms for any plan, and the same advice as for `ClaudeAgentLM`
+  applies: individual use, not batch rollouts or eval sweeps. Concurrency is capped at 2 per
+  process, and `agy` does its own rate-limit retries, so the adapter adds none.
+- **Sampling.** `agy` takes no `temperature`, `top_p` or `max_tokens`, so they are ignored. `n=k` is
+  k `agy` calls, and the constructor warns above 1.
+
 
 dspy ships its own subscription providers, and the kit needs no code for them: `configure()` takes a
 pre-built LM verbatim, so they go in through the same seam as any other.
@@ -1613,13 +1659,16 @@ no equivalent one-liner here because its device-code flow is interactive.
 
 ## Timeouts: what bounds what
 
-Six different things can end a stuck run, on three different clocks, and no single one of them
-bounds a run's wall time. This is the whole map; reach for it before adding a seventh.
+Seven different things can end a stuck run, on three different clocks, and no single one of them
+bounds a run's wall time. This is the whole map; reach for it before adding an eighth. (The
+seventh, `AntigravityLM`'s, is `ClaudeAgentLM`'s twin for the other subscription adapter, not a
+new kind of bound.)
 
 | Knob | Env | Default | Bounds | On expiry |
 |---|---|---|---|---|
 | `RLMConfig.request_timeout_s` | `RLM_REQUEST_TIMEOUT` | unset → the provider SDK's own 600s | **one HTTP request attempt** to a litellm-backed LM | `LMTimeoutError`, which dspy classifies as RETRYABLE, so it is retried, not fatal |
 | `ClaudeAgentLM(timeout_s=…)` |: (constructor only) | 600s | **one whole call**, INCLUDING time queued behind the SDK's concurrency semaphore | `TimeoutError` |
+| `AntigravityLM(timeout_s=…)` |: (constructor only) | 600s | **one whole call**, INCLUDING time queued behind its concurrency cap of 2 | `TimeoutError`, after killing the `agy` process group |
 | `RLMConfig.sandbox_turn_timeout_s` | `RLM_SANDBOX_TURN_TIMEOUT` | unset (disabled) | one whole `execute()` (`pyodide`/`deno`) (host-side tool and sub-LM dispatch time INCLUDED, which is why it is off by default | dspy's **recoverable** interpreter error) the model gets another turn |
 | `ContainerConfig.timeout_s` | `RLM_CONTAINER_TIMEOUT` | 120s | one `execute()`'s sandbox compute (`container`; host tool time excluded) | recoverable, same as above |
 | `RLMTask(cancel_event=…)` |, | unset | anything the caller decides | `SandboxCancelled`, **never** retried, never wrapped |
@@ -1635,13 +1684,14 @@ its own `COMPLETION_HTTP_FALLBACK_SECONDS` of 600s, so this field REPLACES that 
 introducing a bound where none existed. A consumer whose turns legitimately run longer must set it
 UP, not leave it alone.
 
-**The two 600s defaults are not the same quantity.** `request_timeout_s` bounds one HTTP request
-with retries around it; `ClaudeAgentLM`'s bounds one whole call including queueing, with nothing
-around it. Which one you get depends on the model string, and `request_timeout_s` deliberately does
-NOT drive the subscription route: under `llm_query_batched`'s thread fan-out, a value that is
-generous per request would make queued sub-LM calls time out from waiting alone. `configure()` warns
-when you set the knob and a role was auto-routed, and
-`configure(main_lm=ClaudeAgentLM(model, timeout_s=…))` is how you choose that number.
+**The 600s defaults are not the same quantity.** `request_timeout_s` bounds one HTTP request
+with retries around it; `ClaudeAgentLM`'s and `AntigravityLM`'s each bound one whole call including
+queueing, with nothing around it. Which one you get depends on the model string, and
+`request_timeout_s` deliberately does NOT drive a subscription route: under `llm_query_batched`'s
+thread fan-out, a value that is generous per request would make queued sub-LM calls time out from
+waiting alone. `configure()` warns when you set the knob and a role was auto-routed, naming the
+adapter it went to, and `configure(main_lm=ClaudeAgentLM(model, timeout_s=…))` (or
+`AntigravityLM(...)`) is how you choose that number.
 
 **A sandbox timeout and a cancel are opposite outcomes, on purpose.** The turn timeout is a
 safety net: it raises the error dspy CATCHES, so the model sees a dead turn and writes different
@@ -2717,6 +2767,13 @@ start while it's set: the Claude Code CLI silently prefers it over subscription 
 installed. Needs the same setup as `ClaudeAgentLM` itself (see the module's own docstring):
 building one by hand via `main_lm=ClaudeAgentLM(...)` still works exactly as before, for anyone who
 wants to pass its other constructor kwargs (`timeout_s`, `cwd`, …) explicitly.
+
+**Antigravity auto-routing** works the same way with `antigravity_lm.AGY_PREFIX`:
+`RLM_MAIN_MODEL=agy/<id>`, where `<id>` is one `agy models` lists for your account, builds an
+`AntigravityLM`. Its own errors replace `ClaudeAgentLM`'s: `FileNotFoundError` when `agy` is
+neither on PATH nor at `~/.local/bin/agy`, and `RuntimeError` while `GEMINI_API_KEY` or
+`AGY_ADC_AUTH` is set. Build one by hand (`main_lm=AntigravityLM(id, timeout_s=…, executable=…)`)
+to choose its deadline or its binary.
 
 **Model names with a custom endpoint.** When `RLM_BASE_URL` is set, `configure` pins
 litellm's `custom_llm_provider="openai"`, so the model names are the **plain id your

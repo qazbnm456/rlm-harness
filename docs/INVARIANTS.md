@@ -143,13 +143,15 @@ reason is in the rule.
   `_dspy_compat.py`, `metrics.py`, `rubric.py`, `_toolname.py`, `atomic.py`, `isolation.py`,
   `memory.py`, `memory_organise.py`, `memory_vectors.py`, `large_text.py` must NOT import `dspy` at module top:
   that keeps their logic testable without dspy. Only `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`,
-  `container_interpreter.py`, `testing.py`, `claude_agent_lm.py` and `memory_tasks.py` touch dspy:
-  the last five live outside the dspy-free set and are lazily imported (by `__getattr__` / by
-  `sandbox.build_interpreter`'s `"container"` branch / inside `testing.py`'s functions), so
-  `sandbox.py`'s module top and `import rlm_harness` stay dspy-free. `claude_agent_lm.py` (optional
+  `container_interpreter.py`, `testing.py`, `claude_agent_lm.py`, `antigravity_lm.py` and
+  `memory_tasks.py` touch dspy: the last six live outside the dspy-free set and are lazily imported
+  (by `__getattr__` / by `sandbox.build_interpreter`'s `"container"` branch / inside `testing.py`'s
+  functions / inside `runtime._maybe_subscription_lm`), so `sandbox.py`'s module top and
+  `import rlm_harness` stay dspy-free. `claude_agent_lm.py` (optional
   `rlm-harness[subscription]`) additionally keeps its `claude-agent-sdk` import out of module top:
   deferred to instance construction, so `rlm_harness.ClaudeAgentLM` is gettable without the extra,
-  like `mcp_tools`.
+  like `mcp_tools`. `antigravity_lm.py` has no extra at all, because what it needs is the `agy`
+  binary rather than a package; it looks for that only when an instance is built.
 
   **`ClaudeAgentLM` is an ENGINE, not a `forward()` subclass, and the suite must stay free of that
   DeprecationWarning.** It was a `dspy.BaseLM` implementing `forward`/`aforward` until 1.17.0, on a
@@ -204,7 +206,34 @@ reason is in the rule.
   for an `n` carried over from a litellm config on the belief this adapter ignores it, which is
   what the docstrings said. When reading this invariant for a NEW dspy behaviour, enumerate what
   `managed` turns on rather than checking the one knob that prompted the question: retries and `n`
-  arrived together and only one was noticed.
+  arrived together and only one was noticed. **Both halves hold for `AntigravityLM` too**, an
+  engine-backed LM since its first release, and its own tests pin each of them the same way.
+- **`AntigravityLM` gets a pure completion out of an AGENT, and four details of how are
+  load-bearing.** `agy` has no flag that removes its tools, its default prompt or the user's
+  rules, so each call runs a custom agent the adapter generates, in a private directory that is
+  the call's working directory. Every one of the four below was measured against a signed-in
+  `agy` 1.4.12 with a control (the module docstring has each probe), and
+  `tests/test_antigravity_lm.py` pins what the adapter hands `agy` for each.
+  1. **`excludeDefaultComponents: true` and `tools: []` stay in the frontmatter.** Together they
+     are what leaves the model no tool (asked to read a file, it had none, where the default
+     agent read it) and none of the user's `~/.gemini/GEMINI.md` or a workspace `AGENTS.md`
+     (the default agent obeyed both). The adapter never passes `--dangerously-skip-permissions`:
+     it exists to approve tools this call must not have.
+  2. **A schema call gets `tools: [finish]`, and its answer is `structured_output`.** `agy`
+     enforces `--json-schema` through a tool named `finish`; without it the schema is IGNORED
+     with a `SUCCESS` status, which is the silent-degradation shape 1.17.0's structured-output
+     regression had. And `response` joins every attempt of the call, rejected JSON included, so a
+     schema call with no `structured_output` raises rather than falling back to it.
+  3. **The prompt goes on stdin as one stream-json event, never in argv.** Linux refuses a
+     single argument over 131,072 bytes, and a planner prompt can be longer.
+  4. **The body of the agent file is the caller's system prompt, verbatim, and nothing else.**
+     `agy` makes the body the system prompt, so a kit-written sentence there would be prompt text
+     the kit never measured (`docs/PROMPT.md`); the sub-LM seat, with no system prompt, gets an
+     empty body.
+
+  What it does not control is said in its docstring and the guide rather than worked around:
+  every call is saved as an Antigravity conversation (about 400 KB each, prompt included), and
+  the adapter does not delete another program's private state.
 - **`import rlm_harness` must not import dspy.** `RLMTask` and `configure` are lazy
   re-exports in `__init__.py` (PEP 562). Don't make them eager.
 - **Resolve custom output types via `output_model`.** `RLMTask._build_rlm` passes

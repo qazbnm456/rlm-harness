@@ -215,6 +215,59 @@ def test_configure_bare_subscription_prefix_raises_value_error_not_system_exit(m
         rt.configure(RLMConfig(main_model="claude-agent-sdk/", sub_model="x", observe=False))
 
 
+class _StubAntigravityLM:
+    """`_StubClaudeAgentLM`'s twin for the `agy/` prefix: routing is tested without an `agy`."""
+
+    calls: list = []
+
+    def __init__(self, model, **kwargs):
+        self.model = f"agy/{model}"
+        type(self).calls.append((model, kwargs))
+
+
+def _stub_antigravity_lm(monkeypatch):
+    import rlm_harness.antigravity_lm as agl
+
+    _StubAntigravityLM.calls = []
+    monkeypatch.setattr(agl, "AntigravityLM", _StubAntigravityLM)
+    return _StubAntigravityLM
+
+
+def test_configure_routes_each_prefix_to_its_own_adapter(monkeypatch):
+    """Both prefixes in one configure, one per role, so a route that sent `agy/` to
+    `ClaudeAgentLM` (or the reverse) cannot pass. Connection settings reach neither."""
+    monkeypatch.setattr(rt, "_try_instrument", lambda: None)
+    claude = _stub_claude_agent_lm(monkeypatch)
+    agy = _stub_antigravity_lm(monkeypatch)
+    rt.configure(RLMConfig(main_model="agy/gemini-x", sub_model="claude-agent-sdk/haiku",
+                           api_key="sk-should-not-leak", observe=False))
+    assert agy.calls == [("gemini-x", {})]
+    assert claude.calls == [("haiku", {})]
+    assert dspy.settings.lm.model == "agy/gemini-x"
+    assert rt.get_sub_lm().model == "claude-agent-sdk/haiku"
+
+
+def test_configure_bare_agy_prefix_raises_value_error(monkeypatch):
+    monkeypatch.setattr(rt, "_try_instrument", lambda: None)
+    _stub_antigravity_lm(monkeypatch)
+    with pytest.raises(ValueError, match=r"expected agy/<id>"):
+        rt.configure(RLMConfig(main_model="agy/", sub_model="x", observe=False))
+
+
+def test_the_timeout_warning_names_the_adapter_the_role_was_routed_to(monkeypatch, caplog):
+    """It said ClaudeAgentLM unconditionally, which for an `agy/` role names a class the caller
+    cannot use to choose the deadline."""
+    monkeypatch.setattr(rt, "_try_instrument", lambda: None)
+    _stub_antigravity_lm(monkeypatch)
+    with caplog.at_level("WARNING", logger="rlm_harness.runtime"):
+        rt.configure(RLMConfig(main_model="agy/gemini-x", sub_model="x", observe=False,
+                               request_timeout_s=45.0))
+    msg = "\n".join(r.getMessage() for r in caplog.records)
+    assert "request_timeout_s" in msg
+    assert "AntigravityLM" in msg
+    assert "ClaudeAgentLM" not in msg
+
+
 def test_configure_plain_model_never_routes(monkeypatch):
     # Regression guard: a plain (non-prefixed) model string is byte-for-byte unaffected by this
     # change. The routing branch is a pure addition to the `is None` path.

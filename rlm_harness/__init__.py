@@ -176,6 +176,9 @@ __all__ = [
     # Claude subscription LM (optional: rlm-harness[subscription])
     "ClaudeAgentLM",
     "SUBSCRIPTION_PREFIX",
+    # Antigravity sign-in LM through the `agy` CLI (no extra: it needs the binary, not a package)
+    "AntigravityLM",
+    "AGY_PREFIX",
     # atomic filesystem write: never a partial file visible mid-write
     "atomic_write_text",
     "atomic_write_stream",
@@ -283,6 +286,10 @@ def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import
         from .claude_agent_lm import SUBSCRIPTION_PREFIX
 
         return SUBSCRIPTION_PREFIX
+    if name in ("AntigravityLM", "AGY_PREFIX"):  # the `agy` LM: imports dspy now, needs `agy` on use
+        from . import antigravity_lm as _antigravity_lm
+
+        return getattr(_antigravity_lm, name)
     if name in _MEMORY_TASK_NAMES:  # the labelling passes: memory_tasks.py imports dspy, so lazily
         from . import memory_tasks as _memory_tasks
 
