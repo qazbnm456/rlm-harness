@@ -733,12 +733,17 @@ reason is in the rule.
     own field. Re-formatting parsed outputs is the fallback for a trace without it, and the record
     says which it used (`assistant_source`).
   * **Capture can thin a trace and can never fail a run.** It is a dspy callback (dspy logs and
-    swallows a raising one) whose composition step is suppressed and logged; the predictor
-    attributes and the budgets it reads go through `_dspy_compat.rlm_predictor_roles` /
-    `rlm_budget_values` / `rlm_user_tools`, never a call site.
+    swallows a raising one) whose composition step is suppressed and logged. The two lookups whose
+    names dspy has already renamed once, where the predictors live and what the budget attributes
+    are called, go through `_dspy_compat.rlm_predictor_roles` / `rlm_budget_values`, and the tool
+    set through `rlm_user_tools`. `prompt_record.py` does read dspy's adapter and REPL types
+    directly (`get_annotation_name`, `serialize_for_json`, `REPLHistory`), because re-rendering IS
+    dspy's formatting; a dspy that changes those shows up as `verified: False`, which is what the
+    hash is for, and in `tests/test_sft_render.py`.
   * **The export never imports a class a trace names.** An adapter outside dspy's json/chat/xml
     families, or an output type pydantic cannot replay from its schema (one with `$defs`), is
-    supplied by the caller (`adapter=`, `custom_types=`). Importing from the trace would execute
+    supplied by the caller (`adapter=`, `custom_types=`). And one call that cannot be rendered is
+    skipped and counted, never a reason to fail the rest of a corpus. Importing from the trace would execute
     whatever a trace file says.
 
   `tests/test_sft_render.py` is the pin, and its reference is a callback of its own at the LM

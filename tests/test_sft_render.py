@@ -337,7 +337,7 @@ def test_the_default_export_is_unchanged_and_old_traces_are_skipped_loudly(tmp_p
     old = [e for e in events if e["type"] not in (EVENT_RLM_SETUP, EVENT_EXTRACT)]
     with caplog.at_level("WARNING", logger="rlm_harness.dataset"):
         assert export_sft_turns(group_by_run(old), render="adapter") == []
-    assert "skipped 2 turn(s)" in caplog.text
+    assert "skipped 2 call(s)" in caplog.text
     with pytest.raises(ValueError, match="render"):
         export_sft_turns(runs, render="chatml")
 
@@ -413,3 +413,91 @@ def test_format_inputs_are_read_from_either_callback_shape():
     assert _bind_format_inputs(positional) == (sig, [], {"a": "x"})
     assert _bind_format_inputs({"args": ("not a signature",), "kwargs": {}}) is None
     assert _bind_format_inputs(None) is None
+
+
+def test_one_unmatched_turn_is_skipped_not_fatal_to_the_corpus(tmp_path, caplog):
+    """A turn the capture left without its fields (here: `history_len` removed, as when the
+    reasoning check fails) must be skipped and counted, while every other call still exports."""
+    lm = _dummy([*_TWO_TURNS_THEN_EXTRACT, {"answer": "42"}], "json")
+    _configure(lm, max_iterations=2)
+    events, requests = _run(tmp_path, _Plain(interpreter=ScriptedInterpreter(["11", "2"])),
+                            {"document": "hello world", "n": 2})
+    first = next(e for e in events if e["type"] == EVENT_MAIN_STEP)
+    del first["payload"]["history_len"]
+
+    with caplog.at_level("WARNING", logger="rlm_harness.dataset"):
+        records = export_sft_turns(group_by_run(events), render="adapter")
+    assert [(r["kind"], r["turn"]) for r in records] == [("action", 1), ("extract", 2)]
+    _assert_parity(records, requests[1:])
+    assert "skipped 1 call(s)" in caplog.text
+
+
+def test_attempts_are_counted_even_without_a_usage_tracker(tmp_path, monkeypatch):
+    """The attempt index used to be `len(attempt_usage)`, which only grows with a tracker: without
+    one every attempt was 0 and a retry's calls overwrote the recorded attempt's."""
+    import contextlib
+
+    from rlm_harness import _dspy_compat
+    from rlm_harness.testing import submit
+
+    @contextlib.contextmanager
+    def no_tracking():
+        yield None
+
+    monkeypatch.setattr(_dspy_compat, "usage_tracking", no_tracking)
+    lm = _dummy([{"reasoning": "bad", "code": "SUBMIT(out='nope')"},
+                 {"reasoning": "good", "code": "SUBMIT(out='{\"title\": \"t\"}')"}], "json")
+    rt.configure(RLMConfig(main_model="x", sub_model="x", interpreter="mock", observe=False,
+                           max_retries=2), main_lm=lm, sub_lm=lm)
+
+    class Strict(BaseModel):
+        title: str
+
+    class _Strict(RLMTask):
+        signature = "document: str -> out: str"
+        output_field = "out"
+        output_model = Strict
+
+    interp = ScriptedInterpreter([submit({"out": "nope"}), submit({"out": '{"title": "t"}'})])
+    events, requests = _run(tmp_path, _Strict(interpreter=interp), {"document": "d"})
+    steps = [e["payload"] for e in events if e["type"] == EVENT_MAIN_STEP]
+    assert [(s["reasoning"], s["attempt"]) for s in steps] == [("good", 1)]
+    assert "usage" not in steps[0]
+    records = export_sft_turns(group_by_run(events), render="adapter")
+    assert records[0]["messages"] == requests[-1] and records[0]["verified"] is True
+
+
+def test_an_empty_completion_is_never_the_training_target(tmp_path):
+    """A reasoning server that puts the whole turn in `reasoning_content` and returns content ""
+    is parsed by the kit's adapter from the reasoning channel. An assistant target of "" would teach
+    an empty reply, so the record falls back to the rendered outputs and says so."""
+    lm = _ReasoningLM([])
+    lm.turns = [({"reasoning": "r", "code": "print(1)"}, None), ({"answer": "a"}, None)]
+    lm._next = lambda: [{"text": "", "reasoning_content": json.dumps(lm.turns.pop(0)[0])}]
+    _configure(lm, max_iterations=1)
+    events, requests = _run(tmp_path, _Plain(interpreter=ScriptedInterpreter(["1"])),
+                            {"document": "d", "n": 1})
+    records = export_sft_turns(group_by_run(events), render="adapter")
+    _assert_parity(records, requests)
+    assert [r["assistant_source"] for r in records] == [SOURCE_RENDERED, SOURCE_RENDERED]
+    assert json.loads(records[0]["assistant"]["content"]) == {"reasoning": "r", "code": "print(1)"}
+    assert json.loads(records[0]["reasoning_content"]) == {"reasoning": "r", "code": "print(1)"}
+
+
+def test_demos_are_written_once_not_on_every_step(tmp_path):
+    lm = _dummy([*_TWO_TURNS_THEN_EXTRACT, {"answer": "42"}], "json")
+    _configure(lm, max_iterations=2)
+
+    class _WithDemos(_Plain):
+        def _build_rlm(self):
+            rlm = super()._build_rlm()
+            rlm.generate_action.demos = [dspy.Example(
+                variables_info="v", repl_history="h", iteration="1/1", reasoning="r", code="c")]
+            return rlm
+
+    events, requests = _run(tmp_path, _WithDemos(interpreter=ScriptedInterpreter(["11", "2"])),
+                            {"document": "hello world", "n": 2})
+    setup = next(e for e in events if e["type"] == EVENT_RLM_SETUP)["payload"]
+    assert len(setup["predictors"]["action"]["demos"]) == 1
+    assert all("demos" not in e["payload"] for e in events if e["type"] == EVENT_MAIN_STEP)
+    _assert_parity(export_sft_turns(group_by_run(events), render="adapter"), requests)

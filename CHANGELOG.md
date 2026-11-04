@@ -21,9 +21,10 @@ All additions are optional payload within `rlm-harness/trace/v2`.
   (instructions, then every field in order with its type facts), so compiled instructions are
   recorded as the text the model saw.
 - **Per-call fields on `main_step`**: `iteration`, `history_len`, `messages_sha256`,
-  `signature_sha256`, `completion` (the raw content string), `reasoning_content`, `usage` for that
-  call alone, `attempt`, `run_tag`, and `code_raw` when the written code differs from dspy's
-  fence-stripped `code`. A value shared with `rlm_setup` is repeated only when it differs.
+  `signature_sha256`, `completion` (the raw content string), `reasoning_content`, `usage` gained
+  while that call was open, `attempt`, `run_tag`, and `code_raw` when the written code differs from
+  dspy's fence-stripped `code`. A value `rlm_setup` already holds (adapter, signature,
+  `variables_info`, `max_output_chars`, demos) is repeated on a step only when it differs.
 - **`extract` event** when the fallback ran, with the same per-call fields and the parsed
   `outputs`; `final.extract` says whether it ran.
 - **`export_sft_turns(render="adapter")`**: one record per action and extract call, its `messages`
@@ -37,9 +38,12 @@ All additions are optional payload within `rlm-harness/trace/v2`.
 
 ### Notes
 
-- A field type with a nested pydantic model (`$defs` in its schema) cannot be replayed from the
-  trace, because pydantic refuses references to definitions it did not generate. Pass the class
-  through `custom_types`; without it the export raises `RenderError` naming the type.
+- A field type whose schema has `$defs` (a pydantic model nesting another, or a container of a
+  model such as `list[Flat]`) cannot be replayed from the trace, because pydantic refuses
+  references to definitions it did not generate. Pass the type through `custom_types` under its
+  recorded annotation name; without it the export raises `RenderError` naming the type.
+- Per-call `usage` is the usage tracker's slice over the call's window, so it also counts another
+  run's calls when a consumer's own tracker spans concurrent runs.
 - The parity tests compare the export with a request captured by an independent callback at the
   LM boundary, across the json and chat adapters, action and extract calls, compiled instructions,
   a retry, and two runs under one recorder.

@@ -96,7 +96,8 @@ EVENT_API_ROUNDS = "api_rounds"
 #: writes it (instructions, then every field in order with its type facts), plus its `sha256`.
 #: Instructions are the ones the call used, so a `compiled_instructions` text is what appears.
 #: Each `main_step` then adds only what varies per call; see `TraceRecorder.record_main_trajectory`.
-#: Absent when no call was captured (no recorder, a dspy whose predictors the kit cannot find, or a
+#: Absent when no call was captured (no recorder, a recorder without the live-timing hooks, a dspy
+#: whose predictors the kit cannot find, a composition error the kit logged and suppressed, or a
 #: trace written before 1.25.0): a reader must not read its absence as "nothing was shown".
 EVENT_RLM_SETUP = "rlm_setup"
 #: The `extract` fallback ran: dspy's one extra call when the iteration budget is spent, which asks
@@ -849,7 +850,9 @@ class TraceRecorder:
         ``iteration`` (the exact ``"k/N"`` string sent), ``history_len`` (REPL entries the call saw,
         which are this trajectory's earlier turns), ``messages_sha256`` (of the messages the adapter
         produced), ``signature_sha256``, ``completion`` (the LM's raw content string),
-        ``reasoning_content``, ``usage`` (``{model: [per-call usage]}`` for this call alone),
+        ``reasoning_content``, ``usage`` (``{model: [usage entries]}`` the tracker gained while this
+        call was open: two entries for a ChatAdapter that fell back to JSON, and also another run's
+        calls when a consumer's own tracker is shared by runs executing concurrently),
         ``attempt``, ``run_tag``, and ``code_raw`` when the model's code differs from the
         fence-stripped ``code``. ``signature``, ``variables_info``, ``max_output_chars``, ``adapter``
         and ``adapter_class`` appear on a turn only when they differ from the setup's. A turn the

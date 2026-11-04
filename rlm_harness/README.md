@@ -2593,7 +2593,9 @@ does a run with no recorder.
   it was shown: this trajectory's turns before it), `messages_sha256` (of the messages the adapter
   produced), `signature_sha256`, `completion` (the LM's raw content string, exactly as returned),
   `reasoning_content` (the provider's separate reasoning channel, when it returned one), `usage`
-  (`{model: [usage]}` for this call alone), `attempt`, `run_tag`, and `code_raw` when the code the
+  (`{model: [usage]}`, what the tracker gained while this call was open: two entries when a
+  ChatAdapter fell back to JSON, and another run's calls too if your own `dspy.track_usage()` spans
+  runs executing concurrently), `attempt`, `run_tag`, and `code_raw` when the code the
   model wrote differs from dspy's fence-stripped `code`. `signature`, `variables_info`,
   `max_output_chars`, `adapter` and `adapter_class` appear on a step only when they differ from the
   setup's (a ChatAdapter that fell back to JSON for one call shows here).
@@ -2631,19 +2633,22 @@ records = export_sft_turns(group_by_run(load_events("trace.jsonl")), render="ada
   order, because dspy's `JSONAdapter.format_finetune_data` raises `NotImplementedError` (dspy 3.4.1:
   `uv run python -c "import dspy; dspy.JSONAdapter().format_finetune_data(None, [], {}, {})"`).
   `reasoning_content` stays a separate field. A reasoning model whose content came back empty
-  (the case `_LenientJSONAdapter` promotes) records `completion: null` and its answer in
-  `reasoning_content`, and renders as `"rendered"`.
+  (`null` or `""`, the case `_LenientJSONAdapter` promotes) records that empty `completion` and its
+  answer in `reasoning_content`; an empty completion is never used as the target, so the record
+  renders as `"rendered"`.
 - An extract record's `turn` is the number of REPL entries it saw, which is one past the last action
   turn.
 - **A field type is rebuilt from what an adapter reads off it**: its name, and for a structured type
-  its JSON schema. pydantic will not replay a schema with `$defs` (a model that nests another) through
-  a stand-in type, so pass the real class: `custom_types={"Article": Article}`. Without it the export
-  raises `RenderError` naming the type. A `dspy.Type` that adds its own description text is in the
+  its JSON schema. pydantic will not replay a schema with `$defs` through a stand-in type: a model
+  that nests another, and also a container of a model such as `list[Flat]`. Pass the real type under
+  the annotation name the trace recorded: `custom_types={"Article": Article}`, or
+  `{"list[Flat]": list[Flat]}`. Without it the export raises `RenderError` naming the type. A `dspy.Type` that adds its own description text is in the
   same position, and there the hash is what tells you: the record comes out `verified: False`.
 - `adapter=` takes an adapter instance, needed only for a run formatted by a class outside dspy's
   json, chat and xml families. The kit never imports a class a trace names.
-- Turns from a trace written before 1.25.0 are skipped, with a warning saying how many. The default
-  `render=None` export is unchanged.
+- A call with nothing to render from is skipped, and a warning says how many: every turn of a trace
+  written before 1.25.0, and a turn the capture could not match to its call. The rest of the run
+  still exports. The default `render=None` export is unchanged.
 
 `RLMTask(run_tag="...")` is stamped on `rlm_setup`, every `main_step` and `extract`, for grouping a
 corpus by model, budget or experiment arm. The kit never reads it.

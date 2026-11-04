@@ -24,9 +24,10 @@ record says whether it is the request that was sent rather than asserting it.
 **Where re-rendering cannot be exact without help, it says so instead of guessing.** A field type
 is rebuilt from what the adapters read off it: its name, and for a structured type its JSON
 schema. pydantic will not replay a schema that carries ``$defs`` (a model nesting another model)
-through a stand-in type, so such a field needs the real class passed as ``custom_types``, and
-without it the record is rendered anyway and comes out ``verified: False``. A
-:class:`dspy.Type` subclass that contributes its own description text is in the same position.
+through a stand-in type, so such a field needs the real type passed as ``custom_types`` under
+its recorded annotation name, and without it the export raises :class:`RenderError` naming it.
+A :class:`dspy.Type` subclass that contributes its own description text is rebuilt without that
+text, and there the hash is what reports it: the record comes out ``verified: False``.
 
 Module top is dspy-free like ``trace.py`` and ``dataset.py``: the capture side runs inside
 ``task.py``, which already imports dspy, and the render side imports it when it is called.
@@ -180,14 +181,17 @@ def _schema_standin(name: str, schema: dict) -> type:
 
     pydantic regenerates the schema around what ``__get_pydantic_json_schema__`` returns, and its
     ``$ref`` bookkeeping refuses references to definitions it did not generate itself, so a schema
-    with ``$defs`` raises here. That case needs the real class through ``custom_types``.
+    with ``$defs`` raises here. That is any model nesting another, and also a container of a model
+    (``list[Flat]``). Such a field needs the real type through ``custom_types``, keyed by the
+    annotation name the trace recorded.
     """
     from pydantic_core import core_schema
 
     if "$defs" in schema:
         raise RenderError(
-            f"the recorded type {name!r} nests other models ($defs), which cannot be replayed from "
-            f"its schema. Pass the real class: custom_types={{{name!r}: <the class>}}."
+            f"the recorded type {name!r} has a schema with $defs (it is or contains a pydantic "
+            f"model that references another), which cannot be replayed from the schema. Pass the "
+            f"real type under that exact name: custom_types={{{name!r}: <the type>}}."
         )
     frozen = json.dumps(schema)
 
@@ -316,12 +320,16 @@ def render_steps(
 ) -> tuple[list[dict], int]:
     """Re-render every recorded action and extract call in one run's events.
 
-    Returns ``(records, skipped)``: one record per call in a segment that has an ``rlm_setup``, and
-    the number of ``main_step`` events that had none to render against (a trace written before
-    1.25.0). See ``dataset.export_sft_turns`` for the record shape.
+    Returns ``(records, skipped)``: one record per call that carries its per-call fields, and the
+    number of calls that could not be rendered for lack of them. That count covers ``main_step``
+    events with no ``rlm_setup`` before them (a trace written before 1.25.0) and steps inside a
+    segment that the capture left without fields (a turn whose ``reasoning`` did not match its call,
+    or an adapter whose ``format`` arguments the capture could not read). One such step does not
+    stop the rest of the run, or the corpus, from exporting. See ``dataset.export_sft_turns``.
     """
     records: list[dict] = []
     covered = 0
+    unrenderable = 0
     for seg in _segments(events):
         setup = seg["setup"]
         covered += len(seg["steps"])
@@ -330,10 +338,13 @@ def render_steps(
             [(ROLE_ACTION, p) for p in seg["steps"]]
             + ([(ROLE_EXTRACT, seg["extract"])] if seg["extract"] else [])
         ):
+            if not isinstance(payload.get("history_len"), int):
+                unrenderable += 1   # the capture left this call without its fields: skip, count
+                continue
             records.append(_render_one(role, payload, seg, predictors, setup,
                                        custom_types or {}, adapter))
     total = sum(1 for e in events if e.get("type") == "main_step")
-    return records, total - covered
+    return records, total - covered + unrenderable
 
 
 def _render_one(role: str, p: dict, seg: dict, predictors: dict, setup: dict,
@@ -345,9 +356,7 @@ def _render_one(role: str, p: dict, seg: dict, predictors: dict, setup: dict,
     identity = {k: p.get(k, setup.get(k)) for k in ("adapter", "adapter_class")}
     fmt = adapter if adapter is not None else build_adapter(identity)
 
-    length = p.get("history_len")
-    if not isinstance(length, int):
-        raise RenderError(f"a recorded {role} step carries no history_len")
+    length = p["history_len"]
     inputs: dict[str, Any] = {
         "variables_info": p.get("variables_info", setup.get("variables_info")),
         "repl_history": _history(seg["steps"], length,
@@ -366,7 +375,10 @@ def _render_one(role: str, p: dict, seg: dict, predictors: dict, setup: dict,
         "messages": messages,
         "verified": None if recorded is None else messages_sha256(messages) == recorded,
     }
-    if "completion" in p and isinstance(p["completion"], str):
+    # An EMPTY completion is not used as the target. A reasoning server can return its whole turn
+    # in `reasoning_content` with content `""` or null; `_LenientJSONAdapter` then parsed the
+    # reasoning channel as the answer, and an assistant target of `""` would teach an empty reply.
+    if isinstance(p.get("completion"), str) and p["completion"] != "":
         content, source = p["completion"], SOURCE_COMPLETION
     else:
         outputs = (

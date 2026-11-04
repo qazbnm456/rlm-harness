@@ -360,7 +360,9 @@ def _compose_capture(
             if chars is not None and chars != setup["max_output_chars"]:
                 out["max_output_chars"] = chars
             if demos:
-                out["demos"] = _demos_as_json(demos)
+                as_json = _demos_as_json(demos)
+                if as_json != predictors.get(role, {}).get("demos"):
+                    out["demos"] = as_json
         if "messages_sha256" in call:
             out["messages_sha256"] = call["messages_sha256"]
         if "completion" in call:
@@ -1193,6 +1195,10 @@ class RLMTask:
         # turns would be a confidently wrong training record.
         attempt_calls: dict[int, list[dict[str, Any]]] = {}
         roles = _dspy_compat.rlm_predictor_roles(rlm)
+        # The attempt counter, kept apart from `attempt_usage`: that list grows only when a usage
+        # tracker exists, so indexing by its length gave EVERY attempt index 0 on a dspy without
+        # usage tracking, and a later attempt's calls overwrote the recorded one's.
+        attempts_started = [0]
 
         async def runner() -> Any:
             # Capture each turn's LIVE timestamp as dspy parses it, so the post-hoc
@@ -1201,7 +1207,8 @@ class RLMTask:
             recorder = current_recorder()
             if recorder is not None and hasattr(recorder, "begin_main_capture"):
                 recorder.begin_main_capture()
-            index = len(attempt_usage)
+            index = attempts_started[0]
+            attempts_started[0] += 1
             baseline = _dspy_compat.usage_baseline(tracker) if tracker is not None else {}
             capture = _StepCapture(roles, tracker) if recorder is not None and roles else None
             if capture is not None:
