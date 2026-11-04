@@ -276,7 +276,8 @@ def _demos_as_json(demos: Sequence[Any]) -> list[dict[str, Any]]:
 
 def _compose_capture(
     rlm: Any, calls: list[dict[str, Any]], trajectory: Sequence[Any], *, attempt: int,
-    run_tag: str | None,
+    run_tag: str | None, inputs_sha256: dict[str, str] | None = None,
+    lms: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """One attempt's captured calls as trace payloads: ``rlm_setup``, per-turn fields, the extract.
 
@@ -332,6 +333,14 @@ def _compose_capture(
         "predictors": predictors,
         "attempt": attempt,
     }
+    if inputs_sha256:
+        # In the task signature's input order, like `input_fields`.
+        order = [n for n in setup["input_fields"] if n in inputs_sha256]
+        order += [n for n in inputs_sha256 if n not in order]
+        setup["inputs_sha256"] = {n: inputs_sha256[n] for n in order}
+    lm_block = _lm_block(lms or {})
+    if lm_block:
+        setup["lm"] = lm_block
     if run_tag is not None:
         setup["run_tag"] = run_tag
 
@@ -399,6 +408,33 @@ def _compose_capture(
         extract["outputs"] = outputs_as_json(sig, extract_call["prediction"])
     return {"setup": setup, "steps": steps, "extract": extract,
             "extract_ran": extract_call is not None}
+
+
+def _lm_block(lms: dict[str, Any]) -> dict[str, Any]:
+    """``rlm_setup.lm``: the main LM's settings, and the sub-LM's when they differ.
+
+    ``sub_same_as_main`` says which, so an absent ``sub`` is never ambiguous between "identical"
+    and "could not be read".
+    """
+    main = _dspy_compat.lm_settings(lms.get("main"))
+    sub = _dspy_compat.lm_settings(lms.get("sub"))
+    out: dict[str, Any] = {}
+    if main is not None:
+        out["main"] = main
+    if sub is not None:
+        if sub == main:
+            out["sub_same_as_main"] = True
+        else:
+            out["sub"] = sub
+            out["sub_same_as_main"] = False
+    return out
+
+
+def _inputs_sha256(inputs: dict[str, Any]) -> dict[str, str]:
+    """``{field: digest}`` over the values as bound; :func:`_compose_capture` orders them."""
+    from .prompt_record import input_sha256
+
+    return {name: input_sha256(value) for name, value in inputs.items()}
 
 
 def _applied_dspy_settings(sub_lm: Any) -> dict[str, Any]:
@@ -1144,6 +1180,16 @@ class RLMTask:
         # dspy a `LargeText` it would try to serialise.
         from .large_text import stage_inputs
 
+        # Hashed BEFORE staging, while each value is still the caller's: a staged `LargeText` is
+        # replaced by its sandbox path below, and the digest must be of the text, not the path.
+        # Suppressed: a value this cannot serialise loses its digest, never the run.
+        bound_digests: dict[str, str] | None = None
+        if current_recorder() is not None:
+            try:
+                bound_digests = _inputs_sha256(inputs)
+            except Exception:
+                logger.warning("could not hash the task inputs; rlm_setup omits inputs_sha256",
+                               exc_info=True)
         inputs, self._staged = stage_inputs(inputs)
         rlm = self._build_rlm()
         # Two wrappers, and the ORDER is load-bearing.
@@ -1246,8 +1292,11 @@ class RLMTask:
                 return None
             try:
                 trajectory = getattr(captured["prediction"], "trajectory", None) or []
-                return _compose_capture(rlm, calls, list(trajectory), attempt=index,
-                                        run_tag=self._run_tag)
+                return _compose_capture(
+                    rlm, calls, list(trajectory), attempt=index, run_tag=self._run_tag,
+                    inputs_sha256=bound_digests,
+                    lms={"main": dspy.settings.lm, "sub": self._sub_lm},
+                )
             except Exception:
                 logger.warning("could not compose the step capture; the trace keeps turns only",
                                exc_info=True)

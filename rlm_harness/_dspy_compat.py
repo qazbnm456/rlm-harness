@@ -38,6 +38,7 @@ import contextlib
 import copy
 import dataclasses
 import inspect
+import json
 from collections.abc import Mapping
 from functools import lru_cache
 from typing import Any
@@ -878,6 +879,68 @@ def applied_thinking_budget(lm: Any) -> dict[str, Any] | None:
                 if found is not None:
                     return {"value": found, "key": f"{prefix}{outer}.{inner}"}
     return None
+
+
+#: The ``lm.kwargs`` keys :func:`lm_settings` RECORDS, at the top level and inside ``extra_body``.
+#: An ALLOWLIST, never a denylist: ``lm.kwargs`` carries ``api_key`` for every LM the kit builds,
+#: and a passthrough dict can carry headers, a base URL or a token under any name. A key outside
+#: this list is still SENT; it is only listed by NAME in ``unrecorded_keys``, never by value.
+_LM_SETTING_KEYS = frozenset({
+    "temperature", "top_p", "top_k", "min_p", "n", "seed", "stop",
+    "max_tokens", "max_completion_tokens",
+    "presence_penalty", "frequency_penalty", "repetition_penalty",
+    "logprobs", "top_logprobs", "rollout_id",
+    "reasoning_effort", "reasoning", "thinking",
+    *_THINKING_BUDGET_KEYS,
+})
+#: Read inside ``extra_body`` only: server-side knobs vLLM and similar servers take there.
+_LM_EXTRA_BODY_KEYS = _LM_SETTING_KEYS | {"chat_template_kwargs", "enable_thinking",
+                                          "include_reasoning"}
+
+
+def lm_settings(lm: Any) -> dict[str, Any] | None:
+    """``{"model", "kwargs", "unrecorded_keys"}``: which model and sampling settings ``lm`` CARRIES.
+
+    For ``rlm_setup.lm``, so a corpus sampled from one teacher at several temperatures or budgets
+    says which setting produced each trace. Read off the LM, never from ``RLMConfig``, for the
+    reason :func:`applied_lm_budget` gives, and "carries" means what it means there: an LM that
+    ignores a kwarg (``ClaudeAgentLM`` exposes no sampling controls) still reports it.
+
+    ``kwargs`` holds only :data:`_LM_SETTING_KEYS` (and :data:`_LM_EXTRA_BODY_KEYS` under
+    ``extra_body``) whose value is not ``None``. ``unrecorded_keys`` names every other key that was
+    set, as ``"api_key"`` or ``"extra_body.foo"``, so a reader can tell "not recorded" from "not
+    set". ``None`` when ``lm`` is ``None``.
+    """
+    if lm is None:
+        return None
+    raw = getattr(lm, "kwargs", None)
+    raw = raw if isinstance(raw, dict) else {}
+    kept: dict[str, Any] = {}
+    unrecorded: list[str] = []
+    for key, value in raw.items():
+        if value is None:
+            continue
+        if key == "extra_body" and isinstance(value, dict):
+            body = {}
+            for inner, inner_value in value.items():
+                if inner_value is None:
+                    continue
+                if inner in _LM_EXTRA_BODY_KEYS:
+                    body[inner] = inner_value
+                else:
+                    unrecorded.append(f"extra_body.{inner}")
+            if body:
+                kept["extra_body"] = body
+        elif key in _LM_SETTING_KEYS:
+            kept[key] = value
+        else:
+            unrecorded.append(key)
+    model = getattr(lm, "model", None)
+    return {
+        "model": None if model is None else str(model),
+        "kwargs": json.loads(json.dumps(kept, ensure_ascii=False, default=str)),
+        "unrecorded_keys": sorted(unrecorded),
+    }
 
 
 def lm_cache_is_live(lm: Any) -> bool:

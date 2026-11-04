@@ -2582,7 +2582,16 @@ does a run with no recorder.
   `chat`, `xml`, or a class name) and `adapter_class`; `dspy`, the running version;
   `max_iterations`, `max_llm_calls` and `max_output_chars`, read back off the built program rather
   than from `RLMConfig`; `variables_info`, the strings exactly as the model saw them (name, type,
-  total length, preview); `input_fields` and `output_fields`; `tools`, each with the `name`, `desc`
+  total length, preview); `input_fields` and `output_fields`; `inputs_sha256`, one sha256 per input
+  over its FULL value as bound, before any preview (a `str` and a staged `LargeText` hash their UTF-8
+  text, a pydantic model its `model_dump(mode="json")`, anything else
+  `json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)`), for dedupe and for checking a
+  corpus against an evaluation set; `lm`, the `main` LM's `model`, its sampling `kwargs` and the
+  names of any `unrecorded_keys`, plus the `sub` LM's when `sub_same_as_main` is false (kwargs are an
+  ALLOWLIST: temperature, top_p, max_tokens, n, seed, reasoning effort and thinking budgets, and the
+  same under `extra_body`, so `api_key`, a base URL or a header is never written, only named; and like
+  `budgets` it is what the LM carries, which an LM that ignores a kwarg still reports);
+  `tools`, each with the `name`, `desc`
   and `args` dspy documents to the model; `attempt`; `run_tag` when set; and `predictors.action` and
   `predictors.extract`: each signature's `instructions` and its `fields` in order (`name`, `io`,
   `type`, the type facts an adapter reads, and `extra` holding `desc`/`prefix`/`constraints`), plus

@@ -501,3 +501,70 @@ def test_demos_are_written_once_not_on_every_step(tmp_path):
     assert len(setup["predictors"]["action"]["demos"]) == 1
     assert all("demos" not in e["payload"] for e in events if e["type"] == EVENT_MAIN_STEP)
     _assert_parity(export_sft_turns(group_by_run(events), render="adapter"), requests)
+
+
+def test_inputs_sha256_hashes_the_full_bound_values_in_signature_order(tmp_path):
+    import hashlib
+
+    lm = _dummy([*_TWO_TURNS_THEN_EXTRACT, {"answer": "42"}], "json")
+    _configure(lm, max_iterations=2)
+    long_doc = "長文 " * 5000                      # far past dspy's 1000-char preview
+    events, _ = _run(tmp_path, _Plain(interpreter=ScriptedInterpreter(["11", "2"])),
+                     {"n": 2, "document": long_doc})
+    setup = next(e for e in events if e["type"] == EVENT_RLM_SETUP)["payload"]
+    assert list(setup["inputs_sha256"]) == ["document", "n"]      # signature order, not call order
+    assert setup["inputs_sha256"]["document"] == hashlib.sha256(long_doc.encode()).hexdigest()
+    assert setup["inputs_sha256"]["n"] == hashlib.sha256(b"2").hexdigest()
+
+
+def test_input_sha256_serialisation_is_the_documented_one():
+    import hashlib
+
+    from rlm_harness.large_text import LargeText
+    from rlm_harness.prompt_record import input_sha256
+
+    text = "line one\nline two 中文"
+    with LargeText(text) as staged:
+        assert input_sha256(staged) == input_sha256(text) == hashlib.sha256(
+            text.encode()).hexdigest()
+    value = {"b": [1, 2], "a": "é"}
+    expected = hashlib.sha256(
+        json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    assert input_sha256(value) == expected
+    assert input_sha256(Inner(x=1)) == hashlib.sha256(b'{"x": 1}').hexdigest()
+
+
+def test_lm_settings_record_sampling_and_never_a_secret():
+    from rlm_harness import _dspy_compat
+
+    lm = dspy.LM("openai/teacher", api_key="sk-SECRET-123", api_base="http://internal:8000",
+                 temperature=0.7, top_p=0.9, max_tokens=512,
+                 extra_body={"chat_template_kwargs": {"enable_thinking": True},
+                             "x_auth": "sk-SECRET-123"})
+    got = _dspy_compat.lm_settings(lm)
+    assert got["model"] == "openai/teacher"
+    assert got["kwargs"]["temperature"] == 0.7 and got["kwargs"]["top_p"] == 0.9
+    assert got["kwargs"]["max_tokens"] == 512
+    assert got["kwargs"]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": True}}
+    assert {"api_key", "api_base", "extra_body.x_auth"} <= set(got["unrecorded_keys"])
+    serialised = json.dumps(got)
+    assert "SECRET" not in serialised and "internal:8000" not in serialised
+
+
+def test_rlm_setup_records_the_main_and_sub_lm(tmp_path):
+    main = _dummy([*_TWO_TURNS_THEN_EXTRACT, {"answer": "42"}], "json")
+    _configure(main, max_iterations=2)
+    sub = DummyLM([], adapter=dspy.JSONAdapter())
+    sub.kwargs["temperature"] = 0.2
+    events, _ = _run(tmp_path, _Plain(interpreter=ScriptedInterpreter(["11", "2"]), sub_lm=sub),
+                     {"document": "d", "n": 1})
+    lm = next(e for e in events if e["type"] == EVENT_RLM_SETUP)["payload"]["lm"]
+    assert lm["main"]["model"] == "dummy"
+    assert lm["sub_same_as_main"] is False and lm["sub"]["kwargs"]["temperature"] == 0.2
+
+    same = _dummy([*_TWO_TURNS_THEN_EXTRACT, {"answer": "42"}], "json")
+    _configure(same, max_iterations=2)
+    events, _ = _run(tmp_path, _Plain(interpreter=ScriptedInterpreter(["11", "2"])),
+                     {"document": "d", "n": 1}, name="same.jsonl")
+    lm = next(e for e in events if e["type"] == EVENT_RLM_SETUP)["payload"]["lm"]
+    assert lm["sub_same_as_main"] is True and "sub" not in lm

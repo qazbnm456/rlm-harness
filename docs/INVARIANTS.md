@@ -740,6 +740,12 @@ reason is in the rule.
     directly (`get_annotation_name`, `serialize_for_json`, `REPLHistory`), because re-rendering IS
     dspy's formatting; a dspy that changes those shows up as `verified: False`, which is what the
     hash is for, and in `tests/test_sft_render.py`.
+  * **`rlm_setup.lm` is an ALLOWLIST of `lm.kwargs`, never a dump with secrets removed.**
+    `lm.kwargs` carries `api_key` for every LM the kit builds, and a caller's passthrough can put a
+    token under any name (a header inside `extra_body`, say), so a denylist is one unanticipated key
+    from a credential in every trace. `_dspy_compat._LM_SETTING_KEYS` names what is recorded; every
+    other key is listed by NAME in `unrecorded_keys`, so "not recorded" stays distinguishable from
+    "not set". The test greps the serialised result for the secret value itself.
   * **The export never imports a class a trace names.** An adapter outside dspy's json/chat/xml
     families, or an output type pydantic cannot replay from its schema (one with `$defs`), is
     supplied by the caller (`adapter=`, `custom_types=`). And one call that cannot be rendered is

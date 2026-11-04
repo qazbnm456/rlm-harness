@@ -17,7 +17,10 @@ All additions are optional payload within `rlm-harness/trace/v2`.
 
 - **`rlm_setup` event**, once per recorded trajectory: the adapter and its class, the running dspy
   version, the budgets read back off the built program, `variables_info` exactly as shown, the
-  task's input and output field names, the documented tools, and both predictors' signatures
+  task's input and output field names, `inputs_sha256` (one digest per input over its full bound
+  value, for dedupe and evaluation-set decontamination), `lm` (the main and sub LM's model and
+  allowlisted sampling settings; secrets are never written, only the names of unrecorded keys), the
+  documented tools, and both predictors' signatures
   (instructions, then every field in order with its type facts), so compiled instructions are
   recorded as the text the model saw.
 - **Per-call fields on `main_step`**: `iteration`, `history_len`, `messages_sha256`,

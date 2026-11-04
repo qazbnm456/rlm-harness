@@ -75,6 +75,32 @@ def spec_sha256(spec: Mapping[str, Any]) -> str:
     return _sha256(_canonical(spec))
 
 
+def input_sha256(value: Any) -> str:
+    """The digest ``rlm_setup.inputs_sha256`` records for one task input, over its FULL value.
+
+    Taken from the value as the caller bound it, before dspy builds the preview the model sees, so
+    two runs over the same input carry the same digest however long it is. That is what a corpus
+    needs for dedupe, and for checking a run's inputs against an evaluation set it must not train on.
+
+    The serialisation, which a reader must reproduce to compare:
+
+    * a ``str``: its UTF-8 bytes (lone surrogates passed through), nothing added;
+    * a staged ``LargeText``: the same, over the text it was built from, so it matches the
+      digest the same text gets when passed inline;
+    * a pydantic model: ``model_dump(mode="json")``, then as below;
+    * anything else: the UTF-8 bytes of
+      ``json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)``.
+    """
+    staged = getattr(value, "_sha256", None)
+    if isinstance(staged, str) and type(value).__name__ == "LargeText":
+        return staged
+    if isinstance(value, str):
+        return _sha256(value)
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    return _sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str))
+
+
 def _json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 

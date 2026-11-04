@@ -91,7 +91,10 @@ EVENT_API_ROUNDS = "api_rounds"
 #: adapter (`adapter`: `json`/`chat`/`xml` or a class name, plus `adapter_class`), the running
 #: `dspy` version, the budgets read back off the built program (`max_iterations`, `max_llm_calls`,
 #: `max_output_chars`), the `variables_info` strings exactly as passed to the model, the task's
-#: `input_fields`/`output_fields`, the `tools` dspy documents (`name`, `desc`, `args`), and
+#: `input_fields`/`output_fields`, `inputs_sha256` (each input's FULL bound value, see
+#: `prompt_record.input_sha256`), `lm` (`main` and, unless `sub_same_as_main`, `sub`: model plus
+#: allowlisted sampling kwargs, see `_dspy_compat.lm_settings`), the `tools` dspy documents (`name`,
+#: `desc`, `args`), and
 #: `predictors.action` / `predictors.extract`: each signature as `prompt_record.describe_signature`
 #: writes it (instructions, then every field in order with its type facts), plus its `sha256`.
 #: Instructions are the ones the call used, so a `compiled_instructions` text is what appears.
