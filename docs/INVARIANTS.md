@@ -708,56 +708,18 @@ reason is in the rule.
   Re-audit it the same way next time rather than inheriting the conclusion; "no consumer validates
   the version" is a measurement with a date on it, and the first release that asserted it without
   measuring got the cost of a bump backwards.
-- **An SFT example's input is the request the adapter SENT, and the trace keeps what rebuilds it.**
-  A consumer's converter read `main_step`'s `{reasoning, code, output}` and rendered its own
-  multi-turn chat from them, while dspy sends each planner turn as ONE single-turn request
-  formatted by the configured adapter, and expects JSON back under the default `json` adapter. The
-  model was trained on a format it is never served, and nothing in the trace could have told the
-  converter so: the prompt was not recorded, and the `extract` fallback call left no record at all
-  (CHANGELOG 1.25.0). The rules the fix encodes:
+- **An SFT example's input is the request the adapter SENT, and the trace keeps what rebuilds it.** A consumer's converter read `main_step`'s `{reasoning, code, output}` and rendered its own multi-turn chat, while dspy sends each planner turn as one single-turn request formatted by the configured adapter and, under the default `json` adapter, expects JSON back. The model was trained on a format it is never served, and the trace could not have warned the converter: the prompt was not recorded, and the `extract` fallback call left no record (CHANGELOG 1.25.0). The rules:
 
-  * **Record the INPUTS to `Adapter.format`, not its output.** Signature, demos and per-call values
-    go in once per trajectory (`rlm_setup`) plus what varies per call; the REPL history is rebuilt
-    from the trajectory's own earlier turns. Storing the rendered messages would grow every trace
-    with the square of its turn count, which is what made "store the prompt" look unaffordable.
-  * **Hash what was sent, and check every re-render against it.** `messages_sha256` is taken from
-    the adapter's own output inside the call, and `export_sft_turns(render="adapter")` sets
-    `verified` per record. A re-render nobody checks is a claim, and the two places it can silently
-    drift, a type rebuilt from its schema and a dspy that changes how it formats, are exactly the
-    places a test on today's dspy cannot see.
-  * **An absent field over a wrong one.** Per-call fields attach to a turn only after its
-    `reasoning` matches the captured call's; calls are staged PER ATTEMPT and only the attempt whose
-    turns reached the trace is written (the same last-writer-wins rule `run_end.usage` documents). A
-    prompt beside another attempt's answer is a confident training error.
-  * **The assistant side is the raw completion, verbatim**, with `reasoning_content` kept as its
-    own field. Re-formatting parsed outputs is the fallback for a trace without it, and the record
-    says which it used (`assistant_source`).
-  * **Capture can thin a trace and can never fail a run.** It is a dspy callback (dspy logs and
-    swallows a raising one) whose composition step is suppressed and logged. The two lookups whose
-    names dspy has already renamed once, where the predictors live and what the budget attributes
-    are called, go through `_dspy_compat.rlm_predictor_roles` / `rlm_budget_values`, and the tool
-    set through `rlm_user_tools`. `prompt_record.py` does read dspy's adapter and REPL types
-    directly (`get_annotation_name`, `serialize_for_json`, `REPLHistory`), because re-rendering IS
-    dspy's formatting; a dspy that changes those shows up as `verified: False`, which is what the
-    hash is for, and in `tests/test_sft_render.py`.
-  * **`rlm_setup.lm` is an ALLOWLIST of `lm.kwargs`, never a dump with secrets removed.**
-    `lm.kwargs` carries `api_key` for every LM the kit builds, and a caller's passthrough can put a
-    token under any name (a header inside `extra_body`, say), so a denylist is one unanticipated key
-    from a credential in every trace. `_dspy_compat._LM_SETTING_KEYS` names what is recorded; every
-    other key is listed by NAME in `unrecorded_keys`, so "not recorded" stays distinguishable from
-    "not set". The allowlist applies at EVERY depth (`_LM_NESTED_KEYS`): the first version kept an
-    allowlisted key's whole value, so a secret nested under `thinking` or
-    `chat_template_kwargs` was written, which an independent review found. The test greps the
-    serialised result for the secret value itself, top level and nested.
-  * **The export never imports a class a trace names.** An adapter outside dspy's json/chat/xml
-    families, or an output type pydantic cannot replay from its schema (one with `$defs`), is
-    supplied by the caller (`adapter=`, `custom_types=`). And one call that cannot be rendered is
-    skipped and counted, never a reason to fail the rest of a corpus. Importing from the trace would execute
-    whatever a trace file says.
+  * **Record the inputs to `Adapter.format`, not its output.** Signature and shared values go into `rlm_setup` once per trajectory, each call adds only what varies, and the REPL history is rebuilt from the trajectory's own earlier turns. Storing the rendered messages would grow a trace with the square of its turn count.
+  * **Hash what was sent, and check every re-render against it.** `messages_sha256` is taken from the adapter's output inside the call, and `export_sft_turns(render="adapter")` sets `verified` on each record. The two ways a re-render can drift silently, a type rebuilt from its schema and a dspy that formats differently, are invisible to a test run on today's dspy.
+  * **Prefer a missing field to a wrong one.** Per-call fields attach to a turn only when its `reasoning` matches the captured call. Calls are staged per attempt, and only the attempt whose turns reached the trace is written, the same last-writer-wins rule `run_end.usage` documents. A prompt beside another attempt's answer is a training error nobody will notice.
+  * **The assistant side is the raw completion, verbatim**, with `reasoning_content` as its own field. Formatting the parsed outputs is the fallback when the completion is missing or empty, and `assistant_source` says which was used.
+  * **Capture can thin a trace and can never fail a run.** It is a dspy callback (dspy logs and swallows one that raises), and the step that composes its payloads is suppressed and logged. The lookups dspy has renamed before, where the predictors live and what the budget attributes are called, go through `_dspy_compat.rlm_predictor_roles` and `rlm_budget_values`, and the tool set through `rlm_user_tools`. `prompt_record.py` reads dspy's adapter and REPL types directly (`get_annotation_name`, `serialize_for_json`, `REPLHistory`) because re-rendering is dspy's formatting; a dspy that changes them shows up as `verified: False` and in `tests/test_sft_render.py`.
+  * **`rlm_setup.lm` is an allowlist of `lm.kwargs`, never a dump with secrets removed.** `lm.kwargs` carries `api_key` for every LM the kit builds, and a caller's passthrough can hold a token under any name, so a denylist is one unexpected key away from a credential in every trace. `_dspy_compat._LM_SETTING_KEYS` names what is recorded, and every other key is listed by name in `unrecorded_keys`, so "not recorded" stays distinct from "not set". The allowlist must apply at every depth (`_LM_NESTED_KEYS`): an allowlisted name such as `thinking` or `chat_template_kwargs` says nothing about what a caller nested under it, and copying its whole value once wrote a nested secret into the trace. The test searches the serialised result for the secret value itself, at the top level and nested.
+  * **The export never imports a class named in a trace**, because that would execute whatever a trace file says. An adapter outside dspy's json, chat and xml families, or an output type pydantic cannot rebuild from its schema (one with `$defs`), comes from the caller through `adapter=` or `custom_types=`.
+  * **One call that cannot be rendered is skipped and counted**, never a reason to fail the rest of a corpus.
 
-  `tests/test_sft_render.py` is the pin, and its reference is a callback of its own at the LM
-  boundary, never the kit's capture: a test comparing the export to the kit's own record passes for
-  a capture and a render that are wrong the same way.
+  `tests/test_sft_render.py` is the pin. Its reference is its own callback at the LM boundary, never the kit's capture, because a test comparing the export with the kit's own record passes when capture and render are wrong in the same way.
 - **rlm-harness produces TRAJECTORIES, never reward.** The kit runs the RLM, records the trace,
   and turns traces into datasets (`export_sft_turns` / `export_rl` / `export_actions`). It does
   NOT score them: `export_rl` and `export_actions` carry a `reward=` HOOK the downstream trainer

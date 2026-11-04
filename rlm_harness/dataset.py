@@ -317,14 +317,14 @@ def export_sft_turns(
 
     **Default (``render=None``): format-agnostic, unchanged since before 1.25.0.** Each record is
     ``{run_id, turn, input: {initial, history}, output: {reasoning, code}}``. The trainer renders
-    ``initial + history`` into its chat template and masks the loss to ``output`` only. Note that
-    dspy does NOT send a turn as a multi-turn chat: each turn is one single-turn request, so a
-    template of the trainer's own choosing is a different format from the one the model is served.
+    ``initial + history`` into its chat template and masks the loss to ``output``. dspy does not send a
+    turn as a multi-turn chat, though: each turn is one single-turn request, so a template the trainer
+    chooses differs from the format the model is served.
 
     **``render="adapter"`` (1.25.0): the request the run's adapter actually sent.** One record per
-    planner call, ``generate_action`` turns AND the ``extract`` fallback, each rendered by dspy's own
-    ``Adapter.format`` from the signature, demos and inputs the trace recorded (``rlm_setup`` plus
-    the per-call fields on ``main_step`` / ``extract``; see ``trace.EVENT_RLM_SETUP``)::
+    planner call, ``generate_action`` turns and the ``extract`` fallback alike, rendered by dspy's own
+    ``Adapter.format`` from the signature, demos and inputs the trace recorded (``rlm_setup`` plus the
+    per-call fields on ``main_step`` and ``extract``)::
 
         {run_id, kind: "action" | "extract", turn, adapter,
          messages: [{role: "system", ...}, {role: "user", ...}],   # the request, as sent
@@ -333,28 +333,25 @@ def export_sft_turns(
          verified: True | False | None,
          reasoning_content?, usage?, run_tag?, attempt?}
 
-    ``assistant.content`` is the LM's raw content string as returned (``assistant_source:
-    "completion"``), never rewritten; a trace without it, or with an empty one, falls back to the adapter's own
-    assistant formatter over the parsed outputs (``"rendered"``; for JSON that is
-    ``json.dumps(..., indent=2)`` in signature field order, because dspy's
-    ``JSONAdapter.format_finetune_data`` is unimplemented). ``reasoning_content`` is the provider's
-    separate reasoning channel, kept beside the message rather than merged into it. An extract
-    record's ``turn`` is the number of REPL entries it saw.
+    ``assistant.content`` is the LM's raw content string, unchanged (``assistant_source:
+    "completion"``). When the trace has none, or an empty one, the adapter's own formatter renders the
+    parsed outputs instead (``"rendered"``); for JSON that is ``json.dumps(..., indent=2)`` in signature
+    field order, since dspy's ``JSONAdapter.format_finetune_data`` is unimplemented.
+    ``reasoning_content``, the provider's separate reasoning channel, stays beside the message. An
+    extract record's ``turn`` is the number of REPL entries it saw.
 
-    ``verified`` compares the re-rendered ``messages`` with the sha256 of what was actually sent:
-    ``False`` means this record is NOT the request the model saw (a wrong ``custom_types`` or
-    ``adapter``, a ``dspy.Type`` whose own description text the rebuild lacks, or a dspy that formats
-    differently from the one that ran), ``None`` that no hash was recorded. ``strict=True`` raises
-    instead of emitting a ``False``. A type that cannot be rebuilt at all (a schema with ``$defs``)
-    raises ``RenderError`` naming it, whatever ``strict`` says.
+    ``verified`` compares the re-rendered ``messages`` with the sha256 of what was sent. ``False``
+    means the record is not the request the model saw: a wrong ``custom_types`` or ``adapter``, a
+    ``dspy.Type`` whose description text the rebuild lacks, or a dspy that formats differently from
+    the one that ran. ``None`` means no hash was recorded. ``strict=True`` raises instead of returning a
+    ``False``. A type that cannot be rebuilt at all (a schema with ``$defs``) raises ``RenderError``
+    naming it, whatever ``strict`` says.
 
-    ``custom_types`` maps a recorded type NAME (``"Article"``, or a whole annotation such as
-    ``"list[Article]"``) to the real type, for a field whose recorded schema cannot be replayed.
-    ``adapter`` is an adapter instance to format with, required only for a run formatted by a class
-    outside dspy's json/chat/xml families. A call with nothing to render from is skipped, and a
-    warning says how many: every turn of a trace written before 1.25.0, and any turn the capture
-    could not match to its call. This mode imports dspy; the
-    default does not.
+    ``custom_types`` maps a recorded type name (``"Article"``, or a whole annotation such as
+    ``"list[Article]"``) to the real type. ``adapter`` is an instance to format with, needed only for a
+    run formatted by a class outside dspy's json, chat and xml families. A call with nothing to render
+    from is skipped and counted in a warning: every turn of a trace written before 1.25.0, and any turn
+    the capture could not match to its call. This mode imports dspy; the default does not.
     """
     if render not in (None, "adapter"):
         raise ValueError(f"render must be None or 'adapter', not {render!r}")

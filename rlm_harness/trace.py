@@ -86,28 +86,20 @@ EVENT_RUN_END = "run_end"
 #: unaffected, which is the question this answers; attaching a breakdown to one specific call by
 #: adjacency is not available, and was not available from the usage entry either.
 EVENT_API_ROUNDS = "api_rounds"
-#: What the planner's calls were SHOWN, once per recorded trajectory (1.25.0, additive in v2). It
-#: precedes that trajectory's `main_step` events and carries the facts every call shares: the
-#: adapter (`adapter`: `json`/`chat`/`xml` or a class name, plus `adapter_class`), the running
-#: `dspy` version, the budgets read back off the built program (`max_iterations`, `max_llm_calls`,
-#: `max_output_chars`), the `variables_info` strings exactly as passed to the model, the task's
-#: `input_fields`/`output_fields`, `inputs_sha256` (each input's FULL bound value, see
-#: `prompt_record.input_sha256`), `lm` (`main` and, unless `sub_same_as_main`, `sub`: model plus
-#: allowlisted sampling kwargs, see `_dspy_compat.lm_settings`), the `tools` dspy documents (`name`,
-#: `desc`, `args`), and
-#: `predictors.action` / `predictors.extract`: each signature as `prompt_record.describe_signature`
-#: writes it (instructions, then every field in order with its type facts), plus its `sha256`.
-#: Instructions are the ones the call used, so a `compiled_instructions` text is what appears.
-#: Each `main_step` then adds only what varies per call; see `TraceRecorder.record_main_trajectory`.
-#: Absent when no call was captured (no recorder, a recorder without the live-timing hooks, a dspy
-#: whose predictors the kit cannot find, a composition error the kit logged and suppressed, or a
-#: trace written before 1.25.0): a reader must not read its absence as "nothing was shown".
+#: What the planner's calls were shown, once per recorded trajectory, before its `main_step` events
+#: (1.25.0, additive in v2). It holds what every call shares: the adapter, the dspy version, the
+#: budgets read back from the built program, `variables_info` as passed to the model, the task's input
+#: and output fields, `inputs_sha256`, the LM settings (`lm`), the documented tools, and both
+#: predictors' signatures with the instructions they used. The guide's "Re-rendering what the model
+#: was sent" lists every field. Absent when nothing was captured: no recorder, a dspy whose predictors
+#: the kit cannot find, a capture error the kit logged, or a trace written before 1.25.0. Its absence
+#: does not mean the model was shown nothing.
 EVENT_RLM_SETUP = "rlm_setup"
-#: The `extract` fallback ran: dspy's one extra call when the iteration budget is spent, which asks
-#: the model for the task's output fields from the REPL history (1.25.0, additive in v2). Recorded
-#: after the trajectory's last `main_step` and before `final`, with the same per-call fields a
-#: `main_step` gains (no `iteration`; dspy sends none), plus `outputs`, the parsed output fields as
-#: JSON in signature order. Its absence is only meaningful beside `final.payload.extract`.
+#: dspy's `extract` fallback ran: the one extra call, when the iteration budget is spent, that asks
+#: the model for the task's output fields (1.25.0, additive in v2). Written after the trajectory's
+#: last `main_step` and before `final`, with a `main_step`'s per-call fields except `iteration`, plus
+#: `outputs`, the parsed output fields as JSON in signature order. `final.payload.extract` says
+#: whether the fallback ran, so this event's absence only means something beside it.
 EVENT_EXTRACT = "extract"
 
 _active: ContextVar[TraceRecorder | None] = ContextVar("rlm_harness_recorder", default=None)
@@ -846,20 +838,12 @@ class TraceRecorder:
     def record_main_trajectory(self, prediction: Any, *, capture: dict | None = None) -> None:
         """Extract the RLM ``Prediction`` trajectory into ``main_step`` events.
 
-        ``capture`` (from ``task._compose_capture``; plain dicts, so this module stays dspy-free)
-        adds what each call was SHOWN: an :data:`EVENT_RLM_SETUP` before the turns, per-turn
-        fields merged into each ``main_step``, an :data:`EVENT_EXTRACT` after them when the
-        fallback ran, and ``extract`` on ``final``. The per-turn fields, every one optional:
-        ``iteration`` (the exact ``"k/N"`` string sent), ``history_len`` (REPL entries the call saw,
-        which are this trajectory's earlier turns), ``messages_sha256`` (of the messages the adapter
-        produced), ``signature_sha256``, ``completion`` (the LM's raw content string),
-        ``reasoning_content``, ``usage`` (``{model: [usage entries]}`` the tracker gained while this
-        call was open: two entries for a ChatAdapter that fell back to JSON, and also another run's
-        calls when a consumer's own tracker is shared by runs executing concurrently),
-        ``attempt``, ``run_tag``, and ``code_raw`` when the model's code differs from the
-        fence-stripped ``code``. ``signature``, ``variables_info``, ``max_output_chars``, ``adapter``
-        and ``adapter_class`` appear on a turn only when they differ from the setup's. A turn the
-        capture could not be matched to (checked on ``reasoning``) gets none of them.
+        ``capture`` comes from ``task._compose_capture`` as plain dicts, so this module stays
+        dspy-free. It adds an :data:`EVENT_RLM_SETUP` before the turns, per-call fields merged into
+        each ``main_step`` (``iteration``, ``history_len``, ``messages_sha256``, ``completion``,
+        ``usage`` and the rest, listed in the guide's "Re-rendering what the model was sent"), an
+        :data:`EVENT_EXTRACT` after the turns when the fallback ran, and ``extract`` on ``final``. A turn
+        the capture could not be matched to (checked on ``reasoning``) gets none of the per-call fields.
 
         Each turn's ``ts`` is the LIVE time it was parsed (from ``note_main_step``), matched by
         ``reasoning``, so a re-rendered trace reflects when turns actually happened, not when the
@@ -963,7 +947,7 @@ class TraceRecorder:
             self.record(EVENT_EXTRACT, capture["extract"])
         final = {"final_reasoning": getattr(prediction, "final_reasoning", None)}
         if "extract_ran" in capture:
-            # Only when a capture ran: without one the kit cannot tell, and an absent key says so.
+            # Written only when a capture ran. Without one the kit cannot tell, and the key is absent.
             final["extract"] = bool(capture["extract_ran"])
         self.record(EVENT_FINAL, final)
 

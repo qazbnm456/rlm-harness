@@ -138,12 +138,12 @@ class _MainStepTimer(BaseCallback):  # type: ignore[misc, valid-type]
 def _bind_format_inputs(inputs: Any) -> tuple[Any, Any, Any] | None:
     """``(signature, demos, inputs)`` out of an ``on_adapter_format_start`` payload, or ``None``.
 
-    dspy hands the callback ``inspect.getcallargs`` of whichever wrapper fired, and
-    ``Adapter.__init_subclass__`` re-wraps ``format`` once per subclass level (see
-    :class:`_MainStepTimer`), so the OUTER fires carry ``{"args": (...), "kwargs": {...}}`` and only
-    the innermost carries named keys. Measured on the kit's default adapter: three fires per format,
-    the first two positional. Both shapes are accepted and the result is checked by type, so a
-    payload this cannot read is skipped rather than misread.
+    dspy passes the callback ``inspect.getcallargs`` of whichever wrapper fired, and
+    ``Adapter.__init_subclass__`` wraps ``format`` again at every subclass level (see
+    :class:`_MainStepTimer`). The outer fires therefore carry ``{"args": (...), "kwargs": {...}}`` and
+    only the innermost has named keys; the kit's default adapter fires three times per format, the
+    first two positional. Both shapes are accepted and the result is type-checked, so a payload this
+    cannot read is skipped rather than misread.
     """
     if not isinstance(inputs, dict):
         return None
@@ -162,22 +162,20 @@ def _bind_format_inputs(inputs: Any) -> tuple[Any, Any, Any] | None:
 
 
 class _StepCapture(BaseCallback):  # type: ignore[misc, valid-type]
-    """Records what each ``generate_action`` / ``extract`` call was SHOWN and what it returned.
+    """Records what each ``generate_action`` / ``extract`` call was shown and what it returned.
 
     One instance per run attempt. A call is the window between ``on_module_start`` and
-    ``on_module_end`` of one of the RLM's two predictors, matched by object identity, and every
-    adapter-format and LM event inside that window belongs to it: the predictor's calls are strictly
-    sequential, and the sub-LM and tool calls a turn's code makes happen during execution, after the
-    window has closed. The kit's other callbacks are unaffected; dspy swallows a raising callback
-    with a warning, and every hook here is guarded besides, so capture can thin a trace and never
-    fail a run.
+    ``on_module_end`` of one of the RLM's two predictors, matched by identity, and every adapter-format
+    and LM event inside the window belongs to that call: the predictor's calls are sequential, and the
+    sub-LM and tool calls a turn's code makes run during execution, after the window closes. dspy logs
+    and swallows a callback that raises, and every hook here is guarded as well, so capture can thin a
+    trace but never fail a run.
 
-    What it keeps per call: the signature, demos, adapter and input VALUES the last format of the
-    window was given (a ChatAdapter that falls back to JSON formats twice; the second is what was
-    answered), the sha256 of the messages that format produced, the first LM output's raw content
-    and ``reasoning_content``, the parsed outputs, and the usage the tracker gained in the window.
-    The objects are turned into JSON later, by :func:`_compose_capture`, once per attempt that
-    actually reaches the trace.
+    Per call it keeps the signature, demos, adapter and input values given to the window's last
+    format (a ChatAdapter that falls back to JSON formats twice, and the second is the one answered),
+    the sha256 of the messages that format produced, the first LM output's raw content and
+    ``reasoning_content``, the parsed outputs, and the usage the tracker gained during the window.
+    :func:`_compose_capture` turns these into JSON once, for the attempt that reaches the trace.
     """
 
     def __init__(self, roles: dict[str, Any], tracker: Any) -> None:
@@ -281,15 +279,14 @@ def _compose_capture(
 ) -> dict[str, Any] | None:
     """One attempt's captured calls as trace payloads: ``rlm_setup``, per-turn fields, the extract.
 
-    ``steps`` is ALIGNED to ``trajectory``: entry ``i`` holds the fields to add to turn ``i``'s
-    ``main_step``, or ``None``. Every action call appends exactly one REPL entry in dspy's loop, so
-    the i-th action call IS turn i; the alignment is still CHECKED on ``reasoning``, and a mismatch
-    drops that turn's fields rather than attaching another turn's prompt to it. An absent field is
-    recoverable; a wrong one goes into a training set.
+    ``steps`` is aligned to ``trajectory``: entry ``i`` holds the fields to add to turn ``i``'s
+    ``main_step``, or ``None``. Every action call appends exactly one REPL entry in dspy's loop, so the
+    i-th action call is turn i, and the alignment is still checked on ``reasoning``: a mismatch drops
+    that turn's fields instead of attaching another turn's prompt, because a missing field can be
+    skipped and a wrong one ends up in a training set.
 
-    Facts shared by every call (adapter, ``variables_info``, ``max_output_chars``, each predictor's
-    signature) are written once in ``setup``, and a call carries its own copy only when it differs,
-    which is what keeps a long run's trace linear in its turn count.
+    Facts every call shares (adapter, ``variables_info``, ``max_output_chars``, demos, each predictor's
+    signature) are written once in ``setup``, and a call repeats one only when its value differs.
     """
     from .prompt_record import (
         ROLE_ACTION,
@@ -648,9 +645,9 @@ class RLMTask:
         #: Same order-independence as `tools=`: the explicit kwarg wins over the class field,
         #: resolved at build time rather than written onto the class here.
         self._compiled_override = compiled_instructions
-        #: A caller's label for this run, stamped on `rlm_setup`, every `main_step` and the
-        #: `extract` event, so a corpus can be grouped by it (model, budget, experiment arm) without
-        #: a side table. The kit never interprets it. `None` writes no key at all.
+        #: A caller's label for this run, stamped on `rlm_setup`, every `main_step` and `extract`, for
+        #: grouping a corpus by model, budget or experiment arm. The kit never reads it, and `None`
+        #: writes no key.
         self._run_tag = None if run_tag is None else str(run_tag)
 
     @property
@@ -1194,9 +1191,8 @@ class RLMTask:
         # dspy a `LargeText` it would try to serialise.
         from .large_text import stage_inputs
 
-        # Hashed BEFORE staging, while each value is still the caller's: a staged `LargeText` is
-        # replaced by its sandbox path below, and the digest must be of the text, not the path.
-        # Suppressed: a value this cannot serialise loses its digest, never the run.
+        # Hashed before staging, because staging replaces a `LargeText` with its sandbox path and
+        # the digest must be of the text. A value that cannot be hashed loses its digest, not the run.
         bound_digests: dict[str, str] | None = None
         if current_recorder() is not None:
             try:
@@ -1250,14 +1246,12 @@ class RLMTask:
         # the one number this records at all.
         attempt_usage: list[dict[str, Any]] = []
         # What each attempt's planner calls were shown, keyed by attempt index. Staged per attempt
-        # for the reason usage is: the attempt whose turns reach the trace is `captured["attempt"]`,
-        # which is not always the last one, and a prompt from one attempt beside another attempt's
-        # turns would be a confidently wrong training record.
+        # because the attempt whose turns reach the trace (`captured["attempt"]`) is not always the
+        # last, and one attempt's prompt beside another attempt's turns is a wrong training record.
         attempt_calls: dict[int, list[dict[str, Any]]] = {}
         roles = _dspy_compat.rlm_predictor_roles(rlm)
-        # The attempt counter, kept apart from `attempt_usage`: that list grows only when a usage
-        # tracker exists, so indexing by its length gave EVERY attempt index 0 on a dspy without
-        # usage tracking, and a later attempt's calls overwrote the recorded one's.
+        # Counted on its own rather than as `len(attempt_usage)`, which grows only when a usage
+        # tracker exists: without one every attempt would be 0 and overwrite the recorded one.
         attempts_started = [0]
 
         async def runner() -> Any:
@@ -1295,10 +1289,10 @@ class RLMTask:
                     )
 
         def _composed() -> dict[str, Any] | None:
-            """The recorded attempt's capture, as payloads; `None` (a thinner trace) on any failure.
+            """The recorded attempt's capture as payloads, or `None` (a thinner trace) on any error.
 
-            Suppressed and logged, never raised: this runs on the failure path too, and a
-            bookkeeping error here must neither lose the trajectory nor replace the run's exception.
+            Errors are logged, never raised: this also runs on the failure path, where a bookkeeping
+            error must neither lose the trajectory nor replace the run's own exception.
             """
             index = captured.get("attempt")
             calls = attempt_calls.get(index) if index is not None else None

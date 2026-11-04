@@ -205,13 +205,13 @@ def rlm_budget_kwargs(
 
 
 def rlm_budget_values(rlm: Any) -> dict[str, int]:
-    """The three caps a BUILT ``dspy.RLM`` will actually enforce, under the kit's names.
+    """The three caps a built ``dspy.RLM`` will enforce, under the kit's names.
 
-    Read back off the program rather than echoed from ``RLMConfig``, because ``_build_rlm``'s lossy
-    ``except TypeError`` can drop all three to dspy's defaults and a trace that recorded the
-    configured numbers would then describe a prompt (``iteration: "3/20"``) the model never saw.
-    The attribute dspy stores each under is the constructor's spelling, so the same alias table
-    resolves it. A cap the installed dspy does not expose is absent, never guessed.
+    Read back from the program rather than from ``RLMConfig``, because ``_build_rlm``'s ``except
+    TypeError`` fallback can drop all three to dspy's defaults, and a trace recording the configured
+    numbers would then describe a prompt (``iteration: "3/20"``) the model never saw. dspy stores each
+    cap under its constructor spelling, so the same alias table resolves it. A cap the installed dspy
+    does not expose is absent, never guessed.
     """
     out: dict[str, int] = {}
     for canonical, candidates in _BUDGET_ALIASES:
@@ -234,9 +234,9 @@ _PREDICTOR_ROLES: tuple[tuple[str, tuple[str, ...]], ...] = (
 def rlm_predictor_roles(rlm: Any) -> dict[str, Any]:
     """``{"action": predictor, "extract": predictor}`` for a built ``dspy.RLM``.
 
-    The trace records each call under its ROLE because the attribute names are dspy's. A role the
-    installed dspy does not expose is absent, so its calls are simply not captured: a thinner
-    trace, never a wrong attribution.
+    The trace records each call under its role because the attribute names belong to dspy. A role the
+    installed dspy does not expose is absent and its calls are not captured, which thins the trace
+    without misattributing anything.
     """
     out: dict[str, Any] = {}
     for role, candidates in _PREDICTOR_ROLES:
@@ -251,8 +251,8 @@ def rlm_predictor_roles(rlm: Any) -> dict[str, Any]:
 def rlm_user_tools(rlm: Any) -> dict[str, Any]:
     """The caller's tools as dspy will document them to the model: ``{name: dspy.Tool}``.
 
-    ``RLM.tools`` is dspy's public property for exactly this set (it excludes ``llm_query`` and
-    friends). ``{}`` when the installed dspy has no such property.
+    ``RLM.tools`` is dspy's public property for this set, which excludes ``llm_query`` and
+    ``llm_query_batched``. ``{}`` when the installed dspy has no such property.
     """
     try:
         tools = rlm.tools
@@ -881,10 +881,10 @@ def applied_thinking_budget(lm: Any) -> dict[str, Any] | None:
     return None
 
 
-#: The ``lm.kwargs`` keys :func:`lm_settings` RECORDS, at the top level and inside ``extra_body``.
-#: An ALLOWLIST, never a denylist: ``lm.kwargs`` carries ``api_key`` for every LM the kit builds,
-#: and a passthrough dict can carry headers, a base URL or a token under any name. A key outside
-#: this list is still SENT; it is only listed by NAME in ``unrecorded_keys``, never by value.
+#: The ``lm.kwargs`` keys :func:`lm_settings` records, at the top level and inside ``extra_body``. An
+#: allowlist and never a denylist, because ``lm.kwargs`` carries ``api_key`` for every LM the kit builds
+#: and a passthrough dict can hold headers, a base URL or a token under any name. A key outside the
+#: list is still sent to the provider; the trace names it in ``unrecorded_keys`` without its value.
 _LM_SETTING_KEYS = frozenset({
     "temperature", "top_p", "top_k", "min_p", "n", "seed", "stop",
     "max_tokens", "max_completion_tokens",
@@ -896,9 +896,9 @@ _LM_SETTING_KEYS = frozenset({
 #: Read inside ``extra_body`` only: server-side knobs vLLM and similar servers take there.
 _LM_EXTRA_BODY_KEYS = _LM_SETTING_KEYS | {"chat_template_kwargs", "enable_thinking",
                                           "include_reasoning"}
-#: The allowlist goes all the way down. A key above whose value is a MAPPING keeps only these
-#: inner keys; anything else inside it is named in ``unrecorded_keys`` like a top-level key, because
-#: an allowlisted name says nothing about what a caller nested under it.
+#: The allowlist applies at every depth. An allowlisted key whose value is a mapping keeps only these
+#: inner keys, and anything else inside it is named in ``unrecorded_keys``, because an allowlisted
+#: name says nothing about what a caller nested under it.
 _LM_NESTED_KEYS: dict[str, frozenset[str]] = {
     "thinking": frozenset({"type", "budget_tokens"}),
     "reasoning": frozenset({"effort", "max_tokens", "summary", "enabled", "exclude"}),
@@ -938,12 +938,12 @@ _DROP = object()
 
 
 def lm_settings(lm: Any) -> dict[str, Any] | None:
-    """``{"model", "kwargs", "unrecorded_keys"}``: which model and sampling settings ``lm`` CARRIES.
+    """``{"model", "kwargs", "unrecorded_keys"}``: the model and sampling settings ``lm`` carries.
 
-    For ``rlm_setup.lm``, so a corpus sampled from one teacher at several temperatures or budgets
-    says which setting produced each trace. Read off the LM, never from ``RLMConfig``, for the
-    reason :func:`applied_lm_budget` gives, and "carries" means what it means there: an LM that
-    ignores a kwarg (``ClaudeAgentLM`` exposes no sampling controls) still reports it.
+    Recorded as ``rlm_setup.lm``, so a corpus sampled from one teacher at several temperatures or
+    budgets says which setting produced each trace. Read from the LM rather than ``RLMConfig`` for the
+    reason :func:`applied_lm_budget` gives, with the same caveat: an LM that ignores a kwarg
+    (``ClaudeAgentLM`` exposes no sampling controls) still reports it.
 
     ``kwargs`` holds only :data:`_LM_SETTING_KEYS` (and :data:`_LM_EXTRA_BODY_KEYS` under
     ``extra_body``) whose value is not ``None``, and the allowlist applies at every depth: inside an

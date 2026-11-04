@@ -1,14 +1,13 @@
 """`export_sft_turns(render="adapter")` reproduces the request the model was actually sent.
 
-Each test drives the REAL `dspy.RLM.aforward` loop offline (scripted LM + `ScriptedInterpreter`),
-captures every request at the LM boundary with a callback of its own, and compares the export's
-re-render against it as equal lists of messages. The kit's capture is deliberately NOT the
-reference here: a test that compared the export to the kit's own record would pass for a capture
-and a render that are wrong in the same way.
+Each test drives the real `dspy.RLM.aforward` loop offline (scripted LM and `ScriptedInterpreter`),
+captures every request at the LM boundary with its own callback, and compares the export's re-render
+with it. The reference is never the kit's own capture, because a test comparing the export with the
+kit's record passes when capture and render are wrong in the same way.
 
-Coverage: both adapters the kit configures (json, chat), action turns and the extract fallback,
-a run under optimizer-compiled instructions, a typed output (flat pydantic, and a nested one that
-needs `custom_types`), and the raw completion / `reasoning_content` path.
+Coverage: both adapters the kit configures (json, chat), action turns and the extract fallback, a run
+under optimizer-compiled instructions, typed outputs (flat pydantic, and nested with `custom_types`),
+and the raw completion and `reasoning_content` path.
 """
 
 from __future__ import annotations
@@ -132,8 +131,8 @@ _TWO_TURNS_THEN_EXTRACT = [
 
 @pytest.mark.parametrize("adapter", ["json", "chat"])
 def test_action_and_extract_turns_reproduce_the_request_byte_for_byte(tmp_path, adapter):
-    """Two action turns run out the budget, so dspy's extract fallback answers. Every one of the
-    three requests, including the extract call that used to leave no record, comes back exact."""
+    """Two action turns use up the budget, so dspy's extract fallback answers. All three requests,
+    the extract call included, come back exact."""
     lm = _dummy([*_TWO_TURNS_THEN_EXTRACT, {"answer": "42"}], adapter)
     _configure(lm, adapter=adapter, max_iterations=2)
     task = _Plain(interpreter=ScriptedInterpreter(["11", "2"]))
@@ -433,8 +432,8 @@ def test_one_unmatched_turn_is_skipped_not_fatal_to_the_corpus(tmp_path, caplog)
 
 
 def test_attempts_are_counted_even_without_a_usage_tracker(tmp_path, monkeypatch):
-    """The attempt index used to be `len(attempt_usage)`, which only grows with a tracker: without
-    one every attempt was 0 and a retry's calls overwrote the recorded attempt's."""
+    """Attempts are numbered without a usage tracker too, so a retry's calls never overwrite the
+    recorded attempt's."""
     import contextlib
 
     from rlm_harness import _dspy_compat

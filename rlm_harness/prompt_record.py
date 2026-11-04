@@ -1,36 +1,24 @@
-"""What a planner turn was SHOWN, recorded so it can be rendered again byte for byte.
+"""Record what each planner call was shown, so the request can be rendered again byte for byte.
 
-``dspy.RLM`` drives two predictors. ``generate_action`` runs once per iteration and returns
-``{reasoning, code}``. ``extract`` runs once, only when the iteration budget runs out, and returns
-the task's own output fields. Each call is a single-turn request the run's ADAPTER formats from
-three things: the predictor's signature (instructions plus typed fields), its demos, and that
-call's input values. A trace that keeps only ``{reasoning, code, output}`` per turn cannot rebuild
-that request, so a converter that rendered its own chat from it was training on a format the
-model is never served. That is the failure this module exists for.
+``dspy.RLM`` drives two predictors: ``generate_action``, once per iteration, returning ``{reasoning,
+code}``, and ``extract``, once when the iteration budget runs out, returning the task's output fields.
+The run's adapter formats each call as one single-turn request from the predictor's signature, its
+demos and the call's input values. The kit records those inputs rather than the rendered messages:
+the signature once per trajectory in ``rlm_setup`` (:func:`describe_signature`), and per call only
+what varies plus the sha256 of the messages actually sent (:func:`messages_sha256`). The REPL history
+is the trajectory's own earlier ``main_step`` entries, so it is rebuilt at render time instead of
+stored, which keeps a trace linear in its turn count.
 
-So the kit records the three inputs to ``Adapter.format`` instead of the rendered messages:
+:func:`render_steps` rebuilds each request with dspy's own ``Adapter.format`` and compares it with the
+recorded hash, so every exported record says whether it is the request that was sent. A field type is
+rebuilt from what an adapter reads off it, its name and, for a structured type, its JSON schema.
+pydantic cannot rebuild a schema with ``$defs`` through a stand-in, so such a type has to be passed
+in ``custom_types`` under its recorded annotation name, or the export raises :class:`RenderError`. A
+:class:`dspy.Type` that adds its own description text is rebuilt without it and comes out
+``verified: False``.
 
-* the signature once per run, as :func:`describe_signature` output, in ``rlm_setup``;
-* per call, only what varies: ``iteration``, how many REPL entries the history held, and any
-  value that differed from the run's (``variables_info``, the signature after a runtime change);
-* per call, the sha256 of the messages the adapter actually produced (:func:`messages_sha256`).
-
-The REPL history is not stored per step, because it is the run's own earlier ``main_step``
-entries truncated by ``max_output_chars`` at render time; storing it would grow the trace with
-the square of the turn count. :func:`render_steps` rebuilds it from those entries, calls dspy's
-own ``Adapter.format`` and then checks the result against the recorded hash, so every exported
-record says whether it is the request that was sent rather than asserting it.
-
-**Where re-rendering cannot be exact without help, it says so instead of guessing.** A field type
-is rebuilt from what the adapters read off it: its name, and for a structured type its JSON
-schema. pydantic will not replay a schema that carries ``$defs`` (a model nesting another model)
-through a stand-in type, so such a field needs the real type passed as ``custom_types`` under
-its recorded annotation name, and without it the export raises :class:`RenderError` naming it.
-A :class:`dspy.Type` subclass that contributes its own description text is rebuilt without that
-text, and there the hash is what reports it: the record comes out ``verified: False``.
-
-Module top is dspy-free like ``trace.py`` and ``dataset.py``: the capture side runs inside
-``task.py``, which already imports dspy, and the render side imports it when it is called.
+The module top is dspy-free like ``trace.py`` and ``dataset.py``. The capture side runs inside
+``task.py``, which already imports dspy, and the render side imports dspy when called.
 """
 
 from __future__ import annotations
@@ -76,13 +64,12 @@ def spec_sha256(spec: Mapping[str, Any]) -> str:
 
 
 def input_sha256(value: Any) -> str:
-    """The digest ``rlm_setup.inputs_sha256`` records for one task input, over its FULL value.
+    """The digest ``rlm_setup.inputs_sha256`` records for one task input, over its full value.
 
-    Taken from the value as the caller bound it, before dspy builds the preview the model sees, so
-    two runs over the same input carry the same digest however long it is. That is what a corpus
-    needs for dedupe, and for checking a run's inputs against an evaluation set it must not train on.
-
-    The serialisation, which a reader must reproduce to compare:
+    Taken from the value as the caller bound it, before dspy builds the preview the model sees, so two
+    runs over the same input carry the same digest however long it is. A corpus uses it for dedupe and
+    for checking a run's inputs against an evaluation set. To compare, a reader reproduces this
+    serialisation:
 
     * a ``str``: its UTF-8 bytes, with ``errors="surrogatepass"`` so a lone surrogate is encoded
       rather than raising, nothing added;
@@ -118,10 +105,10 @@ def _json_safe(value: Any) -> Any:
 def describe_type(annotation: Any) -> dict[str, Any]:
     """What an adapter reads off a field's annotation, as JSON.
 
-    dspy's adapters consult a type in exactly these ways: its NAME (``get_annotation_name``), an
-    identity test against ``str``/``bool``/``int``/``float``, a ``Literal``'s arguments, an
-    ``Enum``'s values, and otherwise ``pydantic.TypeAdapter(t).json_schema()``. So those are what is
-    recorded, and :func:`_rebuild_type` builds something that answers each of them the same way.
+    dspy's adapters read a type in five ways: its name (``get_annotation_name``), an identity test
+    against ``str``/``bool``/``int``/``float``, a ``Literal``'s arguments, an ``Enum``'s values, and
+    otherwise ``pydantic.TypeAdapter(t).json_schema()``. Those are recorded, and :func:`_rebuild_type`
+    builds a type that answers each of them the same way.
     """
     import pydantic
     from dspy.adapters.utils import get_annotation_name
@@ -173,9 +160,9 @@ def describe_signature(signature: Any) -> dict[str, Any]:
 def adapter_identity(adapter: Any) -> dict[str, str]:
     """``{"adapter": short name, "adapter_class": dotted class}`` for the adapter that formatted.
 
-    The short name is the family whose ``format`` produced the messages: the kit's lenient JSON
-    adapter only changes how a call is sent and parsed, so it reads ``json`` here and re-renders
-    through ``dspy.JSONAdapter``. ``None`` means dspy's own default, a ``ChatAdapter``.
+    The short name is the family whose ``format`` produced the messages. The kit's lenient JSON adapter
+    changes only how a call is sent and parsed, so it is ``json`` here and re-renders through
+    ``dspy.JSONAdapter``. ``None`` means dspy's default, a ``ChatAdapter``.
     """
     import dspy
 
@@ -212,10 +199,9 @@ class RenderError(ValueError):
 def _schema_standin(name: str, schema: dict) -> type:
     """A type whose name and JSON schema are the recorded ones, which is all an adapter reads.
 
-    pydantic regenerates the schema around what ``__get_pydantic_json_schema__`` returns, and its
-    ``$ref`` bookkeeping refuses references to definitions it did not generate itself, so a schema
-    with ``$defs`` raises here. That is any model nesting another, and also a container of a model
-    (``list[Flat]``). Such a field needs the real type through ``custom_types``, keyed by the
+    pydantic regenerates the schema around what ``__get_pydantic_json_schema__`` returns and rejects
+    ``$ref`` targets it did not generate, so a schema with ``$defs`` (a model nesting another, or
+    ``list[Flat]``) raises here. Such a field needs the real type in ``custom_types``, keyed by the
     annotation name the trace recorded.
     """
     from pydantic_core import core_schema
@@ -275,9 +261,8 @@ def rebuild_signature(spec: Mapping[str, Any], custom_types: Mapping[str, Any] |
     for f in spec.get("fields") or []:
         annotation = _rebuild_type(f, custom_types)
         maker = dspy.InputField if f.get("io") == "input" else dspy.OutputField
-        # `prefix` stays in the record (it is part of what dspy built) but is not passed back:
-        # dspy 3.4 deprecates the argument, says it "has no effect", and warns on every field.
-        # Whether that is still true is exactly what the sha256 check would catch.
+        # `prefix` stays in the record but is not passed back: dspy 3.4 deprecates it as having no
+        # effect and warns on every field. If it ever affects formatting again, `verified` shows it.
         extra = {k: v for k, v in dict(f.get("extra") or {}).items() if k != "prefix"}
         fields[f["name"]] = (annotation, maker(**extra))
     return dspy.Signature(fields, spec.get("instructions") or "")
@@ -353,12 +338,10 @@ def render_steps(
 ) -> tuple[list[dict], int]:
     """Re-render every recorded action and extract call in one run's events.
 
-    Returns ``(records, skipped)``: one record per call that carries its per-call fields, and the
-    number of calls that could not be rendered for lack of them. That count covers ``main_step``
-    events with no ``rlm_setup`` before them (a trace written before 1.25.0) and steps inside a
-    segment that the capture left without fields (a turn whose ``reasoning`` did not match its call,
-    or an adapter whose ``format`` arguments the capture could not read). One such step does not
-    stop the rest of the run, or the corpus, from exporting. See ``dataset.export_sft_turns``.
+    Returns ``(records, skipped)``: one record per call that has its per-call fields, and the number
+    of calls without them, which are ``main_step`` events with no ``rlm_setup`` before them (a trace
+    written before 1.25.0) and turns the capture could not match to their call. A skipped call does
+    not stop the rest of the run or the corpus from exporting. See ``dataset.export_sft_turns``.
     """
     records: list[dict] = []
     covered = 0
@@ -408,9 +391,9 @@ def _render_one(role: str, p: dict, seg: dict, predictors: dict, setup: dict,
         "messages": messages,
         "verified": None if recorded is None else messages_sha256(messages) == recorded,
     }
-    # An EMPTY completion is not used as the target. A reasoning server can return its whole turn
-    # in `reasoning_content` with content `""` or null; `_LenientJSONAdapter` then parsed the
-    # reasoning channel as the answer, and an assistant target of `""` would teach an empty reply.
+    # An empty completion is never the target. A reasoning server can return the whole turn in
+    # `reasoning_content` with content `""` or null, which `_LenientJSONAdapter` parses as the
+    # answer, and a target of `""` would teach the model to reply with nothing.
     if isinstance(p.get("completion"), str) and p["completion"] != "":
         content, source = p["completion"], SOURCE_COMPLETION
     else:

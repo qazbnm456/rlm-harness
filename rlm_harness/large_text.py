@@ -94,10 +94,9 @@ class LargeText:
             raise TypeError(f"LargeText takes a str, not {type(text).__name__}")
         self._chars = len(text)
         self._preview_chars = max(0, preview_chars)
-        # The digest a trace records for this input (`rlm_setup.inputs_sha256`), taken from the
-        # TEXT rather than the staged file: `write_text` translates newlines on Windows, so the
-        # file's bytes are not the string's, and the hash must equal what the same text passed
-        # inline would get. Same encoding rule as `prompt_record.input_sha256`.
+        # The digest a trace records for this input (`rlm_setup.inputs_sha256`). Taken from the
+        # text, not the staged file, because `write_text` translates newlines on Windows and the
+        # digest must match what the same text gets inline (`prompt_record.input_sha256`).
         self._sha256 = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
         # mkdtemp, not a shared directory: the grant is per object, and a directory nothing else
         # writes into cannot have a sibling file appear in it between staging and mounting. It is
