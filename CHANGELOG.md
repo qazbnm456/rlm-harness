@@ -4,52 +4,25 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
-## [Unreleased] (1.25.0)
+## [1.25.0] - 2026-11-05
 
-**The trace now records what each planner call was shown, and `export_sft_turns` can give back
-the exact request.** dspy sends every planner turn as one single-turn request formatted by the
-run's adapter, and the `extract` fallback as one more, but a trace kept only each turn's
-`{reasoning, code, output}`. A downstream converter rendered its own multi-turn chat from those, so
-the model was trained on a format it is never served, and the extract call left no record at all.
-All additions are optional payload within `rlm-harness/trace/v2`.
+**The trace now records what each planner call was shown, and `export_sft_turns` can return the exact request.** dspy sends each planner turn as one single-turn request formatted by the run's adapter, plus one `extract` request when the iteration budget runs out. The trace used to keep only each turn's `{reasoning, code, output}`, so a downstream converter had to render its own multi-turn chat, which trained the model on a format it is never served, and the extract call left no record. Everything added here is optional payload within `rlm-harness/trace/v2`.
 
 ### Added
 
-- **`rlm_setup` event**, once per recorded trajectory: the adapter and its class, the running dspy
-  version, the budgets read back off the built program, `variables_info` exactly as shown, the
-  task's input and output field names, `inputs_sha256` (one digest per input over its full bound
-  value, for dedupe and evaluation-set decontamination), `lm` (the main and sub LM's model and
-  allowlisted sampling settings; secrets are never written, only the names of unrecorded keys), the
-  documented tools, and both predictors' signatures
-  (instructions, then every field in order with its type facts), so compiled instructions are
-  recorded as the text the model saw.
-- **Per-call fields on `main_step`**: `iteration`, `history_len`, `messages_sha256`,
-  `signature_sha256`, `completion` (the raw content string), `reasoning_content`, `usage` gained
-  while that call was open, `attempt`, `run_tag`, and `code_raw` when the written code differs from
-  dspy's fence-stripped `code`. A value `rlm_setup` already holds (adapter, signature,
-  `variables_info`, `max_output_chars`, demos) is repeated on a step only when it differs.
-- **`extract` event** when the fallback ran, with the same per-call fields and the parsed
-  `outputs`; `final.extract` says whether it ran.
-- **`export_sft_turns(render="adapter")`**: one record per action and extract call, its `messages`
-  rebuilt by dspy's own `Adapter.format` from the recorded inputs and checked against the recorded
-  hash (`verified`), the raw completion as the assistant side (`assistant_source`), and
-  `reasoning_content` kept separate. `custom_types=`, `adapter=` and `strict=` cover a type or
-  adapter that cannot be rebuilt from the trace. The default export is unchanged.
+- **An `rlm_setup` event, once per recorded trajectory**, with the adapter and its class, the running dspy version, the budgets read back from the built program, `variables_info` as the model saw it, the task's input and output field names, the documented tools, and both predictors' signatures with the instructions they actually used, compiled instructions included. It also carries `inputs_sha256`, one digest per input over its full value, for dedupe and for checking a corpus against an evaluation set, and `lm`, the main and sub LM's model and sampling settings. `lm` records an allowlist of settings and lists any other key by name only, so no credential is written.
+- **Per-call fields on `main_step`**: `iteration`, `history_len`, `messages_sha256`, `signature_sha256`, `completion` (the raw content string), `reasoning_content`, the `usage` of that call, `attempt`, `run_tag`, and `code_raw` when the code the model wrote differs from dspy's fence-stripped `code`. A value `rlm_setup` already holds appears on a step only when it differs.
+- **An `extract` event when the fallback ran**, with the same per-call fields and the parsed `outputs`. `final.extract` says whether it ran.
+- **`export_sft_turns(render="adapter")`** returns one record per action and extract call. Its `messages` are rebuilt by dspy's own `Adapter.format` and checked against the recorded hash (`verified`), the assistant side is the raw completion (`assistant_source` says when it had to be rendered instead), and `reasoning_content` stays a separate field. `custom_types=`, `adapter=` and `strict=` handle a type or adapter the trace cannot rebuild. The default export is unchanged.
 - **`RLMTask(run_tag=...)`**, a caller's label stamped on every recorded call.
-- `EVENT_RLM_SETUP` and `EVENT_EXTRACT` in `__all__`; `rlm_harness.prompt_record` (dspy-free at
-  module top); `_dspy_compat.rlm_budget_values`, `rlm_predictor_roles` and `rlm_user_tools`.
+- `EVENT_RLM_SETUP` and `EVENT_EXTRACT` in `__all__`, and the module `rlm_harness.prompt_record`.
 
 ### Notes
 
-- A field type whose schema has `$defs` (a pydantic model nesting another, or a container of a
-  model such as `list[Flat]`) cannot be replayed from the trace, because pydantic refuses
-  references to definitions it did not generate. Pass the type through `custom_types` under its
-  recorded annotation name; without it the export raises `RenderError` naming the type.
-- Per-call `usage` is the usage tracker's slice over the call's window, so it also counts another
-  run's calls when a consumer's own tracker spans concurrent runs.
-- The parity tests compare the export with a request captured by an independent callback at the
-  LM boundary, across the json and chat adapters, action and extract calls, compiled instructions,
-  a retry, and two runs under one recorder.
+- A field type whose schema has `$defs`, such as a pydantic model that nests another or `list[Flat]`, cannot be rebuilt from its recorded schema, because pydantic rejects references to definitions it did not generate. Pass the type in `custom_types` under its recorded annotation name; without it the export raises `RenderError` naming the type.
+- Per-call `usage` is what the usage tracker gained while the call was open, so it also counts another run's calls when your own `dspy.track_usage()` spans concurrent runs.
+- The parity tests capture each request with their own callback at the LM boundary and compare the export with it, across the json and chat adapters, action and extract calls, compiled instructions, a retry, and two runs under one recorder.
+- Verified before release against a reasoning model served by vLLM, under both adapters: every exported record verified against the request that was sent, extract calls and a nested output type included, every call had non-zero usage, the reasoning channel was recorded, and no credential appeared in any trace.
 
 ## [1.24.1] - 2026-10-23
 
