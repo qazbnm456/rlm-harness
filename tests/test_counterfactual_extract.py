@@ -345,3 +345,26 @@ def test_a_result_the_json_dump_or_output_model_changed_is_never_the_target(tmp_
         if e["type"] == "result":
             e["payload"]["output"]["items"] = ["x=2"]
     assert export_counterfactual_extracts(group_by_run(events), custom_types={"Nested": Nested}) == []
+
+
+def test_the_guides_end_to_end_snippet_runs(tmp_path, monkeypatch):
+    """The snippet under "Using counterfactual extract records" in rlm_harness/README.md, run as
+    written against one real trace in `traces/`."""
+    import pathlib
+    import re
+
+    guide = (pathlib.Path(__file__).parent.parent / "rlm_harness" / "README.md").read_text("utf-8")
+    section = guide.split("### Using counterfactual extract records", 1)[1]
+    snippet = re.search(r"```python\n(.*?)```", section, re.DOTALL).group(1)
+
+    (tmp_path / "traces").mkdir()
+    _submit_run(tmp_path / "traces", "json")   # writes traces/submitted
+    (tmp_path / "traces" / "submitted").rename(tmp_path / "traces" / "a.jsonl")
+    monkeypatch.chdir(tmp_path)
+    exec(compile(snippet, "README snippet", "exec"), {})  # noqa: S102 - the repo's own guide
+
+    rows = [json.loads(line) for line in (tmp_path / "sft.jsonl").read_text("utf-8").splitlines()]
+    assert [(r["source"], r["kind"]) for r in rows] == [
+        ("real", "action"), ("real", "action"), ("real", "action"), ("counterfactual", "extract")]
+    assert {r["run_id"] for r in rows} == {"traces/a.jsonl:submitted"}
+    assert rows[-1]["assistant_source"] == SOURCE_COUNTERFACTUAL and rows[-1]["verified"] is None

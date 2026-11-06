@@ -2638,8 +2638,42 @@ records = export_counterfactual_extracts(group_by_run(load_events("trace.jsonl")
 - `messages` is rendered from the extract signature in `rlm_setup.predictors.extract`, the run's `variables_info`, and the first `turn` REPL entries, where `turn = submit_turn - n` for each `n` in `cut_back`. With the same history it is byte for byte the request a real extract sends, and the tests check it against the `messages_sha256` recorded on one. No request was sent for this record, so `verified` is always `None`.
 - `n = 0` drops only the SUBMIT turn. A larger `n` cuts earlier, but the answer stays the final SUBMIT's values, which the shorter history may not yet support. A cut that would leave no history is skipped, since dspy never sends extract over an empty one.
 - `assistant.content` is the adapter's own formatting of the submitted values: indented JSON for the JSON adapter, `[[ ## field ## ]]` blocks for chat.
-- The values come from `final.outputs`. A 1.25.0 trace lacks it, so they are parsed from the SUBMIT turn's `FINAL: {...}` output (`target_source: "final_repr"`), which works when every value is a Python literal. A pydantic value's repr does not parse, and the value is read from the run's `result` event instead (`target_source: "result"`). That is the value after `output_model` validation and a Python-mode `model_dump`, and holds only `output_field`, so it can differ from what was submitted: a default or validator `output_model` adds, a `datetime` or `Enum` written as its `str`, a model nested in a list written as its `str`. It is used only when the signature has that one output field and writing the value as pydantic would repr the submitted one (`ChangeVerdict(summary='...', ...)`) reproduces the `FINAL: {...}` line exactly; dspy parses every SUBMIT against the field's type before writing that line. A trajectory whose values cannot be read any of these ways is skipped and counted in a warning.
+- The values come from `final.outputs`. A 1.25.0 trace lacks it, so they are parsed from the SUBMIT turn's `FINAL: {...}` output (`target_source: "final_repr"`), which works when every value is a Python literal. A pydantic value's repr does not parse, and the value is read from the run's `result` event instead (`target_source: "result"`). That is the value after `output_model` validation and a Python-mode `model_dump`, and holds only `output_field`, so it can differ from what was submitted: a default or validator `output_model` adds, a `datetime` or `Enum` written as its `str`, a model nested in a list written as its `str`. It is used only when the signature has that one output field and writing the value as pydantic would repr the submitted one (`Verdict(summary='...', ...)`) reproduces the `FINAL: {...}` line exactly; dspy parses every SUBMIT against the field's type before writing that line. A trajectory whose values cannot be read any of these ways is skipped and counted in a warning.
 - Only a trajectory whose run has a `result` event counts, because the kit also records the last attempt of a failed run, and that SUBMIT was rejected. A run that ended by extract contributes nothing.
+
+### Using counterfactual extract records
+
+These records are synthetic. The model never wrote that assistant turn: the request is real in form, but no run sent it, and the answer is borrowed from the run's SUBMIT. Select or count them by `assistant_source == "counterfactual_submit"`. `verified` is always `None` on them because there is no sent request to hash, which is expected and not a failure.
+
+- **Train on them, never evaluate with them.** They say nothing about how well a model answers a real extract call: the answer was not produced by an extract call at all. Measure extract quality on real `extract` records (`export_sft_turns(render="adapter")`, `kind == "extract"`) or on live runs.
+- **Split by `run_id`.** A counterfactual shares its history and its answer with the action turns of the same run, so put it on the same side of a train/validation split as that run. Splitting by record leaks the answer across the split.
+- **Start with `cut_back=(0,)`.** It cuts just before the SUBMIT turn, where the history already holds what the run computed to reach its answer. A larger `n` adds samples for a run cut off earlier, which is what a tight iteration budget produces, but its answer is still the final SUBMIT's, so it teaches the model to state values its history does not yet support. Add larger cuts only if you accept that trade.
+- **Keep them a minority beside the real action turns.** Every counterfactual from a run ends in the same values the run's own SUBMIT turn already teaches, so each one repeats a target the dataset has. The kit does not pick a ratio; cap them so that answer does not outweigh the turns that show how it was reached.
+- **No overlap with real extract records.** A run that really ran extract produces no counterfactual, so the two never describe the same run.
+
+One JSONL of real planner turns and counterfactual extracts, tagged by source:
+
+```python
+import glob
+import json
+
+from rlm_harness import export_counterfactual_extracts, export_sft_turns, group_by_run, load_events
+
+runs = {}
+for path in sorted(glob.glob("traces/*.jsonl")):
+    for run_id, events in group_by_run(load_events(path)).items():
+        runs[f"{path}:{run_id}"] = events          # two files can reuse a run_id
+
+custom_types = {}                                  # e.g. {"Report": Report} for a type with $defs
+real = export_sft_turns(runs, render="adapter", custom_types=custom_types)
+synthetic = export_counterfactual_extracts(runs, cut_back=(0,), custom_types=custom_types)
+
+with open("sft.jsonl", "w", encoding="utf-8") as out:
+    for rec in real:
+        out.write(json.dumps({**rec, "source": "real"}, ensure_ascii=False) + "\n")
+    for rec in synthetic:
+        out.write(json.dumps({**rec, "source": "counterfactual"}, ensure_ascii=False) + "\n")
+```
 
 `RLMTask(run_tag="...")` is stamped on `rlm_setup`, every `main_step` and `extract`, for grouping a corpus by model, budget or experiment arm. The kit never reads it.
 
