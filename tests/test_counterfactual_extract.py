@@ -27,6 +27,7 @@ from rlm_harness.prompt_record import (
     SOURCE_COUNTERFACTUAL,
     TARGET_FINAL_OUTPUTS,
     TARGET_FINAL_REPR,
+    TARGET_RESULT,
     messages_sha256,
 )
 from rlm_harness.testing import ScriptedInterpreter, submit
@@ -148,20 +149,73 @@ def test_earlier_cuts_and_a_cut_with_no_history_left(tmp_path, caplog):
         export_counterfactual_extracts(group_by_run(events), cut_back=(-1,))
 
 
-def test_a_typed_output_needs_final_outputs(tmp_path, caplog):
-    events, _ = _run(tmp_path, "flat", _Flat,
-                     [*_TURNS[:1], {"reasoning": "done", "code": "SUBMIT(out=...)"}],
-                     ["11", submit({"out": {"title": "t", "tags": ["a"]}})],
-                     max_iterations=3, inputs={"document": "hello world"})
-    [rec] = export_counterfactual_extracts(group_by_run(events))
-    assert json.loads(rec["assistant"]["content"]) == {"out": {"title": "t", "tags": ["a"]}}
-
+def _without_final_outputs(events):
+    """What a 1.25.0 trace looks like: no `final.outputs`."""
+    events = json.loads(json.dumps(events))
     for e in events:
         if e["type"] == EVENT_FINAL:
             del e["payload"]["outputs"]
+    return events
+
+
+def _typed_run(tmp_path, task_cls, value, name="typed"):
+    events, _ = _run(tmp_path, name, task_cls,
+                     [*_TURNS[:1], {"reasoning": "done", "code": "SUBMIT(out=...)"}],
+                     ["11", submit({"out": value})],
+                     max_iterations=3, inputs={"document": "hello world"})
+    return events
+
+
+def test_a_typed_submit_in_an_older_trace_is_read_from_the_result(tmp_path):
+    """`FINAL: {'out': Flat(title=...)}` is not a literal, so a 1.25.0 trace falls back to the
+    `result` event, the value after `output_model` validation."""
+    events = _typed_run(tmp_path, _Flat, {"title": "t", "tags": ["a"]})
+    [new] = export_counterfactual_extracts(group_by_run(events))
+    assert json.loads(new["assistant"]["content"]) == {"out": {"title": "t", "tags": ["a"]}}
+
+    [old] = export_counterfactual_extracts(group_by_run(_without_final_outputs(events)))
+    assert old["counterfactual"]["target_source"] == TARGET_RESULT
+    assert old["assistant"] == new["assistant"] and old["messages"] == new["messages"]
+
+
+def test_the_result_stands_in_only_when_it_is_the_submitted_value(tmp_path, caplog):
+    # A `str` field that `output_model` parsed into a model: the result is a dict, the SUBMIT a str.
+    class Strict(BaseModel):
+        title: str
+
+    class _Coerced(RLMTask):
+        signature = "document: str -> out: str"
+        output_field = "out"
+        output_model = Strict
+
+    class _Two(RLMTask):
+        signature = "document: str -> out: Flat, note: str"
+        output_field = "out"
+        output_model = Flat
+
+    coerced = _typed_run(tmp_path, _Coerced, '{"title": "t"}', "coerced")
+    assert next(e for e in coerced if e["type"] == "result")["payload"]["output"] == {"title": "t"}
+    # The repr is a literal here, so break it to reach the `result` fallback.
+    for e in coerced:
+        if e["type"] == "main_step" and e["payload"]["output"].startswith("FINAL: "):
+            e["payload"]["output"] = "FINAL: {'out': Strict(title='t')}"
+
+    # Two output fields: `result` holds only `out`.
+    two, _ = _run(tmp_path, "two", _Two,
+                  [*_TURNS[:1], {"reasoning": "done", "code": "SUBMIT(out=..., note='n')"}],
+                  ["11", submit({"out": {"title": "t"}, "note": "n"})],
+                  max_iterations=3, inputs={"document": "hello world"})
+
+    # A result of the right shape, but the SUBMIT repr names another class.
+    renamed = _typed_run(tmp_path, _Flat, {"title": "t"}, "renamed")
+    for e in renamed:
+        if e["type"] == "main_step" and e["payload"]["output"].startswith("FINAL: "):
+            e["payload"]["output"] = e["payload"]["output"].replace("Flat(", "Other(")
+
     with caplog.at_level("WARNING", logger="rlm_harness.dataset"):
-        assert export_counterfactual_extracts(group_by_run(events)) == []
-    assert "skipped 1 record(s)" in caplog.text   # `Flat(title=...)` is not a literal
+        for events in (coerced, two, renamed):
+            assert export_counterfactual_extracts(group_by_run(_without_final_outputs(events))) == []
+    assert caplog.text.count("skipped 1 record(s)") == 3
 
 
 def test_runs_that_did_not_end_by_a_successful_submit_contribute_nothing(tmp_path, caplog):

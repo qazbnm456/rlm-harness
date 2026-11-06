@@ -43,6 +43,7 @@ SOURCE_COUNTERFACTUAL = "counterfactual_submit"   # a SUBMIT's values, as the ex
 # Where a counterfactual extract record's target came from.
 TARGET_FINAL_OUTPUTS = "final.outputs"   # recorded by the kit (1.26.0 and later)
 TARGET_FINAL_REPR = "final_repr"         # parsed back from the SUBMIT turn's `FINAL: {...}` output
+TARGET_RESULT = "result"                 # the `result` event: output_field after output_model coercion
 
 
 def _canonical(value: Any) -> str:
@@ -312,10 +313,10 @@ def _segments(events: Iterable[dict]) -> list[dict]:
         # further on belongs to a later run, possibly one recorded without an `rlm_setup`.
         just_closed, closed = closed, None
         if t == "result" and just_closed is not None:
-            just_closed["result"] = True
+            just_closed["result"] = e.get("payload") or {}
         elif t == "rlm_setup":
             current = {"setup": e["payload"], "steps": [], "extract": None, "final": None,
-                       "result": False}
+                       "result": None}
             segments.append(current)
         elif current is None:
             continue
@@ -443,8 +444,9 @@ def _submitted_outputs(seg: dict) -> tuple[dict, str] | None:
 
     ``final.outputs`` is what the kit recorded. A trace without it still has the SUBMIT turn's
     output, which dspy writes as ``f"FINAL: {parsed_outputs}"``, a Python repr. That parses back
-    only when every value is a literal (str, number, bool, None, list, dict); a pydantic value's repr
-    does not, and the segment is skipped rather than given a guessed target.
+    only when every value is a literal (str, number, bool, None, list, dict). A pydantic value's repr
+    does not, and the value is read from the run's ``result`` event instead (:func:`_from_result`).
+    When neither works the segment is skipped rather than given a guessed target.
     """
     outputs = (seg["final"] or {}).get("outputs")
     if isinstance(outputs, dict):
@@ -455,11 +457,47 @@ def _submitted_outputs(seg: dict) -> tuple[dict, str] | None:
     try:
         parsed = ast.literal_eval(text[len("FINAL: "):])
     except (ValueError, SyntaxError, MemoryError, RecursionError):
-        return None
+        return _from_result(seg)
     fields = list(seg["setup"].get("output_fields") or [])
     if not isinstance(parsed, dict) or list(parsed) != fields:
         return None
     return parsed, TARGET_FINAL_REPR
+
+
+def _from_result(seg: dict) -> tuple[dict, str] | None:
+    """The SUBMIT value read from the run's ``result`` event, or ``None`` when that is unsafe.
+
+    ``result`` holds only the task's ``output_field``, after ``output_model`` coercion, so it can stand
+    for the SUBMIT only when the signature has that one output field, and only when the coerced value
+    still has the field's recorded type: a ``str`` field that ``output_model`` parsed into a model
+    records a dict where the model submitted a string. A structured value must also come from a
+    SUBMIT of the same class, which the ``FINAL: {...}`` repr names (``{'verdict': ChangeVerdict(``).
+    """
+    if "output" not in (seg["result"] or {}):
+        return None
+    spec = (seg["setup"].get("predictors") or {}).get(ROLE_EXTRACT) or {}
+    outs = [f for f in spec.get("fields") or [] if f.get("io") == "output"]
+    if len(outs) != 1 or [f.get("name") for f in outs] != list(seg["setup"].get("output_fields") or []):
+        return None
+    field, value = outs[0], seg["result"]["output"]
+    kind, name = field.get("kind"), field.get("type")
+    if kind == "builtin":
+        expected = {"str": (str,), "int": (int,), "float": (int, float), "bool": (bool,)}.get(name)
+        ok = expected is not None and isinstance(value, expected) and (
+            name == "bool" or not isinstance(value, bool))
+    elif kind == "literal":
+        ok = value in (field.get("args") or [])
+    elif kind == "enum":
+        ok = value in (field.get("members") or {}).values()
+    elif kind == "schema":
+        shape = {"object": dict, "array": list}.get((field.get("schema") or {}).get("type"))
+        ok = shape is not None and isinstance(value, shape)
+        if ok and isinstance(name, str) and name.isidentifier():
+            text = (seg["steps"][-1].get("output") if seg["steps"] else None) or ""
+            ok = text.startswith(f"FINAL: {{{field['name']!r}: {name}(")
+    else:
+        ok = False
+    return ({field["name"]: value}, TARGET_RESULT) if ok else None
 
 
 def render_counterfactual_extracts(
@@ -483,7 +521,7 @@ def render_counterfactual_extracts(
     skipped = 0
     for seg in _segments(events):
         setup, steps, final = seg["setup"], seg["steps"], seg["final"] or {}
-        if not seg["result"] or seg["extract"] is not None or final.get("extract") is not False:
+        if seg["result"] is None or seg["extract"] is not None or final.get("extract") is not False:
             continue   # the trajectory did not end by SUBMIT, or the run failed
         submitted = _submitted_outputs(seg) if steps else None
         if submitted is None:

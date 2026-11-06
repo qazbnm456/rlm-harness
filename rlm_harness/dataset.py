@@ -446,8 +446,11 @@ def export_counterfactual_extracts(
     ``assistant.content`` is the adapter's own formatting of the SUBMIT values in signature order
     (``json.dumps(..., indent=2)`` for JSON, the ``[[ ## field ## ]]`` blocks for chat).
     ``counterfactual.target_source`` says where they were read: ``"final.outputs"``, recorded since
-    1.26.0, or ``"final_repr"``, parsed from the SUBMIT turn's ``FINAL: {...}`` output in an older
-    trace, which works only when every value is a Python literal.
+    1.26.0. An older trace lacks it, so they are parsed from the SUBMIT turn's ``FINAL: {...}`` output
+    (``"final_repr"``), which works when every value is a Python literal, or else read from the run's
+    ``result`` event (``"result"``). ``result`` is the value after ``output_model`` validation and
+    holds only ``output_field``, so it is used only for a single-output signature and only when it has
+    the field's recorded type and, for a structured type, the class the SUBMIT repr names.
 
     ``custom_types`` and ``adapter`` work as in ``export_sft_turns(render="adapter")``. Skipped and
     counted in a warning: a trajectory whose SUBMIT values cannot be read, and a cut that would leave
