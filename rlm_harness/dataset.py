@@ -409,6 +409,69 @@ def _export_rendered_turns(
     return records
 
 
+def export_counterfactual_extracts(
+    runs: dict[str, list[dict]],
+    *,
+    cut_back: Iterable[int] = (0,),
+    custom_types: dict[str, Any] | None = None,
+    adapter: Any = None,
+) -> list[dict]:
+    """Extract-fallback SFT samples built from runs that ended by SUBMIT.
+
+    dspy's ``extract`` call runs only when a trajectory hits ``max_iterations`` without SUBMIT, which
+    in a healthy corpus is rare and mostly comes from failed runs, so real extract calls make a small
+    and skewed dataset. This builds the call from a run that did SUBMIT: the request is the
+    one dspy would send had the run been cut off before its SUBMIT turn, and the answer is the values
+    that SUBMIT returned. The default export and ``render="adapter"`` are unaffected; these records
+    come only from this function.
+
+    For each recorded trajectory that ended by SUBMIT in a run that succeeded (it has a ``result``
+    event), and for each ``n`` in ``cut_back``, one record::
+
+        {run_id, kind: "extract", turn, adapter,
+         messages: [{role: "system", ...}, {role: "user", ...}],
+         assistant: {role: "assistant", content},
+         assistant_source: "counterfactual_submit",
+         verified: None,
+         counterfactual: {submit_turn, cut_back, target_source},
+         run_tag?, attempt?}
+
+    ``messages`` is dspy's own ``Adapter.format`` over the extract signature recorded in
+    ``rlm_setup.predictors.extract``, the run's ``variables_info``, and a REPL history of the
+    trajectory's first ``turn`` entries, where ``turn = submit_turn - n``. ``n = 0`` drops only the
+    SUBMIT turn. A larger ``n`` cuts earlier, but the answer stays the final SUBMIT's values, which
+    the history at that point may not yet support. The request is byte for byte what a real extract
+    over the same history sends, but none was sent, so ``verified`` is always ``None``.
+
+    ``assistant.content`` is the adapter's own formatting of the SUBMIT values in signature order
+    (``json.dumps(..., indent=2)`` for JSON, the ``[[ ## field ## ]]`` blocks for chat).
+    ``counterfactual.target_source`` says where they were read: ``"final.outputs"``, recorded since
+    1.26.0, or ``"final_repr"``, parsed from the SUBMIT turn's ``FINAL: {...}`` output in an older
+    trace, which works only when every value is a Python literal.
+
+    ``custom_types`` and ``adapter`` work as in ``export_sft_turns(render="adapter")``. Skipped and
+    counted in a warning: a trajectory whose SUBMIT values cannot be read, and a cut that would leave
+    an empty history. A run that ended by extract, failed, or predates ``rlm_setup`` (1.25.0)
+    contributes nothing and is not counted. This function imports dspy.
+    """
+    from .prompt_record import render_counterfactual_extracts
+
+    records: list[dict] = []
+    skipped = 0
+    for run_id, events in runs.items():
+        rendered, missing = render_counterfactual_extracts(
+            events, cut_back=cut_back, custom_types=custom_types, adapter=adapter)
+        skipped += missing
+        records.extend({"run_id": run_id, **rec} for rec in rendered)
+    if skipped:
+        logger.warning(
+            "export_counterfactual_extracts skipped %d record(s): SUBMIT values that could not be "
+            "read back from the trace, or a cut that left no history",
+            skipped,
+        )
+    return records
+
+
 def export_rl(
     runs: dict[str, list[dict]],
     *,

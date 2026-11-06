@@ -842,8 +842,9 @@ class TraceRecorder:
         dspy-free. It adds an :data:`EVENT_RLM_SETUP` before the turns, per-call fields merged into
         each ``main_step`` (``iteration``, ``history_len``, ``messages_sha256``, ``completion``,
         ``usage`` and the rest, listed in the guide's "Re-rendering what the model was sent"), an
-        :data:`EVENT_EXTRACT` after the turns when the fallback ran, and ``extract`` on ``final``. A turn
-        the capture could not be matched to (checked on ``reasoning``) gets none of the per-call fields.
+        :data:`EVENT_EXTRACT` after the turns when the fallback ran, and ``extract`` and ``outputs`` on
+        ``final``. A turn the capture could not be matched to (checked on ``reasoning``) gets none of
+        the per-call fields.
 
         Each turn's ``ts`` is the LIVE time it was parsed (from ``note_main_step``), matched by
         ``reasoning``, so a re-rendered trace reflects when turns actually happened, not when the
@@ -949,6 +950,8 @@ class TraceRecorder:
         if "extract_ran" in capture:
             # Written only when a capture ran. Without one the kit cannot tell, and the key is absent.
             final["extract"] = bool(capture["extract_ran"])
+        if isinstance(capture.get("outputs"), dict):
+            final["outputs"] = capture["outputs"]
         self.record(EVENT_FINAL, final)
 
     def record_result(self, output: Any) -> None:

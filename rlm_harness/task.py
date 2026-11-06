@@ -275,7 +275,7 @@ def _demos_as_json(demos: Sequence[Any]) -> list[dict[str, Any]]:
 def _compose_capture(
     rlm: Any, calls: list[dict[str, Any]], trajectory: Sequence[Any], *, attempt: int,
     run_tag: str | None, inputs_sha256: dict[str, str] | None = None,
-    lms: dict[str, Any] | None = None,
+    lms: dict[str, Any] | None = None, prediction: Any = None,
 ) -> dict[str, Any] | None:
     """One attempt's captured calls as trace payloads: ``rlm_setup``, per-turn fields, the extract.
 
@@ -408,8 +408,17 @@ def _compose_capture(
         extract = _fields(extract_call)
         sig = extract_call["format"][1] if "format" in extract_call else rlm.signature
         extract["outputs"] = outputs_as_json(sig, extract_call["prediction"])
-    return {"setup": setup, "steps": steps, "extract": extract,
-            "extract_ran": extract_call is not None}
+    composed = {"setup": setup, "steps": steps, "extract": extract,
+                "extract_ran": extract_call is not None}
+    if prediction is not None:
+        try:
+            # What the program returned, by SUBMIT or by extract: the target a counterfactual
+            # extract record trains on (`dataset.export_counterfactual_extracts`).
+            composed["outputs"] = outputs_as_json(rlm.signature, prediction)
+        except Exception:
+            logger.warning("could not record the returned outputs; final omits outputs",
+                           exc_info=True)
+    return composed
 
 
 def _lm_block(lms: dict[str, Any]) -> dict[str, Any]:
@@ -1304,6 +1313,7 @@ class RLMTask:
                     rlm, calls, list(trajectory), attempt=index, run_tag=self._run_tag,
                     inputs_sha256=bound_digests,
                     lms={"main": dspy.settings.lm, "sub": self._sub_lm},
+                    prediction=captured["prediction"],
                 )
             except Exception:
                 logger.warning("could not compose the step capture; the trace keeps turns only",

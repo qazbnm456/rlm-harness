@@ -234,6 +234,7 @@ def test_public_surface_includes_the_consumer_contract():
         "intercept_sub_lm", "model_as_tool", "get_sub_lm", "load_skills_as_tools",
         "TraceRecorder", "current_recorder", "record_tool_call", "load_events", "group_by_run",
         "export_sft_turns", "export_rl", "export_actions", "run_label_bundle",
+        "export_counterfactual_extracts",
         # REPL-safety rules a CONSUMER needs when it builds its own tools (1.1.0). Listed here
         # DELIBERATELY: the assertion below is a SUBSET check, so a new __all__ entry passes on
         # its own: being in `must_export` is what makes an accidental removal go red.

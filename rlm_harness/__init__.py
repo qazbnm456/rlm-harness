@@ -32,7 +32,13 @@ from ._toolname import (
 )
 from .atomic import atomic_write_stream, atomic_write_text
 from .config import RLMConfig
-from .dataset import export_actions, export_rl, export_sft_turns, run_label_bundle
+from .dataset import (
+    export_actions,
+    export_counterfactual_extracts,
+    export_rl,
+    export_sft_turns,
+    run_label_bundle,
+)
 from .isolation import run_in_subprocess
 from .large_text import LargeText, LargeTextRefused
 from .memory import (
@@ -150,6 +156,7 @@ __all__ = [
     "reconstruct",
     "RecordedToolProvider",
     "export_sft_turns",
+    "export_counterfactual_extracts",
     "export_rl",
     "export_actions",
     "run_label_bundle",

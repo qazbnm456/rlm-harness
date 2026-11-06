@@ -23,6 +23,7 @@ The module top is dspy-free like ``trace.py`` and ``dataset.py``. The capture si
 
 from __future__ import annotations
 
+import ast
 import enum
 import hashlib
 import json
@@ -37,6 +38,11 @@ ROLE_EXTRACT = "extract"
 #: Values of ``assistant_source`` on an exported record.
 SOURCE_COMPLETION = "completion"   # the LM's raw content string, as returned
 SOURCE_RENDERED = "rendered"       # rebuilt from parsed outputs by the adapter's own formatter
+SOURCE_COUNTERFACTUAL = "counterfactual_submit"   # a SUBMIT's values, as the extract call's answer
+
+# Where a counterfactual extract record's target came from.
+TARGET_FINAL_OUTPUTS = "final.outputs"   # recorded by the kit (1.26.0 and later)
+TARGET_FINAL_REPR = "final_repr"         # parsed back from the SUBMIT turn's `FINAL: {...}` output
 
 
 def _canonical(value: Any) -> str:
@@ -298,11 +304,17 @@ def _segments(events: Iterable[dict]) -> list[dict]:
     """
     segments: list[dict] = []
     current: dict | None = None
+    closed: dict | None = None   # the segment a following `result` belongs to
     for e in events:
         t = e.get("type")
         if t == "rlm_setup":
-            current = {"setup": e["payload"], "steps": [], "extract": None}
+            current = {"setup": e["payload"], "steps": [], "extract": None, "final": None,
+                       "result": False}
             segments.append(current)
+            closed = None
+        elif t == "result" and closed is not None:
+            closed["result"] = True   # the kit records a result only for a run that succeeded
+            closed = None
         elif current is None:
             continue
         elif t == "main_step":
@@ -310,7 +322,8 @@ def _segments(events: Iterable[dict]) -> list[dict]:
         elif t == "extract":
             current["extract"] = e["payload"]
         elif t == "final":
-            current = None
+            current["final"] = e.get("payload") or {}
+            closed, current = current, None
     return segments
 
 
@@ -363,8 +376,12 @@ def render_steps(
     return records, total - covered + unrenderable
 
 
-def _render_one(role: str, p: dict, seg: dict, predictors: dict, setup: dict,
-                custom_types: Mapping[str, Any], adapter: Any) -> dict:
+def _request(role: str, p: dict, seg: dict, predictors: dict, setup: dict,
+             custom_types: Mapping[str, Any], adapter: Any) -> tuple[Any, Any, dict, list]:
+    """``(signature, adapter, identity, messages)`` for one call, from the recorded fields.
+
+    ``p`` holds the per-call fields; whatever it lacks comes from ``setup``, as it was recorded.
+    """
     spec = p.get("signature") or predictors.get(role)
     if spec is None:
         raise RenderError(f"no {role} signature was recorded for this run")
@@ -372,16 +389,22 @@ def _render_one(role: str, p: dict, seg: dict, predictors: dict, setup: dict,
     identity = {k: p.get(k, setup.get(k)) for k in ("adapter", "adapter_class")}
     fmt = adapter if adapter is not None else build_adapter(identity)
 
-    length = p["history_len"]
     inputs: dict[str, Any] = {
         "variables_info": p.get("variables_info", setup.get("variables_info")),
-        "repl_history": _history(seg["steps"], length,
+        "repl_history": _history(seg["steps"], p["history_len"],
                                  p.get("max_output_chars", setup.get("max_output_chars"))),
     }
     if role == ROLE_ACTION:
         inputs["iteration"] = p.get("iteration")
     demos = list(p.get("demos", spec.get("demos")) or [])
-    messages = fmt.format(signature, demos, inputs)
+    return signature, fmt, identity, fmt.format(signature, demos, inputs)
+
+
+def _render_one(role: str, p: dict, seg: dict, predictors: dict, setup: dict,
+                custom_types: Mapping[str, Any], adapter: Any) -> dict:
+    signature, fmt, identity, messages = _request(role, p, seg, predictors, setup,
+                                                  custom_types, adapter)
+    length = p["history_len"]
 
     recorded = p.get("messages_sha256")
     record: dict[str, Any] = {
@@ -411,3 +434,86 @@ def _render_one(role: str, p: dict, seg: dict, predictors: dict, setup: dict,
         if key in p:
             record[key] = p[key]
     return record
+
+
+def _submitted_outputs(seg: dict) -> tuple[dict, str] | None:
+    """The values a segment's SUBMIT returned, and where they were read from, or ``None``.
+
+    ``final.outputs`` is what the kit recorded. A trace without it still has the SUBMIT turn's
+    output, which dspy writes as ``f"FINAL: {parsed_outputs}"``, a Python repr. That parses back
+    only when every value is a literal (str, number, bool, None, list, dict); a pydantic value's repr
+    does not, and the segment is skipped rather than given a guessed target.
+    """
+    outputs = (seg["final"] or {}).get("outputs")
+    if isinstance(outputs, dict):
+        return outputs, TARGET_FINAL_OUTPUTS
+    text = (seg["steps"][-1].get("output") if seg["steps"] else None) or ""
+    if not text.startswith("FINAL: "):
+        return None
+    try:
+        parsed = ast.literal_eval(text[len("FINAL: "):])
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        return None
+    fields = list(seg["setup"].get("output_fields") or [])
+    if not isinstance(parsed, dict) or list(parsed) != fields:
+        return None
+    return parsed, TARGET_FINAL_REPR
+
+
+def render_counterfactual_extracts(
+    events: list[dict],
+    *,
+    cut_back: Iterable[int] = (0,),
+    custom_types: Mapping[str, Any] | None = None,
+    adapter: Any = None,
+) -> tuple[list[dict], int]:
+    """Extract calls a successful SUBMIT run never made, with that SUBMIT's values as the answer.
+
+    For each recorded trajectory that ended by SUBMIT in a run that succeeded, and for each ``n`` in
+    ``cut_back``, renders the request dspy's extract fallback would send had the run been cut off
+    with the SUBMIT turn and the ``n`` turns before it missing. Returns ``(records, skipped)``; see
+    ``dataset.export_counterfactual_extracts`` for the record and for what is skipped.
+    """
+    cuts = sorted({int(n) for n in cut_back})
+    if not cuts or cuts[0] < 0:
+        raise ValueError(f"cut_back must hold integers >= 0, not {list(cut_back)!r}")
+    records: list[dict] = []
+    skipped = 0
+    for seg in _segments(events):
+        setup, steps, final = seg["setup"], seg["steps"], seg["final"] or {}
+        if not seg["result"] or seg["extract"] is not None or final.get("extract") is not False:
+            continue   # the trajectory did not end by SUBMIT, or the run failed
+        submitted = _submitted_outputs(seg) if steps else None
+        if submitted is None:
+            skipped += len(cuts)
+            continue
+        outputs, target_source = submitted
+        submit_turn = len(steps) - 1
+        predictors = setup.get("predictors") or {}
+        for n in cuts:
+            length = submit_turn - n
+            if length < 1:
+                # dspy never sends extract over an empty history: max_iterations is at least 1.
+                skipped += 1
+                continue
+            p = {"history_len": length}
+            signature, fmt, identity, messages = _request(
+                ROLE_EXTRACT, p, seg, predictors, setup, custom_types or {}, adapter)
+            record: dict[str, Any] = {
+                "kind": ROLE_EXTRACT,
+                "turn": length,
+                "adapter": identity.get("adapter"),
+                "messages": messages,
+                "assistant": {"role": "assistant",
+                              "content": fmt.format_assistant_message_content(signature, outputs)},
+                "assistant_source": SOURCE_COUNTERFACTUAL,
+                # No request was ever sent, so there is no hash to verify against.
+                "verified": None,
+                "counterfactual": {"submit_turn": submit_turn, "cut_back": n,
+                                   "target_source": target_source},
+            }
+            for key in ("run_tag", "attempt"):
+                if key in setup:
+                    record[key] = setup[key]
+            records.append(record)
+    return records, skipped

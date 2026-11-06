@@ -29,7 +29,7 @@ pitch, the quickstart, and installation: start at the
 | `skills.py` | `load_skills_as_tools`: expose a Skills directory to the RLM as tools. |
 | `trace.py` | `TraceRecorder`: unified append-only JSONL trajectory (main steps + sub-LM + tool calls). |
 | `replay.py` | Reconstruct/replay a recorded run using recorded tool outputs. |
-| `dataset.py` | `export_sft_turns` / `export_rl` / `export_actions` (turn traces into training datasets (`export_sft_turns` = per-root-turn SFT, the RLM recipe of arXiv 2512.24601; `render="adapter"` re-renders the exact request each planner call was sent, see "Re-rendering what the model was sent"); `run_label_bundle`) carry per-run LABEL surfaces beside the trajectory. |
+| `dataset.py` | `export_sft_turns` / `export_rl` / `export_actions` (turn traces into training datasets (`export_sft_turns` = per-root-turn SFT, the RLM recipe of arXiv 2512.24601; `render="adapter"` re-renders the exact request each planner call was sent, see "Re-rendering what the model was sent"; `export_counterfactual_extracts` builds extract-fallback samples from runs that ended by SUBMIT); `run_label_bundle`) carry per-run LABEL surfaces beside the trajectory. |
 | `prompt_record.py` | What each `generate_action` / `extract` call was shown, as JSON (`describe_signature`, `messages_sha256`), and the re-render behind `export_sft_turns(render="adapter")`. dspy-free at module top. |
 | `mcp.py` | MCP **client** (optional `rlm-harness[mcp]`): `mcp_tools` exposes an external server's tools as SYNC `dspy.Tool`s; `McpCatalog`/`McpConnection` for a progressive multi-server surface. |
 | `testing.py` | Offline forward-path harness: `ScriptedInterpreter`, `scripted_lm`, and the REPL-safety assertions `assert_repl_safe` / `assert_task_repl_safe`. |
@@ -2593,7 +2593,7 @@ Each `main_step` adds:
 - `attempt`, `run_tag`, and `code_raw` when the code the model wrote differs from dspy's fence-stripped `code`.
 - `signature`, `variables_info`, `max_output_chars`, `adapter` and `adapter_class`, only when they differ from `rlm_setup`, as they do for a ChatAdapter call that fell back to JSON.
 
-`extract` follows the last `main_step` when the fallback ran. It has the same per-call fields except `iteration`, plus `outputs`, the parsed output fields as JSON in signature order. `final.extract` is `true` or `false` when the kit captured the run's calls and absent when it could not tell; before 1.25.0 the only sign of the fallback was dspy's literal `final_reasoning` string.
+`extract` follows the last `main_step` when the fallback ran. It has the same per-call fields except `iteration`, plus `outputs`, the parsed output fields as JSON in signature order. `final.extract` is `true` or `false` when the kit captured the run's calls and absent when it could not tell; before 1.25.0 the only sign of the fallback was dspy's literal `final_reasoning` string. `final.outputs` (1.26.0) holds the output fields the program returned, by SUBMIT or by extract, as JSON in signature order.
 
 A turn the capture cannot match to its call (checked on `reasoning`) gets none of the per-call fields, because a missing field can be skipped and a wrong one becomes a training example. Calls are staged per retry attempt, and only the attempt whose turns reached the trace is written.
 
@@ -2618,6 +2618,28 @@ records = export_sft_turns(group_by_run(load_events("trace.jsonl")), render="ada
 - A field type is rebuilt from what an adapter reads off it: its name, and for a structured type its JSON schema. pydantic cannot rebuild a schema that has `$defs`, such as a model that nests another or `list[Flat]`, so pass the real type under the annotation name the trace recorded: `custom_types={"Article": Article}` or `{"list[Flat]": list[Flat]}`. Without it the export raises `RenderError` naming the type. A `dspy.Type` that adds its own description text is rebuilt without it, and the record comes out `verified: False`.
 - `adapter=` takes an adapter instance and is needed only for a run formatted by a class outside dspy's json, chat and xml families. The kit never imports a class named in a trace.
 - A call with nothing to render from is skipped and counted in a warning: every turn of a trace written before 1.25.0, and any turn the capture could not match to its call. The rest of the run still exports. The default `render=None` export is unchanged.
+
+### Extract samples from runs that submitted
+
+dspy sends its `extract` request only when a trajectory runs out of iterations, so a corpus holds few real extract calls, and most of those come from runs that failed. `export_counterfactual_extracts` builds the same call from a successful run that ended by SUBMIT: the request dspy would have sent had the run been cut off before its SUBMIT turn, answered with the values that SUBMIT returned.
+
+```python
+from rlm_harness import export_counterfactual_extracts, group_by_run, load_events
+
+records = export_counterfactual_extracts(group_by_run(load_events("trace.jsonl")), cut_back=(0, 2))
+# {run_id, kind: "extract", turn, adapter, messages,
+#  assistant: {role: "assistant", content},
+#  assistant_source: "counterfactual_submit",
+#  verified: None,
+#  counterfactual: {submit_turn, cut_back, target_source: "final.outputs"|"final_repr"},
+#  run_tag?, attempt?}
+```
+
+- `messages` is rendered from the extract signature in `rlm_setup.predictors.extract`, the run's `variables_info`, and the first `turn` REPL entries, where `turn = submit_turn - n` for each `n` in `cut_back`. With the same history it is byte for byte the request a real extract sends, and the tests check it against the `messages_sha256` recorded on one. No request was sent for this record, so `verified` is always `None`.
+- `n = 0` drops only the SUBMIT turn. A larger `n` cuts earlier, but the answer stays the final SUBMIT's values, which the shorter history may not yet support. A cut that would leave no history is skipped, since dspy never sends extract over an empty one.
+- `assistant.content` is the adapter's own formatting of the submitted values: indented JSON for the JSON adapter, `[[ ## field ## ]]` blocks for chat.
+- The values come from `final.outputs`. A 1.25.0 trace lacks it, so they are parsed from the SUBMIT turn's `FINAL: {...}` output (`target_source: "final_repr"`), which works only when every value is a Python literal: a trajectory with a pydantic value is skipped and counted in a warning.
+- Only a trajectory whose run has a `result` event counts, because the kit also records the last attempt of a failed run, and that SUBMIT was rejected. A run that ended by extract contributes nothing.
 
 `RLMTask(run_tag="...")` is stamped on `rlm_setup`, every `main_step` and `extract`, for grouping a corpus by model, budget or experiment arm. The kit never reads it.
 

@@ -4,6 +4,15 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
+## [Unreleased] (1.26.0)
+
+**`export_counterfactual_extracts` builds extract-fallback training samples from runs that ended by SUBMIT.** dspy sends its `extract` request only when a trajectory runs out of iterations, so real extract calls are rare in a corpus and mostly come from runs that failed. A run that submitted holds everything the same call needs: the extract signature in `rlm_setup`, the turns before its SUBMIT, and the values it submitted.
+
+### Added
+
+- **`export_counterfactual_extracts(runs, cut_back=(0,))`** returns one `kind: "extract"` record per successful SUBMIT trajectory and cut. `messages` is dspy's own `Adapter.format` over the recorded extract signature and the turns before the SUBMIT turn, or `n` turns earlier for each `n` in `cut_back`, and is byte for byte the request a real extract over that history sends. The assistant side is the adapter's formatting of the submitted values. Each record carries `assistant_source: "counterfactual_submit"`, `verified: None` (no request was sent, so there is nothing to check it against) and `counterfactual: {submit_turn, cut_back, target_source}`. `custom_types` and `adapter` work as in `export_sft_turns(render="adapter")`, and neither existing export changes.
+- **`final.outputs`**: the output fields the program returned, by SUBMIT or by extract, as JSON in signature order, written when the kit captured the run's calls. A 1.25.0 trace has no `final.outputs`, so the export parses the SUBMIT turn's `FINAL: {...}` output instead (`target_source: "final_repr"`). That works only when every value is a Python literal, and a trajectory whose values cannot be read is skipped and counted in a warning.
+
 ## [1.25.0] - 2026-11-05
 
 **The trace now records what each planner call was shown, and `export_sft_turns` can return the exact request.** dspy sends each planner turn as one single-turn request formatted by the run's adapter, plus one `extract` request when the iteration budget runs out. The trace used to keep only each turn's `{reasoning, code, output}`, so a downstream converter had to render its own multi-turn chat, which trained the model on a format it is never served, and the extract call left no record. Everything added here is optional payload within `rlm-harness/trace/v2`.
