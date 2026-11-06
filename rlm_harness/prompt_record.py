@@ -433,7 +433,7 @@ def _render_one(role: str, p: dict, seg: dict, predictors: dict, setup: dict,
     record["assistant_source"] = source
     if p.get("reasoning_content") is not None:
         record["reasoning_content"] = p["reasoning_content"]
-    for key in ("usage", "run_tag", "attempt"):
+    for key in ("usage", "run_tag", "attempt", "parse_wrapped"):
         if key in p:
             record[key] = p[key]
     return record

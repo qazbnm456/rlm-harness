@@ -33,7 +33,7 @@ from ._retry import run_with_retry
 from ._toolname import with_model_facing_description
 from .config import RLMConfig
 from .optimize import FINGERPRINT_KEY as _FINGERPRINT_KEY
-from .runtime import get_config, get_sub_lm
+from .runtime import _PARSE_WRAPPED, get_config, get_sub_lm
 from .sandbox import SandboxCancelled, build_interpreter, caller_owned
 from .sub_lm import _ensure_sub_call_recording, bind_recorder_to_sub_lm
 from .trace import EVENT_COMPILED_INSTRUCTIONS, _ensure_tool_timing, current_recorder
@@ -174,7 +174,8 @@ class _StepCapture(BaseCallback):  # type: ignore[misc, valid-type]
     Per call it keeps the signature, demos, adapter and input values given to the window's last
     format (a ChatAdapter that falls back to JSON formats twice, and the second is the one answered),
     the sha256 of the messages that format produced, the first LM output's raw content and
-    ``reasoning_content``, the parsed outputs, and the usage the tracker gained during the window.
+    ``reasoning_content``, the parsed outputs, the usage the tracker gained during the window, and
+    whether ``_LenientJSONAdapter.parse`` needed its brace-wrap retry to parse the reply.
     :func:`_compose_capture` turns these into JSON once, for the attempt that reaches the trace.
     """
 
@@ -194,7 +195,13 @@ class _StepCapture(BaseCallback):  # type: ignore[misc, valid-type]
         baseline = (
             _dspy_compat.usage_baseline(self._tracker) if self._tracker is not None else None
         )
-        self._open = {"role": role, "call_id": call_id, "baseline": baseline}
+        wrapped: list[bool] = []
+        try:
+            token = _PARSE_WRAPPED.set(wrapped)
+        except Exception:
+            token = None
+        self._open = {"role": role, "call_id": call_id, "baseline": baseline,
+                      "wrapped": wrapped, "token": token}
 
     def on_adapter_format_start(self, call_id, instance, inputs):
         if self._open is None:
@@ -228,8 +235,17 @@ class _StepCapture(BaseCallback):  # type: ignore[misc, valid-type]
 
     def on_module_end(self, call_id, outputs, exception=None):
         call, self._open = self._open, None
-        if call is None or call["call_id"] != call_id or exception is not None:
+        if call is None:
             return
+        if call["token"] is not None:
+            # Defensive: a reset from a context other than the start's raises, and the list is read
+            # either way. dspy 3.4.1 runs both hooks of a predictor call in one context.
+            with contextlib.suppress(ValueError):
+                _PARSE_WRAPPED.reset(call["token"])
+        if call["call_id"] != call_id or exception is not None:
+            return
+        if call["wrapped"]:
+            call["parse_wrapped"] = True
         if call.get("baseline") is not None:
             call["usage"] = _dspy_compat.usage_since(self._tracker, call["baseline"])
         call["prediction"] = outputs
@@ -380,6 +396,12 @@ def _compose_capture(
             out["completion"] = call["completion"]
         if "reasoning_content" in call:
             out["reasoning_content"] = call["reasoning_content"]
+        if call.get("parse_wrapped"):
+            # The reply had no outer braces and parsed only after the adapter added them. The reply is
+            # `completion`, or `reasoning_content` when the content was empty and the adapter parsed
+            # the reasoning channel instead. Absent when the reply parsed as written. With n > 1 the
+            # flag covers every completion the call parsed; the RLM's predictors request one.
+            out["parse_wrapped"] = True
         if "usage" in call:
             out["usage"] = json.loads(json.dumps(call["usage"], default=str))
         out["attempt"] = attempt

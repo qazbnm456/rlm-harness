@@ -471,6 +471,25 @@ def test_lenient_json_adapter_recovers_braceless_object():
     assert a.parse(sig, '{"reasoning": "r2", "code": "c2"}') == {"reasoning": "r2", "code": "c2"}
 
 
+def test_the_brace_wrap_reports_itself_only_when_it_parsed_the_reply():
+    sig = dspy.Signature("q: str -> reasoning: str, code: str")
+    a = rt._LenientJSONAdapter()
+    sink: list[bool] = []
+    token = rt._PARSE_WRAPPED.set(sink)
+    try:
+        a.parse(sig, '{"reasoning": "r", "code": "c"}')
+        assert sink == []
+        a.parse(sig, '"reasoning": "r", "code": "c"')
+        assert sink == [True]
+        with pytest.raises(Exception):
+            a.parse(sig, "not json at all")
+        assert sink == [True], "a wrap that failed reports nothing"
+    finally:
+        rt._PARSE_WRAPPED.reset(token)
+    # Outside a captured call there is nowhere to report, and parsing is unchanged.
+    assert a.parse(sig, '"reasoning": "r", "code": "c"') == {"reasoning": "r", "code": "c"}
+
+
 def test_lenient_adapter_promotes_reasoning_content_when_content_empty():
     """A REASONING root (qwen3 / deepseek / gpt-oss) sometimes emits the whole structured turn into
     `reasoning_content` and returns `content` (text) null. The adapter promotes it so the turn

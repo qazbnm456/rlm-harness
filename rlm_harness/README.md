@@ -2591,6 +2591,7 @@ Each `main_step` adds:
 - `completion`, the LM's raw content string as returned, and `reasoning_content` when the provider sent a separate reasoning channel.
 - `usage`, `{model: [usage]}` gained while this call was open. A ChatAdapter that fell back to JSON shows two entries, and if your own `dspy.track_usage()` spans concurrent runs, another run's calls can appear too.
 - `attempt`, `run_tag`, and `code_raw` when the code the model wrote differs from dspy's fence-stripped `code`.
+- `parse_wrapped: true` (1.26.0) when the reply had no outer braces and `_LenientJSONAdapter` parsed it only after adding them. The reply is `completion`, or `reasoning_content` when the content was empty and the adapter parsed the reasoning channel. Absent when the reply parsed as written.
 - `signature`, `variables_info`, `max_output_chars`, `adapter` and `adapter_class`, only when they differ from `rlm_setup`, as they do for a ChatAdapter call that fell back to JSON.
 
 `extract` follows the last `main_step` when the fallback ran. It has the same per-call fields except `iteration`, plus `outputs`, the parsed output fields as JSON in signature order. `final.extract` is `true` or `false` when the kit captured the run's calls and absent when it could not tell; before 1.25.0 the only sign of the fallback was dspy's literal `final_reasoning` string. `final.outputs` (1.26.0) holds the output fields the program returned, by SUBMIT or by extract, as JSON in signature order.
@@ -2608,12 +2609,13 @@ records = export_sft_turns(group_by_run(load_events("trace.jsonl")), render="ada
 #  assistant: {role: "assistant", content},
 #  assistant_source: "completion"|"rendered",
 #  verified: True|False|None,
-#  reasoning_content?, usage?, run_tag?, attempt?}
+#  reasoning_content?, usage?, run_tag?, attempt?, parse_wrapped?}
 ```
 
 - `messages` is rebuilt rather than stored. The history comes from this trajectory's earlier `main_step` entries, truncated by `max_output_chars` the way dspy truncates them, which keeps the trace linear in its turn count. `verified` compares the result with `messages_sha256`: `True` means it is the request that was sent, `False` means it is not, and `None` means no hash was recorded. `strict=True` raises on `False`.
 - `assistant.content` is the raw completion, unchanged. Without a completion, the record falls back to the adapter's own formatter over the parsed outputs and sets `assistant_source: "rendered"`. For JSON that is `json.dumps(..., indent=2)` in signature field order, because dspy's `JSONAdapter.format_finetune_data` raises `NotImplementedError` (dspy 3.4.1: `uv run python -c "import dspy; dspy.JSONAdapter().format_finetune_data(None, [], {}, {})"`).
 - `reasoning_content` stays a separate field. When a reasoning model returns empty content (`null` or `""`) with its answer in `reasoning_content`, which `_LenientJSONAdapter` handles by parsing the reasoning channel, the empty completion is not used as the target and the record is `"rendered"`.
+- `parse_wrapped: true` is copied from the call. The run accepted that reply only after the adapter added the outer braces. On a `"completion"` record, `assistant.content` is the reply as written, without them. On a `"rendered"` record, the reply came from `reasoning_content`, and `assistant.content` is valid JSON the model did not write in that form. Drop these records to train only on replies that parsed as written, or count them to see how often a model drops the braces.
 - An extract record's `turn` is the number of REPL entries it saw, one past the last action turn.
 - A field type is rebuilt from what an adapter reads off it: its name, and for a structured type its JSON schema. pydantic cannot rebuild a schema that has `$defs`, such as a model that nests another or `list[Flat]`, so pass the real type under the annotation name the trace recorded: `custom_types={"Article": Article}` or `{"list[Flat]": list[Flat]}`. Without it the export raises `RenderError` naming the type. A `dspy.Type` that adds its own description text is rebuilt without it, and the record comes out `verified: False`.
 - `adapter=` takes an adapter instance and is needed only for a run formatted by a class outside dspy's json, chat and xml families. The kit never imports a class named in a trace.
@@ -2651,7 +2653,7 @@ These records are synthetic. The model never wrote that assistant turn: the requ
 - **Keep them a minority beside the real action turns.** Each one repeats the history of its run's SUBMIT turn and answers with the run's conclusion, so a corpus with many of them weights final answers over the turns that reached them, and every extra cut in `cut_back` adds another copy of the same answer. The kit does not pick a ratio, and capping them is what keeps that weight in check.
 - **No overlap with real extract records.** A trajectory that really ran extract produces no counterfactual, so the two never describe the same trajectory. A `run_id` that holds several trajectories, from several `arun` calls on one recorder, can hold one of each.
 
-One JSONL of the real action turns of successful runs and the counterfactual extracts, tagged by source. It leaves out real extract records, turns from runs that failed (their SUBMIT was rejected), and any record that did not verify:
+One JSONL of the real action turns of successful runs and the counterfactual extracts, tagged by source. It leaves out real extract records, turns from runs that failed (their SUBMIT was rejected), any record that did not verify, and any reply that parsed only after the adapter added its braces:
 
 ```python
 import glob
@@ -2667,7 +2669,7 @@ for path in sorted(glob.glob("traces/*.jsonl")):
 custom_types = {}                                  # e.g. {"Report": Report} for a type with $defs
 succeeded = {k: ev for k, ev in runs.items() if any(e["type"] == "result" for e in ev)}
 real = [r for r in export_sft_turns(succeeded, render="adapter", custom_types=custom_types)
-        if r["kind"] == "action" and r["verified"] is not False]
+        if r["kind"] == "action" and r["verified"] is not False and not r.get("parse_wrapped")]
 synthetic = export_counterfactual_extracts(runs, cut_back=(0,), custom_types=custom_types)
 
 with open("sft.jsonl", "w", encoding="utf-8") as out:

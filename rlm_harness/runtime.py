@@ -8,6 +8,7 @@ sub-LM via :func:`get_config` / :func:`get_sub_lm`.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import logging
 from typing import Any
 
@@ -27,6 +28,15 @@ class _Runtime:
 
 
 _STATE = _Runtime()
+
+#: Where ``_LenientJSONAdapter.parse`` reports that its brace-wrap retry is what parsed a reply. The
+#: per-call capture in ``task.py`` sets a fresh list for each predictor call and reads it when the
+#: call ends, so the trace can mark that step ``parse_wrapped``. A list rather than a flag, because a
+#: context copied into another thread still shares the list object. ``None`` outside a captured
+#: call, where nothing is recorded.
+_PARSE_WRAPPED: contextvars.ContextVar[list[bool] | None] = contextvars.ContextVar(
+    "rlm_harness_parse_wrapped", default=None
+)
 
 
 class _PromotedReasoning(str):
@@ -62,7 +72,9 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
     2. **Brace-tolerant `parse`.** Schema-guided decoding intermittently drops the outer
        ``{`` ``}`` and returns just ``"a": 1, "b": 2``; stock parse then can't recover a dict.
        We retry once with the body wrapped in braces, unless it is empty, whitespace-only, or
-       already starts with a brace; a genuinely non-JSON response still raises.
+       already starts with a brace; a genuinely non-JSON response still raises. A reply the retry
+       parsed is reported through ``_PARSE_WRAPPED``, and the trace marks its call
+       ``parse_wrapped: true``.
 
     (A future, NIM-specific alternative is to drive ``nvext.guided_json`` directly instead of
     relying on ``response_format``: deliberately deferred; this keeps the path provider-agnostic.)"""
@@ -110,7 +122,7 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
             if not body or body.startswith("{"):
                 raise
             try:
-                return super().parse(signature, "{" + body + "}")
+                parsed = super().parse(signature, "{" + body + "}")
             except AdapterParseError:
                 # The RETRY failed too, and its error quotes the text WE built, braces included.
                 # A consumer debugging a rare failure read `{We need answer with JSON...` as a
@@ -140,6 +152,10 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
                     lm_response=original.lm_response,
                     message=note,
                 ) from None
+            sink = _PARSE_WRAPPED.get()
+            if sink is not None:
+                sink.append(True)
+            return parsed
 
     def _call_postprocess(self, processed_signature, original_signature, outputs, lm, lm_kwargs):
         """Promote ``reasoning_content`` to the answer when a reasoning root left ``content`` empty.

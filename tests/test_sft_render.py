@@ -118,7 +118,8 @@ def _assert_parity(records, requests):
         assert {"run_id", "kind", "turn", "adapter", "messages", "assistant", "assistant_source",
                 "verified"} <= set(rec) <= {"run_id", "kind", "turn", "adapter", "messages",
                                             "assistant", "assistant_source", "verified",
-                                            "reasoning_content", "usage", "run_tag", "attempt"}
+                                            "reasoning_content", "usage", "run_tag", "attempt",
+                                            "parse_wrapped"}
         assert rec["messages"] == real, f"{rec['kind']} turn {rec['turn']} differs from the request"
         assert rec["verified"] is True
 
@@ -309,6 +310,98 @@ class _ReasoningLM(dspy.BaseLM):
     @with_callbacks
     async def acall(self, prompt=None, messages=None, **kwargs):
         return self._next()
+
+
+class _RawLM(dspy.BaseLM):
+    """Returns each scripted reply verbatim, so a test can send text that is not valid JSON."""
+
+    def __init__(self, replies):
+        super().__init__(model="raw-dummy")
+        self.replies = list(replies)
+
+    @with_callbacks
+    def __call__(self, prompt=None, messages=None, **kwargs):
+        return [{"text": self.replies.pop(0)}]
+
+    @with_callbacks
+    async def acall(self, prompt=None, messages=None, **kwargs):
+        return [{"text": self.replies.pop(0)}]
+
+
+def test_a_reply_parsed_only_after_the_brace_wrap_is_marked(tmp_path):
+    """The adapter wraps a brace-less reply in braces and parses it, so the run goes on, but the
+    reply as written is not valid JSON. The step says so, and so does the record built from it."""
+    replies = [
+        '"reasoning": "look", "code": "print(1)"',          # wrapped
+        json.dumps({"reasoning": "count", "code": "print(2)"}),  # parsed as is
+        '"answer": "42"',                                    # wrapped, in the extract call
+    ]
+    _configure(_RawLM(replies), max_iterations=2)
+    events, requests = _run(tmp_path, _Plain(interpreter=ScriptedInterpreter(["1", "2"])),
+                            {"document": "hello world", "n": 2})
+    steps = [e["payload"] for e in events if e["type"] == EVENT_MAIN_STEP]
+    extract = next(e["payload"] for e in events if e["type"] == EVENT_EXTRACT)
+    assert [s.get("parse_wrapped") for s in steps] == [True, None]
+    assert "parse_wrapped" not in steps[1], "absent, not false, when the reply parsed as is"
+    assert extract["parse_wrapped"] is True
+
+    records = export_sft_turns(group_by_run(events), render="adapter")
+    _assert_parity(records, requests)
+    assert [r.get("parse_wrapped") for r in records] == [True, None, True]
+    assert records[0]["assistant"]["content"] == replies[0]
+
+
+def test_a_wrapped_reply_from_the_reasoning_channel_is_marked_and_rendered(tmp_path):
+    """Content empty, the brace-less turn in `reasoning_content`: the adapter promotes it and wraps
+    it. The flag still lands, and the record says its target was rendered, not written."""
+    replies = [
+        {"text": None, "reasoning_content": '"reasoning": "look", "code": "print(1)"'},
+        {"text": json.dumps({"reasoning": "count", "code": "print(2)"})},
+        {"text": json.dumps({"answer": "42"})},
+    ]
+
+    class _LM(dspy.BaseLM):
+        def __init__(self):
+            super().__init__(model="channel-dummy")
+
+        @with_callbacks
+        def __call__(self, prompt=None, messages=None, **kwargs):
+            return [replies.pop(0)]
+
+        @with_callbacks
+        async def acall(self, prompt=None, messages=None, **kwargs):
+            return [replies.pop(0)]
+
+    _configure(_LM(), max_iterations=2)
+    events, _ = _run(tmp_path, _Plain(interpreter=ScriptedInterpreter(["1", "2"])),
+                     {"document": "hello world", "n": 2})
+    records = export_sft_turns(group_by_run(events), render="adapter")
+    assert [r.get("parse_wrapped") for r in records] == [True, None, None]
+    assert records[0]["assistant_source"] == SOURCE_RENDERED
+    assert json.loads(records[0]["assistant"]["content"]) == {"reasoning": "look", "code": "print(1)"}
+
+
+def test_concurrent_runs_keep_their_own_wrap_marks(tmp_path):
+    """Two runs in one event loop, one wrapping its first turn and the other its second. Each mark
+    lands on its own run's step."""
+    def plan(wrap_turn):
+        turns = [{"reasoning": f"t{i}", "code": f"print({i})"} for i in range(2)]
+        out = [json.dumps(t) if i != wrap_turn else json.dumps(t)[1:-1] for i, t in enumerate(turns)]
+        return out + [json.dumps({"answer": "42"})]
+
+    _configure(_RawLM([]), max_iterations=2)
+
+    async def one(name, wrap_turn):
+        path = str(tmp_path / f"{name}.jsonl")
+        with TraceRecorder(path, run_id=name), dspy.context(lm=_RawLM(plan(wrap_turn))):
+            await _Plain(interpreter=ScriptedInterpreter(["1", "2"])).arun(document="d", n=1)
+        return [e["payload"].get("parse_wrapped") for e in load_events(path)
+                if e["type"] == EVENT_MAIN_STEP]
+
+    async def both():
+        return await asyncio.gather(one("a", 0), one("b", 1))
+
+    assert asyncio.run(both()) == [[True, None], [None, True]]
 
 
 def test_reasoning_content_is_kept_as_its_own_field(tmp_path):
