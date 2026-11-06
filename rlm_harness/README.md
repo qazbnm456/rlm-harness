@@ -2645,13 +2645,13 @@ records = export_counterfactual_extracts(group_by_run(load_events("trace.jsonl")
 
 These records are synthetic. The model never wrote that assistant turn: the request is real in form, but no run sent it, and the answer is borrowed from the run's SUBMIT. Select or count them by `assistant_source == "counterfactual_submit"`. `verified` is always `None` on them because there is no sent request to hash, which is expected and not a failure.
 
-- **Train on them, never evaluate with them.** They say nothing about how well a model answers a real extract call: the answer was not produced by an extract call at all. Measure extract quality on real `extract` records (`export_sft_turns(render="adapter")`, `kind == "extract"`) or on live runs.
-- **Split by `run_id`.** A counterfactual shares its history and its answer with the action turns of the same run, so put it on the same side of a train/validation split as that run. Splitting by record leaks the answer across the split.
+- **Train on them, never evaluate with them.** They say nothing about how well a model answers a real extract call: the answer was not produced by an extract call at all. Evaluate extract calls on live runs, or on the requests of real `extract` records (`export_sft_turns(render="adapter")`, `kind == "extract"`). A real record's assistant side is that model's own output, possibly from a run that failed, so it is an input to evaluate on, not a reference answer.
+- **Split by `run_id`.** A counterfactual's history is the exact input of its run's SUBMIT action turn, and the run's other action turns share prefixes of it, so keep all of a run's records on the same side of a train/validation split. Splitting by record puts near-duplicate inputs on both sides.
 - **Start with `cut_back=(0,)`.** It cuts just before the SUBMIT turn, where the history already holds what the run computed to reach its answer. A larger `n` adds samples for a run cut off earlier, which is what a tight iteration budget produces, but its answer is still the final SUBMIT's, so it teaches the model to state values its history does not yet support. Add larger cuts only if you accept that trade.
-- **Keep them a minority beside the real action turns.** Every counterfactual from a run ends in the same values the run's own SUBMIT turn already teaches, so each one repeats a target the dataset has. The kit does not pick a ratio; cap them so that answer does not outweigh the turns that show how it was reached.
-- **No overlap with real extract records.** A run that really ran extract produces no counterfactual, so the two never describe the same run.
+- **Keep them a minority beside the real action turns.** Each one repeats the history of its run's SUBMIT turn and answers with the run's conclusion, so a corpus with many of them weights final answers over the turns that reached them, and every extra cut in `cut_back` adds another copy of the same answer. The kit does not pick a ratio, and capping them is what keeps that weight in check.
+- **No overlap with real extract records.** A trajectory that really ran extract produces no counterfactual, so the two never describe the same trajectory. A `run_id` that holds several trajectories, from several `arun` calls on one recorder, can hold one of each.
 
-One JSONL of real planner turns and counterfactual extracts, tagged by source:
+One JSONL of the real action turns of successful runs and the counterfactual extracts, tagged by source. It leaves out real extract records, turns from runs that failed (their SUBMIT was rejected), and any record that did not verify:
 
 ```python
 import glob
@@ -2665,7 +2665,9 @@ for path in sorted(glob.glob("traces/*.jsonl")):
         runs[f"{path}:{run_id}"] = events          # two files can reuse a run_id
 
 custom_types = {}                                  # e.g. {"Report": Report} for a type with $defs
-real = export_sft_turns(runs, render="adapter", custom_types=custom_types)
+succeeded = {k: ev for k, ev in runs.items() if any(e["type"] == "result" for e in ev)}
+real = [r for r in export_sft_turns(succeeded, render="adapter", custom_types=custom_types)
+        if r["kind"] == "action" and r["verified"] is not False]
 synthetic = export_counterfactual_extracts(runs, cut_back=(0,), custom_types=custom_types)
 
 with open("sft.jsonl", "w", encoding="utf-8") as out:

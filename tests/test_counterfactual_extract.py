@@ -360,11 +360,29 @@ def test_the_guides_end_to_end_snippet_runs(tmp_path, monkeypatch):
     (tmp_path / "traces").mkdir()
     _submit_run(tmp_path / "traces", "json")   # writes traces/submitted
     (tmp_path / "traces" / "submitted").rename(tmp_path / "traces" / "a.jsonl")
+    # A run that really extracted, and one whose SUBMIT was rejected: the snippet keeps neither.
+    _run(tmp_path / "traces", "b.jsonl", _Plain, [*_TURNS, {"answer": "41", "score": 1}],
+         ["11", "2"], max_iterations=2)
+
+    class Strict(BaseModel):
+        title: str
+
+    class _Strict(RLMTask):
+        signature = "document: str -> out: str"
+        output_field = "out"
+        output_model = Strict
+
+    _run(tmp_path / "traces", "c.jsonl", _Strict,
+         [*_TURNS[:1], {"reasoning": "bad", "code": "SUBMIT(out='nope')"}],
+         ["11", submit({"out": "nope"})], max_iterations=3, inputs={"document": "hello world"})
     monkeypatch.chdir(tmp_path)
     exec(compile(snippet, "README snippet", "exec"), {})  # noqa: S102 - the repo's own guide
 
     rows = [json.loads(line) for line in (tmp_path / "sft.jsonl").read_text("utf-8").splitlines()]
-    assert [(r["source"], r["kind"]) for r in rows] == [
-        ("real", "action"), ("real", "action"), ("real", "action"), ("counterfactual", "extract")]
-    assert {r["run_id"] for r in rows} == {"traces/a.jsonl:submitted"}
+    # a: three action turns and its counterfactual. b ended by extract but succeeded: its two action
+    # turns, not its real extract record. c failed: nothing.
+    assert [(r["run_id"], r["source"], r["kind"]) for r in rows] == [
+        ("traces/a.jsonl:submitted", "real", "action")] * 3 + [
+        ("traces/b.jsonl:b.jsonl", "real", "action")] * 2 + [
+        ("traces/a.jsonl:submitted", "counterfactual", "extract")]
     assert rows[-1]["assistant_source"] == SOURCE_COUNTERFACTUAL and rows[-1]["verified"] is None
