@@ -4,7 +4,7 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
-## [Unreleased] (1.26.0)
+## [1.26.0] - 2026-11-06
 
 **`export_counterfactual_extracts` builds extract-fallback training samples from runs that ended by SUBMIT.** dspy sends its `extract` request only when a trajectory runs out of iterations, so real extract calls are rare in a corpus and mostly come from runs that failed. A run that submitted holds everything the same call needs: the extract signature in `rlm_setup`, the turns before its SUBMIT, and the values it submitted.
 
