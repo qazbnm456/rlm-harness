@@ -2977,8 +2977,10 @@ winning:
 | Refused | Because | Instead |
 |---|---|---|
 | `model` | `dspy.LM` takes it positionally | `RLM_MAIN_MODEL` / `RLM_SUB_MODEL` |
-| `api_key`, `base_url`, `custom_llm_provider` | nothing records an override, so a silent one leaves a trace that reads like a run that went somewhere else | `RLM_API_KEY` / `RLM_BASE_URL`; a per-role ENDPOINT is a connection-identity change: build that role's LM and inject it with `configure(sub_lm=…)` |
+| `api_key`, `base_url`, `custom_llm_provider` | nothing records an override's value, so a silent one leaves a trace that reads like a run that went somewhere else | `RLM_API_KEY` / `RLM_BASE_URL`; a per-role ENDPOINT is a connection-identity change: build that role's LM and inject it with `configure(sub_lm=…)` |
 | `timeout` | same, and it is `request_timeout_s`'s own spelling | `RLM_REQUEST_TIMEOUT` |
+| `mock_response` | litellm answers it locally, so the run never reaches a model | nothing: a test that wants a canned answer injects its own LM |
+| `api_base`, `headers`, `extra_headers`, `extra_query`, `api_version`, `organization`, `project`, `azure_ad_token_provider`, `deployment_id`, `model_list`, `engine`, and any key starting `aws_`, `azure_` or `vertex_` | the other names dspy lists as client settings, litellm `completion()`'s routing parameters, and litellm's provider credential and region settings. A provider-specific key outside those three prefixes is not caught. With `base_url` unset, `api_base` sends the run to another endpoint, and an `Authorization` header in `extra_headers` changes the caller without touching `api_key`; a header that only tags a route looks the same in the trace | build that role's LM and inject it with `configure(main_lm=…)` / `configure(sub_lm=…)` |
 
 `max_tokens` is deliberately NOT refused, and the line is not "everything the kit sets". It is
 whether the TRACE can see the override. `max_tokens` is read back off the LM into `budgets`

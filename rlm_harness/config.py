@@ -62,19 +62,56 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 # whole reason that shim reads the LM instead of ``RLMConfig``. It is therefore ALLOWED, and is
 # deliberately how a consumer gets a per-role generation cap without a second config field.
 #
-# The keys below are recorded NOWHERE. Silently changing WHERE a run went (``base_url``,
+# The keys below are not recorded by value: ``rlm_setup.lm.unrecorded_keys`` names them at most. Silently changing WHERE a run went (``base_url``,
 # ``api_key``, ``custom_llm_provider``) or what bounded it (``timeout``) would leave a trace that
 # reads exactly like a run that went somewhere else -- so this refuses at parse time rather than
 # letting either side win silently. A consumer that genuinely needs a per-role ENDPOINT is doing
 # a connection-identity change rather than passing a request parameter: build that role's LM
 # yourself and inject it with ``configure(main_lm=…)`` / ``configure(sub_lm=…)``.
+#
+# The set covers every key dspy lists as a client setting (``dspy.clients.backend_selection.
+# CLIENT_KEYS``, which a test keeps this a superset of), litellm ``completion()``'s named routing
+# parameters, ``mock_response`` (litellm answers it locally and no model is called) and ``engine``
+# (a custom engine object owns its own connection). Provider credential and region kwargs are an
+# open set that grows with litellm, so they are refused by prefix (``aws_``, ``azure_``,
+# ``vertex_``), which covers the providers measured to redirect or re-authenticate a run; a kwarg
+# for any other provider is not covered. Refusing only the canonical names is not enough: with ``base_url`` unset,
+# ``api_base`` (litellm's alias for it) sent a run to another endpoint, and ``extra_headers``
+# reached the wire, where an ``Authorization`` header changes the caller without touching
+# ``api_key``. A connection header is refused even when it only tags a route, because the trace
+# cannot tell the two apart; inject the LM for that role instead.
+_PER_ROLE_ENDPOINT = "a per-role endpoint needs configure(main_lm=…)/configure(sub_lm=…)"
+_PER_ROLE_CLIENT = "a client setting the trace does not record; " + _PER_ROLE_ENDPOINT
 _LM_KWARGS_REFUSED = {
     "model": "dspy.LM takes it positionally; set main_model / sub_model (RLM_MAIN_MODEL / RLM_SUB_MODEL)",
-    "api_key": "set api_key (RLM_API_KEY); a per-role endpoint needs configure(main_lm=…)/configure(sub_lm=…)",
-    "base_url": "set base_url (RLM_BASE_URL); a per-role endpoint needs configure(main_lm=…)/configure(sub_lm=…)",
+    "api_key": f"set api_key (RLM_API_KEY); {_PER_ROLE_ENDPOINT}",
+    "base_url": f"set base_url (RLM_BASE_URL); {_PER_ROLE_ENDPOINT}",
+    "api_base": f"litellm's alias for base_url; set base_url (RLM_BASE_URL); {_PER_ROLE_ENDPOINT}",
     "custom_llm_provider": "configure() derives it from base_url",
     "timeout": "set request_timeout_s (RLM_REQUEST_TIMEOUT)",
+    "headers": f"connection headers can change the caller or the route; {_PER_ROLE_ENDPOINT}",
+    "extra_headers": f"connection headers can change the caller or the route; {_PER_ROLE_ENDPOINT}",
+    "extra_query": _PER_ROLE_CLIENT,
+    "api_version": _PER_ROLE_CLIENT,
+    "organization": _PER_ROLE_CLIENT,
+    "project": _PER_ROLE_CLIENT,
+    "azure_ad_token_provider": _PER_ROLE_CLIENT,
+    "deployment_id": _PER_ROLE_CLIENT,
+    "model_list": _PER_ROLE_CLIENT,
+    "mock_response": "litellm answers it locally, so the run never reaches a model",
+    "engine": "a custom engine owns its own connection; inject the LM with configure(main_lm=…)",
 }
+_LM_KWARGS_REFUSED_PREFIXES = ("aws_", "azure_", "vertex_")
+
+
+def _refused_lm_kwargs(kwargs: dict[str, Any]) -> dict[str, str]:
+    """The keys in ``kwargs`` a per-role passthrough may not set, each mapped to the reason."""
+    provider = f"a provider credential or region setting; {_PER_ROLE_ENDPOINT}"
+    return {
+        k: _LM_KWARGS_REFUSED.get(k, provider)
+        for k in sorted(kwargs)
+        if k in _LM_KWARGS_REFUSED or k.startswith(_LM_KWARGS_REFUSED_PREFIXES)
+    }
 
 
 def _env_lm_kwargs(name: str) -> dict[str, Any] | None:
@@ -408,9 +445,10 @@ class RLMConfig:
                     f"{field_name} must be a dict of dspy.LM kwargs or None, "
                     f"got {type(kwargs).__name__}"
                 )
-            refused = sorted(set(kwargs) & set(_LM_KWARGS_REFUSED))
-            if refused:
-                detail = "; ".join(f"{k!r}: {_LM_KWARGS_REFUSED[k]}" for k in refused)
+            reasons = _refused_lm_kwargs(kwargs)
+            if reasons:
+                refused = list(reasons)
+                detail = "; ".join(f"{k!r}: {why}" for k, why in reasons.items())
                 raise ValueError(
                     f"{field_name} may not set {refused} -- configure() owns these and nothing "
                     f"records an override, so a silent one would leave a trace that reads like a "

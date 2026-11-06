@@ -23,7 +23,7 @@ import pytest
 
 import rlm_harness
 from rlm_harness import _dspy_compat as compat
-from rlm_harness.config import RLMConfig
+from rlm_harness.config import _LM_KWARGS_REFUSED, RLMConfig
 
 dspy = pytest.importorskip("dspy")
 
@@ -72,7 +72,7 @@ def test_valid_json_of_the_wrong_shape_raises_TypeError_naming_the_variable(monk
         RLMConfig.from_env()
 
 
-@pytest.mark.parametrize("key", ["model", "api_key", "base_url", "custom_llm_provider", "timeout"])
+@pytest.mark.parametrize("key", sorted(_LM_KWARGS_REFUSED))
 def test_a_configure_owned_key_is_refused_at_parse_time(key):
     """Refused rather than silently dropped OR silently winning. Nothing records an override of
     these, so a silent one leaves a trace that reads exactly like a run that went somewhere else."""
@@ -80,6 +80,45 @@ def test_a_configure_owned_key_is_refused_at_parse_time(key):
         _cfg(main_lm_kwargs={key: "x"})
     with pytest.raises(ValueError, match=key):
         _cfg(sub_lm_kwargs={key: "x"})
+
+
+def test_every_dspy_client_setting_is_refused():
+    """dspy's own list of the keys that configure a connection. A newer dspy that adds one fails
+    here instead of letting it through: `api_base`, missing from an earlier version of the set,
+    sent a run with no `base_url` to another endpoint."""
+    from dspy.clients.backend_selection import CLIENT_KEYS
+
+    assert set(CLIENT_KEYS) <= set(_LM_KWARGS_REFUSED), sorted(set(CLIENT_KEYS) - set(_LM_KWARGS_REFUSED))
+
+
+@pytest.mark.parametrize("key", ["aws_region_name", "aws_bedrock_runtime_endpoint", "aws_access_key_id",
+                                 "azure_ad_token", "vertex_project"])
+def test_a_provider_credential_or_region_kwarg_is_refused_by_prefix(key):
+    """litellm reads these per provider. `aws_region_name` moved a Bedrock call to another region,
+    `aws_access_key_id` changed the SigV4 caller, and `azure_ad_token` replaced the kit's key."""
+    with pytest.raises(ValueError, match=key) as exc:
+        _cfg(sub_lm_kwargs={key: "x"})
+    assert "provider credential or region" in str(exc.value)
+
+
+def test_mock_response_is_refused_because_no_model_would_be_called():
+    with pytest.raises(ValueError, match="mock_response"):
+        _cfg(main_lm_kwargs={"mock_response": "FAKE"})
+
+
+def test_a_refused_key_and_a_prefixed_one_are_reported_together():
+    with pytest.raises(ValueError) as exc:
+        _cfg(main_lm_kwargs={"api_base": "x", "aws_region_name": "eu-west-1", "extra_body": {}})
+    msg = str(exc.value)
+    assert "['api_base', 'aws_region_name']" in msg and "extra_body" not in msg
+
+
+def test_api_base_cannot_redirect_a_run_without_base_url():
+    """The measured case: `base_url` unset, so nothing else would have won over the alias."""
+    with pytest.raises(ValueError, match="api_base") as exc:
+        RLMConfig(main_model="openai/m", sub_model="openai/m", base_url=None,
+                  main_lm_kwargs={"api_base": "http://127.0.0.1:1/v1"})
+    assert "RLM_BASE_URL" in str(exc.value)
 
 
 def test_the_refusal_names_every_offending_key_and_the_alternative():
@@ -373,8 +412,8 @@ def test_a_role_passthrough_still_overrides_the_cache_default():
     """`main_lm_kwargs` merges OVER the shared kwargs, so a consumer can keep dspy's behaviour.
 
     This is why `cache` sits in the shared dict rather than being forced after the merge. It also
-    only works because `cache` is not in `_LM_KWARGS_REFUSED`, which is deliberate: unlike the five
-    keys in there, `cache` is readable back off the LM and therefore visible in the trace.
+    only works because `cache` is not in `_LM_KWARGS_REFUSED`, which is deliberate: unlike the keys
+    in there, `cache` is readable back off the LM and therefore visible in the trace.
     """
     dspy = pytest.importorskip("dspy")
     cfg = rlm_harness.RLMConfig(
