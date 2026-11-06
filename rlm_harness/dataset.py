@@ -449,8 +449,8 @@ def export_counterfactual_extracts(
     1.26.0. An older trace lacks it, so they are parsed from the SUBMIT turn's ``FINAL: {...}`` output
     (``"final_repr"``), which works when every value is a Python literal, or else read from the run's
     ``result`` event (``"result"``). ``result`` is the value after ``output_model`` validation and
-    holds only ``output_field``, so it is used only for a single-output signature and only when it has
-    the field's recorded type and, for a structured type, the class the SUBMIT repr names.
+    holds only ``output_field``, so it is used only for a single-output signature, and only when
+    writing it as the parsed SUBMIT's repr reproduces that ``FINAL: {...}`` line exactly.
 
     ``custom_types`` and ``adapter`` work as in ``export_sft_turns(render="adapter")``. Skipped and
     counted in a warning: a trajectory whose SUBMIT values cannot be read, and a cut that would leave

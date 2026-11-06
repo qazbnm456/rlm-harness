@@ -464,14 +464,47 @@ def _submitted_outputs(seg: dict) -> tuple[dict, str] | None:
     return parsed, TARGET_FINAL_REPR
 
 
-def _from_result(seg: dict) -> tuple[dict, str] | None:
-    """The SUBMIT value read from the run's ``result`` event, or ``None`` when that is unsafe.
+def _repr_as_submitted(value: Any, schema: Mapping[str, Any], defs: Mapping[str, Any]) -> str:
+    """The Python repr ``value`` would have if it were the parsed SUBMIT value ``schema`` describes.
 
-    ``result`` holds only the task's ``output_field``, after ``output_model`` coercion, so it can stand
-    for the SUBMIT only when the signature has that one output field, and only when the coerced value
-    still has the field's recorded type: a ``str`` field that ``output_model`` parsed into a model
-    records a dict where the model submitted a string. A structured value must also come from a
-    SUBMIT of the same class, which the ``FINAL: {...}`` repr names (``{'verdict': ChangeVerdict(``).
+    A JSON object whose schema is a model with properties is written the way pydantic's ``__repr__``
+    writes it, ``Title(field=repr, ...)``, recursing through ``$ref``, ``items`` and
+    ``additionalProperties``; everything else is ``repr(value)``. A value the JSON dump changed (a
+    ``datetime``, an ``Enum``, a ``set``, a nested model stringified inside a list) comes out
+    different from the real repr, which is the point.
+    """
+    ref = schema.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/$defs/"):
+        schema = defs.get(ref[len("#/$defs/"):]) or {}
+    if "anyOf" in schema and value is not None:
+        options = [o for o in schema["anyOf"] if o.get("type") != "null"]
+        schema = options[0] if len(options) == 1 else {}
+    props = schema.get("properties")
+    if isinstance(value, dict) and isinstance(props, dict) and isinstance(schema.get("title"), str):
+        inner = ", ".join(f"{k}={_repr_as_submitted(v, props.get(k) or {}, defs)}"
+                          for k, v in value.items())
+        return f"{schema['title']}({inner})"
+    if isinstance(value, list):
+        items = schema.get("items") if isinstance(schema.get("items"), dict) else {}
+        return "[" + ", ".join(_repr_as_submitted(v, items, defs) for v in value) + "]"
+    if isinstance(value, dict):
+        extra = schema.get("additionalProperties")
+        extra = extra if isinstance(extra, dict) else {}
+        return "{" + ", ".join(f"{k!r}: {_repr_as_submitted(v, extra, defs)}"
+                               for k, v in value.items()) + "}"
+    return repr(value)
+
+
+def _from_result(seg: dict) -> tuple[dict, str] | None:
+    """The SUBMIT value read from the run's ``result`` event, or ``None`` when it cannot be proven.
+
+    ``result`` holds only the task's ``output_field``, after ``output_model`` coercion and a
+    Python-mode ``model_dump`` written through ``json.dumps(default=str)``, so on its own it can
+    differ from the SUBMIT: defaults and validators ``output_model`` adds, a ``datetime`` or ``Enum``
+    turned into its ``str``, a nested model stringified inside a list. It stands for the SUBMIT only
+    when the signature has that one output field and re-writing it as the parsed SUBMIT's repr
+    reproduces the SUBMIT turn's ``FINAL: {...}`` output exactly. dspy parses every SUBMIT value
+    against the field's annotation before writing that line, so equal text means an equal value.
     """
     if "output" not in (seg["result"] or {}):
         return None
@@ -480,24 +513,13 @@ def _from_result(seg: dict) -> tuple[dict, str] | None:
     if len(outs) != 1 or [f.get("name") for f in outs] != list(seg["setup"].get("output_fields") or []):
         return None
     field, value = outs[0], seg["result"]["output"]
-    kind, name = field.get("kind"), field.get("type")
-    if kind == "builtin":
-        expected = {"str": (str,), "int": (int,), "float": (int, float), "bool": (bool,)}.get(name)
-        ok = expected is not None and isinstance(value, expected) and (
-            name == "bool" or not isinstance(value, bool))
-    elif kind == "literal":
-        ok = value in (field.get("args") or [])
-    elif kind == "enum":
-        ok = value in (field.get("members") or {}).values()
-    elif kind == "schema":
-        shape = {"object": dict, "array": list}.get((field.get("schema") or {}).get("type"))
-        ok = shape is not None and isinstance(value, shape)
-        if ok and isinstance(name, str) and name.isidentifier():
-            text = (seg["steps"][-1].get("output") if seg["steps"] else None) or ""
-            ok = text.startswith(f"FINAL: {{{field['name']!r}: {name}(")
-    else:
-        ok = False
-    return ({field["name"]: value}, TARGET_RESULT) if ok else None
+    schema = field.get("schema") if field.get("kind") == "schema" else {}
+    schema = schema if isinstance(schema, dict) else {}
+    text = (seg["steps"][-1].get("output") if seg["steps"] else None) or ""
+    wrote = _repr_as_submitted(value, schema, schema.get("$defs") or {})
+    if text != f"FINAL: {{{field['name']!r}: {wrote}}}":
+        return None
+    return {field["name"]: value}, TARGET_RESULT
 
 
 def render_counterfactual_extracts(

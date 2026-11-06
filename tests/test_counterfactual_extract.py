@@ -273,3 +273,75 @@ def test_an_earlier_cut_is_the_request_a_real_extract_over_that_history_sends(tm
     [rec] = export_counterfactual_extracts(group_by_run(events), cut_back=(1,))
     assert rec["turn"] == 1 and rec["messages"] == requests[-1]
     assert messages_sha256(rec["messages"]) == real["messages_sha256"]
+
+
+class Inner(BaseModel):
+    x: int
+
+
+class Nested(BaseModel):
+    title: str
+    inner: Inner
+    items: list[Inner] = []
+
+
+class _NestedTask(RLMTask):
+    signature = "document: str -> out: Nested"
+    output_field = "out"
+    output_model = Nested
+
+
+def test_a_nested_model_is_read_from_the_result_when_its_repr_matches(tmp_path):
+    value = {"title": "t", "inner": {"x": 1}, "items": [{"x": 2}]}
+    events = _typed_run(tmp_path, _NestedTask, value)
+    old = _without_final_outputs(events)
+    [rec] = export_counterfactual_extracts(group_by_run(old), custom_types={"Nested": Nested})
+    assert rec["counterfactual"]["target_source"] == TARGET_RESULT
+    assert json.loads(rec["assistant"]["content"]) == {"out": value}
+
+
+def test_a_result_the_json_dump_or_output_model_changed_is_never_the_target(tmp_path, caplog):
+    """Each `result` below differs from what was submitted, and the SUBMIT repr is what catches it."""
+    import datetime
+    import enum
+
+    class Color(enum.Enum):
+        RED = "red"
+
+    class Stamped(BaseModel):
+        when: datetime.datetime
+        color: Color
+
+    class _Stamped(RLMTask):
+        signature = "document: str -> out: Stamped"
+        output_field = "out"
+        output_model = Stamped
+
+    cases = [
+        (_Stamped, {"when": "2024-01-02T03:04:05", "color": "red"}, {"Stamped": Stamped}),
+    ]
+    with caplog.at_level("WARNING", logger="rlm_harness.dataset"):
+        for i, (task, value, types) in enumerate(cases):
+            events = _typed_run(tmp_path, task, value, f"case{i}")
+            assert next(e for e in events if e["type"] == "result")
+            [rec] = export_counterfactual_extracts(group_by_run(events), custom_types=types)
+            assert rec["counterfactual"]["target_source"] == TARGET_FINAL_OUTPUTS
+            assert export_counterfactual_extracts(
+                group_by_run(_without_final_outputs(events)), custom_types=types) == []
+    assert caplog.text.count("skipped 1 record(s)") == 1
+
+    # An `output_model` other than the annotation's class: a default field it adds.
+    events = _without_final_outputs(_typed_run(tmp_path, _Flat, {"title": "t"}, "widened"))
+    for e in events:
+        if e["type"] == "result":
+            e["payload"]["output"]["score"] = 0.5
+    assert export_counterfactual_extracts(group_by_run(events)) == []
+
+    # A model nested in a list, written by `json.dumps(default=str)` as its `str`, as `result` does
+    # for a `list[Model]` output with no `output_model`.
+    events = _without_final_outputs(_typed_run(
+        tmp_path, _NestedTask, {"title": "t", "inner": {"x": 1}, "items": [{"x": 2}]}, "listed"))
+    for e in events:
+        if e["type"] == "result":
+            e["payload"]["output"]["items"] = ["x=2"]
+    assert export_counterfactual_extracts(group_by_run(events), custom_types={"Nested": Nested}) == []
