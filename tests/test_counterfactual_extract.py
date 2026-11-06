@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 import pytest
 from pydantic import BaseModel
@@ -381,7 +382,8 @@ def test_the_guides_end_to_end_snippet_runs(tmp_path, monkeypatch):
     rows = [json.loads(line) for line in (tmp_path / "sft.jsonl").read_text("utf-8").splitlines()]
     # a: three action turns and its counterfactual. b ended by extract but succeeded: its two action
     # turns, not its real extract record. c failed: nothing.
-    assert [(r["run_id"], r["source"], r["kind"]) for r in rows] == [
+    # The snippet keys runs by the path glob returns, which uses the platform's separator.
+    assert [(r["run_id"].replace(os.sep, "/"), r["source"], r["kind"]) for r in rows] == [
         ("traces/a.jsonl:submitted", "real", "action")] * 3 + [
         ("traces/b.jsonl:b.jsonl", "real", "action")] * 2 + [
         ("traces/a.jsonl:submitted", "counterfactual", "extract")]
