@@ -304,17 +304,19 @@ def _segments(events: Iterable[dict]) -> list[dict]:
     """
     segments: list[dict] = []
     current: dict | None = None
-    closed: dict | None = None   # the segment a following `result` belongs to
+    closed: dict | None = None   # the segment whose `final` was the previous event
     for e in events:
         t = e.get("type")
-        if t == "rlm_setup":
+        # The kit writes a successful run's `result` straight after its `final`, with no await in
+        # between, so only the event right after `final` can be that segment's result. A `result`
+        # further on belongs to a later run, possibly one recorded without an `rlm_setup`.
+        just_closed, closed = closed, None
+        if t == "result" and just_closed is not None:
+            just_closed["result"] = True
+        elif t == "rlm_setup":
             current = {"setup": e["payload"], "steps": [], "extract": None, "final": None,
                        "result": False}
             segments.append(current)
-            closed = None
-        elif t == "result" and closed is not None:
-            closed["result"] = True   # the kit records a result only for a run that succeeded
-            closed = None
         elif current is None:
             continue
         elif t == "main_step":

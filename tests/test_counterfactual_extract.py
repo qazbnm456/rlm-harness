@@ -194,3 +194,28 @@ def test_the_other_exports_never_include_a_counterfactual(tmp_path):
     runs = group_by_run(events)
     assert [r["kind"] for r in export_sft_turns(runs, render="adapter")] == ["action"] * 3
     assert all("assistant_source" not in r for r in export_sft_turns(runs))
+
+
+def test_a_later_runs_result_never_vouches_for_a_failed_submit(tmp_path):
+    """Two runs under one run_id: the first submitted and failed, the second succeeded without a
+    capture, so its turns have no `rlm_setup`. Only the event right after a `final` is its result."""
+    events, _ = _submit_run(tmp_path)
+    failed = [e for e in events if e["type"] != "result"]
+    later = [{"type": "main_step", "payload": {"turn": 0, "reasoning": "r", "code": "c",
+                                               "output": "FINAL: {}"}},
+             {"type": "final", "payload": {"final_reasoning": "r"}},
+             {"type": "result", "payload": {"output": "x"}}]
+    assert export_counterfactual_extracts({"r": failed + later}) == []
+    # Two captured runs under one run_id each yield their own record.
+    twice = [e for e in events if e["type"] != "run_end"] * 2
+    assert len(export_counterfactual_extracts({"r": twice})) == 2
+
+
+def test_an_earlier_cut_is_the_request_a_real_extract_over_that_history_sends(tmp_path):
+    events, _ = _submit_run(tmp_path)
+    cut_off, requests = _run(tmp_path, "one_turn", _Plain,
+                             [_TURNS[0], {"answer": "41", "score": 1}], ["11"], max_iterations=1)
+    real = next(e["payload"] for e in cut_off if e["type"] == EVENT_EXTRACT)
+    [rec] = export_counterfactual_extracts(group_by_run(events), cut_back=(1,))
+    assert rec["turn"] == 1 and rec["messages"] == requests[-1]
+    assert messages_sha256(rec["messages"]) == real["messages_sha256"]
