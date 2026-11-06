@@ -170,11 +170,14 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
 
 
 def _maybe_subscription_lm(model: str) -> dspy.LM | None:
-    """A ``ClaudeAgentLM`` when ``model`` carries the ``claude_agent_lm.SUBSCRIPTION_PREFIX``
-    sentinel, else ``None`` (leaving the caller to build a plain ``dspy.LM`` from ``config`` exactly
-    as before). Lazily imports ``claude_agent_lm``, only when the prefix actually matches, so
-    ``configure()``'s own module top, and every call that never touches a subscription-prefixed
-    model string, stays dspy-SDK-free.
+    """A subscription LM when ``model`` carries one of the kit's subscription prefixes, else
+    ``None`` (leaving the caller to build a plain ``dspy.LM`` from ``config`` exactly as before).
+
+    Two prefixes, each the sentinel its own adapter stamps on its model string:
+    ``claude_agent_lm.SUBSCRIPTION_PREFIX`` (``"claude-agent-sdk/"``) builds a ``ClaudeAgentLM``,
+    and ``antigravity_lm.AGY_PREFIX`` (``"agy/"``) builds an ``AntigravityLM``. Neither adapter's
+    own dependency (the Claude Agent SDK, the ``agy`` binary) is touched unless its prefix matches:
+    each is required only when an instance is built.
 
     Raises ``ValueError`` (not ``SystemExit``) for a bare prefix with no model id: `configure()` is
     called from arbitrary contexts: a server's request handler, a notebook cell, a library
@@ -182,18 +185,24 @@ def _maybe_subscription_lm(model: str) -> dspy.LM | None:
     dangerous default there than in a purpose-built CLI, which can catch `ValueError` and convert
     it to its own fail-fast behavior at its own top level if it wants that.
     """
-    from . import claude_agent_lm
+    from . import antigravity_lm, claude_agent_lm
 
-    if not model.startswith(claude_agent_lm.SUBSCRIPTION_PREFIX):
-        return None
-    name = model[len(claude_agent_lm.SUBSCRIPTION_PREFIX) :].strip()
-    if not name:
-        raise ValueError(
-            f"{model!r} names no model: expected "
-            f"{claude_agent_lm.SUBSCRIPTION_PREFIX}<id>, e.g. "
-            f"{claude_agent_lm.SUBSCRIPTION_PREFIX}claude-sonnet-5."
-        )
-    return claude_agent_lm.ClaudeAgentLM(name)
+    # Attributes are read HERE, per call, not bound at import: a test that substitutes a module's
+    # class must reach this lookup.
+    routes = (
+        (claude_agent_lm.SUBSCRIPTION_PREFIX, claude_agent_lm.ClaudeAgentLM, "claude-sonnet-5"),
+        (antigravity_lm.AGY_PREFIX, antigravity_lm.AntigravityLM, "<an id `agy models` lists>"),
+    )
+    for prefix, build, example in routes:
+        if not model.startswith(prefix):
+            continue
+        name = model[len(prefix) :].strip()
+        if not name:
+            raise ValueError(
+                f"{model!r} names no model: expected {prefix}<id>, e.g. {prefix}{example}."
+            )
+        return build(name)
+    return None
 
 
 def _warn_if_thinking_budget_cannot_act(role: str, lm: Any) -> None:
@@ -240,11 +249,15 @@ def configure(
     ``get_sub_lm``; an injected ``main_lm`` also becomes the dspy global. This is the public
     seam for supplying a test double, so nothing needs to reach into the private runtime state.
 
-    **Claude-subscription auto-routing.** For a role whose caller-supplied override is ``None``,
+    **Subscription auto-routing.** For a role whose caller-supplied override is ``None``,
     if ``cfg.main_model``/``cfg.sub_model`` starts with ``claude_agent_lm.SUBSCRIPTION_PREFIX``
     (``"claude-agent-sdk/"``: the sentinel ``ClaudeAgentLM`` stamps its own model string with),
-    that role is built as a ``ClaudeAgentLM`` instead of a plain ``dspy.LM``, with ONLY the
-    stripped model id: never ``lm_kwargs``
+    that role is built as a ``ClaudeAgentLM`` instead of a plain ``dspy.LM``, and one starting with
+    ``antigravity_lm.AGY_PREFIX`` (``"agy/"``) is built as an ``AntigravityLM``. Everything below
+    holds for both, with the adapter's own constructor errors in place of ``ClaudeAgentLM``'s:
+    ``AntigravityLM`` raises ``FileNotFoundError`` when it cannot find ``agy``, and
+    ``RuntimeError`` while ``GEMINI_API_KEY`` or ``AGY_ADC_AUTH`` is set. Either is built with ONLY
+    the stripped model id: never ``lm_kwargs``
     (``api_key``/``base_url``/``custom_llm_provider``/``max_tokens``), which are meaningless (or,
     for ``base_url``, actively misleading) for this adapter. **``max_tokens`` is in that list, so
     ``RLM_MAX_TOKENS`` is inert for an auto-routed subscription role**: the SDK exposes no output
@@ -275,14 +288,19 @@ def configure(
     # function does not build -- explicitly injected and subscription-auto-routed alike.
     injected = {"main": main_lm is not None, "sub": sub_lm is not None}
     auto_routed: list[str] = []
+    # Which adapter each auto-routed role got, so a warning names the class the caller has to build
+    # by hand rather than always naming ClaudeAgentLM.
+    routed_to: dict[str, str] = {}
     if main_lm is None:
         main_lm = _maybe_subscription_lm(cfg.main_model)
         if main_lm is not None:
             auto_routed.append("main_lm")
+            routed_to["main_lm"] = type(main_lm).__name__
     if sub_lm is None:
         sub_lm = _maybe_subscription_lm(cfg.sub_model)
         if sub_lm is not None:
             auto_routed.append("sub_lm")
+            routed_to["sub_lm"] = type(sub_lm).__name__
 
     # litellm (dspy.LM's backend) defaults to an aiohttp transport whose pooled ClientSession is bound to
     # the current asyncio loop. A driver that runs each task in its own short-lived `asyncio.run` loop
@@ -327,16 +345,19 @@ def configure(
             # litellm each retry around), so one number cannot mean both. Under
             # `llm_query_batched`'s thread fan-out a value that is generous per request would
             # make queued sub-LM calls time out from waiting alone.
+            adapters = " and ".join(sorted(set(routed_to.values())))
             logger.warning(
                 "request_timeout_s=%s bounds litellm-backed model requests only; %s "
-                "auto-routed to ClaudeAgentLM and %s unaffected by it. That route is still "
-                "bounded, by ClaudeAgentLM's own end-to-end per-call deadline (600s by "
+                "auto-routed to %s and %s unaffected by it. That route is still "
+                "bounded, by the adapter's own end-to-end per-call deadline (600s by "
                 "default): a DIFFERENT quantity, which is why this knob does not drive it. "
                 "To choose that number, build the LM yourself: "
-                "configure(main_lm=ClaudeAgentLM(model, timeout_s=...)).",
+                "configure(main_lm=%s(model, timeout_s=...)).",
                 cfg.request_timeout_s,
                 " and ".join(auto_routed),
+                adapters,
                 "is" if len(auto_routed) == 1 else "are",
+                routed_to[auto_routed[0]],
             )
     # Both LMs are plain dspy.LM. In "json" mode it's _LenientJSONAdapter (not the LM) that
     # forces the json_schema response_format, so the LM needs no special capability flag.
@@ -363,7 +384,7 @@ def configure(
                 "%s_lm_kwargs=%s is ignored: the %s LM was %s, so configure() did not build it. "
                 "Pass these kwargs to the LM you inject, e.g. dspy.LM(model, **kwargs).",
                 role, sorted(role_kwargs), role,
-                "auto-routed to ClaudeAgentLM (which takes no sampling controls)"
+                f"auto-routed to {routed_to[f'{role}_lm']} (which takes no sampling controls)"
                 if f"{role}_lm" in auto_routed else "supplied explicitly",
             )
     if main_lm is None:

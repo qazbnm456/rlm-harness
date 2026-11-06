@@ -58,7 +58,10 @@ extra: `[observe]` (Langfuse/OpenInference tracing), `[mcp]` (the MCP client bri
 `make_grep_files_tool`'s LM-supplied pattern), `[gitignore]` (`.gitignore`-aware walking in
 `list_candidate_paths`), and `[subscription]`: run the planner and/or sub-LM on a Claude Pro/Max
 login instead of an API key (`pip install "rlm-harness[subscription]"` →
-`rlm_harness.ClaudeAgentLM`, injected via `configure(main_lm=…)`). A
+`rlm_harness.ClaudeAgentLM`, injected via `configure(main_lm=…)`). A Google Antigravity sign-in
+needs no extra, only the `agy` CLI: `RLM_MAIN_MODEL=agy/<id>` routes a role onto
+`rlm_harness.AntigravityLM` (the guide's "Subscription logins" says what it measured and what it
+cannot control). A
 *live* `dspy.RLM` run additionally needs model credentials (see the guide's
 [Configuration](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#configuration)) and a
 Deno sandbox: the logic and tests run without either. dspy's runtime gate is Deno
