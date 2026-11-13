@@ -1105,7 +1105,7 @@ def test_a_mixed_args_error_keeps_its_readable_arguments_unquoted():
     assert json.loads(ns["last_exception_args"]()) == ["bad key", "slice(1, 2, None)"]
 
 
-def test_the_kits_own_LMs_are_off_the_interface_dspy_removes_in_3_5():
+def test_the_kits_own_LMs_are_off_the_interface_dspy_removes_in_3_5(tmp_path, monkeypatch):
     """The instrument for `docs/INVARIANTS.md`'s "stay free of that DeprecationWarning".
 
     dspy 3.4 deprecates implementing a custom LM through `forward()`/`aforward()` and schedules
@@ -1188,6 +1188,22 @@ def test_the_kits_own_LMs_are_off_the_interface_dspy_removes_in_3_5():
             sys.modules.pop("claude_agent_sdk", None)
             if had_key is not None:
                 os.environ["ANTHROPIC_API_KEY"] = had_key
+
+        # `AntigravityLM`, through a fake `agy` that answers one result event: also an engine.
+        fake = tmp_path / "fake_agy.py"
+        fake.write_text(
+            "import json, sys\n"
+            "sys.stdin.read()\n"
+            "print(json.dumps({'event': 'result', 'result': {'status': 'SUCCESS', "
+            "'response': 'ok', 'usage': {'input_tokens': 1, 'output_tokens': 1}}}))\n",
+            encoding="utf-8",
+        )
+        from rlm_harness.community import antigravity_lm
+
+        monkeypatch.setattr(antigravity_lm, "_resolve_executable", lambda _: [sys.executable, str(fake)])
+        lm = rlm_harness.community.AntigravityLM("m")
+        assert lm("hi") == ["ok"]
+        assert asyncio.run(lm.acall(prompt="hi")) == ["ok"]
 
 
 def test_dspy_canonicalises_a_response_format_class_into_the_flat_shape_the_adapter_reads():

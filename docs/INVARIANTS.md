@@ -143,13 +143,15 @@ reason is in the rule.
   `_dspy_compat.py`, `metrics.py`, `rubric.py`, `_toolname.py`, `atomic.py`, `isolation.py`,
   `memory.py`, `memory_organise.py`, `memory_vectors.py`, `large_text.py`, `prompt_record.py`, `community/__init__.py` must NOT import `dspy` at module top:
   that keeps their logic testable without dspy. Only `task.py`, `runtime.py`, `sub_lm.py` (lazily), `mcp.py`,
-  `container_interpreter.py`, `testing.py`, `community/claude_agent_lm.py` and `memory_tasks.py` touch dspy:
-  the last five live outside the dspy-free set and are lazily imported (by `__getattr__` / by
-  `sandbox.build_interpreter`'s `"container"` branch / inside `testing.py`'s functions), so
-  `sandbox.py`'s module top and `import rlm_harness` stay dspy-free. `community/claude_agent_lm.py` (optional
+  `container_interpreter.py`, `testing.py`, `community/claude_agent_lm.py`,
+  `community/antigravity_lm.py` and `memory_tasks.py` touch dspy: the last six live outside the
+  dspy-free set and are lazily imported (by `__getattr__` / by `sandbox.build_interpreter`'s
+  `"container"` branch / inside `testing.py`'s functions), so `sandbox.py`'s module top and
+  `import rlm_harness` stay dspy-free. `community/claude_agent_lm.py` (optional
   `rlm-harness[subscription]`) additionally keeps its `claude-agent-sdk` import out of module top:
   deferred to instance construction, so `rlm_harness.ClaudeAgentLM` is gettable without the extra,
-  like `mcp_tools`.
+  like `mcp_tools`. `community/antigravity_lm.py` has no extra at all, because what it needs is the
+  `agy` binary rather than a package; it looks for that only when an instance is built.
 
   **`ClaudeAgentLM` is an ENGINE, not a `forward()` subclass, and the suite must stay free of that
   DeprecationWarning.** It was a `dspy.BaseLM` implementing `forward`/`aforward` until 1.17.0, on a
@@ -205,7 +207,50 @@ reason is in the rule.
   for an `n` carried over from a litellm config on the belief this adapter ignores it, which is
   what the docstrings said. When reading this invariant for a NEW dspy behaviour, enumerate what
   `managed` turns on rather than checking the one knob that prompted the question: retries and `n`
-  arrived together and only one was noticed.
+  arrived together and only one was noticed. **Both halves hold for `AntigravityLM` too**, an
+  engine-backed LM since its first release, and its own tests pin each of them the same way.
+- **`AntigravityLM` gets a pure completion out of an AGENT (rules 1-4), and decides what a bad
+  answer, the bill and an abandoned call do (rules 5-7). Each rule is load-bearing.** `agy` has no
+  flag that removes its tools, its default prompt or the user's rules, so each call runs a custom
+  agent the adapter generates, in a private directory that is the call's working directory. The
+  measurements and their controls are in the module docstring of
+  `rlm_harness/community/antigravity_lm.py`, not repeated here; `tests/test_antigravity_lm.py`
+  pins each rule below. What Google has said about this use is in the `agy/` row of
+  `rlm_harness/community/README.md`, not here either.
+  1. **`excludeDefaultComponents: true` and `tools: []` stay in the frontmatter**, and
+     `--dangerously-skip-permissions` is never passed: together they are what keeps out every
+     tool, `agy`'s own prompt and the user's rules.
+  2. **A schema call gets `tools: [finish]`, and its answer is `structured_output`, never the
+     joined `response`.** Without `finish`, `agy` ignores the schema with a `SUCCESS` status: the
+     silent-degradation shape 1.17.0's structured-output regression had.
+  3. **The prompt goes on stdin as one stream-json event, never in argv, and from a file, never
+     a pipe the adapter feeds.** An awaited call waits for `agy` in slices, and before Python
+     3.13 a retried `communicate()` does not go on writing its input: a piped prompt larger than
+     the pipe was cut off, and `agy` waited for the rest until the deadline.
+  4. **The body of the agent file is the caller's system prompt, verbatim, and nothing else**
+     (`docs/PROMPT.md`); the sub-LM seat gets an empty body.
+  5. **Bad model output is RETURNED, failures are RAISED.** An empty answer, or a schema call with
+     no `structured_output`, comes back as an empty completion, so the adapter's parse fails and
+     the task retries it. Raising it instead (the shape it first shipped in) makes dspy wrap it
+     as a non-retryable `LMUnexpectedError` and ends the task on one bad answer. A deadline or a
+     failed `agy` call stays raised: fatal on the planner seat, like `ClaudeAgentLM`'s, and shown
+     to the model on the sub-LM seat, where dspy.RLM catches it.
+  6. **`GEMINI_API_KEY` and `AGY_ADC_AUTH` are removed from the environment of every call**, read
+     when the call starts. A check in the constructor (also the shape it first shipped in) misses
+     a key set after it, and `Popen` inherits whatever is set at the time.
+  7. **Every way a call ends kills its `agy`**: the deadline, any exception on the thread waiting
+     for it, and an `acall` left any way but its result (cancelled, or its coroutine closed),
+     whose worker thread `asyncio.to_thread` cannot stop. **Only the thread running the call
+     kills or collects its `agy`**; the awaiting side sets a flag that thread reads every 0.05 s.
+     A kill from the awaiting side ran on the event loop's thread, which on Windows waits for
+     `taskkill`, and could signal a pid the call's thread had just collected. On POSIX `agy`
+     runs in its own session for the group kill, so the terminal's Ctrl-C never reaches it and
+     only the adapter can end it, which leaves a sub-LM call deaf to the first Ctrl-C (the class
+     docstring says where).
+
+  What it does not control is said in its docstring and the guide rather than worked around:
+  every call is saved as an Antigravity conversation (about 400 KB each, prompt included), and
+  the adapter does not delete another program's private state.
 - **`import rlm_harness` must not import dspy.** `RLMTask` and `configure` are lazy
   re-exports in `__init__.py` (PEP 562). Don't make them eager.
 - **Resolve custom output types via `output_model`.** `RLMTask._build_rlm` passes

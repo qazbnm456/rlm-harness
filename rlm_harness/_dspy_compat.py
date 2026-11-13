@@ -772,20 +772,21 @@ def applied_lm_budget(lm: Any) -> dict[str, Any] | None:
 
     **"Carries", not "applied", and the difference is not pedantry.** Reading ``lm.kwargs`` is
     right because dspy's own truncation check reads the same dict -- which is to say this rests on
-    the assumption that an LM's kwargs ARE what it applied. That assumption has one shipped
-    counterexample: ``community.claude_agent_lm.ClaudeAgentLM`` tolerates and IGNORES a ``max_tokens=``
-    (the Claude Agent SDK exposes no sampling controls), so a cap passed there is reported here and
-    ``completion_tokens`` can exceed it. This function cannot detect that -- an LM exposes no
-    attestation of what it honoured -- so the honest contract is the one stated: this is what the
+    the assumption that an LM's kwargs ARE what it applied. That assumption has two shipped
+    counterexamples: ``community.claude_agent_lm.ClaudeAgentLM`` and
+    ``community.antigravity_lm.AntigravityLM`` both tolerate and IGNORE a ``max_tokens=``
+    (neither the Claude Agent SDK nor the ``agy`` CLI exposes an output cap), so a cap passed to
+    either is reported here and ``completion_tokens`` can exceed it. This function cannot detect
+    that -- an LM exposes no attestation of what it honoured -- so the honest contract is the one stated: this is what the
     LM carries, and it equals what was applied for every LM that honours its own kwargs. A READER
     of the finished trace is better placed, with one attribution trap: ``completion_tokens`` above
     the largest of the per-role token caps falsifies the equality (it can never confirm it), but
     above ONE role's cap it proves nothing: ``budgets`` records no model name and ``usage`` is
     keyed by model, so the trace alone maps no usage entry to a role -- differing model strings do
-    not rescue that, they only make it less obvious. This particular LM
-    needs no attribution at all: it is recognisable by the ``SUBSCRIPTION_PREFIX`` on its model
-    key. See that class's docstring, which names itself as
-    the exception at the point a caller would pass the kwarg.
+    not rescue that, they only make it less obvious. These two LMs
+    need no attribution at all: each is recognisable by its route's prefix on its model key
+    (``"claude-agent-sdk/"``, ``"agy/"``; see ``community.ROUTES``). See each class's docstring,
+    which names itself as the exception at the point a caller would pass the kwarg.
 
     **Both key names, and the found one is reported.** dspy rewrites ``max_tokens`` to
     ``max_completion_tokens`` in ``LM._get_initial_kwargs`` for OpenAI reasoning models, so
@@ -943,7 +944,8 @@ def lm_settings(lm: Any) -> dict[str, Any] | None:
     Recorded as ``rlm_setup.lm``, so a corpus sampled from one teacher at several temperatures or
     budgets says which setting produced each trace. Read from the LM rather than ``RLMConfig`` for the
     reason :func:`applied_lm_budget` gives, with the same caveat: an LM that ignores a kwarg
-    (``ClaudeAgentLM`` exposes no sampling controls) still reports it.
+    still reports it, as ``ClaudeAgentLM`` and ``AntigravityLM`` both do (neither the Claude Agent
+    SDK nor the ``agy`` CLI exposes sampling controls).
 
     ``kwargs`` holds only :data:`_LM_SETTING_KEYS` (and :data:`_LM_EXTRA_BODY_KEYS` under
     ``extra_body``) whose value is not ``None``, and the allowlist applies at every depth: inside an

@@ -256,7 +256,7 @@ def configure(
     seam for supplying a test double, so nothing needs to reach into the private runtime state.
 
     **Community auto-routing.** For a role whose caller-supplied override is ``None``, if
-    ``cfg.main_model``/``cfg.sub_model`` starts with a prefix in ``community.ROUTES`` (today only
+    ``cfg.main_model``/``cfg.sub_model`` starts with a prefix in ``community.ROUTES`` (such as
     ``"claude-agent-sdk/"``, the sentinel ``ClaudeAgentLM`` stamps its own model string with),
     that role is built by that route's class instead of a plain ``dspy.LM``, with ONLY the
     stripped model id: never ``lm_kwargs``

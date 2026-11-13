@@ -224,7 +224,7 @@ cannot see.
   action's SHA-to-tag mapping, a behaviour of `os.kill` on Windows, a module missing from mcp 1.0.0.
   Auditable, but not by a local sweep, since it needs network, another platform or an uncached wheel.
   **Write the command or the page that would settle it next to the claim**, or it lands in the bucket
-  below by default and gets treated as permanently on trust when it is one `curl` away. The four
+  below by default and gets treated as permanently on trust when it is one `curl` away. The five
   in this repo today, each with the command that settles it, so nobody has to re-derive it:
 
   - `@runtime_checkable` on `CodeInterpreter` in dspy 3.2.1 (CHANGELOG 1.6.0):
@@ -239,6 +239,19 @@ cannot see.
     rather than adding it: stock parse succeeds here, so the brace wrap never runs. Re-run on any
     newer dspy by swapping the pin:
     `uv run --with "dspy==3.4.1" --no-project python -c "import dspy; print(dspy.JSONAdapter().parse(dspy.Signature('q: str -> payload: dict'), '\"payload\": {\"payload\": {\"a\": \"b\"}}'))"`
+  - what `AntigravityLM` relies on from `agy`, measured on 1.4.12: that a
+    custom agent with `excludeDefaultComponents: true` and `tools: []` leaves the model no tool
+    and none of the user's rules, that its Markdown body becomes the system prompt, and that
+    `--json-schema` needs `tools: [finish]`. CI has no `agy`; it needs a signed-in one, from an
+    empty directory holding `.agents/agents/probe.md` with that frontmatter and a body of "Answer
+    with the single word BANANA.":
+    `agy --output-format json --agent probe --model <id from agy models> -p "Reply with: pong"`
+    prints `"response":"BANANA\n"` while those hold (re-checked on 1.5.0). The same command, prefixed
+    with a bogus `GOOGLE_API_KEY`, `GOOGLE_GENAI_USE_VERTEXAI=true`,
+    `GOOGLE_GENAI_USE_ENTERPRISE=true`, `GOOGLE_GEMINI_BASE_URL` or `GOOGLE_VERTEX_BASE_URL`, still
+    prints BANANA on 1.5.0, which is why only `GEMINI_API_KEY` and `AGY_ADC_AUTH` are removed from a
+    call's environment; a variable that starts failing that probe belongs in `_BILLING_ENV`. The
+    module docstring of `rlm_harness/community/antigravity_lm.py` lists each probe and its control.
 
   A **corpus-attributed** claim ("385 runs", "141 traces", "57% of tool wall-clock") can be audited
   exactly ONCE, at the moment it is written, and never again by anyone. No review of this repo can

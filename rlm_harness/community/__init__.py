@@ -54,6 +54,13 @@ ROUTES: tuple[Route, ...] = (
         example="claude-sonnet-5",
         vendor_permission=EXPLICIT,
     ),
+    Route(
+        prefix="agy/",
+        module="rlm_harness.community.antigravity_lm",
+        attr="AntigravityLM",
+        example="gemini-3.8-flash-medium",
+        vendor_permission=NOT_EXPLICIT,
+    ),
 )
 
 
