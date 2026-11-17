@@ -1362,7 +1362,7 @@ to `pyodide`/`deno`:
 
   **It does not bound a run to its own value.** dspy retries a failed attempt (`num_retries=3`), so a dead endpoint is retried: the run-level wait is a MULTIPLE of this value plus backoff. Size a caller-side budget on the multiple.
 
-  What prompted it: against a self-hosted OpenAI-compatible endpoint one request never came back: the socket stayed `ESTABLISHED` with both queues empty and the worker slept in `epoll_wait` for 38 minutes at 0.3% CPU, while that same endpoint answered unrelated requests in half a second. 600 s across four attempts is about forty minutes, so that observation fits "the default, retried". Either way the consumer could not choose the number, and now it can.
+  What prompted it: against a self-hosted OpenAI-compatible endpoint one request never came back: the socket stayed `ESTABLISHED` with both queues empty and the worker slept in `epoll_wait` for 38 minutes at 0.3% CPU, while that same endpoint answered unrelated requests in half a second. 600 s across four attempts is about forty minutes, so that observation fits "the default, retried". `RLM_REQUEST_TIMEOUT` is what lets a consumer choose the number.
 - **`cancel_event`** (`RLMTask(cancel_event=a_threading.Event)`): for a caller that wants to stop
   an in-flight run NOW (e.g. a "Cancel" button in a UI driving `arun()` from a worker thread). Set
   the event from another thread; the current sandbox turn is killed and `SandboxCancelled` (exported
@@ -2974,12 +2974,7 @@ A deterministic confirmation, when you want one rather than eyeballing the quote
 logs `LM response was truncated due to exceeding max_tokens=...` at WARNING whenever the provider
 reports `finish_reason == "length"`.
 
-A **reasoning model can be the RLM root**, not just an instruct one: some reasoning servers emit the
-*whole* structured turn into the `reasoning_content` channel and return `content` null. `_LenientJSONAdapter`
-promotes `reasoning_content` to the answer when `content` is empty (guarded: a well-behaved model's
-`content` always wins, so its native thinking stays discarded), which keeps the root's first turn from
-dying on dspy's "empty or null response" check. The native chain-of-thought is still dropped from the
-trajectory either way, so a reasoning root spends extra tokens the trace won't keep.
+A **reasoning model can be the RLM root**, not just an instruct one: some reasoning servers emit the *whole* structured turn into the `reasoning_content` channel and return `content` null. `_LenientJSONAdapter` promotes the reasoning channel to the reply's text when the reply has none (guarded: a well-behaved model's `content` always wins, and its thinking is not parsed as the answer), which keeps the root's first turn from dying on dspy's "empty or null response" check. The thinking is not part of the trajectory's `reasoning` (that is the `plan` field), but the trace keeps it: each `main_step` records it as `reasoning_content`, and the SFT export carries it beside the message.
 
 ### Per-role LM request parameters (`RLM_MAIN_LM_KWARGS` / `RLM_SUB_LM_KWARGS`)
 

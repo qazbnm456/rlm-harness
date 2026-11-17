@@ -168,14 +168,9 @@ where the notes first describe RLM at length, under the heading "Hardened RLM an
 PythonInterpreter", which is a different release from the one that shipped it: easy to fuse into a
 single wrong sentence, and worth keeping apart.
 
-**The one seam is `{interpreter_rules}`**, filled from the interpreter factory's
-`execution_instructions` attribute and rendered under an `Execution environment:` heading, followed by dspy's sub-agent paragraph when sub-agents are on. It arrived in 3.3.1; before that there was no seam at all. The kit's declared bound is `>=3.5.0,<3.6.0`, and the kit already feeds it
-from the live interpreter, so a `container` run is described as a container rather than as Pyodide.
-It is the only sanctioned place to say something about the environment from the host side.
+**The one seam is `{interpreter_rules}`**, filled from the interpreter factory's `execution_instructions` attribute and rendered under an `Execution environment:` heading, followed by dspy's sub-agent paragraph when sub-agents are on. It arrived in 3.3.1; before that there was no seam at all. The kit's declared bound is `>=3.5.0,<3.6.0`, and the kit already feeds it from the live interpreter, so a `container` run is described as a container rather than as Pyodide. It is the only sanctioned place to say something about the environment from the host side.
 
-**Know where it lands, though: index 288 of the 1968-character template** (3.5.0), under `Execution environment:`, which is 641 characters BEFORE the first of the six rules and about 1400 before the last. So it is in the middle of dspy's text, not after it. For saying what the
-environment is, that is the right place. For contradicting a rule, it is the weaker of the two
-seams, and a tool docstring is the stronger one.
+**Know where it lands, though: index 288 of the 1968-character template** (3.5.0), under `Execution environment:`, which is 641 characters BEFORE the first of the six rules and about 1400 before the last. So it is in the middle of dspy's text, not after it. For saying what the environment is, that is the right place. For contradicting a rule, it is the weaker of the two seams, and a tool docstring is the stronger one.
 
 No release note introduces the template, and none explains why it is worded as it is. The
 documentation covers the REPL's purpose (*"Instead of feeding huge contexts directly into the

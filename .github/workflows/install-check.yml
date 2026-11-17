@@ -16,8 +16,9 @@ name: install check
 #      break that is green on Linux and red on macOS has never had an instrument, and a consumer's
 #      macOS install can fail on a transitive wheel gap this repo never resolves for itself.
 #
-# Measured before adding this, so the job's claim is honest: a fresh macOS install of a published
-# release resolved and passed the smoke below. Nothing was broken. This is a TRIPWIRE, not a fix: added because the alternative was a manual probe that runs
+# Measured before adding this, so the job's claim is honest: on 2026-09-06 a fresh macOS install of
+# the published 1.11.1 resolved dspy 3.3.1 + litellm 1.99.0 and passed the smoke below. Nothing was
+# broken. This is a TRIPWIRE, not a fix: added because the alternative was a manual probe that runs
 # only when someone remembers, and "an instrument that fires only if you remember" is this project's
 # most expensive recurring failure (see the `sub_call` invariant in docs/INVARIANTS.md).
 #

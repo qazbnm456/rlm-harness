@@ -53,7 +53,7 @@ observe = [
 # from the start: `mcp.client.streamable_http` does not exist at 1.0.0, so the HTTP transport
 # could not work at the declared floor. 1.8.1 rather than 1.8.0 because the floor is only
 # meaningful if the suite PASSES on it, and it does not on 1.8.0: a refused connect takes ~16s
-# there, against the <10s this kit asserts for fail-fast. Measured, not assumed. No upper bound, for the same reason dspy has none; the
+# there, against the <10s this kit asserts for fail-fast. Measured, not assumed. No upper bound (unlike dspy's): the
 # `mcp-latest` job in `.github/workflows/dspy-latest.yml` is the compensating control, and
 # `ci.yml` additionally carries a PINNED 2.x leg so a major that is already out stays covered
 # on every PR. Both majors are supported: see `rlm_harness/mcp.py`'s SDK VERSION TOLERANCE note.

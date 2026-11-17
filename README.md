@@ -52,22 +52,7 @@ pip install rlm-harness
 uv add rlm-harness
 ```
 
-`rlm-harness` needs Python ≥ 3.11 and pulls in `dspy` 3.5 + `pydantic`. Everything else is an opt-in
-extra: `[litellm]` (dspy's litellm engine, for a model string dspy's native engine cannot route and for
-server options it does not send, such as `extra_body`; `configure()` names it when one is needed),
-`[observe]` (Langfuse/OpenInference tracing), `[mcp]` (the MCP client bridge),
-`[jsonschema]` (`make_json_schema_validator`), `[grep]` (a real wall-clock timeout on
-`make_grep_files_tool`'s LM-supplied pattern), `[gitignore]` (`.gitignore`-aware walking in
-`list_candidate_paths`), and `[subscription]`: run the planner and/or sub-LM on a Claude Pro/Max
-login instead of an API key (`pip install "rlm-harness[subscription]"` →
-`rlm_harness.ClaudeAgentLM`, injected via `configure(main_lm=…)`). A Google Antigravity sign-in
-needs no extra, only the `agy` CLI: `RLM_MAIN_MODEL=agy/<id>` routes a role onto
-`rlm_harness.community.AntigravityLM`, a community route Google has not explicitly allowed (read
-[`rlm_harness/community/README.md`](rlm_harness/community/README.md) first). A
-*live* `dspy.RLM` run additionally needs model credentials (see the guide's
-[Configuration](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#configuration)) and a
-Deno sandbox: the logic and tests run without either. dspy's runtime gate is Deno
-`>=2.0.0,<3.0.0`.
+`rlm-harness` needs Python ≥ 3.11 and pulls in `dspy` 3.5 + `pydantic`. Everything else is an opt-in extra: `[litellm]` (dspy's litellm engine, for a model string dspy's native engine cannot route and for server options it does not send, such as `extra_body`; `configure()` names it when one is needed), `[observe]` (Langfuse/OpenInference tracing), `[mcp]` (the MCP client bridge), `[jsonschema]` (`make_json_schema_validator`), `[grep]` (a real wall-clock timeout on `make_grep_files_tool`'s LM-supplied pattern), `[gitignore]` (`.gitignore`-aware walking in `list_candidate_paths`), and `[subscription]`: run the planner and/or sub-LM on a Claude Pro/Max login instead of an API key (`pip install "rlm-harness[subscription]"` → `rlm_harness.ClaudeAgentLM`, injected via `configure(main_lm=…)`). A Google Antigravity sign-in needs no extra, only the `agy` CLI: `RLM_MAIN_MODEL=agy/<id>` routes a role onto `rlm_harness.community.AntigravityLM`, a community route Google has not explicitly allowed (read [`rlm_harness/community/README.md`](rlm_harness/community/README.md) first). A *live* `dspy.RLM` run additionally needs model credentials (see the guide's [Configuration](https://github.com/qazbnm456/rlm-harness/blob/main/rlm_harness/README.md#configuration)) and a Deno sandbox: the logic and tests run without either. dspy's runtime gate is Deno `>=2.0.0,<3.0.0`.
 
 **`pip install "dspy[deno]"` is the portable way to get one** and works on Linux, macOS and
 Windows x64 (its own pin is the narrower `>=2.4.5,<3.0.0`; there is no Windows-ARM wheel, so

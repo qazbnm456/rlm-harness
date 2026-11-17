@@ -84,25 +84,7 @@ cannot see.
   exists for. Never let it stand in for the job below. It PINS dspy to `uv.lock`'s version on
   purpose: it runs on `pull_request`, and a floating dspy would let an upstream release redden
   a contributor's unrelated PR, which is the very reason the job below is kept off that trigger.
-- **`.github/workflows/dspy-latest.yml` runs the same suite against the NEWEST published dspy, and it is the ONLY second dspy axis** (`ci.yml` tests the version in `uv.lock`; when the newest published dspy is that same version the workflow says so in a `::notice::`, and it restores real two-version coverage by itself the day a newer dspy ships).
-  **It carries a SECOND job on the same triggers, `mcp-latest`**, for the same reason and for the
-  dependency that had no such defence: the `mcp` extra is uncapped, `uv.lock` held 1.x, and SDK
-  2.0's camelCase→snake_case field rename made every failed MCP tool call read as a SUCCESS to the
-  model (CHANGELOG 1.5.0). `ci.yml` additionally carries a PINNED 2.x leg, so a major that is
-  already published stays covered on every PR without an upstream release being able to redden one.
-  Both jobs live in that separate workflow, on a weekly cron + `workflow_dispatch` +
-  push-to-main, never on a PR (an upstream break is not a contributor's problem). It exists because the jobs above
-  resolve dspy from `uv.lock`, so they test a version nobody installing from PyPI necessarily gets: a dspy minor once renamed three things at once and the whole suite stayed green while the kit was completely unrunnable on a fresh install: one break loud, two silent (CHANGELOG 1.0.1). It
-  resolves the newest version from PyPI at run time and ASSERTS it actually installed that; a
-  hardcoded floor goes stale, and "fail if resolved == locked" false-alarms right after every lock
-  bump. `--with "dspy==<exact>"` is what overrides the lock: a bare `--with dspy` (and
-  `--isolated --with dspy`) resolve back to the LOCKED version and would make the job decorative.
-  **What a red means depends on the cap, and the cap is the whole point.** With `dspy>=3.5.0,<3.6.0` declared, a fresh install resolves a dspy the kit is tested on, so a red here says one of two things, both urgent and never a flake: **a dspy minor exists that the kit does not support yet** (3.6.0 or later: the signal to move the window), or **a 3.5.x patch broke the kit**, which every fresh install now resolves, so that one IS a release blocker: fix forward, or tighten the cap below the patch AND say in the comment what would lift it. A permanently red detector is a deleted detector, so a tightened cap is a held position that must say how it ends. Read the cap in `pyproject.toml` before reading this job's colour.
-  Do NOT read green as "a fresh install works" either: the overlay upgrades ONLY dspy (plus whatever
-  transitive it forces), so everything else stays locked and a break from, say, the newest
-  `pydantic` is invisible to it. Reproduce locally with
-  `uv run --group dev --extra mcp --extra grep --extra gitignore --with "dspy==<newest>" python -m pytest -q`. It leaves
-  `uv.lock` untouched.
+- **`.github/workflows/dspy-latest.yml` runs the same suite against the NEWEST published dspy, and it is the ONLY second dspy axis** (`ci.yml` tests the version in `uv.lock`; when the newest published dspy is that same version the workflow says so in a `::notice::`, and it restores real two-version coverage by itself the day a newer dspy ships). **It carries a SECOND job on the same triggers, `mcp-latest`**, for the same reason and for the dependency that had no such defence: the `mcp` extra is uncapped, `uv.lock` held 1.x, and SDK 2.0's camelCase→snake_case field rename made every failed MCP tool call read as a SUCCESS to the model (CHANGELOG 1.5.0). `ci.yml` additionally carries a PINNED 2.x leg, so a major that is already published stays covered on every PR without an upstream release being able to redden one. Both jobs live in that separate workflow, on a weekly cron + `workflow_dispatch` + push-to-main, never on a PR (an upstream break is not a contributor's problem). It exists because the jobs above resolve dspy from `uv.lock`, so they test a version nobody installing from PyPI necessarily gets: a dspy minor once renamed three things at once and the whole suite stayed green while the kit was completely unrunnable on a fresh install: one break loud, two silent (CHANGELOG 1.0.1). It resolves the newest version from PyPI at run time and ASSERTS it actually installed that; a hardcoded floor goes stale, and "fail if resolved == locked" false-alarms right after every lock bump. `--with "dspy==<exact>"` is what overrides the lock: a bare `--with dspy` (and `--isolated --with dspy`) resolve back to the LOCKED version and would make the job decorative. **What a red means depends on the cap, and the cap is the whole point.** With `dspy>=3.5.0,<3.6.0` declared, a fresh install resolves a dspy the kit is tested on, so a red here says one of two things, both urgent and never a flake: **a dspy minor exists that the kit does not support yet** (3.6.0 or later: the signal to move the window), or **a 3.5.x patch broke the kit**, which every fresh install now resolves, so that one IS a release blocker: fix forward, or tighten the cap below the patch AND say in the comment what would lift it. A permanently red detector is a deleted detector, so a tightened cap is a held position that must say how it ends. Read the cap in `pyproject.toml` before reading this job's colour. Do NOT read green as "a fresh install works" either: the overlay upgrades ONLY dspy (plus whatever transitive it forces), so everything else stays locked and a break from, say, the newest `pydantic` is invisible to it. Reproduce locally with `uv run --group dev --extra mcp --extra grep --extra gitignore --with "dspy==<newest>" python -m pytest -q`. It leaves `uv.lock` untouched.
 - **`.github/workflows/install-check.yml` is the only job that touches the PUBLISHED artifact, and
   the only one that runs on macOS.** Those two properties are the load-bearing part; the roster of
   every other job is deliberately NOT enumerated here, because an enumeration goes stale the day
@@ -141,13 +123,7 @@ cannot see.
   told once and not blocked. Two limits that follow from that design and are not defects: **CI
   cannot run it** (the runner has no list, so it would skip), and `--no-verify` bypasses it. It
   guards the moment the mistake is actually made, which is local.
-- A *live* `dspy.RLM` run needs real model credentials **and** a Deno sandbox
-  (`brew install deno`, or `pip install "dspy[deno]"`). **Two Deno bounds exist and they are not
-  the same number; quote the one that applies.** dspy's RUNTIME gate is
-  `MIN_DENO_VERSION = (2, 0, 0)` in `dspy/primitives/python_interpreter.py`, which raises at startup
-  outside `>=2.0.0,<3.0.0`; the `dspy[deno]` EXTRA pins the pip-installed `deno` package at
-  `>=2.4.5,<3.0.0` (both read off dspy 3.5.0). A Deno 2.1 therefore runs; it is only not what `pip install "dspy[deno]"` would install. This bullet once invented a delta between those two real numbers by putting an extra's pin and a runtime constant in one sentence, and the invented gate reached a consumer's upgrade advice. A version bound is worth nothing without the file it came from.
-  Don't run a live run in CI; it costs money. `examples/` show it.
+- A *live* `dspy.RLM` run needs real model credentials **and** a Deno sandbox (`brew install deno`, or `pip install "dspy[deno]"`). **Two Deno bounds exist and they are not the same number; quote the one that applies.** dspy's RUNTIME gate is `MIN_DENO_VERSION = (2, 0, 0)` in `dspy/primitives/python_interpreter.py`, which raises at startup outside `>=2.0.0,<3.0.0`; the `dspy[deno]` EXTRA pins the pip-installed `deno` package at `>=2.4.5,<3.0.0` (both read off dspy 3.5.0). A Deno 2.1 therefore runs; it is only not what `pip install "dspy[deno]"` would install. This bullet once invented a delta between those two real numbers by putting an extra's pin and a runtime constant in one sentence, and the invented gate reached a consumer's upgrade advice. A version bound is worth nothing without the file it came from. Don't run a live run in CI; it costs money. `examples/` show it.
 - **An example is the first thing a user runs, and nothing in CI runs one.** `examples/` is six
   files, no workflow touches any of them, and **1.17.0 reached PyPI before a single one had been
   run against it**: the engine migration's only end-to-end evidence was a throwaway probe in a
@@ -214,11 +190,7 @@ cannot see.
     `uv run --with "hatchling==1.27.0" --no-project python -c "from hatchling.metadata.spec import DEFAULT_METADATA_VERSION as d; print(d)"`
   - no `win_arm64` wheel for `deno` (`ci.yml`, CHANGELOG 1.14.1):
     `curl -s https://pypi.org/pypi/deno/json | jq -r '.urls[].filename'`
-  - stock parse reducing a brace-less body to a FRAGMENT of itself, measured on dspy 3.5.0 (`runtime.py` `_LenientJSONAdapter.parse`, CHANGELOG 1.20.1). Prints
-    `{'payload': {'a': 'b'}}` rather than the whole value the body carries. The kit INHERITS this
-    rather than adding it: stock parse succeeds here, so the brace wrap never runs. Re-run on any
-    newer dspy by swapping the pin:
-    `uv run --with "dspy==3.5.0" --no-project python -c "import dspy; print(dspy.JSONAdapter().parse(dspy.Signature('q: str -> payload: dict'), '\"payload\": {\"payload\": {\"a\": \"b\"}}'))"`
+  - stock parse reducing a brace-less body to a FRAGMENT of itself, measured on dspy 3.5.0 (`runtime.py` `_LenientJSONAdapter.parse`, CHANGELOG 1.20.1). Prints `{'payload': {'a': 'b'}}` rather than the whole value the body carries. The kit INHERITS this rather than adding it: stock parse succeeds here, so the brace wrap never runs. Re-run on any newer dspy by swapping the pin: `uv run --with "dspy==3.5.0" --no-project python -c "import dspy; print(dspy.JSONAdapter().parse(dspy.Signature('q: str -> payload: dict'), '\"payload\": {\"payload\": {\"a\": \"b\"}}'))"`
   - what `AntigravityLM` relies on from `agy`, measured on 1.4.12: that a
     custom agent with `excludeDefaultComponents: true` and `tools: []` leaves the model no tool
     and none of the user's rules, that its Markdown body becomes the system prompt, and that
