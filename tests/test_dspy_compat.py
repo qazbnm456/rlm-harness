@@ -1380,3 +1380,10 @@ def test_the_rebind_prelude_is_dspys_and_strips_back_to_the_turn():
     assert prelude and prelude == rlm._REBIND
     for code in ("print(1)", "from __future__ import annotations\nx: int = 1\nprint(x)"):
         assert _dspy_compat.strip_rebind_prelude(rlm._with_prelude(prelude, code)) == code
+
+
+def test_every_runtime_option_dspy_takes_is_refused_by_the_kit():
+    """`RLMTask.arun(**inputs)` hands its keywords to `dspy.RLM.aforward`, which takes these options
+    beside the inputs. Each would change what runs without the trace or the kit's guards seeing it,
+    so each needs a reason in `RLM_RUNTIME_OPTIONS_REFUSED`."""
+    assert set(_dspy_compat.RLM_RUNTIME_OPTIONS_REFUSED) == _dspy_compat.runtime_option_names()

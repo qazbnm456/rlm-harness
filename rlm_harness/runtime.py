@@ -289,7 +289,7 @@ def configure(
     ``"claude-agent-sdk/"``, the sentinel ``ClaudeAgentLM`` stamps its own model string with),
     that role is built by that route's class instead of a plain ``dspy.LM``, with ONLY the
     stripped model id: never ``lm_kwargs``
-    (``api_key``/``base_url``/``custom_llm_provider``/``max_tokens``), which are meaningless (or,
+    (``api_key``/``base_url``/``model_type``/``engine``/``max_tokens``), which are meaningless (or,
     for ``base_url``, actively misleading) for this adapter. **``max_tokens`` is in that list, so
     ``RLM_MAX_TOKENS`` is inert for an auto-routed subscription role**: the SDK exposes no output
     cap, so nothing would honour it. The upside is that no cap is recorded either, where passing
@@ -306,7 +306,7 @@ def configure(
 
     ``cfg.request_timeout_s`` is deliberately in that "never forwarded" set too, and it is the
     one whose absence is worth stating: it becomes ``dspy.LM(timeout=…)``, a bound on ONE HTTP
-    request that dspy and litellm each retry around. ``ClaudeAgentLM`` has its own deadline
+    request that dspy retries around. ``ClaudeAgentLM`` has its own deadline
     instead: end-to-end per call, INCLUDING time queued behind the SDK's concurrency semaphore,
     so the two are not the same number and mapping one onto the other would make queued
     sub-LM calls time out from waiting alone. An auto-routed role therefore stays on
@@ -373,7 +373,7 @@ def configure(
             # when it is not. Deliberately NOT forwarded as the adapter's `timeout_s=`: every
             # community route takes one, and it is a different quantity (an END-TO-END per-call
             # deadline that INCLUDES time queued behind the adapter's concurrency cap, not a
-            # per-HTTP-request bound that dspy and litellm each retry around), so one number
+            # per-HTTP-request bound that dspy retries around), so one number
             # cannot mean both. Under `llm_query_batched`'s thread fan-out a value that is
             # generous per request would make queued sub-LM calls time out from waiting alone.
             routed = ", ".join(f"{role} to {attr}" for role, attr in auto_routed.items())
@@ -425,8 +425,8 @@ def configure(
         _check_lm_route(role, lm)
     for role, lm in (("main", main_lm), ("sub", sub_lm)):
         _warn_if_thinking_budget_cannot_act(role, lm)
-    # Pass the adapter explicitly (None == dspy's stock default) so a re-configure
-    # is clean. The "chat" default never emits response_format: see _build_adapter.
+    # Pass the adapter explicitly so a re-configure is clean: `_build_adapter` builds every
+    # adapter the kit offers, dspy's default XML one included, with the kit's settings.
     #
     # `dspy.configure` is OWNER-LOCKED: dspy records the first thread + async task that calls it and
     # raises if a LATER call comes from a different thread/task. That breaks a long-lived driver that

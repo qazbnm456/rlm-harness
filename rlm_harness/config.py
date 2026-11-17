@@ -27,8 +27,8 @@ KNOWN_INTERPRETERS = frozenset({"pyodide", "deno", "mock", "container", "local"}
 # How the RLM coaxes structured output fields out of the model.
 #   "json": DEFAULT. Schema-guided structured output: a brace-tolerant JSONAdapter
 #               (runtime._LenientJSONAdapter) forces the ``json_schema`` response_format and
-#               absorbs guided output. Works on ANY endpoint that supports structured output
-#: OpenAI-proper AND vLLM/NIM (which reject schema-less json_object but
+#               absorbs guided output. Works on ANY endpoint that supports structured output:
+#               OpenAI-proper AND vLLM/NIM (which reject schema-less json_object but
 #               accept json_schema). On a constraint-decoding server the decoder enforces
 #               the schema, so even a weak / imperfectly-formatting model emits valid output.
 #   "chat": dspy.ChatAdapter with the JSONAdapter fallback DISABLED: text field-markers
@@ -37,9 +37,8 @@ KNOWN_INTERPRETERS = frozenset({"pyodide", "deno", "mock", "container", "local"}
 #               weak model that drops a field has NO recovery (dspy's own ChatAdapter would
 #               fall back to bare json_object, which the kit turns off because vLLM rejects
 #               it; so we don't get that recovery either). Not as portable as it looks.
-#   "default": impose nothing; leave dspy's stock adapter (ChatAdapter WITH the json
-#               fallback) in place. Recovers via json_object on OpenAI-proper endpoints,
-#               but that fallback is rejected by vLLM/NIM.
+#   "default": dspy's own default adapter, an XMLAdapter, with the same JSON fallback turned
+#               off: XML field tags, never ``response_format``.
 KNOWN_ADAPTERS = frozenset({"chat", "json", "default"})
 
 # The server presets a ``base_url`` endpoint can be built with (``RLMConfig.endpoint_dialect``).
@@ -488,8 +487,8 @@ class RLMConfig:
           REPL/root model. An INSTRUCT or a REASONING model both work: ``_LenientJSONAdapter``
           promotes ``reasoning_content`` to the answer when a reasoning root leaves ``content``
           empty (some emit the whole structured turn into the thinking channel). Caveats for a
-          reasoning root: its native chain-of-thought is still DISCARDED (dspy reads only the
-          structured turn), so it spends tokens the trace won't keep, and a too-small ``max_tokens``
+          reasoning root: its chain-of-thought is not the turn's ``reasoning`` (the trace keeps
+          it as ``reasoning_content``), and a too-small ``max_tokens``
           can truncate it mid-thought (→ empty content): keep the cap generous (see ``max_tokens``).
           The second var is a fallback so this scaffold drops into projects that already use
           ``AI_MODEL_NAME`` without re-keying env.
@@ -518,8 +517,8 @@ class RLMConfig:
         - ``RLM_MAX_LLM_CALLS`` (default ``30``).
         - ``RLM_MAX_OUTPUT_CHARS`` (default ``10000``): head+tail character cap on REPL
           output fed back to the planner (distinct from ``RLM_MAX_TOKENS``).
-        - ``RLM_REQUEST_TIMEOUT`` (default: unset, which is NOT no cap: the provider SDK then
-          applies its own 600s): wall-clock seconds for ONE
+        - ``RLM_REQUEST_TIMEOUT`` (default: unset, which is NOT no cap: dspy's native engine
+          then applies its own 600s): wall-clock seconds for ONE
           model HTTP request. Its sibling on the model side of a turn; see
           ``RLMConfig.request_timeout_s`` for the hang it exists to bound and why it has no
           default.

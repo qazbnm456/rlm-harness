@@ -277,3 +277,14 @@ def test_the_fields_a_consumer_reads_are_all_present_on_dspy_3_5(fake_openai, tm
     has(record, "messages", "assistant", "reasoning_content", "verified", "kind", "turn", "run_id",
         "adapter", "assistant_source", "run_tag", "attempt")
     has(record["assistant"], "content")
+
+
+def test_an_interpreter_factory_never_reaches_the_rlm_through_the_kit(fake_openai):
+    """It would replace the interpreter the kit builds, and with it the insecure-sandbox guard and
+    the turn watchdog."""
+    rlm_harness.configure(RLMConfig(main_model=SERVED, sub_model=SERVED,
+                                    base_url=fake_openai.base_url, api_key="k"))
+    with pytest.raises(ValueError, match="interpreter_factory"):
+        asyncio.run(_Task(interpreter=ScriptedInterpreter([])).arun(
+            q="x", interpreter_factory=lambda: None))
+    assert fake_openai.requests == []

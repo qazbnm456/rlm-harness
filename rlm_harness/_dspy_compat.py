@@ -1424,11 +1424,14 @@ def extract_history(turns: list[Mapping[str, Any]], max_output_chars: list[int],
 
 
 #: Options ``dspy.RLM`` takes per call beside the task's inputs that the kit refuses, each with why.
-#: A history processor rewrites the planner's history before every turn, and the trace rebuilds the
-#: history from the recorded turns, so a processed history would not match what was sent.
+#: ``tests/test_dspy_compat.py`` keeps this equal to :func:`runtime_option_names`, so an option a
+#: newer dspy adds goes red there until it is given a reason here.
 RLM_RUNTIME_OPTIONS_REFUSED: dict[str, str] = {
     "history_processor": "it rewrites the planner's history before each turn, and the trace rebuilds "
                          "that history from the recorded turns, so the requests would not verify",
+    "interpreter_factory": "it replaces the interpreter the kit builds, and with it the sandbox guard, "
+                           "the turn watchdog and the JSON-literal aliases; choose the interpreter "
+                           "with RLMConfig.interpreter or RLMTask(interpreter=...)",
 }
 
 

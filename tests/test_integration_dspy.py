@@ -1171,3 +1171,17 @@ def test_the_promotion_marker_survives_the_hop_into_parse():
     Probe()._call_postprocess(sig, sig, [_reply(text='{"reasoning": "r", "code": "c"}')])
     assert seen == [False], seen
     assert rt._PROMOTED_REASONING.get() == frozenset()
+
+
+def test_endpoint_dialect_without_base_url_warns_that_it_does_nothing(caplog):
+    with caplog.at_level("WARNING", logger="rlm_harness.runtime"):
+        rt.configure(RLMConfig(main_model="openai/gpt-4o", sub_model="openai/gpt-4o",
+                               interpreter="mock", endpoint_dialect="vllm"))
+    assert "endpoint_dialect='vllm' is ignored" in caplog.text
+    assert dspy.settings.lm.model == "openai/gpt-4o"
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="rlm_harness.runtime"):
+        rt.configure(RLMConfig(main_model="openai/gpt-4o", sub_model="openai/gpt-4o",
+                               interpreter="mock"))
+    assert "endpoint_dialect" not in caplog.text
+

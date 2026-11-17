@@ -315,12 +315,9 @@ class ScriptedInterpreter:
         #: dspy's own setup executions on this double, in order, by kind (``"bootstrap"``,
         #: ``"import"``, ``"inject"``). None consumes a step or lands in ``.calls``; see ``execute``.
         self.setup_executions: list[str] = []
+        #: How many times dspy bootstrapped its sandbox session on this double: one per forward pass.
+        self.facade_installs = 0
         self._i = 0
-
-    @property
-    def facade_installs(self) -> int:
-        """How many times dspy bootstrapped its sandbox session on this double: one per forward pass."""
-        return self.setup_executions.count("bootstrap")
 
     def start(self) -> None:
         """No-op: there is no process to spin up. Present because dspy's ``CodeInterpreter``
@@ -335,6 +332,8 @@ class ScriptedInterpreter:
             # it out of `.calls` protects consumers, whose assertions read `.calls[0]` as the first
             # thing the MODEL ran; `.setup_executions` is where a test that cares looks instead.
             self.setup_executions.append(kind)
+            if kind == "bootstrap":
+                self.facade_installs += 1
             return ""
         self.calls.append(strip_rebind_prelude(code))
         step: Step = self.steps[self._i] if self._i < len(self.steps) else ""
