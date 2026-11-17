@@ -4,22 +4,57 @@ All notable changes to `rlm-harness`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). Versions track
 `rlm_harness/__init__.__version__` and `pyproject.toml` (kept in sync).
 
-## [Unreleased]
+## [Unreleased] (2.0.0)
+
+**rlm-harness 2.0.0 runs on dspy 3.5 only (`dspy>=3.5.0,<3.6.0`).** dspy 3.5 no longer installs litellm, refuses or drops some options on its native engine, made the planner's request a multi-turn chat, renamed the planner's reasoning field on the wire to `plan`, and runs setup executions of its own in the sandbox. The kit builds its LMs for that engine and refuses any option it would not send, keeps an explicit `plan` on every model, records and re-renders the multi-turn request byte for byte, and accounts for dspy's sandbox setup. Every compatibility path for earlier dspy is gone. This release also adds `AntigravityLM`, a community route on Google's `agy` CLI.
+
+### Breaking
+
+- **dspy 3.5 is required**, and litellm is no longer installed with it. A model string dspy's native engine cannot route (`vllm/`, `sglang/`, `lmstudio/`, `nvidia_nim/` and others; `azure/` is routed natively) and `"engine": "litellm"` in a role's kwargs need the new `rlm-harness[litellm]` extra; `configure()` raises `ImportError` with that hint without it.
+- **A `base_url` LM is built for dspy's native engine.** `configure()` no longer sets `custom_llm_provider="openai"`: the model string is the dialect's prefix plus the served id (`openai/` by default), with `model_type="chat"` and `engine="lm15"`. One leading `openai/` is still removed, so the configured model names work as before. `custom_llm_provider` in a role's kwargs is refused with a pointer to `endpoint_dialect`.
+- **Options dspy's native engine would not send are refused at `configure()`** instead of reaching the wire: `top_k` (which the native engine would leave out of the request), `extra_body`, `thinking_token_budget`, `chat_template_kwargs`, `enable_thinking`, `min_p` and `repetition_penalty`. The guide's `extra_body` recipe for a thinking budget now adds `"engine": "litellm"` (with the `litellm` extra), which sends `extra_body` keys raw as before.
+- **The planner's reasoning field is `plan` on the wire**, as dspy 3.5 names it, and the kit keeps it on every model, including the reasoning models for which dspy would otherwise drop it. Scripted planner turns may be written with `plan` or `reasoning`.
+- **`adapter="default"` is dspy's default `XMLAdapter`** (with the JSON fallback off), not a `ChatAdapter`. `prompt_record.adapter_identity(None)` records `xml`.
+- **Exported `messages` are multi-turn for action calls.** `export_sft_turns(render="adapter")` returns the planner request as dspy 3.5 sends it: the system message, three messages per earlier turn, then the current user message. Extract records are still a system and a user message.
+- **Traces written by rlm-harness 1.26 or earlier are not rendered.** `export_sft_turns(render="adapter")` and `export_counterfactual_extracts` skip them and count them in a warning that names 1.26.x as the version to export them with; `render=None` still reads them.
+- **An artifact compiled under another dspy minor is refused** by `compiled_instructions`, with a message to recompile: dspy 3.5's planner protocol text differs from 3.4's. There is no override.
+- **`testing.assert_task_repl_safe` checks six rules instead of four**: an input field named like dspy's runtime options (`interpreter_factory`, `history_processor`) or like a key dspy writes onto each history event (`history`, `variables_info`, `iteration`, ...) is refused, as dspy 3.5 refuses it.
+- **`ScriptedInterpreter` lists dspy's setup executions in `.setup_executions`** (`"bootstrap"`, `"import"`, `"inject"`), none of which takes a script step, and `.calls` holds each turn's code without dspy's rebind prelude. `.facade_installs` counts bootstraps.
+- **A `history_processor` passed to `RLMTask.arun` is refused**, because the trace rebuilds the planner's history from the recorded turns.
 
 ### Added
 
+- **`RLMConfig.endpoint_dialect`** (`RLM_ENDPOINT_DIALECT`, default `openai`): the wire a `base_url` server speaks, one of `openai`, `vllm`, `ollama`, `openrouter`, `groq` and `together_ai`. Each selects dspy's native preset for that server; `vllm`, `ollama`, `openrouter` and `groq` send the token cap as `max_tokens`, `openai` and `together_ai` as `max_completion_tokens`.
+- **`RLMConfig.native_reasoning`** (`RLM_NATIVE_REASONING`, default off): let dspy handle the planner's reasoning field natively, which on a model dspy's catalog marks as reasoning-capable drops `plan` and sends a reasoning effort. `rlm_setup.native_reasoning` records the mode, so a dataset can keep one.
+- **The `litellm` extra**, which installs `dspy[litellm]`.
+- **`rlm_setup.lm` records the route**: `engine` (`lm15`, `litellm` or `custom`), `api_family` and `dialect` per role, and `dropped_keys` for an option the request left out. Additive within `rlm-harness/trace/v2`.
+- **`scripted_lm(turns, adapter=...)`** writes the canned answers in another adapter's format.
+- **`AntigravityLM`**, a community route that runs a role on a Google Antigravity sign-in through Google's own `agy` CLI in print mode, exported from `rlm_harness.community`. `RLM_MAIN_MODEL=agy/<id>` routes a role onto it. Google has not allowed this use in writing, so the route is not explicit and logs the one-per-process community warning, and it sits outside the SemVer promise. Google's FAQ says that wrapping `agy` inside third-party coding agents or applications is not supported under consumer plans; to use Gemini within Google's terms, use a Google AI Studio API key with the `gemini/` prefix instead. Each call runs a custom agent with no tools and none of the user's rules, takes the prompt on stdin, keeps the bill on the sign-in (`GEMINI_API_KEY` and `AGY_ADC_AUTH` are removed from its environment), and kills `agy` when nobody waits for the call. `community/README.md` quotes Google's pages and the guide covers its behaviour and gaps.
 - **`rlm_harness/community/`**, one place for models that run on a vendor's consumer sign-in through the vendor's own tool, and the document to read before using any of them. `community/README.md` opens with what the kit does not promise: that a route keeps working, that it is affiliated with any vendor, or that it reads anyone's terms for you. Its table gives each route the vendor's own words, a link and the date they were read. `ROUTES` is the prefix table `configure()` routes `main_model` / `sub_model` by, so a new route is one entry there and needs no change to `runtime.py`. A route whose vendor has not explicitly allowed this use logs one warning per process the first time it is built. `ClaudeAgentLM` is the only route today, and Anthropic allows it in writing, so no existing run logs anything new.
 
 ### Changed
 
+- **The JSON adapter always sends a `json_schema`** built from the signature the prompt is rendered from (for the planner, `plan` and `code`), whatever dspy's catalog says about the model, on every route including the litellm engine and the community engines.
+- **A reply with only a reasoning channel is promoted to its text** on dspy 3.5's typed response, so a reasoning model can still be the RLM root; the "carried no content" parse error and `parse_wrapped` keep working.
+- **`rlm_setup.predictors` records each signature as `Adapter.format` received it**, `messages_sha256` hashes the OpenAI-style messages of the adapter's `Prompt`, `completion` and `reasoning_content` come from the engine's response, and `history_len` counts the planner's history events. A turn's own `max_output_chars` is recorded when it differs from the run's.
+- **The turn-timeout restart replays all of dspy's sandbox setup** (the session bootstrap, `import dspy`, the injection of inputs JSON cannot carry), so a restarted sandbox keeps its dspy session.
+- **`sandbox_sub_agents=False` also hides `provide_dspy`**, so no sandbox bundle is built and the sandbox is granted nothing for one. The `container` interpreter never offers sub-agents, because its Python has no dspy.
+- **The sub-LM wrappers handle dspy 3.5's call shapes**: an lm15 `Request` prompt (recorded as its text) and the async seat, which a sub-agent built in the sandbox may use, are intercepted and recorded.
 - **`ClaudeAgentLM` lives in `rlm_harness/community/claude_agent_lm.py`.** `rlm_harness.ClaudeAgentLM`, `rlm_harness.SUBSCRIPTION_PREFIX` and `rlm_harness.community.ClaudeAgentLM` all work. `rlm_harness.claude_agent_lm` is an alias of the moved module, so imports, attribute access and `monkeypatch` through it reach the real one; it stays until the next major release and warns nothing. The module's logger is now `rlm_harness.community.claude_agent_lm`, so a logging filter on the old name needs the new one. `configure()` now imports an adapter module only when a model string names its prefix; it used to import `claude_agent_lm` on every call.
 - The warning `configure()` logs when `request_timeout_s` cannot reach an auto-routed role names the class each role was routed to, and no longer quotes a default deadline.
 - **Community routes added after `ClaudeAgentLM` are outside the SemVer promise** (`docs/CONVENTIONS.md`): they are exported from `rlm_harness.community` only and can be withdrawn in a minor release if a vendor objects.
+
+### Removed
+
+- Every code path for dspy 3.4 and earlier: the `dspy.LMResponse` layout and pydantic copy branches of the sub-LM shims, the execution-instructions probe, and the legacy-LM cache gate.
 
 ### Fixed
 
 - **`main_lm_kwargs` / `sub_lm_kwargs` on an auto-routed role now log a warning.** `configure()` does not build that LM, so the kwargs reached nothing, and the warning meant to say so fired only for an LM passed in by hand. It now also fires for a routed role and names the class it went to.
 - The error `RLMConfig` raises for a refused `main_lm_kwargs` / `sub_lm_kwargs` key no longer says nothing records the override. The trace names such a key in `rlm_setup.lm.unrecorded_keys`; what it never records is the value, and the message now says that.
+- **`AntigravityLM` guards `agy` from the moment it starts.** The kill on any exception now sits inside the `with` that owns the prompt file, directly after the process starts, so an exception can no longer leave `agy` running.
+- **Where `AntigravityLM`'s prompt file goes is documented**: each call writes its prompt to a `tempfile.TemporaryFile` in `tempfile.gettempdir()`, deleted when the call ends and named while it runs on platforms other than Unix.
+- **The `exec_duration_s` of a turn on the sandbox is recorded on dspy 3.5**, which runs each turn with a rebind prelude in front of the code the trajectory records.
 
 ## [1.26.0] - 2026-11-06
 

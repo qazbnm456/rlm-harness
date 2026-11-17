@@ -33,15 +33,12 @@ reason is in the rule.
   `SandboxCancelled` (NOT recoverable: deliberately NOT a `CodeInterpreterError` subclass, so it
   propagates as a genuine run-ending failure).** Never make `SandboxCancelled` a
   `CodeInterpreterError` subclass, and never let a caller-driven cancel degrade into a
-  retried/recoverable outcome. **Which class is "recoverable" is dspy-VERSION-DEPENDENT and must
-  stay resolved, not written down:** dspy 3.3.0 inverted it: the base `CodeInterpreterError` had been
-  the recoverable one, and 3.3.0 added `CodeExecutionError` for that role and made the base TERMINAL. Hardcoding the base class silently turns the safety-net timeout into a run-ending
-  failure with no test going red (CHANGELOG 1.0.1). The same rule governs
+  retried/recoverable outcome. **Which class is "recoverable" is a dspy fact and must stay resolved, not written down:** the recoverable class is the `CodeExecutionError` subclass and the base `CodeInterpreterError` is TERMINAL, and dspy has inverted that pair before. Hardcoding the base class silently turns the safety-net timeout into a run-ending failure with no test going red (CHANGELOG 1.0.1). The same rule governs
   `container_interpreter.py`: its execute-path raises that are *meant* to hand the model another turn
   (execution timeout, an exception raised by the model's own code, a sandbox death mid tool-reply)
   use the resolved class; its setup/health/protocol failures keep the base class and are terminal by
   intent. `SandboxCancelled` needs no shim precisely because it stands outside dspy's hierarchy
-  entirely: that is what makes it non-recoverable across every version, so keep it there.
+  entirely: that is what makes it non-recoverable whatever dspy catches, so keep it there.
   This distinction is only real end-to-end because
   `_retry.py`'s `run_with_retry` has a `non_retryable` allowlist and `RLMTask.arun()` passes
   `non_retryable=(SandboxCancelled,)`, without that wiring, `run_with_retry`'s own blanket
@@ -55,66 +52,14 @@ reason is in the rule.
   stays first). This guard was accidentally
   dropped once during this feature's own design revision and only caught by a second adversarial
   review pass; keep it isolated and commented so it cannot be dropped silently again.
-- **Every dspy API difference is resolved in `_dspy_compat.py`: one place, by introspection.**
-  The kit declares a FLOOR **and, since 1.14.0, a CAP** on dspy (`>=3.4.1,<3.5.0`; 1.15.2
-  tightened the cap to `<3.4.1` and 1.16.0 lifted it back once 3.4.1 was supported, see
-  `pyproject.toml` for the two conditions that lifting had to meet; the floor moved from 3.4.0 to
-  3.4.1 in 1.21.0, because 3.4.0's lazy-import proxy broke `import litellm`, and was `>=3.3.1`
-  since 1.5.0 and `>=3.3.0` since 1.2.0). This sentence said `<3.4.1` and sent the reader to
-  `pyproject.toml` "for why 3.4.1 is excluded" until 1.17.0, nine lines from the sibling sentence
-  1.17.0 did sweep: 1.15.2 wrote it and 1.16.0 lifted the cap without coming back here, so the
-  authority document stated two different caps at once. Consumers pin the KIT, so a consumer's fresh
-  install used to pick up whatever dspy was current, and the kit had to survive dspy's renames
-  without them noticing. **That premise is retired**: it was tested twice and broke a consumer both
-  times (3.3.0 renamed three things, CHANGELOG 1.0.1; 3.4.0 deleted the interpreter seam), because
-  a detector cannot protect an install that happens before anyone reads it. The cap is upstream's
-  own boundary rather than a guess, since several 3.4.0 deprecations say "removal in 3.5". The
-  shims still matter for exactly the same reason WITHIN the allowed range, and a cap does not make
-  `dspy-latest.yml` decorative: `uv run --with "dspy==<newer>"` overrides the bound, measured, so
-  that job still tests the newest dspy and still reddens the day the next minor ships, which is
-  when the next floor bump is due. The 1.2.0 floor bump deleted the 3.2.x BRANCHES but deliberately
-  kept this module: its value was never "supports two versions", it is that every dspy fact lives
-  at ONE introspected call site. Do NOT collapse a shim into its call site just because it now
-  resolves a single answer: that is how the next rename gets to be silent again. Three
-  landed at once in 3.3.0 (`RLM(interpreter=…)` → a positional arg of `forward()`/`aforward()`;
-  `max_iterations` → `max_iters`; the recoverable/terminal interpreter-error inversion) and only the
-  first failed loudly: see CHANGELOG 1.0.1. So: NEVER hardcode a dspy kwarg name, attribute, or
-  error class at a call site, and never assert on a dspy internal (`rlm._interpreter`,
-  `rlm.max_iterations`) in a test: add a shim here and a case to `tests/test_dspy_compat.py`, which
-  asserts the shim's contract against the installed dspy so the next rename goes red HERE. The module
-  is `_`-private and dspy-free at module top (every lookup imports dspy lazily, `lru_cache`d because
-  the installed dspy cannot change mid-process). Two rules the shims encode and that must not drift:
-  **interpreter CREATION stays the kit's on every version, which is what keeps
-  `sandbox.build_interpreter`'s guard on every pass; SHUTDOWN is dspy's for an interpreter it was
-  handed, EXCEPT a caller-supplied double.** That sentence was rewritten in 1.14.0 and the rewrite
-  is the lesson. It used to read "OWNERSHIP stays the kit's" and name `interpreter_factory=` as the
-  WRONG seam for supplying an interpreter, because dspy shuts down whatever the factory returns.
-  dspy 3.4.0 then DELETED the positional seam the kit relied on and left only the factory, so the
-  guarantee had to be re-derived from a mechanism instead of restated: `_build_rlm` hands dspy a
-  real factory (`_dspy_compat.interpreter_kwargs`), dspy calls it once per forward pass and shuts
-  down its return value, and a CALLER-supplied interpreter goes out through `sandbox.caller_owned`,
-  a view whose `shutdown()` is a no-op, so `RLMTask._teardown_interpreter` stays its single
-  shutdown and `RLMTask(interpreter=…)` keeps meaning what it says. Two consequences worth keeping:
-  a retry now gets a FRESH sandbox on the string path (it used to re-enter the same dirty REPL
-  namespace while dspy rebuilt an empty history). **The handle for re-checking this on the next dspy
-  is `dspy.predict.rlm.resolve_interpreter_factory`**: it prefers the module's own factory over
-  `dspy.settings.interpreter_factory`, which is what makes a settings-level factory unable to
-  substitute the runtime that executes model code while the kit always supplies one. Read that
-  function, not this sentence, when the version moves. And `caller_owned` must declare the
-  `CodeInterpreter` protocol members STATICALLY, because from CPython 3.12 `isinstance` against a
-  `@runtime_checkable` Protocol resolves through `inspect.getattr_static` and never consults
-  `__getattr__`: a purely dynamic proxy passes on the 3.11 floor and fails on 3.12/3.13, so the
-  test for it sweeps `getattr_static` rather than asserting `isinstance`.
-  **And the carrier that preceded it is the cautionary half:** 1.5.0 passed an
-  `interpreter_factory` as a metadata CARRIER for `execution_instructions` (without it EVERY run,
-  including a `container` run that can genuinely spawn subprocesses, is described to the model as
-  Pyodide) on the premise that dspy never invokes it. Nothing asserted that premise. 3.4.0 invokes
-  it unconditionally, so the guard fired in production rather than in CI. A premise about
-  upstream's CONTROL FLOW needs a test that exercises the control flow, not a raise that documents
-  the assumption: `tests/test_dspy_compat.py::test_dspy_ACTUALLY_INVOKES_the_factory_it_is_given`
-  is that test. And a lossy fallback must be LOUD: `_build_rlm`'s `except
-  TypeError` drops all three budget caps to dspy's defaults, so it `logger.warning`s rather than
-  `logger.debug`s.
+- **Every dspy API difference is resolved in `_dspy_compat.py`: one place, by introspection.** The kit supports ONE dspy minor at a time (`>=3.5.0,<3.6.0`; see `pyproject.toml`). The cap exists because "no cap, the newest-deps job is the defence" was tested twice and broke a consumer both times (CHANGELOG 1.0.1, and the release that capped dspy): a detector cannot protect an install that happens before anyone reads it. A cap does not make `dspy-latest.yml` decorative: `uv run --with "dspy==<newer>"` overrides the bound, measured, so that job still tests the newest dspy and still reddens the day the next minor ships, which is when the next move is due. Moving to a new minor deletes the old minor's branches and keeps this module: its value was never "supports two versions", it is that every dspy fact lives at ONE introspected call site. Do NOT collapse a shim into its call site just because it resolves a single answer: that is how the next rename gets to be silent again. A dspy minor has renamed three things at once with only one failing loudly (CHANGELOG 1.0.1). So: NEVER hardcode a dspy kwarg name, attribute, or error class at a call site, and never assert on a dspy internal (`rlm._interpreter`, `rlm.max_iterations`) in a test: add a shim here and a case to `tests/test_dspy_compat.py`, which asserts the shim's contract against the installed dspy so the next rename goes red HERE. When a fact is a literal in dspy's source rather than an attribute (the `_raw_` injection prefix, the `import dspy` setup statement), the test reads that source. The module is `_`-private and dspy-free at module top (every lookup imports dspy lazily, `lru_cache`d because the installed dspy cannot change mid-process).
+
+  **Interpreter CREATION stays the kit's, which keeps `sandbox.build_interpreter`'s guard on every pass; SHUTDOWN is dspy's for an interpreter it was handed, EXCEPT a caller-supplied double.** dspy takes an interpreter only through `RLM(interpreter_factory=…)`, calls it once per forward pass and shuts down its return value. `_build_rlm` hands dspy a real factory (`_dspy_compat.interpreter_kwargs`), and a CALLER-supplied interpreter goes out through `sandbox.caller_owned`, a view whose `shutdown()` is a no-op, so `RLMTask._teardown_interpreter` stays its single shutdown and `RLMTask(interpreter=…)` keeps meaning what it says. A retry gets a FRESH sandbox on the string path. **The handle for re-checking this on the next dspy is `dspy.predict.rlm.resolve_interpreter_factory`**: it prefers the module's own factory over `dspy.settings.interpreter_factory`, which is what makes a settings-level factory unable to substitute the runtime that executes model code while the kit always supplies one. Read that function, not this sentence, when the version moves. `caller_owned` must declare the `CodeInterpreter` protocol members STATICALLY, because from CPython 3.12 `isinstance` against a `@runtime_checkable` Protocol resolves through `inspect.getattr_static` and never consults `__getattr__`: a purely dynamic proxy passes on the 3.11 floor and fails on 3.12/3.13, so the test for it sweeps `getattr_static` rather than asserting `isinstance`.
+
+  The same factory carries `execution_instructions` (without it EVERY run, including a `container` run that can genuinely spawn subprocesses, is described to the model as Pyodide). It is a real factory, never a metadata carrier: an earlier carrier that raised if invoked rested on the premise that dspy never invokes it, nothing asserted that premise, and dspy started invoking it unconditionally, so the guard fired in production rather than in CI. A premise about upstream's CONTROL FLOW needs a test that exercises the control flow: `tests/test_dspy_compat.py::test_dspy_ACTUALLY_INVOKES_the_factory_it_is_given` is that test. And a lossy fallback must be LOUD: `_build_rlm`'s `except TypeError` drops all three budget caps to dspy's defaults, so it `logger.warning`s and the trace says so in `budgets.dropped`.
+- **The LMs `configure()` builds go to dspy's native engine, and an option it would not send is refused, never dropped.** A role with a `base_url` is built as the dialect's prefix plus the served id (`_dspy_compat.endpoint_model`), with `model_type="chat"` and `engine="lm15"` (`endpoint_lm_kwargs`), so a recording proxy that handles only `POST …/chat/completions` keeps working and an option the native engine cannot represent raises instead of moving the call to another engine. dspy's native engine also LEAVES OUT some options with only a note (an lm15 `Adaptation`): measured, `top_k` on the Chat wire. So `configure()` works out each built role's route offline with dspy's own pieces (`build_request`, `select_backend`, the engine's `plan`; `_dspy_compat.lm_route`) and refuses a refused or dropped option, naming `rlm-harness[litellm]` with `"engine": "litellm"` as the route that sends it. It holds no list of options or prefixes: a model string that needs litellm is whatever dspy's selection says needs it, and a missing litellm raises the install hint. `rlm_setup.lm` records the engine, API family and dialect actually chosen, and moves an option the request left out to `dropped_keys`, so the trace never claims a setting the call did not carry.
+- **The planner keeps an explicit `plan` on every model.** Every adapter the kit builds gets `native_response_types` without `dspy.Reasoning` (`_dspy_compat.adapter_native_response_types`; a non-empty list, because dspy reads `[]` as its defaults), so dspy neither drops the planner's reasoning field nor sends a reasoning effort for a catalog reasoning model. `RLMConfig.native_reasoning` opts into dspy's native mode, and `rlm_setup.native_reasoning` records which, because the two modes send different requests and one dataset should hold one. The JSON adapter always sends a `json_schema` built from the signature the prompt is rendered from, never `json_object`, and the chat and XML adapters keep dspy's JSON fallback off, because a schema-guided server rejects `json_object`.
+- **dspy's own executions in the sandbox are not model turns.** Before the first turn dspy bootstraps its sandbox session, may run `import dspy`, and injects each input the interpreter's JSON cannot carry (`_dspy_compat.setup_execution` recognises all three), and it runs every later turn with its rebind prelude in front (`_dspy_compat.rebind_prelude`). Anything that counts or matches executions must account for both: `ScriptedInterpreter` takes no step for a setup execution, `.calls` and `exec_duration_s` matching strip the prelude (the trajectory records the code without it), and a turn-timeout restart replays the whole setup sequence, because the prompt still offers sub-agents and the turns still read the injected inputs. The probe that a restart kept the session is `__dspy_guest_spec` in the sandbox's globals: `import dspy` succeeds after a restart that lost the session, because the sandbox snapshot already imported it. `sandbox_sub_agents=False` refuses the bootstrap and hides `provide_dspy`, so no bundle is built and nothing is granted; the `container` interpreter refuses the bootstrap because its Python cannot import dspy.
 - **An LM error dspy itself calls non-retryable fails the task fast, with one carve-out.**
   `_dspy_compat.is_fast_fail_lm_error(exc)` mirrors dspy's own `is_retryable_lm_error`: an
   auth/billing/configuration failure, an invalid request, or an unsupported model/feature is not
@@ -153,35 +98,9 @@ reason is in the rule.
   like `mcp_tools`. `community/antigravity_lm.py` has no extra at all, because what it needs is the
   `agy` binary rather than a package; it looks for that only when an instance is built.
 
-  **`ClaudeAgentLM` is an ENGINE, not a `forward()` subclass, and the suite must stay free of that
-  DeprecationWarning.** It was a `dspy.BaseLM` implementing `forward`/`aforward` until 1.17.0, on a
-  documented exemption dated by the warning dspy emitted for it. dspy 3.4 deprecated that interface
-  in favour of an engine with `complete(Request) -> Response` passed as `dspy.LM(engine=...)` and
-  scheduled removal for 3.5, so the exemption was resolved rather than renewed: the class is now a
-  `dspy.LM` holding `_ClaudeAgentEngine` / `_AsyncClaudeAgentEngine`.
+  **The kit's own LMs are ENGINES.** dspy calls a custom LM only through an engine (`complete(Request) -> Response`, passed as `dspy.LM(engine=...)`) and refuses one that implements `forward()`/`aforward()` instead, on every call. `ClaudeAgentLM` and `AntigravityLM` are each a `dspy.LM` holding a sync and an async engine. Two things go with that, each with its own pin. The LM is **managed**, so dspy WOULD consult a cache for it: each `__init__` defaults `cache=False` so a subscription call touches none, because an injected LM keeps its own flag and the kit's own default could not reach it. And a **copy must keep its engine**, or `copy_lm`'s `rollout_id` variant silently loses it; `tests/test_dspy_compat.py` pins that.
 
-  Two things that go with it, each with its own pin. The LM is **managed** now, so dspy WOULD
-  consult a cache for it: `__init__` defaults `cache=False` so a subscription call keeps touching
-  none, because an injected LM keeps its own flag (1.15.1) and the kit's own default could not
-  reach it. And a **copy must keep its engine**, or `copy_lm`'s `rollout_id` variant silently calls
-  litellm; `tests/test_dspy_compat.py` pins that, replacing the pin that used to assert the
-  ABSENCE of `_engine_spec`.
-
-  The instrument is a TEST, not a habit:
-  `tests/test_dspy_compat.py::test_the_kits_own_LMs_are_off_the_interface_dspy_removes_in_3_5`
-  drives a `forward()`-style subclass first and demands it raise, THEN demands the kit's own LMs
-  raise nothing. **Both DIRECTIONS, because dspy decides "legacy" per direction:**
-  `dspy/clients/execution.py` computes `method = "aforward" if asynchronous else "forward"` and
-  asks whether the LM overrides that one. The first version of this test drove only the sync
-  `__call__`, which left `aforward` free to come back on `ClaudeAgentLM` with the suite green and
-  dspy warning: it guarded the sub-LM seat and missed the planner seat, which is the primary RLM
-  route. Without that control the second half would pass for an LM that is on the dead
-  interface, and relying on remembering to pass `-W error::DeprecationWarning` is not an
-  instrument: nothing in CI passes it, so a future edit reintroducing `forward()` would be green.
-  `dspy-latest.yml` remains what goes red when 3.5 actually ships; the cap still cannot pass
-  `<3.5.0` (see `pyproject.toml`) until then. `intercept_sub_lm`'s wrapper is NOT on the deprecated
-  interface and needs no migration: it overrides `__call__`, not `forward`, and the same test
-  covers it.
+  The instrument is a TEST, not a habit: `tests/test_dspy_compat.py::test_an_engine_less_LM_is_refused_and_the_kits_own_LMs_are_engines` drives a `forward()`-style subclass first and demands dspy refuse it, THEN drives each of the kit's LMs. **Both DIRECTIONS, because the planner takes the async route and the sub-LM the sync one**: a version of that test that drove only `__call__` once left `aforward` free to come back on `ClaudeAgentLM` with the suite green. Without the control the second half would pass for an LM dspy could not call. `intercept_sub_lm`'s wrapper overrides `__call__` and `acall` and hands each call to its base, and the same test covers it.
 - **A community route's `vendor_permission` comes from a quoted vendor statement, never from a reading of one.** `rlm_harness/community/README.md` has one row per route with the vendor's own words, a link and the date they were read, and `explicit` is set only when the vendor allows this use in writing. A route whose vendor has said nothing, or whose terms read against the use, is `not-explicit` and warns once per process when built. A permission inferred from silence, or from a forum reply nobody can attribute, is how a user loses an account on the kit's word. `tests/test_community.py` checks that each row exists, links and is dated; whether the quote still holds is re-checked by hand, and the date moves with it.
 - **`ClaudeAgentLM`'s politeness ladder rests on dspy's error CLASSIFICATION, and that dependency
   is a borrowed table.** `dspy/clients/execution.py` computes
@@ -200,9 +119,7 @@ reason is in the rule.
   performance knob.
 
   **`n` is the second thing that became dspy's to multiply, and the first sweep missed it.**
-  `execute` runs `count = call.n` engine calls once the request is canonical, where an unmanaged
-  LM took its hardcoded `n=1` branch and dropped the kwarg inside `forward()`. Measured across the
-  migration: `n=3` was ONE CLI spawn on 1.16.0 and is three now. The constructor warns above 1
+  `execute` runs `count = call.n` engine calls once the request is canonical, so `n=3` is three CLI spawns. The constructor warns above 1
   rather than refusing, because a caller asking for k candidates correctly gets k; the warning is
   for an `n` carried over from a litellm config on the belief this adapter ignores it, which is
   what the docstrings said. When reading this invariant for a NEW dspy behaviour, enumerate what
@@ -258,19 +175,7 @@ reason is in the rule.
   *name* by walking the call stack's globals/locals, which works only while a
   caller frame holds the name and raises `Unknown name` for dynamic types or
   runner-driven paths. Do NOT reintroduce reliance on that call-stack resolution.
-- **Tools passed to `RLMTask(tools=…)` MUST be sync.** dspy's interpreter invokes a tool with a
-  plain synchronous call: `PythonInterpreter.invoke_tool` is
-  `result = self.tools[name](**kwargs)`. **The consequence changed in dspy 3.4.0 and the rule did
-  not, which is worth stating so a reader who checks the old mechanism and finds it false does not
-  conclude the rule is obsolete.** 3.4.0 appends
-  `return _await_in_sync(result) if asyncio.iscoroutine(result) else result`, and `_await_in_sync`
-  calls `asyncio.run` when there is no running loop and `loop.run_until_complete` when there is. The
-  kit always reaches the sandbox from inside a running loop, since `RLMTask.arun()` is async and
-  `run()` wraps it, so an `async def` tool now raises
-  `RuntimeError: This event loop is already running` rather than handing the model an un-awaited
-  `"<coroutine object …>"`. Loud instead of silent, and still a broken tool. So `tools/` factories
-  (`make_fetch_tool`, `make_web_search_tool`, …) and their `fetcher`/`searcher` inputs are sync.
-  Don't make a tool `async`; wrap an async client into a sync call yourself.
+- **Tools passed to `RLMTask(tools=…)` MUST be sync.** dspy's interpreter invokes a tool with a plain call, and runs the coroutine of an `async def` tool to completion on a separate thread's event loop. The kit's tool seams are written and tested for the plain call: the timing wrapper (`trace._ensure_tool_timing`), the recorder a tool reaches through a context variable, and `run_isolated`, which runs a coroutine on its own bare thread. So `tools/` factories (`make_fetch_tool`, `make_web_search_tool`, …) and their `fetcher`/`searcher` inputs are sync. Don't make a tool `async`; wrap an async client into a sync call yourself.
 - **A tool injected into the REPL MUST expose EXPLICIT params: never `*args`/`**kwargs`.** dspy.RLM
   builds the in-sandbox tool proxy from `inspect.signature(tool.func)` (NOT `dspy.Tool.args`), and this
   holds for BOTH backends: dspy's Deno `PythonInterpreter._extract_parameters` AND rlm-harness's
@@ -547,23 +452,7 @@ reason is in the rule.
   field was suggested from outside. **The fact was never missing; the retrieval was.** So when a rate
   varies by some dimension, enumerate what else differs between the groups before treating the
   dimension as the cause.
-- **A sub-LM wrapper hands dspy back the SHAPE dspy handed it.** `RLM._query_lm` accepts dspy's
-  TYPED response or the legacy `list[str | dict]`, and both reads and both rebuilds live in
-  `_dspy_compat.sub_lm_response_text` / `sub_lm_response_with_text`: never at a call site. The
-  wrapper used to collapse anything non-list into `[outputs]`, which turned a typed response into
-  `[response]` and made dspy raise; invisible on the default path, fatal under
-  `dspy.context(experimental=True)`. **The typed CLASS and its LAYOUT have both moved**, which is
-  why neither is written down: 3.4.0 deleted `dspy.LMResponse` (a LIST of `.outputs`, pydantic) for
-  `dspy.lm15.Response` (one `.message`, a frozen dataclass), so `_lm_response_cls` resolves the
-  class dspy's own `isinstance` names, the rebuild probes the container off the OBJECT rather than
-  assuming either layout, and `_copy_with` probes the copy-with-changes protocol instead of calling
-  `model_copy`. Three rules this path encodes: a shape the shim does not recognise is returned
-  UNTOUCHED by its caller (`sub_lm.py`, not the shim, which ends `return [text]`) so dspy raises its
-  own error (rebuilding it as `[""]` converts a loud failure into a silent empty
-  completion that reaches the planner and the RL data); substituting text drops the response's
-  LATER text parts because its `.text` JOINS them (with `""` on 3.3, `"\n"` on 3.4, so a test must
-  not assert the separator); and a text part is discriminated on its `type` tag, NEVER on
-  `hasattr(part, "text")`, because a thinking part carries a `.text` field of its own on 3.4.0.
+- **A sub-LM wrapper hands dspy back the SHAPE dspy handed it.** `RLM._query_lm` calls the sub-LM with a string, or with an lm15 `Request` for a prompt that carries media, and accepts an lm15 `Response` or the `list[str | dict]` a string call returns. Both reads and both rebuilds live in `_dspy_compat.sub_lm_response_text` / `sub_lm_response_with_text`: never at a call site. Wrapping a typed response in a list (`[response]`) makes dspy raise. The wrapper intercepts and records both seats, `__call__` and `acall` (a sub-agent built in the sandbox may call the async one), and records a `Request` prompt as its text. Three rules this path encodes: a shape the shim does not recognise is returned UNTOUCHED by its caller (`sub_lm.py`, not the shim, which ends `return [text]`) so dspy raises its own error (rebuilding it as `[""]` converts a loud failure into a silent empty completion that reaches the planner and the RL data); substituting text drops the response's LATER text parts because its `.text` JOINS them (a test must not assert the separator), and a string reply's `{"text", "reasoning_content"}` dict keeps its other keys; and a text part is discriminated on its `type` tag, NEVER on `hasattr(part, "text")`, because a thinking part carries a `.text` field of its own.
 - **The JSONL trace is the source of truth** for replay and RL datasets. Langfuse
   is an optional mirror only; never make `dataset.py` depend on Langfuse export.
   `TraceRecorder.record` is **lock-guarded**: dspy.RLM's `llm_query_batched` fans the
@@ -754,16 +643,18 @@ reason is in the rule.
   Re-audit it the same way next time rather than inheriting the conclusion; "no consumer validates
   the version" is a measurement with a date on it, and the first release that asserted it without
   measuring got the cost of a bump backwards.
-- **An SFT example's input is the request the adapter SENT, and the trace keeps what rebuilds it.** A consumer's converter read `main_step`'s `{reasoning, code, output}` and rendered its own multi-turn chat, while dspy sends each planner turn as one single-turn request formatted by the configured adapter and, under the default `json` adapter, expects JSON back. The model was trained on a format it is never served, and the trace could not have warned the converter: the prompt was not recorded, and the `extract` fallback call left no record (CHANGELOG 1.25.0). The rules:
+- **An SFT example's input is the request the adapter SENT, and the trace keeps what rebuilds it.** A consumer's converter read `main_step`'s `{reasoning, code, output}` and rendered its own chat, while dspy formats each planner request with the configured adapter (a multi-turn chat for an action call, with one exchange per earlier turn) and, under the default `json` adapter, expects JSON back. The model was trained on a format it is never served, and the trace could not have warned the converter: the prompt was not recorded, and the `extract` fallback call left no record (CHANGELOG 1.25.0). The goal the rules serve: a model fine-tuned on records exported from this version's traces transfers to the planners of agents built with this version, so `render="adapter"` rebuilds exactly the request the planner was sent. The rules:
 
-  * **Record the inputs to `Adapter.format`, not its output.** Signature and shared values go into `rlm_setup` once per trajectory, each call adds only what varies, and the REPL history is rebuilt from the trajectory's own earlier turns. Storing the rendered messages would grow a trace with the square of its turn count.
-  * **Hash what was sent, and check every re-render against it.** `messages_sha256` is taken from the adapter's output inside the call, and `export_sft_turns(render="adapter")` sets `verified` on each record. The two ways a re-render can drift silently, a type rebuilt from its schema and a dspy that formats differently, are invisible to a test run on today's dspy.
+  * **Record the inputs to `Adapter.format`, not its output.** The signature AS THE ADAPTER RECEIVED IT (after dspy's preprocessing renames the planner's reasoning field to `plan`) and shared values go into `rlm_setup` once per trajectory, each call adds only what varies, and the planner's history is rebuilt from the trajectory's own earlier turns: one `build_repl_event` per turn, with that turn's iteration label (from `max_iterations`) and output cap, and without the task inputs dspy adds to the first event, which no adapter renders. Storing the rendered messages would grow a trace with the square of its turn count. A count taken from an input dspy keeps mutating (its `dspy.History`) is taken when the call is formatted.
+  * **Hash what was sent, and check every re-render against it.** `messages_sha256` is taken inside the call over the OpenAI-style messages of the `Prompt` the adapter returned, the render hashes the same writer's output, and `export_sft_turns(render="adapter")` sets `verified` on each record. Parity is a claim about the Prompt: on the Chat Completions route it equals the wire, and `use_developer_role` or the Responses API change the wire, not the hash. `tests/test_parity_wire.py` checks it against the request bodies a local OpenAI-compatible server received, on every route the kit builds. The two ways a re-render can drift silently, a type rebuilt from its schema and a dspy that formats differently, are invisible to a test run on today's dspy.
   * **Prefer a missing field to a wrong one.** Per-call fields attach to a turn only when its `reasoning` matches the captured call. Calls are staged per attempt, and only the attempt whose turns reached the trace is written, the same last-writer-wins rule `run_end.usage` documents. A prompt beside another attempt's answer is a training error nobody will notice.
-  * **The assistant side is the raw completion, verbatim**, with `reasoning_content` as its own field. Formatting the parsed outputs is the fallback when the completion is missing or empty, and `assistant_source` says which was used.
+  * **The assistant side is the raw completion, verbatim**, read off the engine's `Response`, with `reasoning_content` as its own field. Formatting the parsed outputs under their wire names is the fallback when the completion is missing or empty, and `assistant_source` says which was used.
+  * **A trace in a layout this version cannot rebuild is skipped by name, never rendered wrong.** One recorded by rlm-harness 1.26 or earlier (its action signature has a `repl_history` input) is counted in a warning naming 1.26.x as the version to export it with; `render=None` still reads it.
   * **Capture can thin a trace and can never fail a run.** It is a dspy callback (dspy logs and swallows one that raises), and the step that composes its payloads is suppressed and logged. The lookups dspy has renamed before, where the predictors live and what the budget attributes are called, go through `_dspy_compat.rlm_predictor_roles` and `rlm_budget_values`, and the tool set through `rlm_user_tools`. `prompt_record.py` reads dspy's adapter and REPL types directly (`get_annotation_name`, `serialize_for_json`, `REPLHistory`) because re-rendering is dspy's formatting; a dspy that changes them shows up as `verified: False` and in `tests/test_sft_render.py`.
   * **`rlm_setup.lm` is an allowlist of `lm.kwargs`, never a dump with secrets removed.** `lm.kwargs` carries `api_key` for every LM the kit builds, and a caller's passthrough can hold a token under any name, so a denylist is one unexpected key away from a credential in every trace. `_dspy_compat._LM_SETTING_KEYS` names what is recorded, and every other key is listed by name in `unrecorded_keys`, so "not recorded" stays distinct from "not set". The allowlist must apply at every depth (`_LM_NESTED_KEYS`): an allowlisted name such as `thinking` or `chat_template_kwargs` says nothing about what a caller nested under it, and copying its whole value once wrote a nested secret into the trace. The test searches the serialised result for the secret value itself, at the top level and nested.
   * **The export never imports a class named in a trace**, because that would execute whatever a trace file says. An adapter outside dspy's json, chat and xml families, or an output type pydantic cannot rebuild from its schema (one with `$defs`), comes from the caller through `adapter=` or `custom_types=`.
   * **One call that cannot be rendered is skipped and counted**, never a reason to fail the rest of a corpus.
+  * **Nothing the trace does not record may shape the request.** A `history_processor` passed to `arun` is refused, because it would rewrite the planner's history before each turn and the render rebuilds that history from the recorded turns.
 
   `tests/test_sft_render.py` is the pin. Its reference is its own callback at the LM boundary, never the kit's capture, because a test comparing the export with the kit's own record passes when capture and render are wrong in the same way.
 - **rlm-harness produces TRAJECTORIES, never reward.** The kit runs the RLM, records the trace,

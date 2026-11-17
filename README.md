@@ -52,8 +52,10 @@ pip install rlm-harness
 uv add rlm-harness
 ```
 
-`rlm-harness` needs Python ≥ 3.11 and pulls in `dspy` + `pydantic`. Everything else is an opt-in
-extra: `[observe]` (Langfuse/OpenInference tracing), `[mcp]` (the MCP client bridge),
+`rlm-harness` needs Python ≥ 3.11 and pulls in `dspy` 3.5 + `pydantic`. Everything else is an opt-in
+extra: `[litellm]` (dspy's litellm engine, for a model string dspy's native engine cannot route and for
+server options it does not send, such as `extra_body`; `configure()` names it when one is needed),
+`[observe]` (Langfuse/OpenInference tracing), `[mcp]` (the MCP client bridge),
 `[jsonschema]` (`make_json_schema_validator`), `[grep]` (a real wall-clock timeout on
 `make_grep_files_tool`'s LM-supplied pattern), `[gitignore]` (`.gitignore`-aware walking in
 `list_candidate_paths`), and `[subscription]`: run the planner and/or sub-LM on a Claude Pro/Max

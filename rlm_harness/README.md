@@ -97,13 +97,7 @@ JSONL is the dataset's source of truth.
 > Depth is **1** by design here (main LM + one intercepted sub-LM layer). The wrapper does not
 > recurse, and the interception it adds is per-response, not per-trajectory.
 
-Since dspy 3.4.1, model code CAN reach a nested `dspy.RLM` through the sandbox dspy facade, so
-"unsupported upstream" is no longer the reason depth stays 1 here. The reason is now a measured
-property: a nested RLM built in the sandbox records as ONE `sub_call` carrying only its final
-answer, so the inner run's turns, code and REPL output are absent from the trace entirely. When a
-child's trajectory is the point, use `make_harness_tool`, which gives the child its own rollout and
-the parent a pointer to it; see "Delegate to another harness". `RLMConfig.sandbox_sub_agents`
-decides whether the facade is available at all.
+Model code CAN reach a nested `dspy.RLM` through dspy's sandbox session, so "unsupported upstream" is not the reason depth stays 1 here. The reason is that a nested RLM built in the sandbox leaves no `main_step` of its own: its LM calls are recorded as `sub_call`s, but its turns, code and REPL output are not in the trace. When a child's trajectory is the point, use `make_harness_tool`, which gives the child its own rollout and the parent a pointer to it; see "Delegate to another harness". `RLMConfig.sandbox_sub_agents` decides whether sub-agents are available at all.
 
 ### Sub-LM tracing is automatic (1.7.0)
 
@@ -412,6 +406,8 @@ event naming the source, the versions that compiled it and the one running now, 
 without refusing, which caps only one side recorded, which checks were skipped because one side
 could not supply them, any predictor the file named that this build does not have, and which
 predictors it replaced, so a reader of the trace knows the prompt was not the shipped one.
+
+An artifact compiled under another dspy minor is refused with a message to recompile, and there is no override: the optimized text replaces the planner's whole instruction, including the protocol text dspy writes into it, which differs between dspy minors. The version compared is the one dspy's own `save` records; a state with none, or one that cannot be read, is not refused for it.
 
 `compiled_instructions=""` runs what the build ships, which is the A/B you need to decide whether
 to keep an artifact.
@@ -1359,46 +1355,20 @@ to `pyodide`/`deno`:
   safety-net deadline. **Unset by default** (deliberately NOT matching the container interpreter's
   own `120.0`-default precedent: this budget has no hook to exclude host-side tool/sub-LM dispatch
   time, so a generous always-on value would misfire on legitimate multi-tool-call turns more often
-  than the container analogy implies). Firing raises dspy's own RECOVERABLE interpreter error:
-  `CodeExecutionError` on dspy >= 3.3.0, resolved at call time through
-  `_dspy_compat.recoverable_interpreter_error()` rather than hardcoded, because 3.3.0 INVERTED the
-  split: the base `CodeInterpreterError` used to be the recoverable one and is now the TERMINAL
-  one. The model sees an `"[Error] ..."` string and gets to retry next turn against a
-  freshly-respawned sandbox.
-- **`RLM_REQUEST_TIMEOUT`** (seconds; `RLMConfig.request_timeout_s`): a wall-clock cap on ONE
-  model HTTP request ATTEMPT, handed to `dspy.LM(timeout=...)` and from there to litellm. This is
-  `RLM_SANDBOX_TURN_TIMEOUT`'s sibling on the other side of a turn: the sandbox side was bounded
-  and the model side was not settable at all.
+  than the container analogy implies). Firing raises dspy's own RECOVERABLE interpreter error, `CodeExecutionError`, resolved at call time through `_dspy_compat.recoverable_interpreter_error()` rather than hardcoded, because its base class `CodeInterpreterError` is the TERMINAL one and dspy has swapped the two before. The model sees an `"[Error] ..."` string and gets to retry next turn against a freshly-respawned sandbox, which has dspy's sandbox session back: the kit replays dspy's setup executions after the restart.
+- **`RLM_REQUEST_TIMEOUT`** (seconds; `RLMConfig.request_timeout_s`): a wall-clock cap on ONE model HTTP request ATTEMPT, handed to `dspy.LM(timeout=...)`. This is `RLM_SANDBOX_TURN_TIMEOUT`'s sibling on the other side of a turn.
 
-  **Unset is not "no cap".** With nothing passed the provider SDK applies its own. Measured on
-  dspy 3.4.0 with openai 2.41.0, `DEFAULT_TIMEOUT` is
-  `Timeout(connect=5.0, read=600, write=600, pool=600)`, so the effective default is **600 s** per
-  attempt: this setting *replaces* that number rather than introducing a bound where there was none,
-  and a consumer whose turns legitimately run longer than ten minutes must set it **up**, not leave
-  it alone. (The 600 used to be attributed to litellm's `COMPLETION_HTTP_FALLBACK_SECONDS`, which is
-  genuinely 600.0 but is not on dspy 3.4.0's default path: `select_backend` returns `native=True`
-  for every LM shape this kit builds, so the vendored `lm15` engine handles the call. Same number,
-  different owner, which is why checking the figure never surfaced the mistake.)
+  **Unset is not "no cap".** With nothing passed, dspy's native engine bounds each wait for the reply at **600 s**: this setting *replaces* that number rather than introducing a bound where there was none, and a consumer whose turns legitimately run longer than ten minutes must set it **up**, not leave it alone.
 
-  **It does not bound a run to its own value.** dspy's `LM` passes `num_retries=3` and the OpenAI
-  SDK's own `DEFAULT_MAX_RETRIES` is 2, so a dead endpoint is retried: the run-level wait is a
-  MULTIPLE of this value plus backoff. Size a caller-side budget on the multiple.
+  **It does not bound a run to its own value.** dspy retries a failed attempt (`num_retries=3`), so a dead endpoint is retried: the run-level wait is a MULTIPLE of this value plus backoff. Size a caller-side budget on the multiple.
 
-  What prompted it, and an honest reading of it: against a self-hosted OpenAI-compatible endpoint
-  one request never came back: the socket stayed `ESTABLISHED` with both queues empty and the
-  worker slept in `epoll_wait` for 38 minutes at 0.3% CPU, while that same endpoint answered
-  unrelated requests in half a second. 600 s across four attempts is about forty minutes, so that
-  observation fits "litellm's own default, retried" at least as well as "nothing was watching";
-  no attempt counter was captured at the time. Either way the consumer could not choose the
-  number, and now it can.
+  What prompted it: against a self-hosted OpenAI-compatible endpoint one request never came back: the socket stayed `ESTABLISHED` with both queues empty and the worker slept in `epoll_wait` for 38 minutes at 0.3% CPU, while that same endpoint answered unrelated requests in half a second. 600 s across four attempts is about forty minutes, so that observation fits "the default, retried". Either way the consumer could not choose the number, and now it can.
 - **`cancel_event`** (`RLMTask(cancel_event=a_threading.Event)`): for a caller that wants to stop
   an in-flight run NOW (e.g. a "Cancel" button in a UI driving `arun()` from a worker thread). Set
   the event from another thread; the current sandbox turn is killed and `SandboxCancelled` (exported
   from `rlm_harness`) propagates all the way up through `arun()` as a genuine, NON-recoverable run-ending
   failure: never retried (see `run_with_retry`'s `non_retryable` below), never caught by dspy's own
-  `except (CodeExecutionError, SyntaxError)` (the class it catches is version-dependent: see the
-  turn-timeout bullet above; `SandboxCancelled` stands outside dspy's hierarchy entirely, which is
-  what makes it non-recoverable on EVERY version).
+  `except (CodeExecutionError, SyntaxError)`: `SandboxCancelled` stands outside dspy's hierarchy entirely, which is what makes it non-recoverable whatever dspy catches).
 
 ```python
 import threading
@@ -1441,14 +1411,7 @@ run 81. The kit never reads that history, and turning it off does not change the
 one into a replay of the failure it exists to escape. Two consumers found this independently, each
 after a "fresh attempt" completed in seconds having made no model call.
 
-**Why the per-LM flag and not `dspy.configure_cache`.** On dspy 3.4.0 the per-LM flag GATES access
-to the global store: `clients/execution.py` computes `use_cache` as false unless the LM is `managed`,
-so switching either one off prevents the replay and the per-LM one is the narrower change. It reaches
-only the LMs `configure()` BUILDS. An injected `main_lm`/`sub_lm` is used verbatim, as every other
-injected-LM rule here says, so pass `dspy.LM(…, cache=False)` yourself if you build one.
-`ClaudeAgentLM` needs nothing either, though for a different reason since 1.17.0: it is engine-backed
-and therefore MANAGED, so dspy would consult a cache for it, and its own constructor defaults
-`cache=False` to keep a subscription call touching none. Pass `cache=True` if you want one.
+**Why the per-LM flag and not `dspy.configure_cache`.** dspy consults the global store only when the LM's own `cache` flag is on (`clients/execution.py`), so switching either one off prevents the replay and the per-LM one is the narrower change. It reaches only the LMs `configure()` BUILDS. An injected `main_lm`/`sub_lm` is used verbatim, as every other injected-LM rule here says, so pass `dspy.LM(…, cache=False)` yourself if you build one. `ClaudeAgentLM` and `AntigravityLM` need nothing: each defaults `cache=False` in its own constructor, so a subscription call touches no cache. Pass `cache=True` if you want one.
 
 **Opting back in, and the one thing to know first.** `RLM_DISABLE_HISTORY=0` restores dspy's history
 and `RLM_LM_CACHE=1` restores the cache. The history one is a PROCESS-wide dspy setting, so a
@@ -1464,31 +1427,20 @@ payload field.
 
 ## Sandbox sub-agents (`RLMConfig.sandbox_sub_agents`, `RLM_SANDBOX_SUB_AGENTS`, default on)
 
-From dspy 3.4.1, `dspy.RLM` installs a `dspy` shim inside the sandbox and appends a paragraph to
-every action prompt telling the model it may use it. Model code can then write `import dspy` and
-build `Predict`, `ChainOfThought`, `ReAct`, `ReActV2`, `CodeAct`, `ProgramOfThought` or a nested
-`RLM`. Those run on the HOST: they call this run's `sub_lm`, they charge `max_llm_calls`, and they
-can be handed the task's own tools BY NAME (never a tool that was not injected, and never a
-function authored inside the sandbox).
+`dspy.RLM` bootstraps a session of dspy inside the sandbox and appends a paragraph to every action prompt telling the model it may use it. Model code can then write `import dspy` and build `Predict`, `ChainOfThought`, `ReAct` or a nested `RLM`. Those run on the HOST: they call this run's `sub_lm` (each call recorded as a `sub_call`), they charge `max_llm_calls`, and they can be handed the task's own tools BY NAME (never a tool that was not injected, and never a function authored inside the sandbox).
 
-The default is on because that is what the installed dspy does; turning it off is the kit
-overriding dspy, not a kit default. Two things to know before leaving it on:
+The default is on because that is what dspy does; turning it off is the kit overriding dspy, not a kit default. Two things to know before leaving it on:
 
-- **Who drives your tools changes.** The answer stops being "the root LM" and becomes "the root LM,
-  plus any sub-agent its code builds". If the sandbox is your security boundary, that is the
-  sentence to re-read.
-- **A nested `RLM` is invisible in the trace.** Measured: one `sub_call` carrying only the final
-  answer, no `main_step` for the inner turns, no child run id. When a child's trajectory matters,
-  `make_harness_tool` is the seam that keeps it.
+- **Who drives your tools changes.** The answer stops being "the root LM" and becomes "the root LM, plus any sub-agent its code builds". If the sandbox is your security boundary, that is the sentence to re-read.
+- **A nested `RLM` leaves no turns in the trace.** Its LM calls are `sub_call`s, but there is no `main_step` for its turns and no child run id. When a child's trajectory matters, `make_harness_tool` is the seam that keeps it.
 
-`RLMConfig(sandbox_sub_agents=False)` refuses the shim install. The refusal goes through dspy's own
-degradation path, so dspy drops its two host tools, logs that sub-agents are unavailable, and leaves
-the sub-agent paragraph OUT of the prompt: the model is never offered a capability it does not have.
-It applies to every interpreter kind the kit builds, and has no effect on an interpreter you supply
-yourself via `RLMTask(interpreter=...)`, which bypasses `build_interpreter` entirely.
+`RLMConfig(sandbox_sub_agents=False)` refuses dspy's sandbox-session bootstrap and hides the interpreter's `provide_dspy`, so no sandbox bundle is built and the sandbox is granted nothing for one. The refusal goes through dspy's own degradation path: dspy drops its host tools, logs that sub-agents are unavailable, and leaves the sub-agent paragraph OUT of the prompt, so the model is never offered a capability it does not have. It applies to every interpreter kind the kit builds, and has no effect on an interpreter you supply yourself via `RLMTask(interpreter=...)`, which bypasses `build_interpreter` entirely. Such an injected interpreter is also the one dspy hands the sub-agents a sandbox builds: they share the same instance rather than getting fresh ones.
 
-A turn-timeout restart replays the shim install, because a fresh sandbox would otherwise lose it
-while the prompt still offered it.
+The `container` interpreter never offers sub-agents: its Python has no dspy, so it refuses the bootstrap the same way.
+
+**The sandbox bundle and its cache.** With sub-agents on, the first run for a given dspy builds a bundle of dspy for the Pyodide sandbox (fetching Pyodide builds of its dependencies) and records a snapshot of a sandbox that has imported it, under `$DSPY_CACHEDIR/sandbox`. Later sandboxes restore that snapshot, so `import dspy` costs nothing at run time. `DSPY_SANDBOX_CACHE=0` turns the cache off: the bundle is then built in a temporary directory of each process and no snapshot is kept. For an offline deployment, run one task with sub-agents on while the network is available to warm the cache, or set `sandbox_sub_agents=False`, which builds nothing.
+
+A turn-timeout restart replays dspy's setup executions (the session bootstrap, `import dspy`, and the injection of inputs JSON cannot carry), because a fresh sandbox would otherwise lose them while the prompt still offered sub-agents.
 
 ## Subscription logins: this kit's adapters, and dspy's own providers
 
@@ -1558,7 +1510,7 @@ setting is the control.
 
 ### Antigravity (`agy`): `AntigravityLM`
 
-**Google's FAQ says that wrapping `agy` inside third-party coding agents or applications is not supported under consumer plans. To use Gemini from this kit within Google's terms, use a Google AI Studio API key with litellm's `gemini/` prefix instead.**
+**Google's FAQ says that wrapping `agy` inside third-party coding agents or applications is not supported under consumer plans. To use Gemini from this kit within Google's terms, use a Google AI Studio API key with the `gemini/` prefix instead.**
 
 `AntigravityLM` runs a call through `agy`, the Google Antigravity CLI, in its print mode, on the
 account you signed it in with. Install the CLI, run `agy` once to sign in, list the model ids your
@@ -1710,7 +1662,7 @@ new kind of bound.)
 
 | Knob | Env | Default | Bounds | On expiry |
 |---|---|---|---|---|
-| `RLMConfig.request_timeout_s` | `RLM_REQUEST_TIMEOUT` | unset → the provider SDK's own 600s | **one HTTP request attempt** to a litellm-backed LM | `LMTimeoutError`, which dspy classifies as RETRYABLE, so it is retried, not fatal |
+| `RLMConfig.request_timeout_s` | `RLM_REQUEST_TIMEOUT` | unset → dspy's own 600s | **one HTTP request attempt** of an LM `configure()` builds | `LMTimeoutError`, which dspy classifies as RETRYABLE, so it is retried, not fatal |
 | `ClaudeAgentLM(timeout_s=…)` |: (constructor only) | 600s | **one whole call**, INCLUDING time queued behind the SDK's concurrency semaphore | `TimeoutError` |
 | `AntigravityLM(timeout_s=…)` |: (constructor only) | 600s | **one whole call**, INCLUDING time queued behind its concurrency cap of 2 | `TimeoutError`, after killing `agy` and every process it started (`killpg` on POSIX, `taskkill /T` on Windows) |
 | `RLMConfig.sandbox_turn_timeout_s` | `RLM_SANDBOX_TURN_TIMEOUT` | unset (disabled) | one whole `execute()` (`pyodide`/`deno`) (host-side tool and sub-LM dispatch time INCLUDED, which is why it is off by default | dspy's **recoverable** interpreter error) the model gets another turn |
@@ -1744,7 +1696,7 @@ exception hierarchy entirely and is on `run_with_retry`'s `non_retryable` list, 
 Never let a cancel degrade into the first kind.
 
 **Worked example.** `RLM_REQUEST_TIMEOUT=120`, `RLM_MAX_ITERATIONS=30`, `RLM_MAX_RETRIES=1`,
-against a litellm-backed model on an endpoint that has stopped answering:
+against an endpoint that has stopped answering:
 
 ```
 one attempt      120s              the value you set
@@ -2064,9 +2016,7 @@ RL export together. Six steps:
    searcher)? rlm-harness owns the GENERIC base + the syntactic guard + the async-safe factory
    (`make_model_tool`, `make_fetch_tool`, `make_web_search_tool`); the consumer owns the PROVIDER
    (the endpoint/validator/messages, or the httpx/vendor call) and the project-side TRACING. Tools
-   passed to `RLMTask(tools=…)` MUST be sync: dspy's interpreter calls them with a plain `()`, and
-   on dspy 3.4.0 an `async def` tool then raises `RuntimeError: This event loop is already running`
-   (it silently returned an un-awaited coroutine before 3.4.0).
+   passed to `RLMTask(tools=…)` MUST be sync: the kit's tool seams (timing, the recorder, `run_isolated`) are built for a plain call, see `docs/INVARIANTS.md`.
 3. **Pick the recursion seat deliberately.** A DETERMINISTIC transform of the sub-LM's output →
    `intercept_sub_lm` (the escalation seat, recorded as a `sub_call`). An action the main LM CHOOSES
    to take → a tool (`tools=`, recorded as a `tool_call`). Don't smuggle a model-judgement (asking
@@ -2360,6 +2310,8 @@ SUCCEEDED on a later attempt with 2 ceiling hits and never two in a row. That pa
 pattern is not the page needing more thinking, since the budget was identical on all three
 attempts: it is the trajectory looping. Still one page, so watch it rather than alert on it.
 
+On dspy's native engine a call's token totals include its reasoning tokens (and its prompt total the cached tokens), so compare `completion_tokens` with the cap knowing it counts thinking as well as the answer.
+
 Read `completion_tokens == cap` as a truncation. **Whether the RATIO gives early warning depends on
 how generous your cap is, and 1.10.0 shipped claiming it always does.** On the first production
 corpus: one model, cap 32768, **385 runs reaching `run_end`: 379 that succeeded and 6 that
@@ -2454,8 +2406,7 @@ Five things to know:
   **It moved in 1.17.0**, from `run_end.payload.usage[...]["api_rounds"]` to its own event, and the
   move was forced rather than chosen. An engine-backed LM's usage reaches dspy's tracker through
   `usage_dict`, which rebuilds a fixed key set off the typed `lm15.Usage` and passes nothing else
-  through, so the breakdown could no longer ride along (measured: present on the old `forward()`
-  path, absent on the engine path). Nor could the kit put it back beside the right entry
+  through, so the breakdown cannot ride along. Nor could the kit put it back beside the right entry
   afterwards, because a tracker entry carries no per-call identity and only POSITION could match
   it, which is unsound once dspy owns retries and `llm_query_batched` fans calls across threads.
   The payload keeps the `rounds` nesting so a reader that already parsed `api_rounds["rounds"]`
@@ -2513,8 +2464,7 @@ Five things to know:
 so a `main` holding only a thinking budget would change what an existing reader's
 `budgets["main"]["cap"]` may assume. `budgets.thinking.main` sits beside `budgets.main` instead,
 purely additive. It carries `{"value": int, "key": str}` where `key` is the dotted PATH the value
-was found at (`extra_body.thinking_token_budget`), because a top-level litellm parameter and a raw
-`extra_body` key are different mechanisms. **Absent means NOT RECOGNISED, never "no budget"**: the
+was found at (`extra_body.thinking_token_budget`), because a top-level option and a raw `extra_body` key (sent by dspy's litellm engine) are different mechanisms. **Absent means NOT RECOGNISED, never "no budget"**: the
 kit owns no vocabulary on the wire, so a name it does not know is still SENT and simply not
 annotated here. And a recognised key proves only what was sent: pair it with `usage`'s
 `reasoning_tokens` to find out whether the server honoured it.
@@ -2657,31 +2607,33 @@ deliberately unchanged.
 
 ## Re-rendering what the model was sent
 
-dspy does not run the planner as a chat. Each iteration sends one single-turn request from `generate_action`, and when the iteration budget runs out, one more from `extract`. The configured adapter (`RLM_ADAPTER`, `json` by default) formats each request from three inputs: the predictor's signature, its demos, and that call's values (`variables_info`, the REPL history, `iteration`). A dataset built from `main_step`'s `{reasoning, code, output}` alone has to invent a chat format of its own, and the model is never served that format. Since 1.25.0 the trace keeps the three inputs, and `export_sft_turns(render="adapter")` returns the request itself.
+Each iteration sends one request from `generate_action`, and when the iteration budget runs out, one more from `extract`. The configured adapter (`RLM_ADAPTER`, `json` by default) formats each request from three inputs: the predictor's signature as the adapter received it, its demos, and that call's values. An action call is a multi-turn chat: dspy hands the planner a `dspy.History` with one event per earlier turn, which the adapter writes as three messages (the user message that turn was shown, its reply, and a user message with its REPL output) before the current turn's user message. An extract call is a system and a user message holding the `REPLHistory`. A dataset built from `main_step`'s `{reasoning, code, output}` alone has to invent a chat format of its own, and the model is never served that format. The trace keeps the three inputs, and `export_sft_turns(render="adapter")` returns the request itself.
 
 ### What is recorded
 
-Every field below is optional payload. A trace written before 1.25.0 has none of them, and neither does a run with no recorder.
+Every field below is optional payload. A trace written before 1.25.0 has none of them, and neither does a run with no recorder. A trace written by rlm-harness 1.26 or earlier on dspy 3.4 has them in an older layout (the planner's history as a `repl_history` input, one single-turn request per call), which this version does not render: the render exports skip it and name rlm-harness 1.26.x as the version to export it with, and `render=None` still reads it.
 
 `rlm_setup` is written once per recorded trajectory, before its first `main_step`:
 
-- `adapter` (`json`, `chat`, `xml` or a class name) and `adapter_class`.
+- `adapter` (`json`, `chat`, `xml` or a class name) and `adapter_class`. A run with no adapter configured records the one dspy uses, `xml`.
+- `native_reasoning`, whether dspy handled the planner's reasoning field natively (`RLMConfig.native_reasoning`). The two modes send different requests, so keep one mode per dataset and filter on this.
 - `dspy`, the running version.
 - `max_iterations`, `max_llm_calls` and `max_output_chars`, read back from the built program rather than from `RLMConfig`.
 - `variables_info`, the strings exactly as the model saw them: name, type, total length and preview.
 - `input_fields` and `output_fields`.
 - `inputs_sha256`, one sha256 per input over its full value as bound, before any preview. A `str` or a staged `LargeText` hashes its text as UTF-8 with `errors="surrogatepass"`. Any other value hashes `json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)` with json's default separators, after `model_dump(mode="json")` for a pydantic model. A value whose `str` changes between processes, such as a plain object or a `set`, will not dedupe.
-- `lm`: the `main` LM's `model`, its sampling `kwargs` and the names of its `unrecorded_keys`, plus the `sub` LM's when `sub_same_as_main` is false. `kwargs` is an allowlist applied at every depth (temperature, top_p, max_tokens, n, seed, reasoning effort, thinking budgets, the same keys under `extra_body`, and named inner keys of `thinking`, `reasoning` and `chat_template_kwargs`), so `api_key`, a base URL or a header appears only by name. Like `budgets`, it is what the LM carries, and an LM that ignores a kwarg still reports it.
+- `lm`: the `main` LM's `model`, `engine` (`lm15`, `litellm` or `custom`), `api_family` (`chat`, `responses`, ...) and `dialect` (the native provider id, such as `openai-chat` or `vllm`), its sampling `kwargs` and the names of its `unrecorded_keys`, plus the `sub` LM's when `sub_same_as_main` is false. An option dspy's native engine would leave out of the request moves from `kwargs` to `dropped_keys`, so `kwargs` holds only what the request carried. `kwargs` is an allowlist applied at every depth (temperature, top_p, max_tokens, n, seed, reasoning effort, thinking budgets, the same keys under `extra_body`, and named inner keys of `thinking`, `reasoning` and `chat_template_kwargs`), so `api_key`, a base URL or a header appears only by name. Like `budgets`, it is what the LM carries, and an LM that ignores a kwarg still reports it.
 - `tools`, each with the `name`, `desc` and `args` dspy documents to the model. The rendered tool documentation itself is part of the action instructions.
-- `predictors.action` and `predictors.extract`: each signature's `instructions` and its `fields` in order (`name`, `io`, `type`, the type facts an adapter reads, and `extra` with `desc`, `prefix` and `constraints`), plus a `sha256`. The instructions are the ones the call used, so a run under `compiled_instructions` records the optimizer's text.
+- `predictors.action` and `predictors.extract`: each signature as `Adapter.format` received it, its `instructions` and its `fields` in order (`name`, `io`, `type`, the type facts an adapter reads, and `extra` with `desc`, `prefix`, `constraints` and dspy's own markers), plus a `sha256`. For the planner that is `history` (kind `history`), `variables_info`, `iteration`, `plan` (kind `reasoning`, marked with `__dspy_reasoning_field: "reasoning"`, the name the trajectory keeps) and `code`. The instructions are the ones the call used, so a run under `compiled_instructions` records the optimizer's text.
 - `attempt`, and `run_tag` when set.
 
 Each `main_step` adds:
 
 - `iteration`, the exact `"k/N"` string sent.
-- `history_len`, how many REPL entries the call was shown, which are this trajectory's earlier turns.
-- `messages_sha256`, of the messages the adapter produced, and `signature_sha256`.
-- `completion`, the LM's raw content string as returned, and `reasoning_content` when the provider sent a separate reasoning channel.
+- `history_len`, how many earlier turns the call was shown: the events of the action's `dspy.History`, counted when the call is formatted.
+- `messages_sha256`, of the OpenAI-style messages of the `Prompt` the adapter produced, and `signature_sha256`. On the Chat Completions route that is the request body's `messages`; `use_developer_role` or the Responses API change the wire, not the hash.
+- `completion`, the reply's text as the engine returned it, and `reasoning_content` when the reply carried a reasoning channel.
+- `max_output_chars`, only when the cap a turn's output was shown under differs from the run's.
 - `usage`, `{model: [usage]}` gained while this call was open. A ChatAdapter that fell back to JSON shows two entries, and if your own `dspy.track_usage()` spans concurrent runs, another run's calls can appear too.
 - `attempt`, `run_tag`, and `code_raw` when the code the model wrote differs from dspy's fence-stripped `code`.
 - `parse_wrapped: true` (1.26.0) when the reply had no outer braces and `_LenientJSONAdapter` parsed it only after adding them. The reply is `completion`, or `reasoning_content` when the content was empty and the adapter parsed the reasoning channel. Absent when the reply parsed as written.
@@ -2698,21 +2650,21 @@ from rlm_harness import export_sft_turns, group_by_run, load_events
 
 records = export_sft_turns(group_by_run(load_events("trace.jsonl")), render="adapter")
 # {run_id, kind: "action"|"extract", turn, adapter,
-#  messages: [system, user],            # dspy's own Adapter.format over the recorded inputs
+#  messages: [system, user, ...],       # dspy's own Adapter.format over the recorded inputs
 #  assistant: {role: "assistant", content},
 #  assistant_source: "completion"|"rendered",
 #  verified: True|False|None,
 #  reasoning_content?, usage?, run_tag?, attempt?, parse_wrapped?}
 ```
 
-- `messages` is rebuilt rather than stored. The history comes from this trajectory's earlier `main_step` entries, truncated by `max_output_chars` the way dspy truncates them, which keeps the trace linear in its turn count. `verified` compares the result with `messages_sha256`: `True` means it is the request that was sent, `False` means it is not, and `None` means no hash was recorded. `strict=True` raises on `False`.
-- `assistant.content` is the raw completion, unchanged. Without a completion, the record falls back to the adapter's own formatter over the parsed outputs and sets `assistant_source: "rendered"`. For JSON that is `json.dumps(..., indent=2)` in signature field order, because dspy's `JSONAdapter.format_finetune_data` raises `NotImplementedError` (dspy 3.4.1: `uv run python -c "import dspy; dspy.JSONAdapter().format_finetune_data(None, [], {}, {})"`).
-- `reasoning_content` stays a separate field. When a reasoning model returns empty content (`null` or `""`) with its answer in `reasoning_content`, which `_LenientJSONAdapter` handles by parsing the reasoning channel, the empty completion is not used as the target and the record is `"rendered"`.
+- `messages` is rebuilt rather than stored, as OpenAI-style dicts: a multi-turn chat for an action call. Each earlier turn is rebuilt from this trajectory's `main_step` entries the way dspy builds its history event (`build_repl_event` with that turn's iteration label and a `REPLEntry` of its reasoning, fence-stripped code and output, truncated at that turn's `max_output_chars`), which keeps the trace linear in its turn count. `verified` compares the result with `messages_sha256`: `True` means it is the request that was sent, `False` means it is not, and `None` means no hash was recorded. `strict=True` raises on `False`.
+- `assistant.content` is the raw completion, unchanged. Without a completion, the record falls back to the adapter's own formatter over the parsed outputs and sets `assistant_source: "rendered"`. The outputs go under the names the signature puts on the wire (the planner's reasoning as `plan`). For JSON that is `json.dumps(..., indent=2)` in signature field order, because dspy's `JSONAdapter.format_finetune_data` raises `NotImplementedError` (`uv run python -c "import dspy; dspy.JSONAdapter().format_finetune_data(None, [], {}, {})"`).
+- `reasoning_content` stays a separate field. When a reasoning model returns no content with its answer in its reasoning channel, which `_LenientJSONAdapter` handles by promoting the reasoning to the reply's text, the empty completion is not used as the target and the record is `"rendered"`.
 - `parse_wrapped: true` is copied from the call. The run accepted that reply only after the adapter added the outer braces. On a `"completion"` record, `assistant.content` is the reply as written, without them. On a `"rendered"` record, the reply came from `reasoning_content`, and `assistant.content` is valid JSON the model did not write in that form. Drop these records to train only on replies that parsed as written, or count them to see how often a model drops the braces.
 - An extract record's `turn` is the number of REPL entries it saw, one past the last action turn.
 - A field type is rebuilt from what an adapter reads off it: its name, and for a structured type its JSON schema. pydantic cannot rebuild a schema that has `$defs`, such as a model that nests another or `list[Flat]`, so pass the real type under the annotation name the trace recorded: `custom_types={"Article": Article}` or `{"list[Flat]": list[Flat]}`. Without it the export raises `RenderError` naming the type. A `dspy.Type` that adds its own description text is rebuilt without it, and the record comes out `verified: False`.
 - `adapter=` takes an adapter instance and is needed only for a run formatted by a class outside dspy's json, chat and xml families. The kit never imports a class named in a trace.
-- A call with nothing to render from is skipped and counted in a warning: every turn of a trace written before 1.25.0, and any turn the capture could not match to its call. The rest of the run still exports. The default `render=None` export is unchanged.
+- A call with nothing to render from is skipped and counted in a warning: every turn of a trace written before 1.25.0, and any turn the capture could not match to its call. A trajectory recorded by rlm-harness 1.26 or earlier is skipped and counted in its own warning, which names 1.26.x as the version to export it with. The rest of the run still exports. The default `render=None` export reads every trace.
 
 ### Extract samples from runs that submitted
 
@@ -2905,10 +2857,7 @@ All via env (`RLMConfig.from_env()`): `RLM_MAIN_MODEL` (or `AI_MODEL_NAME`),
 `RLM_MAX_TOKENS`, `RLM_MAX_OUTPUT_CHARS`, `RLM_ALLOW_INSECURE_SANDBOX`,
 `RLM_MAX_ITERATIONS`, `RLM_MAX_LLM_CALLS`, `RLM_MAX_RETRIES`, `RLM_SANDBOX_TURN_TIMEOUT`,
 `RLM_REQUEST_TIMEOUT`, `RLM_MAIN_LM_KWARGS`, `RLM_SUB_LM_KWARGS`, `RLM_DISABLE_HISTORY`,
-`RLM_LM_CACHE`, `RLM_SANDBOX_SUB_AGENTS`, `RLM_OBSERVE`.
-
-(`RLM_REQUEST_TIMEOUT` is this kit's own name. litellm separately reads a bare `REQUEST_TIMEOUT`
-for its global default: setting that one moves litellm, not this.)
+`RLM_LM_CACHE`, `RLM_SANDBOX_SUB_AGENTS`, `RLM_ENDPOINT_DIALECT`, `RLM_NATIVE_REASONING`, `RLM_OBSERVE`.
 
 The `AI_*` fallbacks let the kit drop into projects already keyed on those vars
 without re-keying env; the `RLM_*` form wins when both are set.
@@ -2941,37 +2890,46 @@ the way `ClaudeAgentLM` refuses `ANTHROPIC_API_KEY`, because it removes both fro
 environment instead. Build one by hand (`main_lm=AntigravityLM(id, timeout_s=…, executable=…)`)
 to choose its deadline or its binary.
 
-**Model names with a custom endpoint.** When `RLM_BASE_URL` is set, `configure` pins
-litellm's `custom_llm_provider="openai"`, so the model names are the **plain id your
-endpoint serves**: e.g. `qwen/qwen3-next`, not `openai/qwen/qwen3-next`. (dspy.LM runs on
-litellm, which otherwise reads the first path segment as a provider and fails on a bare id;
-the pin routes everything via the OpenAI wire protocol to your `base_url`.) A prefixed
-`openai/...` name still works. With no base_url, write litellm's own prefix (`openai/gpt-4o`,
-`anthropic/claude-...`).
+**Model names with a custom endpoint.** When `RLM_BASE_URL` is set, the model names are the **id your endpoint serves**: e.g. `qwen/qwen3-next`. One leading `openai/` is removed, so `openai/qwen/qwen3-next` still works, and a served name that itself starts with `openai/` is written with the prefix twice (`openai/openai/gpt-oss-120b`). `configure()` builds that role's LM as the dialect's prefix plus the served id, with `model_type="chat"` (Chat Completions, which a recording proxy that handles only `POST …/chat/completions` keeps working with) and `engine="lm15"`, dspy's native engine.
+
+**The endpoint's dialect** (`RLMConfig.endpoint_dialect`, `RLM_ENDPOINT_DIALECT`, default `openai`) picks the native server preset the request follows. Read only with a `base_url`; set without one, it logs a warning and does nothing.
+
+| Dialect | Model prefix dspy routes | Token-cap field on the wire |
+|---|---|---|
+| `openai` (default) | `openai/` | `max_completion_tokens` |
+| `vllm` | `hosted_vllm/` | `max_tokens` |
+| `ollama` | `ollama_chat/` | `max_tokens` |
+| `openrouter` | `openrouter/` | `max_tokens` |
+| `groq` | `groq/` | `max_tokens` |
+| `together_ai` | `together_ai/` | `max_completion_tokens` |
+
+An older OpenAI-compatible server may ignore `max_completion_tokens`, which is why `vllm` sends `max_tokens`. `RLM_MAX_TOKENS` is the kit's knob either way, and `budgets` records it under the key the LM carries.
+
+**Without a `base_url`** the model string goes to `dspy.LM` unchanged, with dspy's defaults (`model_type="auto"`, `engine="auto"`): write the provider's prefix, `openai/gpt-4o` or `anthropic/claude-...`. Note that dspy's `auto` picks the Responses API for `openai/` and `azure/` models.
+
+**litellm is optional** (`pip install 'rlm-harness[litellm]'`, which installs `dspy[litellm]`). dspy's native engine routes most providers itself, `azure/` included. A model string it has no native route for (`vllm/`, `sglang/`, `lmstudio/`, `nvidia_nim/` and others) needs dspy's litellm engine, and `configure()` asks dspy's own backend selection which one applies: without litellm installed it raises `ImportError` with the install hint. The same holds for `"engine": "litellm"` in a role's kwargs.
+
+**Options dspy's native engine would not send are refused at `configure()`**, before any request. dspy's native engine refuses some options outright and leaves others out of the request with only a note (an lm15 `Adaptation`), so a setting could otherwise vanish. Measured on dspy 3.5.0, on both the `openai` and `vllm` dialects:
+
+| Option | Native engine | `configure()` |
+|---|---|---|
+| `temperature`, `top_p`, `seed`, `stop`, `reasoning_effort` (including `"none"`) | sent | built |
+| `top_k` | left out of the request | refused |
+| `extra_body`, `thinking_token_budget`, `min_p`, `repetition_penalty` | refused at call time | refused |
+| `chat_template_kwargs`, `enable_thinking` | refused (the preset's reasoning dial is `reasoning_effort`) | refused |
+
+The refusal names the option and the route that carries it: install `rlm-harness[litellm]` and add `"engine": "litellm"` to that role's kwargs. dspy's litellm engine sends each of these as written, `extra_body` keys raw in the request body. No server preset carries an option the plain OpenAI wire refuses, so a different dialect is not the answer.
 
 `RLM_ADAPTER` (default `json`) picks how structured fields are coaxed out of the
 model:
 
-- **`json`** (default): schema-guided structured output, end-to-end. A lenient `JSONAdapter` always
-  sends the `json_schema` response format directly: bypassing dspy's `supports_response_schema`
-  gate, so no `litellm.register_model` poke is needed, and a brace-tolerant parse absorbs guided
-  output that drops the outer `{ }`. Works on **any** structured-output endpoint: OpenAI-proper
-  AND vLLM / NVIDIA NIM (which reject schema-less `json_object` but accept `json_schema`). The
-  decoder enforces the schema, so it **yields valid output even from a weak / imperfectly-
-  formatting model**. An EMPTY or whitespace-only completion is not absorbed: since 1.20.1 it
-  raises, rather than being wrapped into the `{}` that dspy reads as an output field left unset,
-  then filling that field from a default, a default factory, or an annotation admitting `None`.
-  That reached a task only when EVERY output field was one dspy would supply: a single plain
-  required field made the parse raise before 1.20.1 as well.
-- **`chat`**: `dspy.ChatAdapter` with the JSONAdapter fallback **off**: never sends
-  `response_format`. For an endpoint with **no** structured-output support. Needs the model to
-  follow dspy's text field-marker format reliably. The fallback is off (dspy's stock ChatAdapter
-  recovers via bare `json_object`, which vLLM rejects), so a model that drops a field has no
-  recovery. Not as portable as it looks.
-- **`default`**: leave dspy's stock adapter (ChatAdapter *with* the json_object fallback):
-  recovers on OpenAI-proper endpoints, but the fallback is rejected by vLLM/NIM.
+- **`json`** (default): schema-guided structured output, end-to-end. A lenient `JSONAdapter` always sends a `json_schema` response format built from the signature the prompt is rendered from (for the planner, `plan` and `code`), whatever dspy's catalog says about the model, and a brace-tolerant parse absorbs guided output that drops the outer `{ }`. Works on **any** structured-output endpoint: OpenAI-proper AND vLLM / NVIDIA NIM (which reject schema-less `json_object` but accept `json_schema`). The decoder enforces the schema, so it **yields valid output even from a weak / imperfectly-formatting model**. An EMPTY or whitespace-only completion is not absorbed: it raises, rather than being wrapped into the `{}` that dspy reads as an output field left unset. A reply with only a reasoning channel is promoted to its text, so a reasoning model can be the RLM root.
+- **`chat`**: `dspy.ChatAdapter` with the JSONAdapter fallback **off**: never sends `response_format`. For an endpoint with **no** structured-output support. Needs the model to follow dspy's text field-marker format reliably. The fallback is off (it retries through bare `json_object`, which vLLM rejects), so a model that drops a field has no recovery. Not as portable as it looks.
+- **`default`**: dspy's own default adapter, `XMLAdapter(use_native_function_calling=True)`, with the same JSON fallback turned off.
 
-`RLM_MAX_TOKENS` (default `8192`) is the per-call generation cap. It defaults generous rather
+**The planner's explicit `plan`, on every model.** Every adapter the kit builds keeps the planner's `plan` output field and sends no reasoning effort of its own, so the planner request has one shape whatever the model. `RLMConfig.native_reasoning` (`RLM_NATIVE_REASONING=1`) lets dspy handle that field natively instead: on a model dspy's catalog marks as reasoning-capable the request carries no `plan` field and a reasoning effort, and the model's thinking becomes the step's reasoning. `rlm_setup.native_reasoning` records the mode, so keep one mode per dataset. `reasoning_effort="none"` in a role's kwargs turns a model's thinking off; it does not keep the `plan` field, which is the default's job. In native mode a turn's live `ts` falls back to the time the trajectory is flushed, because the reasoning arrives in the reply rather than in the parse the turn timer reads.
+
+`RLM_MAX_TOKENS` (default `8192`) is the per-call generation cap, sent in the dialect's own field (see the table above). It defaults generous rather
 than deferring to the server: a **reasoning model** emits its chain-of-thought before the answer,
 so a server's small default cap (e.g. 1000) truncates the thinking and returns **empty content**.
 Set `RLMConfig(max_tokens=None)` to defer to the server.
@@ -3030,8 +2988,8 @@ only** (`RLMConfig.main_lm_kwargs` / `sub_lm_kwargs`). Unset sends nothing. The 
 byte-identical to not having the field, down to putting no new key on the wire.
 
 ```bash
-# bound a reasoning model's THINKING without touching the sub-LM's model
-export RLM_MAIN_LM_KWARGS='{"extra_body":{"thinking_token_budget":16384}}'
+# bound a reasoning model's THINKING without touching the sub-LM's model (needs rlm-harness[litellm])
+export RLM_MAIN_LM_KWARGS='{"engine":"litellm","extra_body":{"thinking_token_budget":16384}}'
 ```
 
 **What it is for.** A reasoning model whose thinking runs away does not look like a long answer:
@@ -3052,12 +3010,7 @@ family. On that model `reasoning_effort` moved reasoning the WRONG way (`low` 24
 which is the last thing you want in front of a JSON adapter. So what you write is what reaches
 the server, and the kit owns no name on the wire.
 
-**Two levels, and the difference is where silent no-ops come from.** A TOP-LEVEL key is a litellm
-parameter and goes through litellm's own per-provider mapping. `reasoning_effort` is one of these,
-so the passthrough reaches it with litellm's semantics rather than the kit's. A key inside
-`extra_body` is passed RAW into the request body with no mapping, which is what a server-specific
-name needs. On that same deployment `max_thinking_tokens`, `thinking_budget`, `reasoning_budget`
-and `chat_template_kwargs.thinking_budget` were all accepted and silently ignored.
+**Which route sends what.** A top-level key is a generation option in dspy's OpenAI vocabulary. dspy's native engine sends the ones it has a mapping for and refuses or leaves out the rest, so `configure()` refuses every option the role's route would not send as written (see "Options dspy's native engine would not send" above). A server-specific name such as `thinking_token_budget` therefore needs `"engine": "litellm"`, whose `extra_body` is passed RAW into the request body with no mapping. On the deployment above `max_thinking_tokens`, `thinking_budget`, `reasoning_budget` and `chat_template_kwargs.thinking_budget` were all accepted by the server and silently ignored, which is the kind of no-op no client can see.
 
 **The limit worth stating: a passthrough cannot tell you the server dropped your key.** Nothing
 here can, since an ignored key and an honoured one are identical on the wire. The check is after
@@ -3082,15 +3035,15 @@ winning:
 | Refused | Because | Instead |
 |---|---|---|
 | `model` | `dspy.LM` takes it positionally | `RLM_MAIN_MODEL` / `RLM_SUB_MODEL` |
-| `api_key`, `base_url`, `custom_llm_provider` | nothing records an override's value, so a silent one leaves a trace that reads like a run that went somewhere else | `RLM_API_KEY` / `RLM_BASE_URL`; a per-role ENDPOINT is a connection-identity change: build that role's LM and inject it with `configure(sub_lm=…)` |
+| `api_key`, `base_url` | nothing records an override's value, so a silent one leaves a trace that reads like a run that went somewhere else | `RLM_API_KEY` / `RLM_BASE_URL`; a per-role ENDPOINT is a connection-identity change: build that role's LM and inject it with `configure(sub_lm=…)` |
+| `custom_llm_provider` | a litellm routing setting the trace does not record | `RLM_ENDPOINT_DIALECT` |
 | `timeout` | same, and it is `request_timeout_s`'s own spelling | `RLM_REQUEST_TIMEOUT` |
 | `mock_response` | litellm answers it locally, so the run never reaches a model | nothing: a test that wants a canned answer injects its own LM |
-| `api_base`, `headers`, `extra_headers`, `extra_query`, `api_version`, `organization`, `project`, `azure_ad_token_provider`, `deployment_id`, `model_list`, `engine`, and any key starting `aws_`, `azure_` or `vertex_` | the other names dspy lists as client settings, litellm `completion()`'s routing parameters, and litellm's provider credential and region settings. A provider-specific key outside those three prefixes is not caught. With `base_url` unset, `api_base` sends the run to another endpoint, and an `Authorization` header in `extra_headers` changes the caller without touching `api_key`; a header that only tags a route looks the same in the trace | build that role's LM and inject it with `configure(main_lm=…)` / `configure(sub_lm=…)` |
+| `api_base`, `headers`, `extra_headers`, `extra_query`, `api_version`, `organization`, `project`, `azure_ad_token_provider`, `deployment_id`, `model_list`, an `engine` or `async_engine` OBJECT (a custom engine owns its connection; an engine NAME such as `"litellm"` is allowed and recorded), and any key starting `aws_`, `azure_` or `vertex_` | the other names dspy lists as client settings, litellm `completion()`'s routing parameters, and litellm's provider credential and region settings. A provider-specific key outside those three prefixes is not caught. With `base_url` unset, `api_base` sends the run to another endpoint, and an `Authorization` header in `extra_headers` changes the caller without touching `api_key`; a header that only tags a route looks the same in the trace | build that role's LM and inject it with `configure(main_lm=…)` / `configure(sub_lm=…)` |
 
 A consumer that reads the same kwargs from its own settings can check them before running anything by constructing the config, `RLMConfig(main_model, sub_model, main_lm_kwargs=...)`, which raises `ValueError` naming every refused key. That is the public check; the helper behind it is internal.
 
-`max_tokens` is deliberately NOT refused, and the line is not "everything the kit sets". It is
-whether the TRACE can see the override. `max_tokens` is read back off the LM into `budgets`
+`max_tokens` is deliberately NOT refused, and the line is not "everything the kit sets". It is whether the TRACE can see the override (`engine` and `model_type` are recorded too, in `rlm_setup.lm`). `max_tokens` is read back off the LM into `budgets`
 (`_dspy_compat.applied_lm_budget`), so a per-role cap is self-documenting, and that is how you get
 one without a second config field:
 
@@ -3129,15 +3082,17 @@ from rlm_harness.testing import ScriptedInterpreter, call, scripted_lm, submit
 
 configure(RLMConfig(main_model="x", sub_model="x", interpreter="mock"),
           main_lm=scripted_lm([                         # the planner's canned turns
-              {"reasoning": "call the tool", "code": "print(my_tool(x=1))"},
-              {"reasoning": "submit", "code": "SUBMIT(answer={'x': 5})"}]),
-          sub_lm=scripted_lm([{"reasoning": "r", "answer": "{}"}]))
+              {"plan": "call the tool", "code": "print(my_tool(x=1))"},
+              {"plan": "submit", "code": "SUBMIT(answer={'x': 5})"}]),
+          sub_lm=scripted_lm([{"answer": "{}"}]))
 
 task = MyTask(interpreter=ScriptedInterpreter([          # one step per planner turn
     call("my_tool", x=1),                                # dispatch the REAL injected tool (traces a tool_call)
     submit({"answer": {"x": 5}})]))                      # SUBMIT: terminates the loop, coerces the result
 result = await task.arun(q="…")                          # the whole planner→tools→result chain, offline
 ```
+
+A planner turn is `{"plan", "code"}`; `{"reasoning", "code"}` means the same, and either goes out under the name dspy's planner parses. `scripted_lm(turns, adapter=...)` writes the answers in another adapter's format (the JSON one by default). dspy's own setup executions before the first turn (its sandbox-session bootstrap, `import dspy`, injected inputs) take no script step: they are listed in the interpreter's `.setup_executions`, and `.calls` holds each model turn's code without dspy's rebind prelude.
 
 `dspy.RLM` injects the run's real tools onto the scripted interpreter's `.tools`, so a `call(...)` step
 runs the actual tool (its tracing records a genuine `tool_call`); a `dict`/`submit(...)` step SUBMITs.

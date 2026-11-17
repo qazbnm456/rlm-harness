@@ -84,11 +84,7 @@ cannot see.
   exists for. Never let it stand in for the job below. It PINS dspy to `uv.lock`'s version on
   purpose: it runs on `pull_request`, and a floating dspy would let an upstream release redden
   a contributor's unrelated PR, which is the very reason the job below is kept off that trigger.
-- **`.github/workflows/dspy-latest.yml` runs the same suite against the NEWEST published dspy,
-  and since the 1.2.0 floor bump it is the ONLY dspy axis** (the floor and `uv.lock` are both on
-  3.4.1 since 1.21.0, and were both on 3.4.0 from 1.14.0, so `ci.yml` no longer covers a second
-  version; the workflow says so in a
-  `::notice::` and restores real two-version coverage by itself the day a newer dspy ships).
+- **`.github/workflows/dspy-latest.yml` runs the same suite against the NEWEST published dspy, and it is the ONLY second dspy axis** (`ci.yml` tests the version in `uv.lock`; when the newest published dspy is that same version the workflow says so in a `::notice::`, and it restores real two-version coverage by itself the day a newer dspy ships).
   **It carries a SECOND job on the same triggers, `mcp-latest`**, for the same reason and for the
   dependency that had no such defence: the `mcp` extra is uncapped, `uv.lock` held 1.x, and SDK
   2.0's camelCase→snake_case field rename made every failed MCP tool call read as a SUCCESS to the
@@ -96,23 +92,12 @@ cannot see.
   already published stays covered on every PR without an upstream release being able to redden one.
   Both jobs live in that separate workflow, on a weekly cron + `workflow_dispatch` +
   push-to-main, never on a PR (an upstream break is not a contributor's problem). It exists because the jobs above
-  resolve dspy from `uv.lock`, so they test a version nobody installing from PyPI necessarily gets:
-  dspy 3.3.0 renamed three things at once and the whole suite stayed green while the kit was
-  completely unrunnable on a fresh install: one break loud, two silent (CHANGELOG 1.0.1). It
+  resolve dspy from `uv.lock`, so they test a version nobody installing from PyPI necessarily gets: a dspy minor once renamed three things at once and the whole suite stayed green while the kit was completely unrunnable on a fresh install: one break loud, two silent (CHANGELOG 1.0.1). It
   resolves the newest version from PyPI at run time and ASSERTS it actually installed that; a
   hardcoded floor goes stale, and "fail if resolved == locked" false-alarms right after every lock
   bump. `--with "dspy==<exact>"` is what overrides the lock: a bare `--with dspy` (and
   `--isolated --with dspy`) resolve back to the LOCKED version and would make the job decorative.
-  **What a red means depends on the cap, and the cap is the whole point.** Written when dspy was
-  uncapped, this said a red means "the kit is broken for every fresh install: a release blocker".
-  With `dspy<3.5.0` declared, a fresh install resolves a dspy the kit is tested on, so a red here
-  says something different and still urgent: **a dspy exists that the kit does not support yet.**
-  That is the floor-bump signal, not a broken release, and it is never a flake. It read as a
-  blocker once in the wrong direction: 1.15.2 answered a red by tightening the cap to `<3.4.1`,
-  which protected installs but left this job permanently red, and a permanently red detector is a
-  deleted detector. If a red cannot be fixed in the release it appears in, tighten the cap AND say
-  in the comment what would lift it, so the next reader can tell a held position from a forgotten
-  one. Read the cap in `pyproject.toml` before reading this job's colour.
+  **What a red means depends on the cap, and the cap is the whole point.** With `dspy>=3.5.0,<3.6.0` declared, a fresh install resolves a dspy the kit is tested on, so a red here says one of two things, both urgent and never a flake: **a dspy minor exists that the kit does not support yet** (3.6.0 or later: the signal to move the window), or **a 3.5.x patch broke the kit**, which every fresh install now resolves, so that one IS a release blocker: fix forward, or tighten the cap below the patch AND say in the comment what would lift it. A permanently red detector is a deleted detector, so a tightened cap is a held position that must say how it ends. Read the cap in `pyproject.toml` before reading this job's colour.
   Do NOT read green as "a fresh install works" either: the overlay upgrades ONLY dspy (plus whatever
   transitive it forces), so everything else stays locked and a break from, say, the newest
   `pydantic` is invisible to it. Reproduce locally with
@@ -161,11 +146,7 @@ cannot see.
   the same number; quote the one that applies.** dspy's RUNTIME gate is
   `MIN_DENO_VERSION = (2, 0, 0)` in `dspy/primitives/python_interpreter.py`, which raises at startup
   outside `>=2.0.0,<3.0.0`; the `dspy[deno]` EXTRA pins the pip-installed `deno` package at
-  `>=2.4.5,<3.0.0`. Both are byte-identical on 3.3.1 and 3.4.0: **3.4.0 changed nothing about Deno.**
-  This bullet claimed for three releases that 3.4.0 raised the gate to 2.4.5 and broke a working
-  Deno 2.1, and it reached a consumer's upgrade advice before anyone measured it. Both numbers were
-  real and read off real files; the DELTA between them was invented by putting an extra's pin and a
-  runtime constant in one sentence. A version bound is worth nothing without the file it came from.
+  `>=2.4.5,<3.0.0` (both read off dspy 3.5.0). A Deno 2.1 therefore runs; it is only not what `pip install "dspy[deno]"` would install. This bullet once invented a delta between those two real numbers by putting an extra's pin and a runtime constant in one sentence, and the invented gate reached a consumer's upgrade advice. A version bound is worth nothing without the file it came from.
   Don't run a live run in CI; it costs money. `examples/` show it.
 - **An example is the first thing a user runs, and nothing in CI runs one.** `examples/` is six
   files, no workflow touches any of them, and **1.17.0 reached PyPI before a single one had been
@@ -185,7 +166,7 @@ cannot see.
   event, and that run is the ONLY time the engine-backed adapter has ever spoken to the real CLI.
   Every other check of it drives a fake `claude_agent_sdk` module whose `ClaudeAgentOptions(**kwargs)`
   swallows any keyword, so an upstream rename stays green. `mini_run.py` is the no-subscription
-  equivalent (any litellm model through `RLM_*` env).
+  equivalent (any model through `RLM_*` env).
 - **The release notes and the tag message are human-facing documents, and they are the only ones
   that cannot be quietly corrected later.** Draft the body to a file, run the punctuation gate on
   it the way any doc is gated, and pass it with `gh release create --notes-file`. One line per
@@ -227,18 +208,17 @@ cannot see.
   below by default and gets treated as permanently on trust when it is one `curl` away. The five
   in this repo today, each with the command that settles it, so nobody has to re-derive it:
 
-  - `@runtime_checkable` on `CodeInterpreter` in dspy 3.2.1 (CHANGELOG 1.6.0):
-    `uv run --with "dspy==3.2.1" --no-project python -c "from dspy.primitives.python_interpreter import CodeInterpreter as C; print(getattr(C,'_is_runtime_protocol',False))"`
+  - `@runtime_checkable` on `CodeInterpreter` (CHANGELOG 1.6.0), `True` on 3.5.0:
+    `uv run --with "dspy==3.5.0" --no-project python -c "from dspy.primitives.code_interpreter import CodeInterpreter as C; print(getattr(C,'_is_runtime_protocol',False))"`
   - hatchling 1.27's own default metadata version (`pyproject.toml`, `release.yml`):
     `uv run --with "hatchling==1.27.0" --no-project python -c "from hatchling.metadata.spec import DEFAULT_METADATA_VERSION as d; print(d)"`
   - no `win_arm64` wheel for `deno` (`ci.yml`, CHANGELOG 1.14.1):
     `curl -s https://pypi.org/pypi/deno/json | jq -r '.urls[].filename'`
-  - stock parse reducing a brace-less body to a FRAGMENT of itself, measured on dspy 3.4.0 and on
-    3.4.1 (`runtime.py` `_LenientJSONAdapter.parse`, CHANGELOG 1.20.1). Prints
+  - stock parse reducing a brace-less body to a FRAGMENT of itself, measured on dspy 3.5.0 (`runtime.py` `_LenientJSONAdapter.parse`, CHANGELOG 1.20.1). Prints
     `{'payload': {'a': 'b'}}` rather than the whole value the body carries. The kit INHERITS this
     rather than adding it: stock parse succeeds here, so the brace wrap never runs. Re-run on any
     newer dspy by swapping the pin:
-    `uv run --with "dspy==3.4.1" --no-project python -c "import dspy; print(dspy.JSONAdapter().parse(dspy.Signature('q: str -> payload: dict'), '\"payload\": {\"payload\": {\"a\": \"b\"}}'))"`
+    `uv run --with "dspy==3.5.0" --no-project python -c "import dspy; print(dspy.JSONAdapter().parse(dspy.Signature('q: str -> payload: dict'), '\"payload\": {\"payload\": {\"a\": \"b\"}}'))"`
   - what `AntigravityLM` relies on from `agy`, measured on 1.4.12: that a
     custom agent with `excludeDefaultComponents: true` and `tools: []` leaves the model no tool
     and none of the user's rules, that its Markdown body becomes the system prompt, and that
@@ -258,6 +238,7 @@ cannot see.
   reach the corpus. So its only control is at write time, which is what "Before believing a count"
   in `docs/INVARIANTS.md` already demands: quote the corpus size and the moment, not a bare rate.
   Say this half out loud, or the rule reads as "sweep everything", and half of it cannot be swept.
+- **Two things on the LM boundary no local run covers.** The prelude strip on the `container` interpreter's exec-duration matching (`container_interpreter.py`) has no test that can fail for it, because the suite has no Docker: it is covered only by reading, beside the tested Deno path it mirrors. And the token cap's wire field (`max_completion_tokens` on the `openai` dialect, `max_tokens` on `vllm`) is pinned against a fake server, which proves what the kit SENDS and not that a server honours it: before a release, a consumer with vLLM runs one traced task per dialect it uses and confirms from the trace (`completion_tokens` against the cap) that the cap applies on its build, that every exported record verifies, and that its recording proxy saw one chat/completions call per planner step.
 - Before claiming done, actually run the two commands above and paste the output. (The
   newest-dspy workflow is NOT one of them. It needs network, and CI runs it for you.)
 

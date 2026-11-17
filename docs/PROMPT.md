@@ -30,8 +30,7 @@ the command for it or says plainly that it needs a task you would have to build.
 dspy.Signature({}, task_instructions + ACTION_INSTRUCTIONS_TEMPLATE.format(...) + tool_docs)
 ```
 
-That string becomes the **system message**. Measured on five real consumer tasks, built offline
-against a mock interpreter:
+That string becomes the **system message**. Measured on five real consumer tasks, built offline against a mock interpreter (on dspy 3.4.1, whose fixed words were 1780 characters; on 3.5.0 they are 1883, so dspy's share is a little larger):
 
 | task | total | your `instructions` | dspy's fixed words | interpolated | tool descriptions |
 |---|---|---|---|---|---|
@@ -43,9 +42,7 @@ against a mock interpreter:
 
 Four things that table is worth reading for.
 
-**dspy's own words are a constant, 1780 characters.** Identical on every task and every dspy from
-3.3.1 on. Its *share* moves (17.0% to 35.8% above) only because your text around it grows. Measure
-the share on your own task before deciding it matters.
+**dspy's own words are a constant for a given dspy**, 1883 characters on 3.5.0, identical on every task. Its *share* moves (17.0% to 35.8% above) only because your text around it grows. Measure the share on your own task before deciding it matters.
 
 **Between half and three quarters of the string is text you originated.** Your `instructions` plus
 the part dspy renders from your signature, output model and config. The surprise in this file is
@@ -164,6 +161,7 @@ It has been there since the module existed, not added by a later dspy:
 | 3.3.1 | present | 1865 chars | **present** |
 | 3.4.0 | present | 1865 chars | present |
 | 3.4.1 | present | 1865 chars | present |
+| 3.5.0 | present | 1968 chars | present |
 
 The module arrives in **3.1.2** (there is no 3.1.1), already carrying the whole template. 3.2.0 is
 where the notes first describe RLM at length, under the heading "Hardened RLM and
@@ -171,15 +169,11 @@ PythonInterpreter", which is a different release from the one that shipped it: e
 single wrong sentence, and worth keeping apart.
 
 **The one seam is `{interpreter_rules}`**, filled from the interpreter factory's
-`execution_instructions` attribute and rendered under an `Execution environment:` heading. It
-arrived in 3.3.1, which is why the kit's floor moved to `dspy>=3.3.1` at the time; the declared
-bound is now `>=3.4.1,<3.5.0`. Before 3.3.1 there was no seam at all. The kit already feeds it
+`execution_instructions` attribute and rendered under an `Execution environment:` heading, followed by dspy's sub-agent paragraph when sub-agents are on. It arrived in 3.3.1; before that there was no seam at all. The kit's declared bound is `>=3.5.0,<3.6.0`, and the kit already feeds it
 from the live interpreter, so a `container` run is described as a container rather than as Pyodide.
 It is the only sanctioned place to say something about the environment from the host side.
 
-**Know where it lands, though: index 288 of the 1865-character template**, under
-`Execution environment:`, which is 538 characters BEFORE the first of the six rules and about
-1300 before the last. So it is in the middle of dspy's text, not after it. For saying what the
+**Know where it lands, though: index 288 of the 1968-character template** (3.5.0), under `Execution environment:`, which is 641 characters BEFORE the first of the six rules and about 1400 before the last. So it is in the middle of dspy's text, not after it. For saying what the
 environment is, that is the right place. For contradicting a rule, it is the weaker of the two
 seams, and a tool docstring is the stronger one.
 
@@ -356,15 +350,10 @@ mentioned zero times in the optimized instruction, so the model is no longer tol
 task never needed it and no part of the score would have moved if it had, which is what makes it
 the loss worth naming: the only way to see it was to compare capabilities before and after.
 
-**And the measurement carries its dspy version**, because 3.4.1 makes `InstructionProposer` the
-default and sends tool trajectories to the reflection LM as structured content rather than
-flattened placeholders. Upstream's own note is that "optimization results can differ from 3.4.0
-even with the same seed", so the figures above are a measurement of 3.4.0's proposer and say
-nothing about 3.4.1's in either direction. What settles the default, rather than the class merely
-existing, is where GEPA builds one when the caller passes none:
+**And the measurement carries its dspy version**: the figures above are a measurement of dspy 3.4.0's proposer. From 3.4.1 GEPA's default is `InstructionProposer`, which sends tool trajectories to the reflection LM as structured content rather than flattened placeholders, and upstream notes that "optimization results can differ from 3.4.0 even with the same seed", so they say nothing about the current proposer in either direction. Re-measure on the dspy you run before quoting them. What settles the default, rather than the class merely existing, is where GEPA builds one when the caller passes none (`True` on 3.5.0):
 
 ```bash
-uv run --no-project --with "dspy==3.4.1" python -c \
+uv run --no-project --with "dspy==3.5.0" python -c \
   "import inspect; from dspy.teleprompt.gepa import gepa_utils as g; \
    print('InstructionProposer()' in inspect.getsource(g))"
 ```
@@ -489,7 +478,7 @@ To get the BEFORE column, run the same thing against an older checkout:
 **What a given dspy version's protocol says, and where its one seam lands.**
 
 ```bash
-uv run --no-project --with "dspy==3.4.1" python -c "
+uv run --no-project --with "dspy==3.5.0" python -c "
 import re
 from dspy.predict.rlm import ACTION_INSTRUCTIONS_TEMPLATE as T
 print(len(T), 'total,', len(re.sub(r'\{\w+\}', '', T)), 'fixed words')
