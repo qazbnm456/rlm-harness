@@ -28,7 +28,13 @@ import inspect
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from ._dspy_compat import is_facade_install, is_reserved_tool_name, reserved_result_names, reserved_tool_names
+from ._dspy_compat import (
+    is_reserved_tool_name,
+    reserved_result_names,
+    reserved_tool_names,
+    setup_execution,
+    strip_rebind_prelude,
+)
 from ._toolname import is_valid_tool_name
 
 # A step is one execute() worth of behaviour. It is one of:
@@ -260,13 +266,15 @@ class ScriptedInterpreter:
     """A scripted ``dspy`` ``CodeInterpreter`` double for offline forward-path tests.
 
     Build it with a list of STEPS (see ``Step``); one step is consumed per MODEL TURN, in order.
-    dspy's own setup executions (from 3.4.1, installing its sandbox ``dspy`` facade) consume none
-    and are counted in ``.facade_installs`` instead, so a script's length is the number of turns
-    it scripts on every dspy.
+    dspy's own setup executions before the first turn (its sandbox-session bootstrap, ``import dspy``,
+    and the injection of inputs JSON cannot carry; see ``_dspy_compat.setup_execution``) consume none
+    and are listed in ``.setup_executions`` instead, so a script's length is the number of turns it
+    scripts.
     When the script is exhausted it returns ``""`` forever (a non-terminal no-op) so a loop that never
     reaches a SUBMIT step runs to its iteration cap: useful for budget-exhaustion tests.
 
-    ``.calls`` records the code strings ``dspy`` asked to execute, in order, for assertions. ``.tools``
+    ``.calls`` records the code of each model turn, in order, for assertions: as the model wrote it,
+    without the rebind prelude dspy puts in front of every turn. ``.tools``
     is populated by ``dspy.RLM`` with the run's execution tools (the consumer's tools + ``SUBMIT`` /
     ``llm_query`` / ...), so a callable step can dispatch a REAL tool: ``lambda tools, v: tools["scan"](x=1)``.
 
@@ -288,29 +296,31 @@ class ScriptedInterpreter:
         self.tools: dict[str, Callable[..., Any]] = {}
         self.steps: list[Step] = list(steps)
         self.calls: list[str] = []
-        #: How many times dspy installed its sandbox ``dspy`` facade on this double: 1 per
-        #: forward pass from dspy 3.4.1, 0 before it. Neither consumes a step nor lands in
-        #: ``.calls``; see ``execute``.
-        self.facade_installs = 0
+        #: dspy's own setup executions on this double, in order, by kind (``"bootstrap"``,
+        #: ``"import"``, ``"inject"``). None consumes a step or lands in ``.calls``; see ``execute``.
+        self.setup_executions: list[str] = []
         self._i = 0
+
+    @property
+    def facade_installs(self) -> int:
+        """How many times dspy bootstrapped its sandbox session on this double: one per forward pass."""
+        return self.setup_executions.count("bootstrap")
 
     def start(self) -> None:
         """No-op: there is no process to spin up. Present because dspy's ``CodeInterpreter``
         protocol requires it (see the class docstring), not because the double needs it."""
 
     def execute(self, code: str, variables: dict | None = None) -> Any:
-        if is_facade_install(variables):
-            # dspy's OWN setup, not a model turn: consume no step and stay out of `.calls`.
-            # From dspy 3.4.1 `RLM._setup_facade` runs one extra `execute()` before the turn
-            # loop to install its sandbox `dspy` shim, which ate the first step of every script
-            # written against 3.4.0 and surfaced as `AdapterParseError: Expected to find output
-            # fields [reasoning, code]` once the scripted LM ran out of turns: two frames from
-            # the cause. Keeping it out of `.calls` is the half that protects consumers, whose
-            # assertions read `.calls[0]` as the first thing the MODEL ran; `.facade_installs`
-            # is where a test that cares about the shim looks instead.
-            self.facade_installs += 1
+        kind = setup_execution(code, variables)
+        if kind is not None:
+            # dspy's OWN setup, not a model turn: consume no step and stay out of `.calls`. A setup
+            # execution that took a step would shift every scripted output one turn late, and
+            # surface as the scripted LM running out of turns two frames from the cause. Keeping
+            # it out of `.calls` protects consumers, whose assertions read `.calls[0]` as the first
+            # thing the MODEL ran; `.setup_executions` is where a test that cares looks instead.
+            self.setup_executions.append(kind)
             return ""
-        self.calls.append(code)
+        self.calls.append(strip_rebind_prelude(code))
         step: Step = self.steps[self._i] if self._i < len(self.steps) else ""
         self._i += 1
         return self._interpret(step, variables or {})

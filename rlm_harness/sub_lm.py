@@ -67,6 +67,12 @@ def bind_recorder_to_sub_lm(sub_lm: Any, recorder: Any) -> Any:
             with recorder_scope(recorder):
                 return sub_lm(*args, **kwargs)
 
+        async def acall(self, *args: Any, **kwargs: Any):
+            # The async seat (a sub-agent built in the sandbox calls the sub-LM this way) binds the
+            # recorder the same way, or its escalations would go unrecorded.
+            with recorder_scope(recorder):
+                return await sub_lm.acall(*args, **kwargs)
+
         def __getattr__(self, name: str) -> Any:   # delegate dspy's bookkeeping (model/kwargs/…)
             return getattr(sub_lm, name)
 
@@ -183,97 +189,115 @@ def intercept_sub_lm(
             duplicate.kwargs = dict(getattr(base, "kwargs", {}) or {})
             return duplicate
 
-        # dspy's `RLM._query_lm` accepts dspy's TYPED response OR the legacy `list[str | dict]`.
-        # This returns whichever the BASE LM returned, never a shape of its own choosing.
+        # dspy's `RLM._query_lm` calls the sub-LM with a string, or with an lm15 `Request` for a
+        # prompt that carries media, and accepts dspy's TYPED response OR the `list[str | dict]` a
+        # string call returns. This returns whichever the BASE LM returned, never a shape of its own
+        # choosing. `acall` is the same pipeline on the async seat, so neither seat escapes it.
         def __call__(self, *args: Any, **kwargs: Any):
             recorder = current_recorder()
+            input_repr = _input_repr(args, kwargs)
             last_error: str | None = None
-            # Capture the call input (the escalation prompt) for the trace / RL data.
-            prompt = kwargs.get("prompt")
-            if prompt is None:
-                prompt = kwargs.get("messages")
-            if prompt is None and args:
-                prompt = args[0]
-            input_repr = None if prompt is None else str(prompt)[:4000]
-
             for attempt in range(1, self._max_retries + 1):
                 try:
                     outputs = self._base(*args, **kwargs)
                 except Exception as exc:
-                    # An escalation the PROVIDER refused still happened, and before this it left
-                    # no trace at all: the record below sits after the call, so a raise skipped it
-                    # and the run read as one where the planner never escalated. That is the exact
-                    # ambiguity 1.7.0 removed one level up, where the cause was a consumer who
-                    # never wrapped. Observed on a real deployment whose sub model was pulled from
-                    # the proxy: 8 of 10 runs escalated 2-3 times each, every call failed, and the
-                    # traces recorded zero escalations.
-                    #
-                    # SUPPRESSED so a recorder fault cannot replace the provider's exception with a
-                    # bookkeeping one, the same reason `TraceRecorder.__exit__` suppresses.
-                    if recorder is not None:
-                        with contextlib.suppress(Exception):
-                            recorder.record("sub_call", {
-                                "kind": "sub_lm", "name": self._name, "model": self.model,
-                                "attempt": attempt, "input": input_repr,
-                                "raw": None, "processed": None,
-                                "error": short_error(exc), "cause": CAUSE_ENDPOINT,
-                            })
+                    self._record_failure(recorder, attempt, input_repr, exc)
                     raise
-                # SHAPE-PRESERVING. This used to be `[outputs]` for anything non-list, which turned
-                # a typed response into `[response]` and made dspy raise "Sub-LM response must
-                # contain text": invisible on the default path, fatal under
-                # `dspy.context(experimental=True)`, and on course to become the DEFAULT after dspy
-                # 3.4. Both the read and the rebuild are resolved in `_dspy_compat`, never here.
-                raw = _dspy_compat.sub_lm_response_text(outputs)
-                processed, error = self._run_pipeline(raw if raw is not None else "")
+                done, result = self._finish(recorder, attempt, input_repr, outputs)
+                if done:
+                    return result
+                last_error = result
+            raise self._exhausted(last_error)
 
-                if recorder is not None:
-                    recorder.record(
-                        "sub_call",
-                        {
-                            # A sub_call is always one sub-LM escalation, reached via
-                            # the RLM's built-in llm_query/llm_query_batched (which is
-                            # the only thing that calls sub_lm). `kind` labels that role
-                            # explicitly; `name` is this wrapper's label. We can't record
-                            # WHICH built-in triggered it: dspy calls sub_lm identically
-                            # for both, so don't infer llm_query vs _batched from here.
-                            "kind": "sub_lm",
-                            "name": self._name,
-                            "model": self.model,
-                            "attempt": attempt,
-                            "input": input_repr,
-                            "raw": raw,          # None = the shape was not recognised
-                            "processed": processed,
-                            "error": error,
-                            # Which of the three outcomes this was, in the SAME vocabulary a
-                            # `tool_call` uses, so one reader answers "why did this fail" for both.
-                            # Without it an `error` set by a validator and one set by a dead
-                            # provider are indistinguishable, and only one of them is the model's
-                            # doing.
-                            "cause": CAUSE_OK if error is None else CAUSE_INVALID,
-                        },
-                    )
+        async def acall(self, *args: Any, **kwargs: Any):
+            recorder = current_recorder()
+            input_repr = _input_repr(args, kwargs)
+            last_error: str | None = None
+            for attempt in range(1, self._max_retries + 1):
+                try:
+                    outputs = await self._base.acall(*args, **kwargs)
+                except Exception as exc:
+                    self._record_failure(recorder, attempt, input_repr, exc)
+                    raise
+                done, result = self._finish(recorder, attempt, input_repr, outputs)
+                if done:
+                    return result
+                last_error = result
+            raise self._exhausted(last_error)
 
-                if error is None:
-                    # A no-op pipeline returns the base LM's object UNTOUCHED: identity, not a
-                    # reconstruction. That is what makes automatic wrapping safe: a sub-LM the kit
-                    # wrapped on the caller's behalf must be indistinguishable from the bare one.
-                    #
-                    # `raw is None` means the shim did not RECOGNISE the shape. Return it untouched
-                    # too, so dspy raises its own clear error. Rebuilding it as `[""]` would turn a
-                    # loud TypeError into a silent EMPTY completion that reaches the planner and
-                    # then the RL data as a real escalation answer, and since 1.7.0 wraps every
-                    # sub-LM automatically, that would be inflicted on callers who never opted in.
-                    if raw is None or processed == raw:
-                        return outputs
-                    return _dspy_compat.sub_lm_response_with_text(outputs, processed)
-                last_error = error
-                logger.warning(
-                    "sub-LM %s validation failed (attempt %d/%d): %s",
-                    self._name, attempt, self._max_retries, error,
+        def _record_failure(self, recorder: Any, attempt: int, input_repr: str | None,
+                            exc: BaseException) -> None:
+            # An escalation the PROVIDER refused still happened, and before this it left no trace
+            # at all: the record sits after the call, so a raise skipped it and the run read as one
+            # where the planner never escalated. That is the exact ambiguity 1.7.0 removed one
+            # level up, where the cause was a consumer who never wrapped. Observed on a real
+            # deployment whose sub model was pulled from the proxy: 8 of 10 runs escalated 2-3
+            # times each, every call failed, and the traces recorded zero escalations.
+            #
+            # SUPPRESSED so a recorder fault cannot replace the provider's exception with a
+            # bookkeeping one, the same reason `TraceRecorder.__exit__` suppresses.
+            if recorder is not None:
+                with contextlib.suppress(Exception):
+                    recorder.record("sub_call", {
+                        "kind": "sub_lm", "name": self._name, "model": self.model,
+                        "attempt": attempt, "input": input_repr,
+                        "raw": None, "processed": None,
+                        "error": short_error(exc), "cause": CAUSE_ENDPOINT,
+                    })
+
+        def _finish(self, recorder: Any, attempt: int, input_repr: str | None,
+                    outputs: Any) -> tuple[bool, Any]:
+            """Record one answered attempt: ``(True, value to return)``, or ``(False, error)`` to retry."""
+            # SHAPE-PRESERVING: both the read and the rebuild are resolved in `_dspy_compat`, never
+            # here, so a typed response stays typed and a list stays a list.
+            raw = _dspy_compat.sub_lm_response_text(outputs)
+            processed, error = self._run_pipeline(raw if raw is not None else "")
+
+            if recorder is not None:
+                recorder.record(
+                    "sub_call",
+                    {
+                        # A sub_call is always one sub-LM escalation, reached via the RLM's
+                        # built-in llm_query/llm_query_batched or a sub-agent built in the sandbox.
+                        # `kind` labels that role explicitly; `name` is this wrapper's label. dspy
+                        # calls sub_lm identically for both built-ins, so which one triggered it is
+                        # not inferred here.
+                        "kind": "sub_lm",
+                        "name": self._name,
+                        "model": self.model,
+                        "attempt": attempt,
+                        "input": input_repr,
+                        "raw": raw,          # None = the shape was not recognised
+                        "processed": processed,
+                        "error": error,
+                        # Which of the three outcomes this was, in the SAME vocabulary a
+                        # `tool_call` uses, so one reader answers "why did this fail" for both.
+                        # Without it an `error` set by a validator and one set by a dead provider
+                        # are indistinguishable, and only one of them is the model's doing.
+                        "cause": CAUSE_OK if error is None else CAUSE_INVALID,
+                    },
                 )
 
-            raise SubLMValidationError(
+            if error is None:
+                # A no-op pipeline returns the base LM's object UNTOUCHED: identity, not a
+                # reconstruction. That is what makes automatic wrapping safe: a sub-LM the kit
+                # wrapped on the caller's behalf must be indistinguishable from the bare one.
+                #
+                # `raw is None` means the shim did not RECOGNISE the shape. Return it untouched too,
+                # so dspy raises its own clear error. Rebuilding it as `[""]` would turn a loud
+                # TypeError into a silent EMPTY completion that reaches the planner and then the RL
+                # data as a real escalation answer.
+                if raw is None or processed == raw:
+                    return True, outputs
+                return True, _dspy_compat.sub_lm_response_with_text(outputs, processed)
+            logger.warning(
+                "sub-LM %s validation failed (attempt %d/%d): %s",
+                self._name, attempt, self._max_retries, error,
+            )
+            return False, error
+
+        def _exhausted(self, last_error: str | None) -> SubLMValidationError:
+            return SubLMValidationError(
                 f"sub-LM {self._name!r} could not produce a valid response "
                 f"after {self._max_retries} attempts: {last_error}"
             )
@@ -289,6 +313,17 @@ def intercept_sub_lm(
             return processed, None
 
     return _InterceptedSubLM()
+
+
+def _input_repr(args: tuple, kwargs: dict) -> str | None:
+    """The escalation's prompt as text for the trace: the string, or a ``Request``'s text."""
+    prompt = kwargs.get("prompt")
+    if prompt is None and args:
+        prompt = args[0]
+    if prompt is None:
+        return None
+    text = _dspy_compat.sub_lm_prompt_text(prompt)
+    return (text if text is not None else str(prompt))[:4000]
 
 
 def model_as_tool(name: str, lm: Any, *, description: str = "") -> Callable[[str], str]:

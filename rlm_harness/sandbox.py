@@ -123,20 +123,25 @@ def caller_owned(interp: Any) -> Any:
 
 
 class _NoSubAgentInterpreter:
-    """A view of ``interp`` that refuses dspy's sandbox-facade install, and forwards everything else.
+    """A view of ``interp`` that refuses dspy's sandbox-session bootstrap, and forwards everything else.
 
-    **What it turns off.** From dspy 3.4.1 ``RLM`` installs a ``dspy`` shim inside the sandbox, so
-    model code may build ``Predict``/``ChainOfThought``/``ReAct``/``RLM``/… sub-agents that run on
-    the HOST, call the run's ``sub_lm``, and resolve the task's own tools BY NAME. That is a new
-    capability crossing the boundary this module exists to defend, and for a consumer whose threat
-    model is "the sandbox is the boundary" it has to be refusable. dspy has no flag for it, so the
-    refusal is expressed where the kit does own a seam: the ``execute`` that installs the shim.
+    **What it turns off.** ``RLM`` bootstraps a session of dspy inside the sandbox, so model code may
+    build ``Predict``/``ChainOfThought``/``ReAct``/``RLM``/… sub-agents that run on the HOST, call the
+    run's ``sub_lm``, and resolve the task's own tools BY NAME. That is a capability crossing the
+    boundary this module exists to defend, and for a consumer whose threat model is "the sandbox is
+    the boundary" it has to be refusable. dspy has no flag for it, so the refusal is expressed where
+    the kit does own a seam: the ``execute`` that runs the bootstrap.
+
+    **It also hides ``provide_dspy``.** ``SandboxSession.install`` calls the interpreter's
+    ``provide_dspy`` before the bootstrap, and on Deno that builds dspy's sandbox bundle (fetching
+    Pyodide wheels on first use) and grants the sandbox read access to it. With sub-agents off neither
+    may happen, so the attribute reads as absent and dspy skips it.
 
     **Raising ``SyntaxError`` is dspy's OWN degradation path, not a trick.**
-    ``RLM._setup_facade`` catches ``(CodeExecutionError, SyntaxError)``, drops its two host tools
-    and logs "RLM sub-agents are unavailable on %s", then runs the whole forward pass normally with
-    the sub-agent paragraph left out of the prompt. So the model is never told about a capability
-    it does not have, which is the half a bare refusal would get wrong.
+    ``RLM._setup_facade`` catches ``(CodeExecutionError, SyntaxError, SandboxBundleError)``, drops its
+    host tools and logs "RLM sub-agents are unavailable on %s", then runs the whole forward pass
+    normally with the sub-agent paragraph left out of the prompt. So the model is never told about a
+    capability it does not have, which is the half a bare refusal would get wrong.
 
     **The protocol members are declared STATICALLY**, for exactly the reason
     :class:`_CallerOwnedInterpreter` documents: dspy's ``isinstance`` against a
@@ -158,9 +163,9 @@ class _NoSubAgentInterpreter:
         return object.__getattribute__(self, "_interp").start()
 
     def execute(self, code: str, variables: dict | None = None) -> Any:
-        from ._dspy_compat import is_facade_install
+        from ._dspy_compat import setup_execution
 
-        if is_facade_install(variables):
+        if setup_execution(code, variables) == "bootstrap":
             raise SyntaxError(
                 "sandbox sub-agents are disabled for this run "
                 "(RLMConfig(sandbox_sub_agents=False) / RLM_SANDBOX_SUB_AGENTS=0)"
@@ -171,10 +176,16 @@ class _NoSubAgentInterpreter:
         return object.__getattribute__(self, "_interp").shutdown()
 
     def __getattr__(self, name: str) -> Any:
+        if name in _HIDDEN_WITHOUT_SUB_AGENTS:
+            raise AttributeError(name)
         return getattr(object.__getattribute__(self, "_interp"), name)
 
     def __setattr__(self, name: str, value: Any) -> None:
         setattr(object.__getattribute__(self, "_interp"), name, value)
+
+
+#: What :class:`_NoSubAgentInterpreter` hides: the hook that builds and grants dspy's sandbox bundle.
+_HIDDEN_WITHOUT_SUB_AGENTS = frozenset({"provide_dspy"})
 
 
 def build_interpreter(
@@ -201,7 +212,7 @@ def build_interpreter(
     an explicit Cancel control deserves a loud failure rather than a control that silently
     does nothing.
 
-    ``sandbox_sub_agents=False`` refuses dspy's in-sandbox ``dspy`` facade for EVERY kind, by
+    ``sandbox_sub_agents=False`` refuses dspy's sandbox-session bootstrap for EVERY kind, by
     wrapping the result in :class:`_NoSubAgentInterpreter`. The default wraps NOTHING, so the
     path every run takes today is byte-for-byte what it was: the view exists only for the
     consumer who turns the capability off.
@@ -354,10 +365,11 @@ def _build_sandboxed_interpreter(
         from dspy.primitives.python_interpreter import PythonInterpreter
 
         from ._dspy_compat import (
-            is_facade_install,
             recoverable_interpreter_error,
             reset_interpreter_session,
             runner_path_with_safe_error_args,
+            setup_execution,
+            strip_rebind_prelude,
         )
 
         # The class dspy's RLM loop CATCHES, resolved for the installed dspy rather than
@@ -381,16 +393,17 @@ def _build_sandboxed_interpreter(
                 note = getattr(rec, "note_exec_duration", None)
                 if callable(note):
                     with contextlib.suppress(Exception):
-                        note(time.perf_counter() - t0, code)
+                        # Matched against the trajectory's code, which has no rebind prelude.
+                        note(time.perf_counter() - t0, strip_rebind_prelude(code))
 
         class _JsonLiteralInterpreter(PythonInterpreter):
             _JSON_ALIASES = _JSON_LITERAL_ALIASES
             _turn_timeout_s: float | None = None
             _cancel_event: threading.Event | None = None
-            #: The ``(code, variables)`` of dspy's sandbox-facade install, remembered so a
-            #: restart can replay it. See ``_replay_facade_install``.
-            _facade_install: tuple[str, dict] | None = None
-            _facade_stale = False
+            #: The ``(code, variables)`` of each of dspy's setup executions, in order, remembered so a
+            #: restart can replay them. See ``_replay_setup``.
+            _setup: list[tuple[str, dict]] | None = None
+            _setup_stale = False
 
             def _get_runner_path(self) -> str:
                 # dspy's own runner, with the one helper that lets a model's exception kill the
@@ -399,17 +412,19 @@ def _build_sandboxed_interpreter(
                 return runner_path_with_safe_error_args(super()._get_runner_path())
 
             def execute(self, code: str, variables: dict | None = None) -> Any:
-                if is_facade_install(variables):
-                    # dspy installs its sandbox `dspy` shim with ONE execute before the turn
-                    # loop (3.4.1+). Remember it: a turn-timeout kill resets the session, the
-                    # next call spawns a FRESH Deno, and dspy never installs the shim again,
-                    # while the action prompt still tells the model it may `import dspy`.
-                    # Without the replay below the model follows that instruction into a
-                    # NameError and spends its remaining turns on a capability the runtime
-                    # silently lost.
-                    self._facade_install = (code, dict(variables or {}))
-                elif self._facade_stale:
-                    self._replay_facade_install()
+                if setup_execution(code, variables) is not None:
+                    # dspy bootstraps its sandbox session, may import dspy, and injects inputs
+                    # JSON cannot carry, before the turn loop. Remember each: a turn-timeout kill
+                    # resets the session, the next call spawns a FRESH Deno, and dspy never runs
+                    # them again, while the action prompt still offers sub-agents and the turns
+                    # still read those inputs. Without the replay below the model follows that
+                    # offer into a sandbox with no session and spends its remaining turns on a
+                    # capability the runtime silently lost.
+                    if self._setup is None:
+                        self._setup = []
+                    self._setup.append((code, dict(variables or {})))
+                elif self._setup_stale:
+                    self._replay_setup()
                 merged = {**self._JSON_ALIASES, **(variables or {})}
                 # The ENTIRE disabled-by-default guarantee: when neither knob is
                 # set, NO WATCHER THREAD is ever created. Keep this the FIRST thing
@@ -424,31 +439,32 @@ def _build_sandboxed_interpreter(
                     return _timed(super().execute, code, merged)
                 return _timed(self._execute_guarded, code, merged)
 
-            def _replay_facade_install(self) -> None:
-                """Re-install dspy's sandbox facade into the session that replaced a killed one.
+            def _replay_setup(self) -> None:
+                """Re-run dspy's setup executions, in order, in the session that replaced a killed one.
 
                 Replays the exact ``(code, variables)`` dspy itself ran, so nothing here has to
-                know the shim's source or its host token: both are private to dspy, and a kit
-                that imported them would be asserting a private seam it cannot see change.
+                know the bootstrap's source or its session spec: both are private to dspy, and a kit
+                that rebuilt them would be asserting a private seam it cannot see change.
 
                 Best-effort by design, and the degradation is dspy's own: ``RLM._setup_facade``
-                treats a sandbox that cannot host the shim as "no sub-agents this call" and logs
+                treats a sandbox that cannot host the session as "no sub-agents this call" and logs
                 it, so a failed replay must leave the run alive rather than turn a recovered turn
                 timeout into a dead run. The flag is cleared FIRST, so a replay that raises is not
-                retried on every later cell.
+                retried on every later cell, and the replayed executions are not remembered twice.
                 """
-                self._facade_stale = False
-                install = self._facade_install
-                if install is None:
-                    return
-                code, variables = install
+                self._setup_stale = False
+                setup, self._setup = self._setup or [], None
                 try:
-                    self.execute(code, variables)
+                    for code, variables in setup:
+                        self.execute(code, variables)
                 except Exception as e:
                     logger.warning(
-                        "could not re-install dspy's sandbox facade after a sandbox restart, so "
-                        "`import dspy` in model code will fail for the rest of this run: %s", e
+                        "could not re-run dspy's sandbox setup after a sandbox restart, so the "
+                        "sandbox's dspy session (sub-agents, injected inputs) is missing for the rest "
+                        "of this run: %s", e
                     )
+                finally:
+                    self._setup = setup
 
             def _execute_guarded(self, code: str, merged: dict) -> Any:
                 fired: dict = {"reason": None}  # ONE field, ONE write per trigger
@@ -528,9 +544,9 @@ def _build_sandboxed_interpreter(
                         watcher.join()
                     reset_interpreter_session(self)
                     # The reset makes the next call spawn a fresh Deno, which re-mounts files and
-                    # re-registers tools but does NOT bring back the sandbox-side `dspy` shim:
-                    # that was an `execute`, not a tool registration. Mark it for replay.
-                    self._facade_stale = True
+                    # re-registers tools but does NOT bring back dspy's sandbox session: those were
+                    # executions, not tool registrations. Mark them for replay.
+                    self._setup_stale = True
                     raise _RecoverableExecError(
                         f"execution exceeded the {self._turn_timeout_s:g}s per-turn "
                         f"sandbox budget; the interpreter was killed and will restart "

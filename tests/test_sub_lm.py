@@ -1,6 +1,11 @@
 import pytest
 
-from rlm_harness.sub_lm import SubLMValidationError, intercept_sub_lm, model_as_tool
+from rlm_harness.sub_lm import (
+    SubLMValidationError,
+    bind_recorder_to_sub_lm,
+    intercept_sub_lm,
+    model_as_tool,
+)
 from rlm_harness.trace import (
     EVENT_SUB_CALL,
     EVENT_TOOL_CALL,
@@ -487,3 +492,77 @@ def test_cause_separates_a_dead_provider_from_a_rejected_output(tmp_path):
                          max_retries=2)(prompt="q")
     causes = [e["payload"]["cause"] for e in _events(path2) if e["type"] == "sub_call"]
     assert causes == ["invalid", "invalid"]
+
+
+# ---- dspy 3.5's call shapes, against a real dspy.LM on the fake OpenAI-compatible server ---------
+
+
+def _served_lm(fake_openai):
+    from rlm_harness import _dspy_compat
+
+    return dspy.LM(_dspy_compat.endpoint_model("openai", "sub-model"), base_url=fake_openai.base_url,
+                   api_key="k", cache=False, **_dspy_compat.endpoint_lm_kwargs())
+
+
+def _sub_calls(path):
+    return [e["payload"] for e in load_events(path) if e["type"] == "sub_call"]
+
+
+def test_a_request_prompt_is_intercepted_and_recorded_as_its_text(fake_openai, tmp_path):
+    """`llm_query` with a list prompt calls the sub-LM with an lm15 `Request`, built from the
+    wrapper's own model and defaults. The wrapper hands it to the base unchanged, returns the typed
+    response untouched, and records the prompt's text."""
+    from dspy.adapters.base import Prompt
+    from dspy.clients.requests import build_request
+    from dspy.lm15 import Message, TextPart
+
+    fake_openai.script = [{"role": "assistant", "content": "an answer"}]
+    wrapped = intercept_sub_lm(_served_lm(fake_openai))
+    request = build_request(wrapped, Prompt(messages=(Message.user((TextPart("part one "),
+                                                                     TextPart("part two"))),)))
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r"):
+        response = wrapped(request)
+    assert isinstance(response, dspy.lm15.Response) and response.text == "an answer"
+    (call,) = _sub_calls(path)
+    assert (call["input"], call["raw"], call["cause"]) == ("part one part two", "an answer", "ok")
+    assert fake_openai.requests[0]["body"]["model"] == "sub-model"
+
+
+def test_the_async_seat_is_intercepted_and_recorded_too(fake_openai, tmp_path):
+    import asyncio
+
+    fake_openai.script = [{"role": "assistant", "content": "async answer"}]
+    wrapped = intercept_sub_lm(_served_lm(fake_openai), postprocessors=[str.upper])
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r") as rec:
+        bound = bind_recorder_to_sub_lm(wrapped, rec)
+        out = asyncio.run(bound.acall("hi"))
+    assert out == ["ASYNC ANSWER"]
+    (call,) = _sub_calls(path)
+    assert (call["input"], call["raw"], call["processed"]) == ("hi", "async answer", "ASYNC ANSWER")
+
+
+def test_a_string_call_that_carried_reasoning_keeps_dspys_shape(fake_openai):
+    """A string call to a reasoning model returns `[{"text", "reasoning_content"}]`; a post-processed
+    answer replaces the text and keeps the dict, so the reasoning still reaches dspy."""
+    fake_openai.script = [{"role": "assistant", "content": "answer", "reasoning_content": "why"}]
+    out = intercept_sub_lm(_served_lm(fake_openai), postprocessors=[str.upper])("hi")
+    assert out == [{"text": "ANSWER", "reasoning_content": "why"}]
+
+
+def test_the_bound_async_seat_records_from_a_thread_with_no_recorder(fake_openai, tmp_path):
+    """dspy may reach the sub-LM from a worker thread, which starts with an empty context: the
+    recorder binding is what makes that call record, on the async seat as on the sync one."""
+    import asyncio
+    import threading
+
+    fake_openai.script = [{"role": "assistant", "content": "from a worker"}]
+    path = str(tmp_path / "t.jsonl")
+    with TraceRecorder(path, run_id="r") as rec:
+        bound = bind_recorder_to_sub_lm(intercept_sub_lm(_served_lm(fake_openai)), rec)
+        worker = threading.Thread(target=lambda: asyncio.run(bound.acall("hi")))
+        worker.start()
+        worker.join()
+    (call,) = _sub_calls(path)
+    assert call["raw"] == "from a worker"

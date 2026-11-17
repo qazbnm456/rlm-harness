@@ -553,3 +553,38 @@ def test_turning_sub_agents_off_takes_the_offer_out_of_the_prompt_too():
     assert "import dspy" not in withheld, (
         "sub-agents were refused but the prompt still tells the model to `import dspy`"
     )
+
+
+def test_turning_sub_agents_off_hides_the_hook_that_builds_dspys_bundle():
+    """dspy calls `provide_dspy` before its bootstrap, and on Deno that builds the sandbox bundle and
+    grants the sandbox read access to it. With sub-agents off the view reads as not having it."""
+    from rlm_harness.sandbox import _NoSubAgentInterpreter
+
+    class _Interp:
+        tools: dict = {}
+
+        def provide_dspy(self):  # pragma: no cover - must never be reached through the view
+            raise AssertionError("reached")
+
+    view = _NoSubAgentInterpreter(_Interp())
+    assert getattr(view, "provide_dspy", None) is None
+    assert view.tools == {}
+
+
+def test_the_container_interpreter_refuses_dspys_sandbox_session():
+    """The container's Python has no dspy, and dspy's bootstrap would succeed anyway (it defers the
+    import), leaving a sub-agent offer whose `import dspy` fails. Refused through the exception dspy
+    treats as "no sub-agents this call", before any container starts."""
+    pytest.importorskip("dspy")
+    from dspy.primitives import facade
+
+    from rlm_harness.config import ContainerConfig
+    from rlm_harness.container_interpreter import ContainerInterpreter
+
+    def no_docker(*args, **kwargs):  # pragma: no cover - the refusal comes first
+        raise AssertionError("a container was started")
+
+    interp = ContainerInterpreter(ContainerConfig(), spawn=no_docker)
+    session = facade.SandboxSession({}, lm=None, reserve=lambda n=1: None)
+    with pytest.raises(SyntaxError, match="container"):
+        session.install(interp, import_dspy=False)

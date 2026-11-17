@@ -349,40 +349,6 @@ def is_reserved_tool_name(name: object) -> bool:
     return name in _FACADE_RESERVED_EXACT or name.startswith(_FACADE_RESERVED_PREFIXES)
 
 
-@lru_cache(maxsize=1)
-def _facade_host_token_var() -> str:
-    """The variable name dspy passes when it installs its sandbox ``dspy`` facade."""
-    try:
-        from dspy.primitives.facade import HOST_TOKEN_VAR
-
-        return str(HOST_TOKEN_VAR)
-    except Exception:
-        return "__dspy_host_token"
-
-
-def is_facade_install(variables: Any) -> bool:
-    """True when this ``execute()`` is dspy installing its sandbox facade, not a model turn.
-
-    dspy 3.4.1's ``RLM._setup_facade`` runs one extra ``interpreter.execute(SHIM_SETUP,
-    variables={HOST_TOKEN_VAR: ...})`` BEFORE the turn loop, so an interpreter that counts
-    executions is one short from the moment it is installed. That is not hypothetical: it
-    silently ate the first step of every :class:`rlm_harness.testing.ScriptedInterpreter`
-    script, and the symptom surfaced two frames away as ``AdapterParseError: Expected to find
-    output fields [reasoning, code]`` from a scripted LM that had simply run out of turns.
-
-    Detected off the VARIABLES rather than the code text: the token variable is a marker dspy
-    passes on purpose, while the shim body is a docstring-and-defs blob that any rewrite changes.
-    The fallback scans for the ``__dspy`` prefix dspy reserves sandbox-wide (see
-    :func:`is_reserved_tool_name`), so a renamed token is still recognised; a model turn cannot
-    collide with it, because dspy refuses to bind any name with that prefix.
-    """
-    if not isinstance(variables, dict) or not variables:
-        return False
-    if _facade_host_token_var() in variables:
-        return True
-    return any(isinstance(k, str) and k.startswith("__dspy") for k in variables)
-
-
 #: Output-field names dspy's RLM owns on its own Prediction. Hardcoded floor for
 #: :func:`reserved_result_names`, unioned with whatever the installed dspy exposes.
 _RESERVED_RESULT_FALLBACK = frozenset({"trajectory", "final_reasoning"})
@@ -601,7 +567,10 @@ def sub_lm_response_with_text(response: Any, text: str) -> Any:
             return _copy_with(response, message=new_container)
         return _copy_with(response, outputs=[new_container, *siblings])
     if isinstance(response, (list, tuple)) and response:
-        rest = list(response[1:])
+        first, rest = response[0], list(response[1:])
+        # A string call that carried reasoning returns `{"text", "reasoning_content"}`: keep the dict.
+        if isinstance(first, dict):
+            return [{**first, "text": text}, *rest]
         return [text, *rest]
     return [text]
 
@@ -1535,3 +1504,89 @@ RLM_RUNTIME_OPTIONS_REFUSED: dict[str, str] = {
     "history_processor": "it rewrites the planner's history before each turn, and the trace rebuilds "
                          "that history from the recorded turns, so the requests would not verify",
 }
+
+
+def sub_lm_prompt_text(prompt: Any) -> str | None:
+    """The text of a sub-LM call's prompt: the string itself, or a ``Request``'s user text parts.
+
+    dspy's ``llm_query`` sends a string, or an lm15 ``Request`` when the prompt carries media; a
+    media part is named by its type, so the trace says what was sent without the bytes.
+    """
+    if isinstance(prompt, str):
+        return prompt
+    from dspy.lm15 import Request, TextPart
+
+    if not isinstance(prompt, Request):
+        return None
+    pieces = []
+    for message in prompt.messages:
+        for part in message.parts:
+            pieces.append(part.text if isinstance(part, TextPart) else f"[{getattr(part, 'type', 'part')}]")
+    return "".join(pieces)
+
+
+# ---- dspy's own executions in the sandbox, which are not model turns -----------------------------
+
+#: What ``RLM._prepare_serializable_vars`` prefixes the variable carrying an input it injects with,
+#: and the statement ``SandboxSession.install`` runs to import dspy in the sandbox. Both are literals
+#: in dspy's source; ``tests/test_dspy_compat.py`` reads that source so a change goes red there.
+SETUP_INJECT_PREFIX = "_raw_"
+SETUP_IMPORT_DSPY = "import dspy"
+
+
+@lru_cache(maxsize=1)
+def _bootstrap_source() -> str | None:
+    try:
+        from dspy.primitives.facade import BOOTSTRAP
+
+        return str(BOOTSTRAP)
+    except Exception:
+        return None
+
+
+def setup_execution(code: Any, variables: Any) -> str | None:
+    """Which of dspy's own setup executions ``execute(code, variables)`` is, or ``None`` for a turn.
+
+    Before the first turn dspy 3.5's ``RLM`` runs, in order: ``"bootstrap"``, its sandbox-session
+    bootstrap (``SandboxSession.install``, variables ``{"__dspy_spec": ...}``); ``"import"``, a bare
+    ``import dspy`` with no variables, when a typed value may cross into the sandbox; and ``"inject"``,
+    one ``<name> = ...`` per input the interpreter's JSON cannot carry, with the value in a single
+    ``_raw_<name>`` variable. A model turn always comes with the task's inputs as variables and, once
+    the bootstrap ran, with dspy's rebind prelude in front, so it matches none of these.
+    """
+    variables = variables if isinstance(variables, dict) else {}
+    if isinstance(code, str) and code == _bootstrap_source():
+        return "bootstrap"
+    if not variables and isinstance(code, str) and code.strip() == SETUP_IMPORT_DSPY:
+        return "import"
+    if len(variables) == 1 and isinstance(code, str):
+        (key,) = variables
+        if isinstance(key, str) and key.startswith(SETUP_INJECT_PREFIX):
+            name = key[len(SETUP_INJECT_PREFIX):]
+            if name and code.startswith(f"{name} = "):
+                return "inject"
+    return None
+
+
+@lru_cache(maxsize=1)
+def rebind_prelude() -> str:
+    """The prelude dspy puts in front of every model turn once its sandbox session is installed.
+
+    ``RLM`` runs ``_with_prelude(_REBIND, code)`` so a turn that imported dspy is bound to the session.
+    The kit strips it wherever a turn's code is compared with the trajectory's, which records the code
+    without it. Empty when the installed dspy has none.
+    """
+    try:
+        from dspy.predict import rlm
+
+        return str(getattr(rlm, "_REBIND", "") or "")
+    except Exception:
+        return ""
+
+
+def strip_rebind_prelude(code: Any) -> Any:
+    """``code`` as the model wrote it: dspy's rebind prelude removed, wherever dspy placed it."""
+    prelude = rebind_prelude()
+    if not prelude or not isinstance(code, str) or prelude not in code:
+        return code
+    return code.replace(prelude, "", 1)

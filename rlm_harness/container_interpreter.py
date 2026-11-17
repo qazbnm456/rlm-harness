@@ -500,8 +500,16 @@ class ContainerInterpreter:
         that raises all degrade to "no duration recorded". A failed turn is still timed: the
         sandbox really did spend that time, and dspy keeps the turn in the trajectory either way.
         """
+        from ._dspy_compat import setup_execution, strip_rebind_prelude
         from .trace import current_recorder
 
+        if setup_execution(code, variables) == "bootstrap":
+            # dspy's sandbox session needs dspy importable in the REPL, and the container's Python
+            # has none. Its bootstrap would still succeed (it defers the import to first use), so
+            # the prompt would offer sub-agents whose `import dspy` then fails. Refused here instead,
+            # through the exception `RLM._setup_facade` treats as "no sub-agents this call", which
+            # also takes the offer out of the prompt.
+            raise SyntaxError("the container interpreter cannot host dspy's sandbox session")
         t0 = time.perf_counter()
         try:
             return self._execute_inner(code, variables)
@@ -509,7 +517,8 @@ class ContainerInterpreter:
             note = getattr(current_recorder(), "note_exec_duration", None)
             if callable(note):
                 with contextlib.suppress(Exception):
-                    note(time.perf_counter() - t0, code)
+                    # Matched against the trajectory's code, which has no rebind prelude.
+                    note(time.perf_counter() - t0, strip_rebind_prelude(code))
 
     def _execute_inner(self, code: str, variables: dict[str, Any] | None = None) -> Any:
         from dspy.primitives.code_interpreter import CodeInterpreterError, FinalOutput

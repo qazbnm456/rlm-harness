@@ -129,20 +129,29 @@ def test_dspys_own_setup_executions_consume_no_step_and_stay_out_of_calls(tmp_pa
     # `.calls` holds the model's code and nothing else. A consumer reads `.calls[0]`.
     assert si.calls == ["SUBMIT(answer={'x': 3})"]
 
-    try:
-        import dspy.primitives.facade  # noqa: F401
-    except ImportError:
-        installs_a_facade = False
-    else:
-        installs_a_facade = True
-    if installs_a_facade:
-        assert si.facade_installs == 1, (
-            "dspy exposes its sandbox facade but installed none on this double: either the "
-            "install stopped happening or `is_facade_install` stopped recognising it, and the "
-            "step accounting above is now green for the wrong reason"
-        )
-    else:
-        assert si.facade_installs == 0
+    # dspy bootstraps its sandbox session before the first turn: no step, not in `.calls`.
+    assert si.facade_installs == 1
+    assert si.setup_executions == ["bootstrap"], (
+        "dspy ran no recognised setup on this double: either it stopped bootstrapping or "
+        "`setup_execution` stopped recognising it, and the step accounting above is green for the "
+        "wrong reason")
+
+
+def test_a_typed_input_is_injected_without_taking_a_step():
+    """An input the interpreter's JSON cannot carry crosses after `import dspy`, one execution per
+    input: neither takes a step, so the one-step script still submits on its step."""
+    _configure([{"reasoning": "submit", "code": "SUBMIT(answer={'x': 4})"}])
+
+    class T(RLMTask):
+        signature = "q: str, image: dspy.Image -> answer: _Out"
+        output_field = "answer"
+        output_model = _Out
+
+    si = ScriptedInterpreter([submit({"answer": {"x": 4}})])
+    image = dspy.Image("data:image/png;base64,iVBORw0KGgo=")
+    assert asyncio.run(T(interpreter=si).arun(q="hi", image=image)).x == 4
+    assert si.setup_executions == ["bootstrap", "import", "inject"]
+    assert si.calls == ["SUBMIT(answer={'x': 4})"]
 
 
 @pytest.mark.parametrize("key", ["plan", "reasoning"])

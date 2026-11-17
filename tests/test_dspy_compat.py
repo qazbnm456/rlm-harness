@@ -1411,3 +1411,37 @@ def test_the_default_adapter_is_the_one_dspy_falls_back_to():
     with dspy.context(adapter=None):
         assert type(_get_adapter()) is type(_dspy_compat.default_adapter())
 
+
+
+# ---- dspy's own executions in the sandbox ---------------------------------------------------------
+
+
+def test_the_setup_executions_are_the_ones_dspy_runs():
+    """The literals `setup_execution` matches are read off dspy's own source, so a change goes red
+    here rather than as a script step eaten or a replay that misses one."""
+    import inspect
+
+    import dspy
+    from dspy.primitives import facade
+
+    inject = inspect.getsource(dspy.RLM._prepare_serializable_vars)
+    assert f'f"{_dspy_compat.SETUP_INJECT_PREFIX}{{name}}"' in inject
+    install = inspect.getsource(facade.SandboxSession.install)
+    assert f'interpreter.execute("{_dspy_compat.SETUP_IMPORT_DSPY}")' in install
+    assert "interpreter.execute(BOOTSTRAP" in install
+
+    assert _dspy_compat.setup_execution(facade.BOOTSTRAP, {"__dspy_spec": {}}) == "bootstrap"
+    assert _dspy_compat.setup_execution("import dspy", None) == "import"
+    assert _dspy_compat.setup_execution("image = x", {"_raw_image": "{}"}) == "inject"
+    # A model turn: the task's inputs as variables, and code of its own.
+    assert _dspy_compat.setup_execution("import dspy", {"q": "hi"}) is None
+    assert _dspy_compat.setup_execution("x = 1", {"_raw_y": 1}) is None
+
+
+def test_the_rebind_prelude_is_dspys_and_strips_back_to_the_turn():
+    from dspy.predict import rlm
+
+    prelude = _dspy_compat.rebind_prelude()
+    assert prelude and prelude == rlm._REBIND
+    for code in ("print(1)", "from __future__ import annotations\nx: int = 1\nprint(x)"):
+        assert _dspy_compat.strip_rebind_prelude(rlm._with_prelude(prelude, code)) == code
