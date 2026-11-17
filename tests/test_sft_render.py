@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 dspy = pytest.importorskip("dspy")
 
-from dspy.utils.callback import BaseCallback, with_callbacks
+from dspy.utils.callback import BaseCallback
 from dspy.utils.dummies import DummyLM
 
 import rlm_harness
@@ -33,7 +33,7 @@ from rlm_harness.prompt_record import (
     RenderError,
     messages_sha256,
 )
-from rlm_harness.testing import ScriptedInterpreter
+from rlm_harness.testing import ScriptedInterpreter, scripted_lm
 from rlm_harness.trace import (
     EVENT_EXTRACT,
     EVENT_FINAL,
@@ -52,7 +52,14 @@ class _Sent(BaseCallback):
         self.requests: list[list[dict]] = []
 
     def on_lm_start(self, call_id, instance, inputs):
-        self.requests.append(json.loads(json.dumps(inputs.get("messages"))))
+        # The Request the LM was called with, written as Chat Completions messages by dspy's own
+        # SDK-boundary writer: what an OpenAI-compatible server receives.
+        from dspy.clients.lm15_boundary import request_kwargs
+
+        request = inputs.get("prompt")
+        if not isinstance(request, dspy.lm15.Request):
+            return
+        self.requests.append(json.loads(json.dumps(request_kwargs(request, "chat")["messages"])))
 
 
 class Flat(BaseModel):
@@ -98,7 +105,7 @@ def _configure(lm, adapter="json", max_iterations=3):
 
 
 def _dummy(turns, adapter):
-    return DummyLM(list(turns), adapter=dspy.JSONAdapter() if adapter == "json" else dspy.ChatAdapter())
+    return scripted_lm(turns, adapter=dspy.JSONAdapter() if adapter == "json" else dspy.ChatAdapter())
 
 
 def _run(tmp_path, task, inputs, *, name="t.jsonl"):
@@ -185,8 +192,12 @@ def test_the_setup_records_what_the_model_was_told(tmp_path):
     assert len(setup["variables_info"]) == 2
     assert "Total length: 11 characters" in setup["variables_info"][0]
     action = setup["predictors"]["action"]
-    assert [f["name"] for f in action["fields"]] == [
-        "variables_info", "repl_history", "iteration", "reasoning", "code"]
+    # As `Adapter.format` received it: the earlier turns are a `dspy.History`, and the reasoning
+    # field goes out under its wire name, marked with the name the trajectory keeps.
+    assert [(f["name"], f["kind"]) for f in action["fields"]] == [
+        ("history", "history"), ("variables_info", "builtin"), ("iteration", "builtin"),
+        ("plan", "reasoning"), ("code", "builtin")]
+    assert action["fields"][3]["extra"]["__dspy_reasoning_field"] == "reasoning"
     assert "Answer from the document." in action["instructions"]
     extract = setup["predictors"]["extract"]
     assert [(f["name"], f["io"]) for f in extract["fields"]] == [
@@ -280,7 +291,7 @@ def test_the_assistant_side_is_the_raw_completion(tmp_path):
                      {"document": "hello world", "n": 2})
     records = export_sft_turns(group_by_run(events), render="adapter")
     assert {r["assistant_source"] for r in records} == {SOURCE_COMPLETION}
-    assert json.loads(records[0]["assistant"]["content"]) == _TWO_TURNS_THEN_EXTRACT[0]
+    assert json.loads(records[0]["assistant"]["content"]) == _wire(_TWO_TURNS_THEN_EXTRACT[0])
     assert json.loads(records[2]["assistant"]["content"]) == {"answer": "42"}
 
     # A trace without the raw text falls back to dspy's own formatter, and says it did.
@@ -288,55 +299,65 @@ def test_the_assistant_side_is_the_raw_completion(tmp_path):
         e["payload"].pop("completion", None)
     fallback = export_sft_turns(group_by_run(events), render="adapter")
     assert {r["assistant_source"] for r in fallback} == {SOURCE_RENDERED}
-    assert json.loads(fallback[0]["assistant"]["content"]) == _TWO_TURNS_THEN_EXTRACT[0]
-    assert fallback[0]["assistant"]["content"].startswith('{\n  "reasoning"')
+    assert json.loads(fallback[0]["assistant"]["content"]) == _wire(_TWO_TURNS_THEN_EXTRACT[0])
+    assert fallback[0]["assistant"]["content"].startswith('{\n  "plan"')
 
 
-class _ReasoningLM(dspy.BaseLM):
-    """Returns content plus a separate reasoning channel, as an OpenAI-compatible reasoning server."""
+def _wire(turn):
+    """A planner turn with its reasoning under the wire name, as `scripted_lm` writes it."""
+    from rlm_harness import _dspy_compat
 
-    def __init__(self, turns):
-        super().__init__(model="reasoning-dummy")
-        self.turns = list(turns)
-
-    def _next(self):
-        content, thinking = self.turns.pop(0)
-        return [{"text": json.dumps(content), "reasoning_content": thinking}]
-
-    @with_callbacks
-    def __call__(self, prompt=None, messages=None, **kwargs):
-        return self._next()
-
-    @with_callbacks
-    async def acall(self, prompt=None, messages=None, **kwargs):
-        return self._next()
+    return _dspy_compat.action_turn_on_the_wire(turn)
 
 
-class _RawLM(dspy.BaseLM):
-    """Returns each scripted reply verbatim, so a test can send text that is not valid JSON."""
+class _Engine:
+    """Answers each call with the next scripted reply, as an lm15 `Response`: `text` becomes the
+    reply's text part, `reasoning_content` its thinking part, as a reasoning server's reply arrives."""
 
     def __init__(self, replies):
-        super().__init__(model="raw-dummy")
-        self.replies = list(replies)
+        self.replies = replies
 
-    @with_callbacks
-    def __call__(self, prompt=None, messages=None, **kwargs):
-        return [{"text": self.replies.pop(0)}]
+    def complete(self, request):
+        from dspy.lm15 import Message, Response, TextPart, ThinkingPart, Usage
 
-    @with_callbacks
-    async def acall(self, prompt=None, messages=None, **kwargs):
-        return [{"text": self.replies.pop(0)}]
+        reply = self.replies.pop(0)
+        reply = reply if isinstance(reply, dict) else {"text": reply}
+        parts = ([ThinkingPart(reply["reasoning_content"])] if reply.get("reasoning_content") else []) + (
+            [TextPart(reply["text"])] if reply.get("text") else [])
+        return Response(id="r", model=request.model, message=Message(role="assistant", parts=tuple(parts)),
+                        finish_reason="stop", usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2))
+
+
+class _AsyncEngine:
+    def __init__(self, engine):
+        self.engine = engine
+
+    async def complete(self, request):
+        return self.engine.complete(request)
+
+
+def _engine_lm(replies, model="engine-dummy"):
+    """An LM that returns `replies` verbatim: a string is the reply's text, a dict its `text` and
+    `reasoning_content`."""
+    engine = _Engine(list(replies))
+    return dspy.LM(model, engine=engine, async_engine=_AsyncEngine(engine), cache=False)
+
+
+def _reasoning_lm(turns):
+    """Content plus a separate reasoning channel, as an OpenAI-compatible reasoning server sends."""
+    return _engine_lm([{"text": json.dumps(_wire(content)), "reasoning_content": thinking}
+                       for content, thinking in turns], model="reasoning-dummy")
 
 
 def test_a_reply_parsed_only_after_the_brace_wrap_is_marked(tmp_path):
     """The adapter wraps a brace-less reply in braces and parses it, so the run goes on, but the
     reply as written is not valid JSON. The step says so, and so does the record built from it."""
     replies = [
-        '"reasoning": "look", "code": "print(1)"',          # wrapped
-        json.dumps({"reasoning": "count", "code": "print(2)"}),  # parsed as is
+        '"plan": "look", "code": "print(1)"',                # wrapped
+        json.dumps({"plan": "count", "code": "print(2)"}),  # parsed as is
         '"answer": "42"',                                    # wrapped, in the extract call
     ]
-    _configure(_RawLM(replies), max_iterations=2)
+    _configure(_engine_lm(replies), max_iterations=2)
     events, requests = _run(tmp_path, _Plain(interpreter=ScriptedInterpreter(["1", "2"])),
                             {"document": "hello world", "n": 2})
     steps = [e["payload"] for e in events if e["type"] == EVENT_MAIN_STEP]
@@ -355,45 +376,33 @@ def test_a_wrapped_reply_from_the_reasoning_channel_is_marked_and_rendered(tmp_p
     """Content empty, the brace-less turn in `reasoning_content`: the adapter promotes it and wraps
     it. The flag still lands, and the record says its target was rendered, not written."""
     replies = [
-        {"text": None, "reasoning_content": '"reasoning": "look", "code": "print(1)"'},
-        {"text": json.dumps({"reasoning": "count", "code": "print(2)"})},
+        {"text": None, "reasoning_content": '"plan": "look", "code": "print(1)"'},
+        {"text": json.dumps({"plan": "count", "code": "print(2)"})},
         {"text": json.dumps({"answer": "42"})},
     ]
 
-    class _LM(dspy.BaseLM):
-        def __init__(self):
-            super().__init__(model="channel-dummy")
-
-        @with_callbacks
-        def __call__(self, prompt=None, messages=None, **kwargs):
-            return [replies.pop(0)]
-
-        @with_callbacks
-        async def acall(self, prompt=None, messages=None, **kwargs):
-            return [replies.pop(0)]
-
-    _configure(_LM(), max_iterations=2)
+    _configure(_engine_lm(replies), max_iterations=2)
     events, _ = _run(tmp_path, _Plain(interpreter=ScriptedInterpreter(["1", "2"])),
                      {"document": "hello world", "n": 2})
     records = export_sft_turns(group_by_run(events), render="adapter")
     assert [r.get("parse_wrapped") for r in records] == [True, None, None]
     assert records[0]["assistant_source"] == SOURCE_RENDERED
-    assert json.loads(records[0]["assistant"]["content"]) == {"reasoning": "look", "code": "print(1)"}
+    assert json.loads(records[0]["assistant"]["content"]) == {"plan": "look", "code": "print(1)"}
 
 
 def test_concurrent_runs_keep_their_own_wrap_marks(tmp_path):
     """Two runs in one event loop, one wrapping its first turn and the other its second. Each mark
     lands on its own run's step."""
     def plan(wrap_turn):
-        turns = [{"reasoning": f"t{i}", "code": f"print({i})"} for i in range(2)]
+        turns = [{"plan": f"t{i}", "code": f"print({i})"} for i in range(2)]
         out = [json.dumps(t) if i != wrap_turn else json.dumps(t)[1:-1] for i, t in enumerate(turns)]
         return out + [json.dumps({"answer": "42"})]
 
-    _configure(_RawLM([]), max_iterations=2)
+    _configure(_engine_lm([]), max_iterations=2)
 
     async def one(name, wrap_turn):
         path = str(tmp_path / f"{name}.jsonl")
-        with TraceRecorder(path, run_id=name), dspy.context(lm=_RawLM(plan(wrap_turn))):
+        with TraceRecorder(path, run_id=name), dspy.context(lm=_engine_lm(plan(wrap_turn))):
             await _Plain(interpreter=ScriptedInterpreter(["1", "2"])).arun(document="d", n=1)
         return [e["payload"].get("parse_wrapped") for e in load_events(path)
                 if e["type"] == EVENT_MAIN_STEP]
@@ -405,7 +414,7 @@ def test_concurrent_runs_keep_their_own_wrap_marks(tmp_path):
 
 
 def test_reasoning_content_is_kept_as_its_own_field(tmp_path):
-    lm = _ReasoningLM([({"reasoning": "r", "code": "print(1)"}, "thinking one"),
+    lm = _reasoning_lm([({"reasoning": "r", "code": "print(1)"}, "thinking one"),
                        ({"answer": "a"}, "thinking two")])
     _configure(lm, max_iterations=1)
     events, requests = _run(tmp_path, _Plain(interpreter=ScriptedInterpreter(["1"])),
@@ -413,7 +422,7 @@ def test_reasoning_content_is_kept_as_its_own_field(tmp_path):
     records = export_sft_turns(group_by_run(events), render="adapter")
     _assert_parity(records, requests)
     assert [r["reasoning_content"] for r in records] == ["thinking one", "thinking two"]
-    assert json.loads(records[0]["assistant"]["content"]) == {"reasoning": "r", "code": "print(1)"}
+    assert json.loads(records[0]["assistant"]["content"]) == _wire({"reasoning": "r", "code": "print(1)"})
 
 
 def test_the_default_export_is_unchanged_and_old_traces_are_skipped_loudly(tmp_path, caplog):
@@ -563,17 +572,16 @@ def test_an_empty_completion_is_never_the_training_target(tmp_path):
     """A reasoning server that puts the whole turn in `reasoning_content` and returns content ""
     is parsed by the kit's adapter from the reasoning channel. An assistant target of "" would teach
     an empty reply, so the record falls back to the rendered outputs and says so."""
-    lm = _ReasoningLM([])
-    lm.turns = [({"reasoning": "r", "code": "print(1)"}, None), ({"answer": "a"}, None)]
-    lm._next = lambda: [{"text": "", "reasoning_content": json.dumps(lm.turns.pop(0)[0])}]
+    lm = _engine_lm([{"text": "", "reasoning_content": json.dumps(_wire(turn))}
+                     for turn in ({"reasoning": "r", "code": "print(1)"}, {"answer": "a"})])
     _configure(lm, max_iterations=1)
     events, requests = _run(tmp_path, _Plain(interpreter=ScriptedInterpreter(["1"])),
                             {"document": "d", "n": 1})
     records = export_sft_turns(group_by_run(events), render="adapter")
     _assert_parity(records, requests)
     assert [r["assistant_source"] for r in records] == [SOURCE_RENDERED, SOURCE_RENDERED]
-    assert json.loads(records[0]["assistant"]["content"]) == {"reasoning": "r", "code": "print(1)"}
-    assert json.loads(records[0]["reasoning_content"]) == {"reasoning": "r", "code": "print(1)"}
+    assert json.loads(records[0]["assistant"]["content"]) == _wire({"reasoning": "r", "code": "print(1)"})
+    assert json.loads(records[0]["reasoning_content"]) == _wire({"reasoning": "r", "code": "print(1)"})
 
 
 def test_demos_are_written_once_not_on_every_step(tmp_path):
@@ -688,3 +696,21 @@ def test_one_unhashable_input_loses_only_its_own_digest():
         got = _inputs_sha256({"bad": {1: "a", "b": 2}, "staged": staged, "plain": plain})
     assert "bad" not in got
     assert got["staged"] == got["plain"]
+
+
+def test_the_planner_input_and_reasoning_types_round_trip():
+    """dspy 3.5's action signature carries a `dspy.History` input and a `dspy.Reasoning` output; both
+    are recorded by kind and rebuilt as the same types, so the adapter formats them the same way."""
+    from rlm_harness.prompt_record import describe_type, rebuild_signature
+
+    assert describe_type(dspy.History)["kind"] == "history"
+    assert describe_type(dspy.Reasoning)["kind"] == "reasoning"
+    sig = dspy.Signature({"history": (dspy.History, dspy.InputField()),
+                          "plan": (dspy.Reasoning, dspy.OutputField())}, "x")
+    sig = sig.with_updated_fields("plan", __dspy_reasoning_field="reasoning")
+    from rlm_harness.prompt_record import describe_signature
+
+    rebuilt = rebuild_signature(describe_signature(sig))
+    assert rebuilt.fields["history"].annotation is dspy.History
+    assert rebuilt.fields["plan"].annotation is dspy.Reasoning
+    assert rebuilt.fields["plan"].json_schema_extra["__dspy_reasoning_field"] == "reasoning"

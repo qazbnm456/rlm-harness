@@ -38,7 +38,8 @@ class FakeOpenAIServer:
     """A local OpenAI-compatible Chat Completions server, for tests of what the kit puts on the wire.
 
     Records every request as ``{"path", "body"}`` in ``requests``. Answers each with the next entry of
-    ``script`` (a message dict, or a callable taking the request body and returning one), and once the
+    ``script`` (a message dict with a ``role``; a dict of field values, written the way the request's
+    adapter expects; or a callable taking the request body and returning a message), and once the
     script is spent with :meth:`answer`, which fills the fields the request asks for: the planner's
     ``plan`` and ``code``, or the task's ``answer``, in the format the adapter expects. Setting
     ``reasoning_only`` puts that answer in ``reasoning_content`` and sends no content, as a reasoning
@@ -87,7 +88,9 @@ class FakeOpenAIServer:
     def _next(self, body: dict) -> dict:
         if self.script:
             step = self.script.pop(0)
-            return step(body) if callable(step) else step
+            if callable(step):
+                return step(body)
+            return step if "role" in step else self.answer(body, step)
         return self.answer(body)
 
     @staticmethod
@@ -100,10 +103,10 @@ class FakeOpenAIServer:
         planner = "[[ ## code ## ]]" in system or "<code>" in system
         return list(FakeOpenAIServer.PLANNER if planner else FakeOpenAIServer.EXTRACT)
 
-    def answer(self, body: dict) -> dict:
+    def answer(self, body: dict, values: dict | None = None) -> dict:
         import json
 
-        values = {**self.PLANNER, **self.EXTRACT}
+        values = values if values is not None else {**self.PLANNER, **self.EXTRACT}
         fields = {name: values.get(name, "x") for name in self.asked_fields(body)}
         system = body["messages"][0]["content"] if body["messages"][0]["role"] == "system" else ""
         if body.get("response_format"):

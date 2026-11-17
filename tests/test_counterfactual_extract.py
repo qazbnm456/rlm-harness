@@ -18,7 +18,6 @@ from pydantic import BaseModel
 dspy = pytest.importorskip("dspy")
 
 from dspy.utils.callback import BaseCallback
-from dspy.utils.dummies import DummyLM
 
 import rlm_harness
 import rlm_harness.runtime as rt
@@ -31,7 +30,7 @@ from rlm_harness.prompt_record import (
     TARGET_RESULT,
     messages_sha256,
 )
-from rlm_harness.testing import ScriptedInterpreter, submit
+from rlm_harness.testing import ScriptedInterpreter, scripted_lm, submit
 from rlm_harness.trace import EVENT_EXTRACT, EVENT_FINAL, TraceRecorder, group_by_run, load_events
 
 
@@ -40,7 +39,14 @@ class _Sent(BaseCallback):
         self.requests: list[list[dict]] = []
 
     def on_lm_start(self, call_id, instance, inputs):
-        self.requests.append(json.loads(json.dumps(inputs.get("messages"))))
+        # The Request the LM was called with, written as Chat Completions messages by dspy's own
+        # SDK-boundary writer: what an OpenAI-compatible server receives.
+        from dspy.clients.lm15_boundary import request_kwargs
+
+        request = inputs.get("prompt")
+        if not isinstance(request, dspy.lm15.Request):
+            return
+        self.requests.append(json.loads(json.dumps(request_kwargs(request, "chat")["messages"])))
 
 
 class _Plain(RLMTask):
@@ -70,8 +76,8 @@ _INPUTS = {"document": "hello world", "n": 2}
 
 def _run(tmp_path, name, task_cls, lm_turns, outputs, *, adapter="json", max_iterations,
          max_retries=1, inputs=_INPUTS):
-    lm = DummyLM(list(lm_turns),
-                 adapter=dspy.JSONAdapter() if adapter == "json" else dspy.ChatAdapter())
+    lm = scripted_lm(lm_turns,
+                     adapter=dspy.JSONAdapter() if adapter == "json" else dspy.ChatAdapter())
     rt.configure(
         RLMConfig(main_model="x", sub_model="x", interpreter="mock", observe=False,
                   adapter=adapter, max_iterations=max_iterations, max_retries=max_retries),

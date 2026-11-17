@@ -143,3 +143,23 @@ def test_dspys_own_setup_executions_consume_no_step_and_stay_out_of_calls(tmp_pa
         )
     else:
         assert si.facade_installs == 0
+
+
+@pytest.mark.parametrize("key", ["plan", "reasoning"])
+def test_a_scripted_planner_turn_may_name_its_reasoning_plan_or_reasoning(key):
+    """Either spelling goes out under the wire name the planner parses, and the trajectory keeps it
+    as the turn's reasoning. Any answer without `code` is used as written."""
+    from rlm_harness import _dspy_compat
+
+    _configure([{key: "submit the answer", "code": "SUBMIT(answer={'x': 5})"}])
+
+    class T(RLMTask):
+        signature = "q: str -> answer: _Out"
+        output_field = "answer"
+        output_model = _Out
+
+    assert T(interpreter=ScriptedInterpreter([submit({"answer": {"x": 5}})])).run(q="go") == _Out(x=5)
+    wire = _dspy_compat.action_reasoning_wire_name()
+    assert _dspy_compat.action_turn_on_the_wire({key: "r", "code": "c"}) == {wire: "r", "code": "c"}
+    assert _dspy_compat.action_turn_on_the_wire({"reasoning": "r", "answer": "a"}) == {
+        "reasoning": "r", "answer": "a"}

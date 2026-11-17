@@ -1314,7 +1314,7 @@ def test_rlm_predictor_roles_finds_the_action_and_extract_predictors():
     roles = _dspy_compat.rlm_predictor_roles(_built_rlm())
     assert set(roles) == {"action", "extract"}
     action, extract = roles["action"].signature, roles["extract"].signature
-    assert list(action.input_fields) == ["variables_info", "repl_history", "iteration"]
+    assert list(action.input_fields) == ["history", "variables_info", "iteration"]
     assert list(action.output_fields) == ["reasoning", "code"]
     assert list(extract.input_fields) == ["variables_info", "repl_history"]
     assert list(extract.output_fields) == ["answer"]

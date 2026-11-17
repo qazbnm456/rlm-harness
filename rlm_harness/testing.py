@@ -347,15 +347,24 @@ def call(tool_name: str, **kwargs: Any) -> Callable[[dict, dict], str]:
     return _step
 
 
-def scripted_lm(turns: Sequence[dict]) -> Any:
-    """A ``DummyLM`` whose canned ``{"reasoning", "code"}`` turns parse under the kit's JSON adapter:
-    the planner side of an offline scripted forward run. One turn is consumed per RLM iteration, so
-    provide at least as many turns as ``ScriptedInterpreter`` steps up to (and including) the SUBMIT.
+def scripted_lm(turns: Sequence[dict], *, adapter: Any = None) -> Any:
+    """A ``DummyLM`` whose canned turns parse under the kit's adapters: the planner side of an offline
+    scripted forward run. One turn is consumed per RLM iteration, so provide at least as many turns as
+    ``ScriptedInterpreter`` steps up to (and including) the SUBMIT.
+
+    A planner turn is ``{"plan": ..., "code": ...}``; ``{"reasoning": ..., "code": ...}`` means the
+    same. Either key goes out under the name dspy's planner reads it as (``plan``), so a turn needs no
+    change when that name does. Any other answer (an extract's output fields, a sub-LM reply) is used
+    as written.
 
     The ``code`` string is what lands in the recorded trajectory (a ``main_step``); it should MATCH what
     the paired interpreter step does, since the scripted interpreter runs the step, not the code.
+    ``adapter`` is the format the answers are written in: the kit's JSON one unless given.
     """
     import dspy
     from dspy.utils.dummies import DummyLM
 
-    return DummyLM(list(turns), adapter=dspy.JSONAdapter())
+    from . import _dspy_compat
+
+    answers = [_dspy_compat.action_turn_on_the_wire(t) for t in turns]
+    return DummyLM(answers, adapter=adapter if adapter is not None else dspy.JSONAdapter())

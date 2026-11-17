@@ -15,17 +15,15 @@ import pytest
 
 pytest.importorskip("dspy")
 
-import dspy
-from dspy.utils.dummies import DummyLM
 
 from rlm_harness import RLMConfig, RLMTask, configure
-from rlm_harness.testing import ScriptedInterpreter
+from rlm_harness.testing import ScriptedInterpreter, scripted_lm
 
 
 @pytest.fixture(autouse=True)
 def _configured():
     configure(RLMConfig(main_model="d/m", sub_model="d/s"),
-              main_lm=DummyLM([{"reasoning": "x", "code": "y"}], adapter=dspy.JSONAdapter()))
+              main_lm=scripted_lm([{"reasoning": "x", "code": "y"}]))
 
 
 def _tool(name):

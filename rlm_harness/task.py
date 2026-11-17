@@ -81,21 +81,21 @@ class _MainStepTimer(BaseCallback):  # type: ignore[misc, valid-type]
     backfill main_step ts. dspy.RLM only exposes its trajectory post-hoc (on the final ``Prediction``),
     so without this the recorder stamps every main_step at finalize time.
 
-    A ROOT-planner turn is the only adapter parse carrying BOTH ``reasoning`` and ``code`` (a lifeline
-    parse lacks ``code``; the extract-fallback parse carries the output fields, not these): the same
-    filter a streaming consumer's callback uses. Holds a DIRECT recorder reference (not the
+    A ROOT-planner turn is the only adapter parse carrying ``code`` and the planner's reasoning field,
+    under the name the adapter parsed it as: ``plan`` on the wire, ``reasoning`` where dspy handles it
+    natively (a lifeline parse lacks ``code``; the extract-fallback parse carries the output fields,
+    not these): the same filter a streaming consumer's callback uses. Holds a DIRECT recorder reference (not the
     contextvar) so it works regardless of which thread dspy parses on; the recorder's note_main_step
     is itself thread-safe.
 
     **Stages the OUTERMOST parse only, and that is load-bearing.** ``Adapter.__init_subclass__``
-    re-wraps ``format`` and ``parse`` with ``with_callbacks`` for EVERY subclass: unconditionally,
-    whether or not that subclass redefines them, so each subclass level adds a callback fire that
-    a ``super().parse(...)`` call then traverses. Measured, one root turn:
+    wraps ``parse`` with ``with_callbacks`` for each subclass that defines it, so each
+    ``super().parse(...)`` in an adapter hierarchy adds a callback fire. Measured, one root turn:
 
         stock ``JSONAdapter``                     1 fire
         ``runtime._LenientJSONAdapter`` (DEFAULT) 2   (it calls ``super().parse``)
-        a consumer subclass overriding NOTHING    3
-        ...that also calls ``super().parse``      4
+        a consumer subclass overriding NOTHING    2
+        ...one that also calls ``super().parse``  3
 
     So this is not a fixed double to divide by two: the depth is a property of the caller's adapter
     hierarchy, which is why the fix counts nesting rather than assuming a count. A consumer
@@ -131,8 +131,12 @@ class _MainStepTimer(BaseCallback):  # type: ignore[misc, valid-type]
         self._depth.n = max(0, depth - 1)
         if depth > 1:
             return  # a nested parse (the kit's own adapter calling super()): the outer one stages
-        if isinstance(outputs, dict) and "reasoning" in outputs and "code" in outputs:
-            self._recorder.note_main_step(outputs.get("reasoning"))
+        if not isinstance(outputs, dict) or "code" not in outputs:
+            return
+        for name in (_dspy_compat.action_reasoning_wire_name(), "reasoning"):
+            if name in outputs:
+                self._recorder.note_main_step(outputs.get(name))
+                return
 
 
 def _bind_format_inputs(inputs: Any) -> tuple[Any, Any, Any] | None:
@@ -173,8 +177,8 @@ class _StepCapture(BaseCallback):  # type: ignore[misc, valid-type]
 
     Per call it keeps the signature, demos, adapter and input values given to the window's last
     format (a ChatAdapter that falls back to JSON formats twice, and the second is the one answered),
-    the sha256 of the messages that format produced, the first LM output's raw content and
-    ``reasoning_content``, the parsed outputs, the usage the tracker gained during the window, and
+    the sha256 of the OpenAI-style messages of the ``Prompt`` that format produced, the reply's text
+    and reasoning channel as the engine returned them, the parsed outputs, the usage the tracker gained during the window, and
     whether ``_LenientJSONAdapter.parse`` needed its brace-wrap retry to parse the reply.
     :func:`_compose_capture` turns these into JSON once, for the attempt that reaches the trace.
     """
@@ -209,28 +213,29 @@ class _StepCapture(BaseCallback):  # type: ignore[misc, valid-type]
         bound = _bind_format_inputs(inputs)
         if bound is not None:
             self._open["format"] = (instance, *bound)
+            # Counted now: dspy keeps appending to the same `dspy.History` object after this call.
+            self._open["history_events"] = _dspy_compat.repl_events_in(bound[2].get("history"))
 
     def on_adapter_format_end(self, call_id, outputs, exception=None):
-        if self._open is None or exception is not None or not isinstance(outputs, list):
+        if self._open is None or exception is not None:
+            return
+        messages = _dspy_compat.prompt_messages(outputs)
+        if messages is None:
             return
         from .prompt_record import messages_sha256
 
-        self._open["messages_sha256"] = messages_sha256(outputs)
+        self._open["messages_sha256"] = messages_sha256(messages)
 
     def on_lm_end(self, call_id, outputs, exception=None):
         if self._open is None or exception is not None:
             return
-        first = outputs[0] if isinstance(outputs, list) and outputs else None
-        if isinstance(first, dict):
-            text = first.get("text")
-            self._open["completion"] = text if isinstance(text, str) or text is None else str(text)
-            reasoning = first.get("reasoning_content")
-            if reasoning is not None:
-                self._open["reasoning_content"] = str(reasoning)
-            else:
-                self._open.pop("reasoning_content", None)
-        elif isinstance(first, str):
-            self._open["completion"] = str(first)
+        reply = _dspy_compat.lm_reply(outputs)
+        if reply is None:
+            return
+        self._open["completion"], reasoning = reply
+        if reasoning is not None:
+            self._open["reasoning_content"] = reasoning
+        else:
             self._open.pop("reasoning_content", None)
 
     def on_module_end(self, call_id, outputs, exception=None):
@@ -316,8 +321,15 @@ def _compose_capture(
     if not calls:
         return None
     predictors: dict[str, Any] = {}
+    # The signature as `Adapter.format` received it, which is what a render must format with: the
+    # adapter's preprocessing renames the planner's reasoning field to its wire name. A predictor
+    # whose call was not captured falls back to its declared signature.
+    formatted = {}
+    for c in calls:
+        if "format" in c:
+            formatted.setdefault(c["role"], c["format"][1])
     for role, predictor in _dspy_compat.rlm_predictor_roles(rlm).items():
-        spec = describe_signature(predictor.signature)
+        spec = describe_signature(formatted.get(role, predictor.signature))
         demos = _demos_as_json(getattr(predictor, "demos", None) or [])
         if demos:
             spec["demos"] = demos
@@ -326,7 +338,8 @@ def _compose_capture(
 
     first_fmt = next((c["format"] for c in calls if "format" in c), None)
     first_values = first_fmt[3] if first_fmt else {}
-    first_history = first_values.get("repl_history")
+    first_history = next((c["format"][3].get("repl_history") for c in calls
+                          if "format" in c and c["format"][3].get("repl_history") is not None), None)
     budgets = _dspy_compat.rlm_budget_values(rlm)
     adapter = first_fmt[0] if first_fmt else dspy.settings.adapter
     setup: dict[str, Any] = {
@@ -380,10 +393,14 @@ def _compose_capture(
             for key, value in ident.items():
                 if value != setup.get(key):
                     out[key] = value
+            # Earlier REPL turns this call was shown: the events of the action's `dspy.History`, the
+            # entries of the extract's `REPLHistory`.
             history = values.get("repl_history")
-            out["history_len"] = len(history) if history is not None else 0
             if role == ROLE_ACTION:
+                out["history_len"] = call.get("history_events") or 0
                 out["iteration"] = values.get("iteration")
+            else:
+                out["history_len"] = len(history) if history is not None else 0
             variables = list(values.get("variables_info") or [])
             if variables != setup["variables_info"]:
                 out["variables_info"] = variables
@@ -426,6 +443,10 @@ def _compose_capture(
         code = getattr(call["prediction"], "code", None)
         if isinstance(code, str) and code != entry.get("code"):
             fields["code_raw"] = code   # as the model wrote it; the turn's `code` is fence-stripped
+        # The cap dspy applied to this turn's output when later turns were shown it.
+        chars = entry.get("max_output_chars")
+        if isinstance(chars, int) and chars != setup["max_output_chars"]:
+            fields["max_output_chars"] = chars
         steps.append(fields)
 
     extract_call = next((c for c in calls if c["role"] == ROLE_EXTRACT), None)
@@ -1226,6 +1247,12 @@ class RLMTask:
         # dspy a `LargeText` it would try to serialise.
         from .large_text import stage_inputs
 
+        refused = {k: why for k, why in _dspy_compat.RLM_RUNTIME_OPTIONS_REFUSED.items() if k in inputs}
+        if refused:
+            raise ValueError(
+                "RLMTask does not pass these dspy.RLM options: "
+                + "; ".join(f"{k!r}: {why}" for k, why in refused.items())
+            )
         # Hashed before staging, because staging replaces a `LargeText` with its sandbox path and
         # the digest must be of the text. A value that cannot be hashed loses its digest, not the run.
         bound_digests: dict[str, str] | None = None

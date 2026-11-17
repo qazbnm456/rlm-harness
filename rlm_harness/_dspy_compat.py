@@ -1399,3 +1399,139 @@ def reset_interpreter_session(interp: Any) -> None:
     for name, value in _INTERPRETER_SESSION_FIELDS:
         setattr(interp, name, value)
     interp._pending_large_vars = {}
+
+
+# ---- What an RLM planner call is shown and returns (capture and render) -----------------------
+
+
+@lru_cache(maxsize=1)
+def action_reasoning_wire_name() -> str:
+    """The name the planner's reasoning field goes out under when dspy does not handle it natively.
+
+    dspy's RLM declares its action output ``reasoning: dspy.Reasoning`` and, outside native mode,
+    renames it on the wire to the fallback stored on the field (``plan`` on 3.5) so a model reads an
+    explicit plan field. Read off a real RLM's action signature, not written down.
+    """
+    import dspy
+    from dspy.adapters.types.reasoning import Reasoning
+
+    signature = rlm_predictor_roles(dspy.RLM("q -> a"))["action"].signature
+    name = next(n for n, f in signature.output_fields.items() if f.annotation is Reasoning)
+    return Reasoning._fallback_field_name(signature, name)
+
+
+def action_turn_on_the_wire(turn: Mapping[str, Any]) -> dict[str, Any]:
+    """A scripted planner turn with its reasoning under the name the wire uses.
+
+    A turn is a planner turn when it carries ``code``; its ``reasoning`` or ``plan`` key is renamed
+    to :func:`action_reasoning_wire_name`. Any other answer (an extract's output fields, a sub-LM
+    reply) is returned unchanged.
+    """
+    turn = dict(turn)
+    if "code" not in turn:
+        return turn
+    wire = action_reasoning_wire_name()
+    for name in ("reasoning", "plan"):
+        if name in turn and name != wire:
+            turn = {(wire if k == name else k): v for k, v in turn.items()}
+            break
+    return turn
+
+
+def prompt_messages(prompt: Any) -> list[dict[str, Any]] | None:
+    """The OpenAI-style chat messages for what ``Adapter.format`` returned, or ``None``.
+
+    dspy 3.5's ``format`` returns a ``Prompt`` (system text plus lm15 messages); its own
+    ``prompt_to_openai_messages`` writes it the way the Chat Completions wire carries it. The capture
+    hashes this and the render compares with it, so both sides use the one writer.
+    """
+    from dspy.adapters.base import Prompt, prompt_to_openai_messages
+
+    if isinstance(prompt, Prompt):
+        return prompt_to_openai_messages(prompt)
+    if isinstance(prompt, list):
+        return prompt
+    return None
+
+
+def lm_reply(outputs: Any) -> tuple[str | None, str | None] | None:
+    """``(completion, reasoning_content)`` from what an LM call returned, or ``None`` if unreadable.
+
+    A call through an adapter returns an lm15 ``Response``: the completion is its visible text (dspy's
+    ``response_text``) and the reasoning its thinking parts. A string call returns dspy's list of
+    ``{"text", "reasoning_content"}`` dicts or strings, read from its first element.
+    """
+    from dspy.lm15 import Response, ThinkingPart
+
+    if isinstance(outputs, Response):
+        from dspy.clients.call_result import response_text
+
+        thinking = "".join(p.text for p in outputs.message.parts if isinstance(p, ThinkingPart))
+        return response_text(outputs), thinking or None
+    first = outputs[0] if isinstance(outputs, list) and outputs else None
+    if isinstance(first, dict):
+        text = first.get("text")
+        reasoning = first.get("reasoning_content")
+        return (text if isinstance(text, str) or text is None else str(text),
+                None if reasoning is None else str(reasoning))
+    if isinstance(first, str):
+        return first, None
+    return None
+
+
+def repl_events_in(history: Any) -> int | None:
+    """How many earlier REPL turns a planner call's ``history`` input holds, or ``None``.
+
+    dspy 3.5 hands the action predictor a ``dspy.History`` with one event per earlier iteration; a
+    message that is not an RLM event (a caller's own history) is not a turn.
+    """
+    from dspy.primitives.repl_types import is_repl_event
+
+    messages = getattr(history, "messages", None)
+    if not isinstance(messages, list):
+        return None
+    return sum(1 for m in messages if isinstance(m, dict) and is_repl_event(m))
+
+
+def repl_entry(turn: Mapping[str, Any], max_output_chars: int) -> Any:
+    """dspy's ``REPLEntry`` for one recorded turn (its reasoning, the code that ran, its output)."""
+    from dspy.primitives.repl_types import REPLEntry
+
+    return REPLEntry(reasoning=turn.get("reasoning") or "", code=turn.get("code") or "",
+                     output=turn.get("output") or "", max_output_chars=max_output_chars)
+
+
+def action_history(turns: list[Mapping[str, Any]], variables_info: list[str], max_iters: int,
+                   max_output_chars: list[int]) -> Any:
+    """The ``dspy.History`` dspy's RLM hands its action predictor after ``turns``.
+
+    One ``build_repl_event`` per earlier turn, as ``RLM._repl_entry_event`` builds it, carrying the
+    ``variables_info`` and ``iteration`` label that turn was shown. The task's own inputs, which dspy
+    adds to the first event for callers and history processors, are left out: no adapter renders them.
+    """
+    import dspy
+    from dspy.primitives.repl_types import build_repl_event
+
+    events = [
+        build_repl_event({"variables_info": list(variables_info), "iteration": f"{j + 1}/{max_iters}"},
+                         repl_entry(turn, chars))
+        for j, (turn, chars) in enumerate(zip(turns, max_output_chars, strict=True))
+    ]
+    return dspy.History(messages=events)
+
+
+def extract_history(turns: list[Mapping[str, Any]], max_output_chars: list[int], default: int) -> Any:
+    """The ``REPLHistory`` dspy's RLM hands its extract fallback after ``turns``."""
+    from dspy.primitives.repl_types import REPLHistory
+
+    entries = [repl_entry(turn, chars) for turn, chars in zip(turns, max_output_chars, strict=True)]
+    return REPLHistory(entries=entries, max_output_chars=default)
+
+
+#: Options ``dspy.RLM`` takes per call beside the task's inputs that the kit refuses, each with why.
+#: A history processor rewrites the planner's history before every turn, and the trace rebuilds the
+#: history from the recorded turns, so a processed history would not match what was sent.
+RLM_RUNTIME_OPTIONS_REFUSED: dict[str, str] = {
+    "history_processor": "it rewrites the planner's history before each turn, and the trace rebuilds "
+                         "that history from the recorded turns, so the requests would not verify",
+}

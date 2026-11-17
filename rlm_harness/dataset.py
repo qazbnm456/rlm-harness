@@ -317,9 +317,9 @@ def export_sft_turns(
 
     **Default (``render=None``): format-agnostic, unchanged since before 1.25.0.** Each record is
     ``{run_id, turn, input: {initial, history}, output: {reasoning, code}}``. The trainer renders
-    ``initial + history`` into its chat template and masks the loss to ``output``. dspy does not send a
-    turn as a multi-turn chat, though: each turn is one single-turn request, so a template the trainer
-    chooses differs from the format the model is served.
+    ``initial + history`` into its chat template and masks the loss to ``output``. That template is the
+    trainer's choice, so it differs from the format the model is served; ``render="adapter"`` gives the
+    served one.
 
     **``render="adapter"`` (1.25.0): the request the run's adapter actually sent.** One record per
     planner call, ``generate_action`` turns and the ``extract`` fallback alike, rendered by dspy's own
@@ -327,7 +327,7 @@ def export_sft_turns(
     per-call fields on ``main_step`` and ``extract``)::
 
         {run_id, kind: "action" | "extract", turn, adapter,
-         messages: [{role: "system", ...}, {role: "user", ...}],   # the request, as sent
+         messages: [{role: "system", ...}, {role: "user", ...}, ...],   # the request, as sent
          assistant: {role: "assistant", content},
          assistant_source: "completion" | "rendered",
          verified: True | False | None,
@@ -339,6 +339,15 @@ def export_sft_turns(
     field order, since dspy's ``JSONAdapter.format_finetune_data`` is unimplemented.
     ``reasoning_content``, the provider's separate reasoning channel, stays beside the message. An
     extract record's ``turn`` is the number of REPL entries it saw.
+
+    ``messages`` are OpenAI-style dicts. An action call is a multi-turn chat: the system message, then
+    three messages per earlier turn (the user message it was shown, its reply, and a user message with
+    its REPL output), then the current turn's user message. An extract call
+    is a system and a user message. The hash covers these messages as the adapter's ``Prompt`` writes
+    them, which on the Chat Completions route is the request body's ``messages``; a route that rewrites
+    them (``use_developer_role``, the Responses API) changes the wire and not the hash. A trajectory
+    recorded by rlm-harness 1.26 or earlier (on dspy 3.4) is not rendered: it is counted in a warning
+    that names 1.26.x as the version to export it with.
 
     ``verified`` compares the re-rendered ``messages`` with the sha256 of what was sent. ``False``
     means the record is not the request the model saw: a wrong ``custom_types`` or ``adapter``, a
@@ -384,13 +393,15 @@ def export_sft_turns(
 def _export_rendered_turns(
     runs: dict[str, list[dict]], *, custom_types: dict[str, Any] | None, adapter: Any, strict: bool,
 ) -> list[dict]:
-    from .prompt_record import RenderError, render_steps
+    from .prompt_record import RenderError, legacy_layout_calls, render_steps
 
     records: list[dict] = []
     skipped = 0
+    legacy = 0
     for run_id, events in runs.items():
         rendered, missing = render_steps(events, custom_types=custom_types, adapter=adapter)
         skipped += missing
+        legacy += legacy_layout_calls(events)
         for rec in rendered:
             if strict and rec["verified"] is False:
                 raise RenderError(
@@ -406,7 +417,18 @@ def _export_rendered_turns(
             "turns the capture could not match to their call",
             skipped,
         )
+    _warn_legacy_layout("export_sft_turns(render='adapter')", legacy)
     return records
+
+
+def _warn_legacy_layout(caller: str, count: int) -> None:
+    if count:
+        logger.warning(
+            "%s skipped %d call(s) recorded by rlm-harness 1.26 or earlier on dspy 3.4, whose "
+            "planner request this version cannot re-render. Export them with rlm-harness 1.26.x; "
+            "render=None still reads them.",
+            caller, count,
+        )
 
 
 def export_counterfactual_extracts(
@@ -457,14 +479,16 @@ def export_counterfactual_extracts(
     an empty history. A run that ended by extract, failed, or predates ``rlm_setup`` (1.25.0)
     contributes nothing and is not counted. This function imports dspy.
     """
-    from .prompt_record import render_counterfactual_extracts
+    from .prompt_record import legacy_layout_calls, render_counterfactual_extracts
 
     records: list[dict] = []
     skipped = 0
+    legacy = 0
     for run_id, events in runs.items():
         rendered, missing = render_counterfactual_extracts(
             events, cut_back=cut_back, custom_types=custom_types, adapter=adapter)
         skipped += missing
+        legacy += legacy_layout_calls(events)
         records.extend({"run_id": run_id, **rec} for rec in rendered)
     if skipped:
         logger.warning(
@@ -472,6 +496,7 @@ def export_counterfactual_extracts(
             "read back from the trace, or a cut that left no history",
             skipped,
         )
+    _warn_legacy_layout("export_counterfactual_extracts", legacy)
     return records
 
 

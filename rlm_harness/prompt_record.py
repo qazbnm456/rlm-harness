@@ -1,13 +1,15 @@
 """Record what each planner call was shown, so the request can be rendered again byte for byte.
 
-``dspy.RLM`` drives two predictors: ``generate_action``, once per iteration, returning ``{reasoning,
-code}``, and ``extract``, once when the iteration budget runs out, returning the task's output fields.
-The run's adapter formats each call as one single-turn request from the predictor's signature, its
-demos and the call's input values. The kit records those inputs rather than the rendered messages:
-the signature once per trajectory in ``rlm_setup`` (:func:`describe_signature`), and per call only
-what varies plus the sha256 of the messages actually sent (:func:`messages_sha256`). The REPL history
-is the trajectory's own earlier ``main_step`` entries, so it is rebuilt at render time instead of
-stored, which keeps a trace linear in its turn count.
+``dspy.RLM`` drives two predictors: ``generate_action``, once per iteration, returning its reasoning
+(sent as ``plan``) and ``code``, and ``extract``, once when the iteration budget runs out, returning
+the task's output fields. The run's adapter formats each call from the predictor's signature, its
+demos and the call's input values: an action call as a multi-turn chat with one exchange per earlier
+turn (dspy hands it a ``dspy.History``), an extract call as a system and a user message holding a
+``REPLHistory``. The kit records those inputs rather than the rendered messages: the signature as the
+adapter received it once per trajectory in ``rlm_setup`` (:func:`describe_signature`), and per call
+only what varies plus the sha256 of the OpenAI-style messages of what the adapter produced
+(:func:`messages_sha256`). The earlier turns are the trajectory's own ``main_step`` entries, so they
+are rebuilt at render time instead of stored, which keeps a trace linear in its turn count.
 
 :func:`render_steps` rebuilds each request with dspy's own ``Adapter.format`` and compares it with the
 recorded hash, so every exported record says whether it is the request that was sent. A field type is
@@ -117,6 +119,7 @@ def describe_type(annotation: Any) -> dict[str, Any]:
     otherwise ``pydantic.TypeAdapter(t).json_schema()``. Those are recorded, and :func:`_rebuild_type`
     builds a type that answers each of them the same way.
     """
+    import dspy
     import pydantic
     from dspy.adapters.utils import get_annotation_name
     from dspy.primitives.repl_types import REPLHistory
@@ -126,6 +129,10 @@ def describe_type(annotation: Any) -> dict[str, Any]:
         out["kind"] = "builtin"
     elif annotation is REPLHistory:
         out["kind"] = "repl_history"
+    elif annotation is dspy.History:
+        out["kind"] = "history"
+    elif annotation is dspy.Reasoning:
+        out["kind"] = "reasoning"
     elif getattr(annotation, "__origin__", None) is _literal():
         out["kind"] = "literal"
         out["args"] = _json_safe(list(annotation.__args__))
@@ -237,6 +244,7 @@ def _schema_standin(name: str, schema: dict) -> type:
 def _rebuild_type(field: Mapping[str, Any], custom_types: Mapping[str, Any]) -> Any:
     from typing import Literal
 
+    import dspy
     from dspy.primitives.repl_types import REPLHistory
 
     name = field.get("type")
@@ -247,6 +255,10 @@ def _rebuild_type(field: Mapping[str, Any], custom_types: Mapping[str, Any]) -> 
         return {"str": str, "int": int, "float": float, "bool": bool}[name]
     if kind == "repl_history":
         return REPLHistory
+    if kind == "history":
+        return dspy.History
+    if kind == "reasoning":
+        return dspy.Reasoning
     if kind == "literal":
         return Literal[tuple(field.get("args") or ())]
     if kind == "enum":
@@ -265,14 +277,22 @@ def rebuild_signature(spec: Mapping[str, Any], custom_types: Mapping[str, Any] |
 
     custom_types = custom_types or {}
     fields: dict[str, Any] = {}
+    marks: dict[str, dict[str, Any]] = {}
     for f in spec.get("fields") or []:
         annotation = _rebuild_type(f, custom_types)
         maker = dspy.InputField if f.get("io") == "input" else dspy.OutputField
         # `prefix` stays in the record but is not passed back: dspy 3.4 deprecates it as having no
         # effect and warns on every field. If it ever affects formatting again, `verified` shows it.
         extra = {k: v for k, v in dict(f.get("extra") or {}).items() if k != "prefix"}
+        # dspy's own markers (the planner's `__dspy_reasoning_field`) are set the way dspy sets them,
+        # with `with_updated_fields`; as Field kwargs pydantic deprecates them.
+        marks[f["name"]] = {k: extra.pop(k) for k in list(extra) if k.startswith("__dspy")}
         fields[f["name"]] = (annotation, maker(**extra))
-    return dspy.Signature(fields, spec.get("instructions") or "")
+    signature = dspy.Signature(fields, spec.get("instructions") or "")
+    for name, marked in marks.items():
+        if marked:
+            signature = signature.with_updated_fields(name, **marked)
+    return signature
 
 
 def build_adapter(identity: Mapping[str, Any]) -> Any:
@@ -330,20 +350,37 @@ def _segments(events: Iterable[dict]) -> list[dict]:
     return segments
 
 
-def _history(steps: list[dict], length: int, max_output_chars: int) -> Any:
-    from dspy.primitives.repl_types import REPLEntry, REPLHistory
+def is_legacy_layout(setup: Mapping[str, Any]) -> bool:
+    """Was this trajectory recorded on dspy 3.4 (rlm-harness 1.26 or earlier)?
 
-    ordered = sorted(steps, key=lambda p: p.get("turn", 0))
-    entries = [
-        REPLEntry(reasoning=p.get("reasoning") or "", code=p.get("code") or "",
-                  output=p.get("output") or "")
-        for p in ordered[:length]
-    ]
-    if len(entries) != length:
+    On 3.4 the planner was shown its earlier turns as one ``repl_history`` input and sent one
+    single-turn request; from 3.5 they are a ``dspy.History`` the adapter writes as a multi-turn chat.
+    A recorded action signature with a ``repl_history`` input is the older layout, which this version
+    cannot re-render; rlm-harness 1.26.x exports it.
+    """
+    action = (setup.get("predictors") or {}).get(ROLE_ACTION) or {}
+    return any(f.get("name") == "repl_history" and f.get("io") == "input"
+               for f in action.get("fields") or [])
+
+
+def legacy_layout_calls(events: list[dict]) -> int:
+    """How many recorded planner calls in one run's events are in the older layout (see above)."""
+    return sum(len(seg["steps"]) + (1 if seg["extract"] else 0)
+               for seg in _segments(events) if is_legacy_layout(seg["setup"]))
+
+
+def _earlier_turns(seg: dict, length: int) -> list[dict]:
+    ordered = sorted(seg["steps"], key=lambda p: p.get("turn", 0))[:length]
+    if len(ordered) != length:
         raise RenderError(
-            f"a step saw {length} REPL entries but only {len(entries)} earlier turns were recorded"
+            f"a step saw {length} REPL entries but only {len(ordered)} earlier turns were recorded"
         )
-    return REPLHistory(entries=entries, max_output_chars=max_output_chars)
+    return ordered
+
+
+def _turn_chars(turns: list[dict], setup: dict) -> list[int]:
+    """The output cap each turn was shown under: its own when recorded, else the run's."""
+    return [t.get("max_output_chars", setup.get("max_output_chars")) for t in turns]
 
 
 def render_steps(
@@ -356,8 +393,10 @@ def render_steps(
 
     Returns ``(records, skipped)``: one record per call that has its per-call fields, and the number
     of calls without them, which are ``main_step`` events with no ``rlm_setup`` before them (a trace
-    written before 1.25.0) and turns the capture could not match to their call. A skipped call does
-    not stop the rest of the run or the corpus from exporting. See ``dataset.export_sft_turns``.
+    written before 1.25.0) and turns the capture could not match to their call. Calls recorded in the
+    older layout (:func:`is_legacy_layout`) are neither rendered nor in ``skipped``; count them with
+    :func:`legacy_layout_calls`. A skipped call does not stop the rest of the run or the corpus from
+    exporting. See ``dataset.export_sft_turns``.
     """
     records: list[dict] = []
     covered = 0
@@ -365,6 +404,8 @@ def render_steps(
     for seg in _segments(events):
         setup = seg["setup"]
         covered += len(seg["steps"])
+        if is_legacy_layout(setup):
+            continue
         predictors = setup.get("predictors") or {}
         for role, payload in (
             [(ROLE_ACTION, p) for p in seg["steps"]]
@@ -384,7 +425,12 @@ def _request(role: str, p: dict, seg: dict, predictors: dict, setup: dict,
     """``(signature, adapter, identity, messages)`` for one call, from the recorded fields.
 
     ``p`` holds the per-call fields; whatever it lacks comes from ``setup``, as it was recorded.
+    ``messages`` are the OpenAI-style messages of the ``Prompt`` the adapter formats, the form the
+    capture hashed: a multi-turn chat for an action call (one exchange per earlier turn), a
+    system and a user message for an extract call.
     """
+    from . import _dspy_compat
+
     spec = p.get("signature") or predictors.get(role)
     if spec is None:
         raise RenderError(f"no {role} signature was recorded for this run")
@@ -392,15 +438,35 @@ def _request(role: str, p: dict, seg: dict, predictors: dict, setup: dict,
     identity = {k: p.get(k, setup.get(k)) for k in ("adapter", "adapter_class")}
     fmt = adapter if adapter is not None else build_adapter(identity)
 
-    inputs: dict[str, Any] = {
-        "variables_info": p.get("variables_info", setup.get("variables_info")),
-        "repl_history": _history(seg["steps"], p["history_len"],
-                                 p.get("max_output_chars", setup.get("max_output_chars"))),
-    }
+    variables = p.get("variables_info", setup.get("variables_info"))
+    turns = _earlier_turns(seg, p["history_len"])
+    chars = _turn_chars(turns, setup)
+    inputs: dict[str, Any] = {"variables_info": variables}
     if role == ROLE_ACTION:
+        max_iters = setup.get("max_iterations")
+        if not isinstance(max_iters, int):
+            raise RenderError("rlm_setup records no max_iterations, which labels each earlier turn")
+        inputs["history"] = _dspy_compat.action_history(turns, variables, max_iters, chars)
         inputs["iteration"] = p.get("iteration")
+    else:
+        inputs["repl_history"] = _dspy_compat.extract_history(
+            turns, chars, p.get("max_output_chars", setup.get("max_output_chars")))
     demos = list(p.get("demos", spec.get("demos")) or [])
-    return signature, fmt, identity, fmt.format(signature, demos, inputs)
+    messages = _dspy_compat.prompt_messages(fmt.format(signature, demos, inputs))
+    return signature, fmt, identity, messages
+
+
+def _wire_outputs(signature: Any, values: Mapping[str, Any]) -> dict[str, Any]:
+    """``values`` keyed by the output field names ``signature`` puts on the wire.
+
+    A field the adapter renamed (the planner's ``reasoning``, sent as ``plan``) records its original
+    name in ``__dspy_reasoning_field``; the parsed outputs and the trace use that original name.
+    """
+    out = {}
+    for name, field in signature.output_fields.items():
+        original = (field.json_schema_extra or {}).get("__dspy_reasoning_field") or name
+        out[name] = values.get(original, values.get(name))
+    return out
 
 
 def _render_one(role: str, p: dict, seg: dict, predictors: dict, setup: dict,
@@ -417,17 +483,17 @@ def _render_one(role: str, p: dict, seg: dict, predictors: dict, setup: dict,
         "messages": messages,
         "verified": None if recorded is None else messages_sha256(messages) == recorded,
     }
-    # An empty completion is never the target. A reasoning server can return the whole turn in
-    # `reasoning_content` with content `""` or null, which `_LenientJSONAdapter` parses as the
-    # answer, and a target of `""` would teach the model to reply with nothing.
+    # An empty completion is never the target. A reasoning server can return the whole turn in its
+    # reasoning channel with no content, which `_LenientJSONAdapter` parses as the answer, and a
+    # target of `""` would teach the model to reply with nothing.
     if isinstance(p.get("completion"), str) and p["completion"] != "":
         content, source = p["completion"], SOURCE_COMPLETION
     else:
-        outputs = (
+        values = (
             {"reasoning": p.get("reasoning"), "code": p.get("code_raw", p.get("code"))}
             if role == ROLE_ACTION else dict(p.get("outputs") or {})
         )
-        content = fmt.format_assistant_message_content(signature, outputs)
+        content = fmt.format_assistant_message_content(signature, _wire_outputs(signature, values))
         source = SOURCE_RENDERED
     record["assistant"] = {"role": "assistant", "content": content}
     record["assistant_source"] = source
@@ -543,6 +609,8 @@ def render_counterfactual_extracts(
     skipped = 0
     for seg in _segments(events):
         setup, steps, final = seg["setup"], seg["steps"], seg["final"] or {}
+        if is_legacy_layout(setup):
+            continue   # counted by the caller through `legacy_layout_calls`
         if seg["result"] is None or seg["extract"] is not None or final.get("extract") is not False:
             continue   # the trajectory did not end by SUBMIT, or the run failed
         submitted = _submitted_outputs(seg) if steps else None

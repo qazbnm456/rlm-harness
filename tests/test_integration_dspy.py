@@ -888,17 +888,17 @@ def test_adjacent_duplicate_turns_get_distinct_ts_end_to_end(tmp_path):
 
 
 def test_main_step_timer_stages_once_at_ANY_adapter_nesting_depth():
-    """`Adapter.__init_subclass__` re-wraps `parse` with `with_callbacks` for every subclass,
-    unconditionally, so the fire count is a property of the caller's adapter hierarchy, not a
-    fixed double. A consumer subclassing the kit's adapter and overriding NOTHING already gets
-    three fires. Pinned because a fix that divided by two, or that special-cased the kit's own
-    adapter, would pass every other test in this file and still lose that consumer's stamps."""
+    """`Adapter.__init_subclass__` wraps `parse` with `with_callbacks` for each subclass that defines
+    it, so every `super().parse(...)` in the caller's adapter hierarchy adds a fire: the count is a
+    property of that hierarchy, not a fixed double. Pinned because a fix that divided by two, or that
+    special-cased the kit's own adapter, would pass every other test in this file and still lose a
+    consumer subclass's stamps."""
     import json as _json
 
     from rlm_harness.task import _MainStepTimer
 
     class _ConsumerSubclass(rt._LenientJSONAdapter):
-        """Overrides nothing: the subclassing alone adds a wrapper."""
+        """Overrides nothing: inherits the kit's already-wrapped `parse`."""
 
     class _ConsumerSubclassCallingSuper(_ConsumerSubclass):
         def parse(self, signature, completion):
@@ -910,9 +910,6 @@ def test_main_step_timer_stages_once_at_ANY_adapter_nesting_depth():
         def on_adapter_parse_end(self, call_id, outputs, exception=None):
             type(self).n += 1
 
-    sig = dspy.Signature("q -> reasoning, code")
-    completion = _json.dumps({"reasoning": "R1", "code": "c1"})
-
     class _Rec:
         def __init__(self):
             self.captured: list = []
@@ -923,16 +920,20 @@ def test_main_step_timer_stages_once_at_ANY_adapter_nesting_depth():
     expected_fires = {
         dspy.JSONAdapter: 1,
         rt._LenientJSONAdapter: 2,
-        _ConsumerSubclass: 3,
-        _ConsumerSubclassCallingSuper: 4,
+        _ConsumerSubclass: 2,
+        _ConsumerSubclassCallingSuper: 3,
     }
-    for adapter_cls, fires in expected_fires.items():
-        _CountFires.n = 0
-        rec = _Rec()
-        with dspy.context(callbacks=[_CountFires(), _MainStepTimer(rec)]):
-            adapter_cls().parse(sig, completion)
-        assert _CountFires.n == fires, f"{adapter_cls.__name__} fired {_CountFires.n}, not {fires}"
-        assert rec.captured == ["R1"], f"{adapter_cls.__name__} staged {len(rec.captured)}"
+    # The planner's reasoning parses under its wire name, or as `reasoning` in native mode.
+    for name in (_dspy_compat.action_reasoning_wire_name(), "reasoning"):
+        sig = dspy.Signature(f"q -> {name}, code")
+        completion = _json.dumps({name: "R1", "code": "c1"})
+        for adapter_cls, fires in expected_fires.items():
+            _CountFires.n = 0
+            rec = _Rec()
+            with dspy.context(callbacks=[_CountFires(), _MainStepTimer(rec)]):
+                adapter_cls().parse(sig, completion)
+            assert _CountFires.n == fires, f"{adapter_cls.__name__} fired {_CountFires.n}, not {fires}"
+            assert rec.captured == ["R1"], f"{adapter_cls.__name__} staged {len(rec.captured)}"
 
 
 # ---- a sub-LM escalation records itself, whether or not the caller asked ------------------------
