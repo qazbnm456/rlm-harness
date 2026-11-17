@@ -483,7 +483,7 @@ class _AgyCall:
         # The `try` sits inside the `with`, directly after `Popen`, as in `subprocess.run`: closing
         # the file first would put a step between starting `agy` and the code that kills it, and
         # an exception there (Ctrl-C, a failed close) would leave `agy` running. The file stays
-        # open until `agy` is done, which costs nothing, since `agy` holds its own copy of it.
+        # open until `agy` is done, which costs nothing, since `agy` holds its own handle to it.
         with tempfile.TemporaryFile() as prompt_file:
             prompt_file.write((event + "\n").encode("utf-8"))
             prompt_file.seek(0)
