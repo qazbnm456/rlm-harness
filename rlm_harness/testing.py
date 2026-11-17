@@ -295,7 +295,7 @@ class ScriptedInterpreter:
     ``llm_query`` / ...), so a callable step can dispatch a REAL tool: ``lambda tools, v: tools["scan"](x=1)``.
 
     It implements dspy's full ``CodeInterpreter`` surface: ``tools`` / ``start`` / ``execute`` /
-    ``shutdown``, and must keep doing so: from dspy 3.3.0 that protocol is ``@runtime_checkable`` and
+    ``shutdown``, and must keep doing so: that protocol is ``@runtime_checkable`` and
     a caller-supplied interpreter is ``isinstance``-checked against it before every forward pass, so a
     missing method turns into a ``TypeError`` at run time rather than anything a type checker catches.
     """

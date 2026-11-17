@@ -244,7 +244,7 @@ class _StepCapture(BaseCallback):  # type: ignore[misc, valid-type]
             return
         if call["token"] is not None:
             # Defensive: a reset from a context other than the start's raises, and the list is read
-            # either way. dspy 3.4.1 runs both hooks of a predictor call in one context.
+            # either way. dspy runs both hooks of a predictor call in one context.
             with contextlib.suppress(ValueError):
                 _PARSE_WRAPPED.reset(call["token"])
         if call["call_id"] != call_id or exception is not None:
@@ -530,11 +530,8 @@ def _applied_dspy_settings(sub_lm: Any) -> dict[str, Any]:
     for role, lm in (("main", main_lm), ("sub", sub_lm)):
         if lm is None:
             continue
-        # `_dspy_compat.lm_cache_is_live`, not `lm.cache`: an unmanaged LM carries `cache=True` and
-        # never consults the cache, so the raw attribute records a live cache for an LM that cannot
-        # have one. `ClaudeAgentLM` was that LM when 1.15.1 measured this; since 1.17.0 it is
-        # engine-backed and a consumer's own duck-typed or legacy LM is the live case. False there
-        # is definitive; True means "not ruled out".
+        # `_dspy_compat.lm_cache_is_live`, not `lm.cache`: dspy also skips the cache for an LM that
+        # opted out through `_cache_responses` (a `DummyLM`), which the raw attribute misses.
         with contextlib.suppress(Exception):
             cache[role] = _dspy_compat.lm_cache_is_live(lm)
     if cache:
@@ -742,15 +739,10 @@ class RLMTask:
         instructions = self.instructions or None
         if self.output_model is not None:
             sig_kwargs["custom_types"] = {self.output_model.__name__: self.output_model}
-            # Historically dspy dropped custom_types when instructions was None, re-parsing the
-            # signature without them, so this passed "" instead. **That premise is dead on dspy
-            # 3.4.0 and the line is kept only because it costs nothing.** Measured with a valid
-            # control, a type created in one function and passed to another so no frame holds its
-            # NAME: without custom_types both None and "" raise `ValueError: Unknown name`, and with
-            # custom_types both resolve. Getting that control right is the whole experiment, since a
-            # type reachable by dspy's `sys._getframe` fallback makes the control PASS and proves
-            # nothing. The invariant this protects, that a dynamic output type must not rely on
-            # call-stack resolution, is unchanged and is exactly what the failing control shows.
+            # "" rather than None for instructions costs nothing and keeps dspy on the path that
+            # applies custom_types. The invariant this protects is that a dynamic output type must
+            # not rely on call-stack resolution: without custom_types, a type created in one function
+            # and passed to another (so no frame holds its NAME) raises `ValueError: Unknown name`.
             if instructions is None:
                 instructions = ""
         staged = getattr(self, "_staged", None) or {}
@@ -810,7 +802,7 @@ class RLMTask:
             "tools": self._model_facing_tools(),
         }
 
-        # THE SEAM. dspy >= 3.4.0 supplies the interpreter ONLY through this factory, which it
+        # THE SEAM. dspy takes the interpreter ONLY through this factory, which it
         # calls once per forward pass and whose return value it shuts down. So CREATION is ours
         # (the guard runs on every pass) and shutdown is dspy's, EXCEPT for a caller-supplied
         # double: that one goes out through `caller_owned`, whose `shutdown()` is a no-op, so the
@@ -827,7 +819,7 @@ class RLMTask:
                 return caller_owned(injected)
             # Hand out the eagerly-built one first so a single-pass run builds exactly one
             # interpreter, then build fresh per pass. `try/pop` rather than `if first: pop()`:
-            # dspy 3.4.0 documents that the factory "may be invoked concurrently", and a
+            # dspy documents that the factory "may be invoked concurrently", and a
             # check-then-act would let two threads both pass the check and the loser raise
             # `IndexError`. Unreachable on today's single-`aforward` path, but `optimize.compile_task`
             # is exactly the caller that would run passes in parallel once enabled.
@@ -844,8 +836,8 @@ class RLMTask:
             execution_instructions=str(getattr(interpreter, "execution_instructions", "") or ""),
         ))
 
-        # Budget caps are mapped onto the names the installed dspy accepts (3.3.x renamed
-        # `max_iterations` to `max_iters`). The `except TypeError` below is now only a
+        # Budget caps are mapped onto the names the installed dspy accepts (`max_iterations` is
+        # dspy's `max_iters`). The `except TypeError` below is only a
         # backstop for an unknown future signature, and it is a LOSSY one, so the
         # mapping has to be right: it drops every cap to dspy's defaults, silently.
         # RESET per build, not just set on failure: without this the flag survives into a later
@@ -1173,7 +1165,9 @@ class RLMTask:
         An optimizer's text replaces the planner's whole instruction, and that instruction carries
         dspy's own fixed protocol text, which changes between minors (3.5 rewrote it). Loading it
         under another minor would splice that minor's template into this one's prompt. There is no
-        override: recompiling is the only way to get text that describes this dspy.
+        override: recompiling is the only way to get text that describes this dspy. A state that
+        records no dspy version, or one that cannot be read, passes: the check refuses a known
+        mismatch and never guesses one.
         """
         compiled = _dig(state, "metadata", "dependency_versions", "dspy")
         theirs, ours = _dspy_compat.dspy_minor(compiled), _dspy_compat.dspy_minor()
@@ -1351,9 +1345,8 @@ class RLMTask:
                 attempt_calls[index] = capture.calls
             try:
                 with _live_main_timing(recorder, (capture,) if capture is not None else ()):
-                    # Inputs ONLY. dspy >= 3.4.0 made `aforward` keyword-only and deleted the
-                    # positional interpreter argument 3.3.x took here; the interpreter now
-                    # reaches dspy through the constructor factory `_build_rlm` passes.
+                    # Inputs ONLY: the interpreter reaches dspy through the constructor factory
+                    # `_build_rlm` passes, and `aforward` takes its options by keyword.
                     prediction = await rlm.aforward(**inputs)
                 captured["prediction"] = prediction
                 captured["attempt"] = index
@@ -1469,10 +1462,8 @@ class RLMTask:
     def _teardown_interpreter(self) -> None:
         """Shut down the sandbox interpreter built for this run, if any.
 
-        **What this owns changed in 1.14.0, and the old sentence is why it is spelled out here.**
-        It used to read "dspy tears down only an interpreter it constructed itself, so the
-        lifecycle is ours", which dspy 3.4.0 falsified: dspy now shuts down whatever
-        ``interpreter_factory`` returns, once per forward pass.
+        dspy shuts down whatever ``interpreter_factory`` returns, once per forward pass, so what
+        this method owns depends on the path.
 
         So on the STRING path dspy is the shutdown point and this method re-shuts the eagerly built
         one, which is harmless because both kinds' ``shutdown()`` are idempotent (``PythonInterpreter``

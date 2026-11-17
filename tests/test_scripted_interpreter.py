@@ -105,9 +105,8 @@ def test_dspys_own_setup_executions_consume_no_step_and_stay_out_of_calls(tmp_pa
     """`.calls` is the MODEL's turns, on every dspy, and a script's length is its turn count.
 
     Drives the real `aforward` loop rather than calling `execute` by hand, because the thing
-    under test is whether DSPY's own pre-loop execution is accounted separately: dspy 3.4.1 added
-    one (`RLM._setup_facade` installing the sandbox `dspy` shim) and it silently ate step 0 of
-    every script written against 3.4.0. A hand-rolled `execute(SHIM_SETUP, ...)` call would assert
+    under test is whether DSPY's own pre-loop executions are accounted separately: one that took a
+    step would silently eat step 0 of every script. A hand-rolled `execute(BOOTSTRAP, ...)` call would assert
     the kit against its own idea of what dspy does; this asserts it against what dspy DOES.
 
     The facade count is asserted against dspy's CAPABILITY, not a version number, so this stays a

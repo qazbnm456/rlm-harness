@@ -77,11 +77,11 @@ def is_valid_tool_name(name: object) -> bool:
 def _is_reserved(name: str) -> bool:
     """Would the installed dspy refuse ``name`` because the sandbox owns it?
 
-    A PREDICATE, not membership in a set, because since dspy 3.4.1 the rule is not a set: its
-    sandbox ``dspy`` facade owns ``dspy`` plus every ``_dspy``/``__dspy`` prefix. Before this,
-    ``sanitize_tool_name("dspy")`` returned ``"dspy"`` unchanged and ``RLM(...)`` then refused
-    the whole tool registration, which is the failure mode this module exists to prevent (and
-    the module docstring's "one bad name takes every other tool down with it").
+    A PREDICATE, not membership in a set, because the rule is not a set: dspy's sandbox session
+    owns ``dspy`` plus every ``_dspy``/``__dspy`` prefix. A set lookup would return ``"dspy"``
+    unchanged and ``RLM(...)`` would then refuse the whole tool registration, which is the failure
+    mode this module exists to prevent (the module docstring's "one bad name takes every other
+    tool down with it").
 
     Resolved lazily, like the set it replaced, so this module stays dspy-free at import.
     """

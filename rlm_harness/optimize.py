@@ -563,8 +563,8 @@ def compile_task(
 
     ``reflection_lm`` has no default and is checked here rather than left to dspy, which raises
     ``AssertionError: GEPA requires a reflection language model, or custom instruction proposer to
-    be provided``. It must be a ``dspy.LM`` that can return JSON, which 3.4.1 and later require
-    because the default proposer goes through ``dspy.Predict`` and ``JSONAdapter``;
+    be provided``. It must be a ``dspy.LM`` that can return JSON, because dspy's default proposer
+    goes through ``dspy.Predict`` and ``JSONAdapter``;
     ``docs/PROMPT.md`` carries the command that settles which dspy builds one by default.
 
     ``audit_outputs(examples, predictions)`` is yours, run over the holdout before and after.
@@ -581,9 +581,9 @@ def compile_task(
     if reflection_lm is None:
         raise ValueError(
             "compile_task needs reflection_lm=dspy.LM(...): the LM that reads a trajectory and "
-            "proposes a new instruction. dspy raises a bare AssertionError without it. On dspy "
-            "3.4.1 and later it must be able to return JSON, because the default proposer goes "
-            "through dspy.Predict and JSONAdapter."
+            "proposes a new instruction. dspy raises a bare AssertionError without it. It must be "
+            "able to return JSON, because dspy's default proposer goes through dspy.Predict and "
+            "JSONAdapter."
         )
     if not trainset:
         raise ValueError("compile_task needs a non-empty trainset: GEPA has nothing to run on.")
@@ -600,7 +600,7 @@ def compile_task(
     if _metric_cannot_score(metric, train[0]):
         metric(train[0], _ProbePrediction())   # raise it where the caller can read it
     program = task._build_rlm()
-    # Captured BEFORE the compile. dspy 3.4.0's GEPA hands back a deepcopy and leaves the
+    # Captured BEFORE the compile. dspy's GEPA hands back a deepcopy and leaves the
     # student's own text intact, so this is not the only moment it could be read; it is the moment
     # it is CERTAINLY the text GEPA was seeded from, before a save, a retry or a future dspy that
     # does mutate can touch it, and that is what an audit's baseline has to be.

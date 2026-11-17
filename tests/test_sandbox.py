@@ -280,7 +280,7 @@ def test_build_interpreter_silently_accepts_turn_timeout_for_mock():
 
 
 def test_mock_interpreter_satisfies_dspys_protocol():
-    """`interpreter="mock"` is a documented public config value, and from dspy 3.3.0 the
+    """`interpreter="mock"` is a documented public config value, and dspy's
     `CodeInterpreter` protocol is `@runtime_checkable` and `RLM._interpreter_context`
     isinstance-checks a caller-supplied interpreter on EVERY forward pass. Missing `tools`
     or `start` is therefore a run-time TypeError: invisible to a construction test, which

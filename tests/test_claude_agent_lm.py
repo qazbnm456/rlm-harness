@@ -44,12 +44,11 @@ def test_user_prompt_multi_turn_flatten():
 def test_lm15_refuses_a_system_role_message_which_is_why_nothing_folds_one_in():
     """The pin under `_request_to_prompts`'s "nothing can be there".
 
-    1.17.0 shipped a join that picked up a `role="system"` MESSAGE as well as `Request.system`,
-    documented as defending a consumer adapter that puts one there. It cannot: lm15 refuses that
-    role when the `Message` is constructed, so no request reaching this engine can hold one and
-    the branch was unreachable. Asserted against the INSTALLED dspy rather than restated in
-    prose, so the fold comes back the day lm15 allows the role instead of staying absent on a
-    belief about 3.4.
+    A join that also picked up a `role="system"` MESSAGE as well as `Request.system` would defend a
+    consumer adapter that puts one there. It cannot: lm15 refuses that role when the `Message` is
+    constructed, so no request reaching this engine can hold one. Asserted against the INSTALLED
+    dspy rather than restated in prose, so the fold comes back the day lm15 allows the role
+    instead of staying absent on a belief.
     """
     import dspy
 
@@ -107,11 +106,8 @@ def fake_sdk(monkeypatch):
 def test_a_subscription_call_goes_through_THIS_adapter_and_not_litellm(fake_sdk, monkeypatch):
     """The property the old `_engine_spec` pin was a proxy for, asserted directly.
 
-    Until 1.17.0 this class was a legacy `forward()` LM and the pin was the ABSENCE of
-    `_engine_spec`, because `dspy.clients.execution.prepare` reads `hasattr(lm, "_engine_spec")`
-    to decide between a legacy LM and a managed one, and a managed LM with no engine would have
-    been routed to litellm. The class now IS engine-managed, legitimately, so that absence is
-    gone and asserting it would fail for the right reason while protecting nothing. What must
+    The class is an engine-backed `dspy.LM`, so an attribute check proves nothing about where a
+    call goes. What must
     stay true is the thing it stood for: a subscription call reaches the Claude Agent SDK through
     this adapter, never litellm. Pinned by driving a call and demanding OUR engine ran.
 
@@ -260,8 +256,7 @@ def test_a_bool_is_not_a_token_count():
 # site, with the helper left intact but unused, leaves every one of them green. These drive the
 # real coroutine end to end through the ENGINE (`lm.engine.complete(request)`): the bridge loop,
 # the semaphore, `_query_once` and the `lm15.Response` mapping, against a fake SDK, so the
-# defect's own location is covered. It read `forward()` and "the litellm mapping" until 1.17.0
-# migrated the class off both.
+# defect's own location is covered.
 
 
 def _complete(lm, prompt="hi", *, response_format=None, system=None):
@@ -544,8 +539,7 @@ def test_an_unreported_usage_cannot_be_resurrected_by_the_rounds(sdk_returning, 
 def test_the_rounds_reach_the_trace_under_both_dspy_reads(sdk_returning, tmp_path):
     """The predecessor of this test asserted the rounds reached dspy's USAGE TRACKER on both
     reads. That property is gone by construction, not by accident: on the engine path
-    `usage_dict` rebuilds the entry from the typed `Usage` and drops everything else, measured on
-    dspy 3.4.1. So the thing to pin is that the breakdown still arrives, by the route it takes
+    `usage_dict` rebuilds the entry from the typed `Usage` and drops everything else. So the thing to pin is that the breakdown still arrives, by the route it takes
     now, and that neither dspy read interferes with it."""
     import dspy
 
@@ -1008,13 +1002,11 @@ def test_dspys_retry_budget_is_live_but_never_multiplies_an_sdk_call(sdk_returni
 
 
 def test_n_above_one_spawns_one_cli_call_per_candidate_and_warns(sdk_returning, monkeypatch, caplog):
-    """`n` is the one sampling kwarg this adapter does not ignore, and that changed in 1.17.0.
+    """`n` is the one sampling kwarg this adapter does not ignore.
 
     dspy's `execute` runs one ENGINE call per candidate once the request is canonical
-    (`count = call.n`), where an unmanaged LM took its hardcoded `n=1` branch and `n` reached
-    `forward()` only to be dropped. Measured across the migration: `n=3` was ONE SDK spawn on
-    1.16.0 and is three now. Nothing said so, in the docstring or the release notes, so a
-    consumer carrying `n=2` over from a litellm config doubled their subscription calls silently.
+    (`count = call.n`), so `n=3` is three SDK spawns. A consumer carrying `n=2` over from another
+    config would double their subscription calls silently, which is why the constructor warns.
 
     Pinned rather than described, because the number is the hazard: the docstrings quote it.
     """

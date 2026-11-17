@@ -2,7 +2,7 @@
 
 Unit tests elsewhere use fakes. This one wires our RLMTask through the *real*
 dspy.RLM constructor to catch signature/kwarg/interpreter drift between rlm-harness
-and the installed dspy. It does not call forward() (that needs a paid LLM and a
+and the installed dspy. It does not run a forward pass (that needs a paid LLM and a
 Deno sandbox), so it stays free and offline. Skipped if dspy is absent.
 """
 
@@ -62,8 +62,8 @@ def test_rlmtask_builds_real_dspy_rlm():
     assert rlm.sub_lm is dummy
     assert "finding" in rlm.signature.output_fields
     # Budget kwargs were accepted by the real constructor (no TypeError fallback).
-    # Read them by VALUE under whichever name the installed dspy uses: 3.3.0 renamed
-    # `max_iterations` to `max_iters`. Asserting one hardcoded name would either fail on
+    # Read them by VALUE under whichever name the installed dspy uses (`max_iterations` is
+    # dspy's `max_iters`). Asserting one hardcoded name would either fail on
     # a dspy that renamed it (a false alarm) or, worse, pass while the cap was silently
     # dropped. `_budget_attr` fails loudly if dspy exposes NEITHER name.
     assert _budget_attr(rlm, "max_iters", "max_iterations") == 10
@@ -581,7 +581,7 @@ def test_lenient_json_adapter_never_answers_an_empty_reply_from_an_invented_obje
     The wrap turns ``""`` into ``"{}"``, and dspy's ``apply_output_field_defaults`` supplies a
     value for an output field left unset, from a default, a default factory, or an annotation that
     admits ``None``. So the reply that said nothing came back as an answer.
-    Measured on dspy 3.4.0 and on 3.4.1: an output field annotated ``str | None`` came back
+    Measured: an output field annotated ``str | None`` came back
     ``None``, so the parse returned ``{"payload": None}``, no exception raised and nothing
     recorded. Note it carries NO default: the value comes from the annotation admitting ``None``.
     An output field dspy will NOT supply a value for raised before this change and raises after
@@ -593,8 +593,8 @@ def test_lenient_json_adapter_never_answers_an_empty_reply_from_an_invented_obje
 
     Both shapes dspy supplies a value for are pinned, because the DEFAULT one is the variant whose
     failure is invisible: where the invented answer was ``None`` an ``output_model`` already
-    rejected it, but a default can yield one that passes schema validation. Measured on dspy 3.4.0
-    and on 3.4.1, the old ordering returned ``{"payload": {"ok": True}}`` here and
+    rejected it, but a default can yield one that passes schema validation. Measured, the old
+    ordering returned ``{"payload": {"ok": True}}`` here and
     ``coerce_output`` accepted it into a model cleanly.
 
     Exposure was all or nothing across a signature: one plain required output field made the parse
@@ -1065,7 +1065,7 @@ def test_task_composes_bind_OUTSIDE_intercept(tmp_path):
     Bind must be outermost: it establishes `recorder_scope`, and the interceptor reads
     `current_recorder()` at call time. Reversed, the interceptor sees `None` on any thread that did
     not inherit the contextvar and SILENTLY skips the record. A RAW thread is required to observe
-    it: dspy 3.3.1's `llm_query_batched` copies the context itself, so its own dispatch records
+    it: dspy's `llm_query_batched` copies the context itself, so its own dispatch records
     correctly in BOTH orders."""
     from dspy.utils.dummies import DummyLM
 
@@ -1090,7 +1090,7 @@ def test_recording_survives_a_call_from_a_RAW_thread():
     `current_recorder()` at call time. Reversed, the interceptor sees None and SILENTLY skips the
     record: no error, no event.
 
-    A raw thread is required to see this. dspy 3.3.1's `llm_query_batched` now dispatches via
+    A raw thread is required to see this. dspy's `llm_query_batched` dispatches via
     `contextvars.copy_context().run(...)`, so a test written against dspy's own path would pass in
     BOTH composition orders and pin nothing."""
     import tempfile

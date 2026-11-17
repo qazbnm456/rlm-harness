@@ -1,35 +1,22 @@
-"""Shims for ``dspy``'s ``RLM`` / interpreter API, resolved by introspection in ONE place.
+"""Shims for ``dspy``'s ``RLM``, interpreter and LM APIs, resolved by introspection in ONE place.
 
 PRIVATE (``_``-prefixed): not part of the public surface, may change without notice.
 
-**Why this module exists, and why it survives the 3.3.0 floor.** rlm-harness declares only a
-FLOOR on dspy and consumers pin the KIT, so a consumer's fresh install resolves whatever dspy
-is current. dspy 3.3.0 renamed three things at once: the caller-owned interpreter moved from
-``RLM(interpreter=…)`` to ``forward``/``aforward``'s first positional arg, ``max_iterations``
-became ``max_iters``, and ``CodeInterpreterError`` stopped being the RECOVERABLE interpreter
-error (the new ``CodeExecutionError`` took that role), and only the first failed loudly. The
-kit was completely unrunnable on a fresh install while its whole suite stayed green
-(CHANGELOG 1.0.1).
+**Why this module exists.** The kit supports one dspy minor at a time (``dspy>=3.5.0,<3.6.0``), and
+each dspy minor so far has renamed or removed something the kit uses, often silently: a kwarg that
+moves, a recoverable error class that becomes terminal, a predictor whose fields change. So every
+dspy fact the kit depends on lives here, at ONE introspected call site, and
+``tests/test_dspy_compat.py`` asserts each shim's contract against the installed dspy, so the next
+rename is a one-line change here plus a red test instead of a silent behaviour change in someone's
+rollout. Do not collapse a shim into its call site just because it currently resolves one answer.
 
-The floor is ``dspy>=3.4.1`` since 1.21.0 (``>=3.4.0`` since 1.14.0, ``>=3.3.1`` since 1.5.0,
-which needs ``interpreter_factory.execution_instructions``, and ``>=3.3.0`` since 1.2.0), and the
-older branches are gone, so most of these now resolve a single answer. **They are kept anyway**:
-the module's value was never "supports two versions", it is that every dspy fact lives at ONE
-introspected call site, so the NEXT
-rename is a one-line change here plus a red test in ``tests/test_dspy_compat.py``: instead of
-a silent behaviour change in someone's rollout. Do not collapse a shim into its call site just
-because it currently has one branch.
+The interpreter seam is the FACTORY, passed to the ``RLM(...)`` constructor
+(:func:`interpreter_kwargs`); ``task.py`` calls ``await rlm.aforward(**inputs)`` with nothing
+positional. A dspy that moved the seam again fails LOUDLY (a ``TypeError`` from the constructor)
+rather than auto-adapting, and ``.github/workflows/dspy-latest.yml`` is what catches it.
 
-Note one consequence of the floor: the interpreter seam is the FACTORY, and the kit passes it to
-the ``RLM(...)`` constructor. dspy 3.4.0 deleted the positional form this paragraph used to claim
-was hardcoded here: ``aforward`` is ``(self, *, interpreter_factory=None, **input_args)``,
-keyword-only, and ``task.py`` calls ``await rlm.aforward(**inputs)`` with nothing positional. A
-future dspy that moved the seam again would fail LOUDLY (a ``TypeError`` from the constructor)
-rather than auto-adapting, which is the right trade, and ``.github/workflows/dspy-latest.yml`` is
-what catches it. See ``interpreter_kwargs`` below for the arrangement as it actually is.
-
-This module must stay importable without dspy (its module top is dspy-free); every lookup
-imports dspy lazily and is cached, since the installed dspy cannot change mid-process.
+This module must stay importable without dspy (its module top is dspy-free); every lookup imports
+dspy lazily and is cached, since the installed dspy cannot change mid-process.
 """
 
 from __future__ import annotations
@@ -78,22 +65,6 @@ def _rlm_init_takes_var_keyword() -> bool:
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
 
 
-@lru_cache(maxsize=1)
-def _dspy_reads_execution_instructions() -> bool:
-    """True if the installed dspy renders ``interpreter_factory.execution_instructions``.
-
-    Probed off ``PythonInterpreter``, which grew the attribute in the same release that taught
-    ``RLM._build_signatures`` to read it. Introspected rather than version-gated, like every
-    other answer in this module.
-    """
-    try:
-        from dspy.primitives.python_interpreter import PythonInterpreter
-
-        return isinstance(getattr(PythonInterpreter, "execution_instructions", None), str)
-    except Exception:  # pragma: no cover - defensive
-        return False
-
-
 #: The ``RLM(...)`` kwarg that SUPPLIES the interpreter, NEWEST FIRST. Same probing shape as
 #: ``_BUDGET_ALIASES``: the next rename is one entry here plus a red test.
 _INTERPRETER_FACTORY_ALIASES: tuple[str, ...] = ("interpreter_factory",)
@@ -113,32 +84,23 @@ def _interpreter_factory_param() -> str | None:
 def interpreter_kwargs(factory: Any, *, execution_instructions: str = "") -> dict[str, Any]:
     """``RLM(...)`` kwargs that SUPPLY the kit's interpreter and describe it to the model.
 
-    **Since dspy 3.4.0 this is the ONLY seam.** 3.3.x took a caller-owned interpreter as the first
-    POSITIONAL argument of ``forward``/``aforward``; 3.4.0 made both keyword-only and deleted that
-    parameter, so ``rlm.aforward(interpreter, **inputs)`` raises ``TypeError: RLM.aforward() takes
-    1 positional argument but 2 were given``.
+    The factory is dspy's only seam for an interpreter: ``forward``/``aforward`` take none.
 
-    **The ownership SENTENCE changed; the ownership GUARANTEES did not.** dspy now calls this
-    factory once per forward pass and shuts down whatever it returns
-    (``RLM._interpreter_context``: ``factory()``, then ``interpreter.shutdown()`` in a
-    ``finally``). So CREATION stays the kit's, which is what keeps ``sandbox.build_interpreter``'s
-    guard on every pass, and dspy becomes the SHUTDOWN point for an interpreter it was handed. A
-    CALLER-SUPPLIED double is the exception: it goes out through ``sandbox.caller_owned``, whose
-    ``shutdown()`` is a no-op, so ``RLMTask._teardown_interpreter`` stays its single shutdown.
+    **Ownership.** dspy calls this factory once per forward pass and shuts down whatever it returns
+    (``RLM._interpreter_context``: ``factory()``, then ``interpreter.shutdown()`` in a ``finally``).
+    So CREATION stays the kit's, which is what keeps ``sandbox.build_interpreter``'s guard on every
+    pass, and dspy is the SHUTDOWN point for an interpreter it was handed. A CALLER-SUPPLIED double is
+    the exception: it goes out through ``sandbox.caller_owned``, whose ``shutdown()`` is a no-op, so
+    ``RLMTask._teardown_interpreter`` stays its single shutdown.
 
-    **This replaces a metadata CARRIER whose premise dspy 3.4.0 falsified.** Until 1.14.0 the kit
-    passed an ``interpreter_factory`` that existed only so dspy could read
-    ``execution_instructions`` off it, and it raised if invoked, on the documented premise that
-    dspy never would. 3.4.0's ``_interpreter_context`` invokes it unconditionally, so that guard
-    fired for real on every ``container``, ``mock`` and ``ScriptedInterpreter`` run. Nothing
-    asserted the control-flow premise the carrier rested on, which is why the break was silent
-    until the ``TypeError`` above exposed it. One object now does both jobs and the premise is
-    gone rather than re-asserted.
+    The same object carries ``execution_instructions``, which dspy reads off the factory and renders
+    into the action prompt; without it every run is described to the model as Pyodide. dspy invokes
+    the factory unconditionally, so it must be a real factory, never a metadata carrier.
 
-    **Raises rather than returning ``{}``.** With no positional seam left, a silently dropped
-    factory means dspy builds its own bare ``PythonInterpreter`` and the run continues with no
-    watchdog, no JSON-literal aliases, no container boundary and no insecure-interpreter guard.
-    That is exactly the silent degradation this module exists to prevent.
+    **Raises rather than returning ``{}``.** A silently dropped factory means dspy builds its own bare
+    ``PythonInterpreter`` and the run continues with no watchdog, no JSON-literal aliases, no
+    container boundary and no insecure-interpreter guard: exactly the silent degradation this module
+    exists to prevent.
     """
     name = _interpreter_factory_param()
     if name is None:
@@ -147,7 +109,7 @@ def interpreter_kwargs(factory: Any, *, execution_instructions: str = "") -> dic
             "cannot supply its own sandbox and would silently run without its guard. Update "
             "rlm_harness._dspy_compat._INTERPRETER_FACTORY_ALIASES."
         )
-    if _dspy_reads_execution_instructions() and execution_instructions.strip():
+    if execution_instructions.strip():
         factory.execution_instructions = execution_instructions
     return {name: factory}
 
@@ -176,11 +138,10 @@ def rlm_budget_kwargs(
 ) -> dict[str, int]:
     """Map the kit's budget caps onto the names the installed dspy actually accepts.
 
-    Silently dropping a cap is the failure mode to avoid here: before this shim the
-    kit passed all three under their 3.2.x names inside one all-or-nothing ``try``,
-    so on 3.3.x the single renamed ``max_iterations`` made dspy reject the call and
-    the fallback dropped ALL THREE caps back to dspy's defaults: unbounded relative
-    to what ``RLMConfig`` asked for, with nothing logged at the caller's level.
+    Silently dropping a cap is the failure mode to avoid here: a single renamed cap passed under
+    its old name makes dspy reject the call, and an all-or-nothing fallback would then drop ALL
+    THREE caps back to dspy's defaults, unbounded relative to what ``RLMConfig`` asked for. So each
+    cap is resolved on its own (``max_iterations`` is ``max_iters`` in dspy).
     """
     values = {
         "max_iterations": max_iterations,
@@ -193,8 +154,7 @@ def rlm_budget_kwargs(
     resolved: dict[str, int] = {}
     for canonical, candidates in _BUDGET_ALIASES:
         if permissive:
-            # Can't probe: send the name this kit currently targets (newest = last, since
-            # the alias tuples are newest-first and 1.2.0 dropped the legacy spellings).
+            # Can't probe: send the name this kit currently targets (the last candidate).
             resolved[candidates[-1]] = values[canonical]
             continue
         for name in candidates:
@@ -269,11 +229,11 @@ _RESERVED_FALLBACK = frozenset({"llm_query", "llm_query_batched", "SUBMIT", "pri
 #: is one entry here. Same probing shape as `_BUDGET_ALIASES` above.
 _RESERVED_ATTRS = ("_RESERVED_SANDBOX_NAMES",)
 
-#: Names the SANDBOX DSPY FACADE owns, which :func:`reserved_tool_names` structurally cannot
-#: carry: dspy 3.4.1 states half its rule as a PREDICATE over prefixes
+#: Names dspy's sandbox session owns, which :func:`reserved_tool_names` structurally cannot
+#: carry: dspy states half its rule as a PREDICATE over prefixes
 #: (``facade.is_reserved_sandbox_name``) rather than as a member of the set that attribute holds,
-#: so a union of sets silently under-rejects. Measured on 3.4.1: a tool named ``dspy`` passed
-#: ``sanitize_tool_name`` and ``assert_repl_safe`` unchanged and then died at ``RLM(...)`` with
+#: so a union of sets silently under-rejects: a tool named ``dspy`` would pass
+#: ``sanitize_tool_name`` and ``assert_repl_safe`` unchanged and then die at ``RLM(...)`` with
 #: ``ValueError: Tool name 'dspy' conflicts with built-in sandbox function``: the precise
 #: direction :func:`reserved_tool_names` documents as the expensive one. Mirrored here rather
 #: than only asked of dspy so the rule survives the predicate being renamed or moved.
@@ -323,7 +283,7 @@ def is_reserved_tool_name(name: object) -> bool:
     """True if the installed dspy would refuse ``name`` as a tool name because it owns it.
 
     **The set from :func:`reserved_tool_names` is no longer the whole rule**, which is why this
-    exists beside it rather than inside it. dspy 3.4.1 added a sandbox ``dspy`` facade and states
+    exists beside it rather than inside it. dspy's sandbox session owns the ``dspy`` names and states
     the names it owns as a PREDICATE over prefixes, not as entries in the attribute
     ``reserved_tool_names`` unions. Keeping that function set-valued and adding a predicate was
     deliberate: a set-like object whose ``in`` accepted more than its iteration yields would be a
@@ -408,12 +368,11 @@ def runtime_option_names() -> frozenset[str]:
 def recoverable_interpreter_error() -> type[Exception]:
     """The interpreter-error class dspy's RLM loop CATCHES and feeds back to the model.
 
-    Load-bearing, and the reason it is resolved rather than hardcoded at the raise sites: dspy
-    3.3.0 added ``CodeExecutionError`` and INVERTED the meaning of the base class. Raising a bare
-    ``CodeInterpreterError`` was recoverable on 3.2.x and is TERMINAL from 3.3.0, so a sandbox
-    turn-timeout that used to hand the model another turn would instead end the whole run, with
-    no test failure to reveal it. That inversion is why every raise site asks here instead of
-    naming a class (see ``sandbox.py``'s watchdog and ``container_interpreter.py``'s execute path).
+    Load-bearing, and the reason it is resolved rather than hardcoded at the raise sites: the
+    recoverable class is the ``CodeExecutionError`` SUBCLASS, and the base ``CodeInterpreterError``
+    is TERMINAL. Raising the base from a sandbox turn-timeout would end the whole run instead of
+    handing the model another turn, with no test failure to reveal it. dspy has inverted this pair
+    once already, which is why every raise site asks here instead of naming a class (see ``sandbox.py``'s watchdog and ``container_interpreter.py``'s execute path).
     """
     from dspy.primitives.code_interpreter import CodeExecutionError
 
@@ -424,8 +383,8 @@ def recoverable_interpreter_error() -> type[Exception]:
 def terminal_interpreter_error() -> type[Exception]:
     """The interpreter-error class dspy's RLM loop does NOT catch: a run-ending failure.
 
-    ``CodeInterpreterError``: terminal by design from dspy 3.3.0, since the recoverable role
-    moved to its ``CodeExecutionError`` subclass. A condition that must end the run REGARDLESS
+    ``CodeInterpreterError``: terminal by design, since the recoverable role belongs to its
+    ``CodeExecutionError`` subclass. A condition that must end the run REGARDLESS
     of dspy's handling should still use an exception outside dspy's hierarchy entirely: that is
     what ``SandboxCancelled`` is, and why it needs no shim.
     """
@@ -459,8 +418,7 @@ def is_fast_fail_lm_error(exc: BaseException) -> bool:
     request. It is NOT correct here: ``run_with_retry`` retries by re-running the WHOLE
     trajectory, which can genuinely produce a shorter prompt on the next attempt (a different
     turn sequence, a truncated tool result). So it is excluded and keeps retrying like any other
-    exception. This was the one contested part of the design (CHANGELOG 1.2.0) and is resolved
-    HERE, not left to whoever reads the CHANGELOG note next.
+    exception. The decision is resolved HERE, not left to whoever reads the CHANGELOG next.
 
     Deliberately reached through the PUBLIC ``dspy.is_retryable_lm_error`` rather than the
     private ``dspy.utils.exceptions._RETRYABLE_LM_ERRORS`` tuple it is built from: the same
@@ -483,56 +441,19 @@ def is_fast_fail_lm_error(exc: BaseException) -> bool:
     return not is_retryable(exc)
 
 
-@lru_cache(maxsize=1)
-def _lm_response_cls() -> Any:
-    """dspy's typed sub-LM response class, or ``None`` on a dspy that has none.
-
-    3.4.0 DELETED ``dspy.LMResponse`` (and made ``import dspy.core.types`` raise a migration
-    error) and moved the typed shape to ``dspy.lm15.Response``. Not a rename: the LAYOUT changed
-    too, from ``.outputs`` (a LIST of outputs, each with parts) to a single ``.message`` holding
-    the parts. ``sub_lm_response_with_text`` handles both.
-
-    Resolved here so the kit's gate is the SAME class object ``RLM._query_lm`` branches on, never
-    a duck-typed guess.
-    """
-    import dspy
-
-    return getattr(getattr(dspy, "lm15", None), "Response", None) or getattr(dspy, "LMResponse", None)
-
-
-def _copy_with(obj: Any, **changes: Any) -> Any:
-    """``obj`` with ``changes`` applied, by whichever copy-with-changes protocol its type has.
-
-    dspy 3.4's ``lm15`` types are FROZEN DATACLASSES (``dataclasses.replace``); 3.3's were
-    pydantic models (``model_copy(update=…)``). Probed rather than written down, so the next
-    migration of that detail is a no-op here instead of a ``TypeError`` at a call site. Either way
-    the ORIGINAL is not mutated, which is what lets a no-op pipeline return dspy's own object by
-    identity.
-    """
-    model_copy = getattr(obj, "model_copy", None)
-    if callable(model_copy):
-        return model_copy(update=changes)
-    return dataclasses.replace(obj, **changes)
-
-
 def sub_lm_response_text(response: Any) -> str | None:
     """The completion TEXT out of whatever shape a sub-LM returned, or ``None``.
 
-    dspy's ``RLM._query_lm`` accepts TWO shapes from ``sub_lm`` and this mirrors that read:
-    a typed ``dspy.LMResponse`` (take ``.text``), or the legacy ``list[str | dict]`` (take the
-    first element, and its ``"text"`` key when it is a dict). Anything else yields ``None``.
+    dspy's ``RLM._query_lm`` accepts TWO shapes from ``sub_lm`` and this mirrors that read: an lm15
+    ``Response`` (take ``.text``), or the ``list[str | dict]`` a string call returns (take the first
+    element, and its ``"text"`` key when it is a dict). Anything else yields ``None``.
 
-    **Why this is a shim and not three lines at the call site.** ``sub_lm.py`` used to assume the
-    legacy list unconditionally, ``[outputs]`` for anything non-list, which turned an
-    ``LMResponse`` into ``[LMResponse]`` and made dspy raise ``Sub-LM response must contain text,
-    got LMResponse``. That break was invisible on the default path and fired only under
-    ``dspy.context(experimental=True)``, and dspy's own source dates the legacy shape: *"In DSPy
-    3.3 and 3.4, ordinary calls preserve the legacy public return value"*. So the assumption had a
-    two-minor shelf life and no test could see it expire. Resolving it HERE is what makes
-    ``tests/test_dspy_compat.py`` the place a 3.5 contract change goes red.
+    A shim rather than three lines at the call site, because wrapping a typed response in a list
+    (``[response]``) makes dspy raise ``Sub-LM response must contain text``: the shape is dspy's.
     """
-    lm_response = _lm_response_cls()
-    if lm_response is not None and isinstance(response, lm_response):
+    from dspy.lm15 import Response
+
+    if isinstance(response, Response):
         text = getattr(response, "text", None)
         return text if isinstance(text, str) else None
     if isinstance(response, (list, tuple)) and response:
@@ -545,35 +466,23 @@ def sub_lm_response_text(response: Any) -> str | None:
 def sub_lm_response_with_text(response: Any, text: str) -> Any:
     """``response`` with its completion text replaced by ``text``, in the SAME shape.
 
-    Shape preservation is the point: a sub-LM wrapper must hand dspy back what dspy handed it,
-    or it silently narrows what the installed dspy supports. For a typed ``LMResponse`` the first
-    ``text`` part of the first output is replaced and **every LATER text part of that output is
-    dropped**: because ``LMOutput.text`` JOINS all of them, so replacing only the first would
-    leave the rest appended to the substituted text (``"AB"`` round-tripping to ``"ABB"``).
-    Multi-part text is not exotic: dspy emits one ``LMTextPart`` per content item, so any provider
-    returning a content ARRAY (citation-interleaved text, Responses-API output blocks) produces
-    several. Thinking, tool-call, citation and refusal parts, every sibling output, and every
-    response-level field (``model``, ``usage``, ``cost``, ``cache_hit``, …) survive untouched, via
-    ``model_copy`` so the ORIGINAL is not mutated. For the legacy list only element 0 is replaced;
-    additional completions pass through.
+    Shape preservation is the point: a sub-LM wrapper must hand dspy back what dspy handed it, or it
+    silently narrows what the installed dspy supports. For an lm15 ``Response`` the first text part
+    of its message is replaced and **every LATER text part is dropped**, because ``Response.text``
+    JOINS them, so replacing only the first would leave the rest appended to the substituted text
+    (``"AB"`` round-tripping to ``"ABB"``). A provider returning a content array produces several.
+    Thinking, tool-call, citation and refusal parts, and every response-level field (``model``,
+    ``usage``, ...) survive untouched, through ``dataclasses.replace``, so the ORIGINAL is not
+    mutated. For a list only element 0 is replaced, a ``{"text", "reasoning_content"}`` dict keeping
+    its other keys; additional completions pass through.
 
-    Falls back to a one-element list for a shape it does not recognise: the legacy shape dspy
-    has always accepted, so an unknown future return type degrades to something dspy can read
-    rather than to a crash.
+    Falls back to a one-element list for a shape it does not recognise, which dspy can read, rather
+    than crashing.
     """
-    lm_response = _lm_response_cls()
-    if lm_response is not None and isinstance(response, lm_response):
-        # TWO LAYOUTS, one branch each. dspy 3.4's `lm15.Response` holds exactly ONE `.message`;
-        # 3.3's `LMResponse` held a LIST of `.outputs`. Probed off the object, not off a version.
-        container = getattr(response, "message", None)
-        field = "message"
-        siblings: list[Any] = []
-        if container is None:
-            outputs = list(getattr(response, "outputs", None) or ())
-            if not outputs:
-                return [text]
-            container, field, siblings = outputs[0], "outputs", outputs[1:]
-        parts = list(getattr(container, "parts", None) or ())
+    from dspy.lm15 import Response
+
+    if isinstance(response, Response):
+        parts = list(response.message.parts)
         replaced = False
         new_parts = []
         for part in parts:
@@ -582,17 +491,15 @@ def sub_lm_response_with_text(response: Any, text: str) -> Any:
             if getattr(part, "type", None) != "text":
                 new_parts.append(part)          # thinking / tool_call / citation / refusal
             elif not replaced:
-                new_parts.append(_copy_with(part, text=text))
+                new_parts.append(dataclasses.replace(part, text=text))
                 replaced = True
             # ...and every LATER text part is DROPPED: the response's `.text` JOINS them, so
             # keeping one would append the old tail to the substituted text.
         if not replaced:
             return [text]
-        # `replaced` guarantees at least one part, which 3.4's `Message.__post_init__` requires.
-        new_container = _copy_with(container, parts=tuple(new_parts))
-        if field == "message":
-            return _copy_with(response, message=new_container)
-        return _copy_with(response, outputs=[new_container, *siblings])
+        # `replaced` guarantees at least one part, which `Message` requires.
+        message = dataclasses.replace(response.message, parts=tuple(new_parts))
+        return dataclasses.replace(response, message=message)
     if isinstance(response, (list, tuple)) and response:
         first, rest = response[0], list(response[1:])
         # A string call that carried reasoning returns `{"text", "reasoning_content"}`: keep the dict.
@@ -606,20 +513,12 @@ def copy_lm(lm: Any, **updates: Any) -> Any:
     """A VARIANT of an LM (dspy's documented ``lm.copy(rollout_id=…)``), for a base the kit only
     duck-types.
 
-    Resolved here because WHICH instance state an LM's ``copy()`` needs is dspy-VERSION-dependent.
-    3.3.1's ``dspy.LM`` had no ``copy`` of its own and inherited ``BaseLM.copy``, a shallow copy
-    reading nothing private; 3.4.0 added ``LM.copy``, whose first act is to read
-    ``self._engine_spec``.
+    Resolved here because WHICH instance state an LM's ``copy()`` needs is dspy's: ``dspy.LM.copy``
+    reads ``self._engine_spec``, so a duck-typed base must copy itself.
 
-    **Never stamp ``_engine_spec`` on to satisfy it.** In 3.4.0 its ABSENCE is how
-    ``dspy.clients.execution.prepare`` recognises a legacy ``forward``/``aforward`` LM
-    (``managed = hasattr(lm, "_engine_spec")``), so stamping one on a legacy LM routes its calls
-    through litellm instead of its own ``forward``. Ask the object that HAS the state to copy
-    itself instead. ``ClaudeAgentLM`` was this rule's motivating case until 1.17.0, when it became
-    an engine-backed ``dspy.LM`` and acquired an ``_engine_spec`` legitimately; the rule stands for
-    every other duck-typed base, and the risk it guards moved rather than went away, since a copy
-    that LOSES its engine is the same silent reroute from the other side (pinned in
-    ``tests/test_dspy_compat.py``).
+    **Never stamp ``_engine_spec`` on to satisfy it.** Ask the object that HAS the state to copy
+    itself instead. A copy that LOSES its engine is a silent reroute of every call it makes, which
+    ``tests/test_dspy_compat.py`` pins for the kit's own engine-backed LMs.
 
     **The probe is on the TYPE, called unbound.** An instance ``getattr`` is exactly what a
     ``unittest.mock`` double manufactures for any name, and a mock sub-LM is a base the kit
@@ -1359,7 +1258,7 @@ def _remove_patched_runners_dir(path: str) -> None:
 # ---- restarting a PythonInterpreter after the kit killed its Deno -----------------------------
 
 #: The per-session fields ``PythonInterpreter.__init__`` sets, at the values it sets them to.
-#: dspy has no public "restart" and, from 3.3.0, marks a session ENDED the moment its Deno dies,
+#: dspy has no public "restart" and marks a session ENDED the moment its Deno dies,
 #: so every later ``execute`` raises ``PythonInterpreter session has ended``. Resetting exactly
 #: what a fresh instance starts with is what makes the next call spawn a new Deno, mount files
 #: again and register tools again. ``tests/test_dspy_compat.py`` checks each name still exists

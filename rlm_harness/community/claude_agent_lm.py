@@ -1,10 +1,9 @@
 """Run rlm-harness on a Claude Pro/Max SUBSCRIPTION via the official Claude Agent SDK.
 
 `ClaudeAgentLM` is a `dspy.LM` over `claude-agent-sdk`, injected through the kit's existing public
-seam `configure(main_lm=..., sub_lm=...)`. Since 1.17.0 the SDK call is an ENGINE
-(`complete(Request) -> Response`, passed as `dspy.LM(engine=...)`), not a `forward`/`aforward`
-subclass: dspy deprecated that interface in 3.4 and schedules its removal for 3.5. The kit itself is
-unchanged. Each LM call is one stateless `query()` through the Claude Code CLI on YOUR OWN
+seam `configure(main_lm=..., sub_lm=...)`. The SDK call is an ENGINE
+(`complete(Request) -> Response`, passed as `dspy.LM(engine=...)`), because an engine is the only
+way dspy calls a custom LM. Each LM call is one stateless `query()` through the Claude Code CLI on YOUR OWN
 subscription login: the officially sanctioned path for individual subscribers, as opposed
 to the blocked OAuth-token-against-the-API routes. Every call is a pure completion: no
 agent loop, no tools, no filesystem access, no settings leakage (`tools=[]`,
@@ -130,25 +129,13 @@ def _api_rounds(usage: dict | None) -> dict[str, list] | None:
     summarisation, NOT the size of the context it closed, so Anthropic says not to derive a
     context size from one "even when it is the last entry".
 
-    **Why it is nested.** ``{"rounds": [...]}`` rather than the bare list, and load-bearing rather
-    than tidy, though WHAT it protects against changed in dspy 3.4.0 and the wrapper is right
-    either way. dspy's ``UsageTracker`` merges a model's usage entries, and dspy calls that merge
-    ITSELF out of ``dspy.Module.__call__`` whenever ``dspy.configure(track_usage=True)`` is set,
-    with no ``get_total_tokens()`` anywhere in the caller's code. On 3.3.1 it added same-named
-    values blind (``(current or 0) + (v or 0)``), so a bare LIST concatenated, ``[] or 0`` was
-    ``0`` because an empty list is falsy, and the mixed cases raised ``TypeError: int + list``. On
-    3.4.0 addition is gated behind ``_is_summable`` and a non-summable value silently KEEPS THE
-    FIRST and drops every later one: no crash, and no second round either.
-
-    **Since 1.17.0 that merge is no longer on the path, and the nesting is kept for a different
-    reason.** The breakdown is its own trace event (``trace.EVENT_API_ROUNDS``), recorded by
-    ``TraceRecorder.record_api_rounds``, so it never reaches dspy's ``UsageTracker`` and the
-    arithmetic above cannot touch it. What the nesting buys now is that a reader who already
-    parsed ``api_rounds["rounds"]`` off the old usage entry parses the new payload unchanged, and
-    that the trace format freezes the payload shape either way. The history above is kept because it
-    is why the shape is what it is, not because the hazard is still live. ``tests/test_dspy_compat.py``
-    still pins the nested-value-survives-a-merge property for any consumer who DOES put structured
-    data in a usage entry; no caller in this kit does.
+    **Why it is nested.** ``{"rounds": [...]}`` rather than the bare list. The breakdown is its own
+    trace event (``trace.EVENT_API_ROUNDS``), recorded by ``TraceRecorder.record_api_rounds``, so it
+    never reaches dspy's ``UsageTracker``, whose merge of a model's usage entries does not keep a
+    bare list intact. The nesting keeps the payload shape a reader already parses
+    (``api_rounds["rounds"]``), and ``tests/test_dspy_compat.py`` pins the
+    nested-value-survives-a-merge property for any consumer who DOES put structured data in a usage
+    entry; no caller in this kit does.
 
     **Why non-empty.** ``all(...)`` over an empty list is ``True``, so a guard that only checked
     "list of dicts" would CARRY ``[]``. That is not a corner case: the CLI seeds its usage
@@ -343,7 +330,7 @@ def _request_to_prompts(request: Any) -> tuple[str | None, str]:
 
     lm15 carries the system prompt in its OWN field rather than as a ``role="system"`` entry, so
     this replaces the legacy path's message split and keeps only the user-side flatten.
-    Measured on dspy 3.4.0 and 3.4.1: the sub-LM seat arrives as ``system=None`` plus one ``user``
+    The sub-LM seat arrives as ``system=None`` plus one ``user``
     message, and the planner seat as ``system=<str>`` plus one ``user`` message.
 
     **Nothing is folded in from the messages, because nothing can be there.** This function was
@@ -520,7 +507,7 @@ class _ClaudeAgentCall:
         # a required field, so there is no "omit the attribute" state the way litellm had: an
         # all-`None` `lm15.Usage` is what expresses absence, because `usage_dict` drops every
         # `None` field and then returns `{}`, and `UsageTracker.add_usage` skips an empty entry.
-        # Measured on dspy 3.4.1: an all-`None` Usage produces NO tracker entry, while a genuine
+        # Measured: an all-`None` Usage produces NO tracker entry, while a genuine
         # `Usage(0, 0, 0)` produces one holding zeroes. That is the kit's published promise
         # ("Usage may be absent, and absent is not zero"), kept by a different construction.
         #
@@ -653,12 +640,10 @@ class ClaudeAgentLM(dspy.LM):
     `intercept_sub_lm` unchanged. Sampling lm_kwargs (temperature, top_p, max_tokens, ...) are
     tolerated and ignored: the SDK exposes no sampling controls.
 
-    **`n` is the exception, and it changed meaning in 1.17.0.** dspy's `execute` runs one ENGINE
-    call per candidate (`count = call.n` once the request is canonical), where an unmanaged LM took
-    its hardcoded `n=1` branch and `n` reached `forward()` only to be dropped. So `n=k` is now k
-    separate CLI spawns against one personal subscription: measured, `n=3` was 1 spawn on 1.16.0
-    and is 3 here. The constructor WARNS above 1 rather than refusing, because a caller asking for
-    k candidates now correctly gets k and that is dspy's contract; the warning is for the other
+    **`n` is the exception.** dspy's `execute` runs one ENGINE call per candidate (`count = call.n`
+    once the request is canonical), so `n=k` is k separate CLI spawns against one personal
+    subscription. The constructor WARNS above 1 rather than refusing, because a caller asking for k
+    candidates gets k and that is dspy's contract; the warning is for the other
     case, an `n` carried over from a litellm config on the belief that this adapter ignores it.
 
     **Since 1.17.0 a CONNECTION kwarg is refused rather than ignored**, and that is dspy's doing

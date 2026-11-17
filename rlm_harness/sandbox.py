@@ -64,9 +64,8 @@ class SandboxCancelled(RuntimeError):
 class _CallerOwnedInterpreter:
     """A view of ``interp`` whose ``shutdown()`` is a no-op; every other attribute forwards.
 
-    dspy >= 3.4.0 CREATES and SHUTS DOWN one interpreter per forward pass and deleted the
-    caller-owned positional seam that used to keep a supplied interpreter the caller's. This view
-    is what keeps ``RLMTask(interpreter=...)`` working the way its contract says: dspy shuts down
+    dspy CREATES and SHUTS DOWN one interpreter per forward pass, through the factory the kit
+    passes; it has no seam for an interpreter the caller keeps owning. This view is what keeps ``RLMTask(interpreter=...)`` working the way its contract says: dspy shuts down
     the view, the real object survives every pass, and ``RLMTask._teardown_interpreter`` stays its
     single shutdown. Without it a caller's ``ScriptedInterpreter`` is destroyed after the first
     pass and a retry runs against a dead double.
@@ -374,8 +373,8 @@ def _build_sandboxed_interpreter(
 
         # The class dspy's RLM loop CATCHES, resolved for the installed dspy rather than
         # hardcoded. This IS the recoverable/terminal distinction the two raises below turn
-        # on. dspy 3.3.0 moved it: `CodeInterpreterError` became TERMINAL and the recoverable
-        # role passed to its `CodeExecutionError` subclass. Hardcoding the base class here
+        # on: `CodeInterpreterError` is TERMINAL and the recoverable role belongs to its
+        # `CodeExecutionError` subclass. Hardcoding the base class here
         # would silently turn the per-turn timeout: a SAFETY NET whose whole point is to hand
         # the model another turn: into a run-ending failure, with nothing going red to show it.
         _RecoverableExecError = recoverable_interpreter_error()
@@ -586,14 +585,10 @@ def _build_mock_interpreter() -> Any:
     """A do-nothing interpreter usable in tests without a real sandbox.
 
     Implements the FULL ``CodeInterpreter`` surface: ``tools`` / ``start`` / ``execute`` /
-    ``shutdown``, and must keep doing so. From dspy 3.3.0 that protocol is
-    ``@runtime_checkable`` and ``RLM._interpreter_context`` ``isinstance``-checks a
-    caller-supplied interpreter on EVERY forward pass, so a missing member is a run-time
-    ``TypeError``, not something a type checker or a construction test catches. ``tools`` and
-    ``start`` were absent until 1.2.1 and `interpreter="mock"` could not run a task at all
-    (it worked before only because dspy 3.2.x took the interpreter as a constructor kwarg and
-    validated nothing). Same requirement, same reason, as
-    ``rlm_harness.testing.ScriptedInterpreter``.
+    ``shutdown``, and must keep doing so. That protocol is ``@runtime_checkable`` and
+    ``RLM._interpreter_context`` ``isinstance``-checks the interpreter on EVERY forward pass, so a
+    missing member is a run-time ``TypeError``, not something a type checker or a construction test
+    catches. Same requirement, same reason, as ``rlm_harness.testing.ScriptedInterpreter``.
 
     Still dspy-free: the protocol is structural, so satisfying it needs no import.
     """

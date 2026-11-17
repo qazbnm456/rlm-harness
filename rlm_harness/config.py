@@ -316,18 +316,20 @@ class RLMConfig:
     # unnecessary one. See `sandbox.py`'s `_build_sandboxed_interpreter` for the mechanism.
     sandbox_turn_timeout_s: float | None = None
 
-    # May model code inside the sandbox build dspy sub-agents? Default ON, matching the installed
-    # dspy: from 3.4.1 `RLM` installs a `dspy` shim in the sandbox and tells the model about it, so
-    # OFF is the kit overriding dspy, not the kit's own default. What ON grants: sandboxed code may
-    # construct `Predict`/`ChainOfThought`/`ReAct`/`ReActV2`/`CodeAct`/`ProgramOfThought`/`RLM`,
-    # which run on the HOST, call this run's `sub_lm`, charge `max_llm_calls`, and may be handed the
-    # task's own tools BY NAME (never a tool that was not injected).
+    # May model code inside the sandbox build dspy sub-agents? Default ON, matching dspy: `RLM`
+    # bootstraps a session of dspy in the sandbox and tells the model about it, so OFF is the kit
+    # overriding dspy, not the kit's own default. What ON grants: sandboxed code may construct
+    # `Predict`/`ChainOfThought`/`ReAct`/`RLM` sub-agents (the ones dspy's prompt names), which run
+    # on the HOST, call this run's `sub_lm` (each call recorded as a `sub_call`), charge
+    # `max_llm_calls`, and may be handed the task's own tools BY NAME (never a tool that was not
+    # injected). OFF also skips building dspy's sandbox bundle; the container interpreter never
+    # offers sub-agents, since its Python has no dspy.
     #
     # Turn it OFF when the sandbox is the security boundary and "which model drives my tools" must
     # stay answerable: ON means the answer is "the root LM, plus any sub-agent its code builds".
-    # Also worth knowing before leaving it on: a nested `dspy.RLM` built this way records as ONE
-    # `sub_call` with only its final answer, so the inner run's turns are not in the trace at all
-    # (measured). When a child's trajectory is the point, `make_harness_tool` is the seam that
+    # Also worth knowing before leaving it on: a nested `dspy.RLM` built this way leaves no
+    # `main_step` of its own, so the inner run's turns are not in the trace. When a child's
+    # trajectory is the point, `make_harness_tool` is the seam that
     # keeps it: the child owns its own rollout and the parent records a pointer to it.
     sandbox_sub_agents: bool = True
 
@@ -339,37 +341,26 @@ class RLMConfig:
     native_reasoning: bool = False
 
     # Wall-clock cap on ONE model HTTP request ATTEMPT, passed to ``dspy.LM(timeout=...)``.
-    # ``None`` (the default) sends nothing, which is NOT the same as no cap: the provider SDK
-    # applies its own. Measured on dspy 3.4.0 + openai 2.41.0: ``DEFAULT_TIMEOUT`` is
-    # ``Timeout(connect=5.0, read=600, write=600, pool=600)``, so the effective default is 600s per
-    # attempt and this field REPLACES that number rather than introducing a bound where there was
-    # none.
-    #
-    # **The 600 used to be attributed to litellm here: the right number with the wrong owner.**
-    # litellm's ``COMPLETION_HTTP_FALLBACK_SECONDS`` is genuinely 600.0, but litellm is not on dspy
-    # 3.4.0's default path at all. ``select_backend`` returns ``native=True`` for every LM shape this
-    # kit builds (plain, with ``api_base``, with ``timeout``) and ``_engine_spec`` is ``'auto'``, so
-    # the vendored ``lm15`` engine handles the call, and there is no 600 anywhere in ``lm15``. The
-    # figures coincide, which is why verifying the NUMBER by execution never surfaced the wrong
-    # OWNERSHIP.
+    # ``None`` (the default) sends nothing, which is NOT the same as no cap: dspy's native engine
+    # bounds each wait for the reply at 600 seconds by default, and this field REPLACES that number
+    # rather than introducing a bound where there was none.
     #
     # **It does not bound a run to its own value, because an attempt is not a request.** dspy
-    # passes ``num_retries=3`` and litellm's first call hands the OpenAI SDK ``max_retries=2``, so
-    # a dead endpoint is retried. The run-level wait is a MULTIPLE of this, plus backoff. Size a
-    # caller-side budget on the multiple, not on this number.
+    # retries a failed attempt (``num_retries=3``), so a dead endpoint is retried. The run-level wait
+    # is a MULTIPLE of this, plus backoff. Size a caller-side budget on the multiple, not on this
+    # number.
     #
     # Why it exists at all: ``sandbox_turn_timeout_s`` bounds the sandbox side of a turn and
     # nothing here bounded the model side, so a consumer could not choose the number. Observed on
     # a real deployment against a self-hosted OpenAI-compatible endpoint: one request never came
     # back, the socket stayed ESTABLISHED with both queues empty, and the worker slept in
     # ``epoll_wait`` for 38 minutes at 0.3% CPU while that same endpoint answered unrelated
-    # requests in half a second. Note 600s x 4 attempts is about 40 minutes, so that observation
-    # is consistent with the litellm default being retried rather than with nothing being
-    # watching: an honest reading of it, since no attempt counter was captured at the time.
+    # requests in half a second. 600s x 4 attempts is about 40 minutes, so that observation is
+    # consistent with the default being retried rather than with nothing watching.
     #
-    # Left at ``None`` so the default stays exactly what it was before this field existed. A
-    # legitimately long turn does exist (a reasoning model assembling a large structured answer),
-    # and a consumer whose turns exceed 600s must set this UP, not merely leave it alone.
+    # Left at ``None`` so the default stays dspy's. A legitimately long turn does exist (a reasoning
+    # model assembling a large structured answer), and a consumer whose turns exceed 600s must set
+    # this UP, not merely leave it alone.
     request_timeout_s: float | None = None
 
     # Two dspy defaults this kit turns OFF, because both are properties of the RLM WORKLOAD rather
@@ -394,15 +385,13 @@ class RLMConfig:
     # cache turns each into a replay of the failure it exists to escape. Two consumers found this
     # independently, each after a "fresh attempt" finished in seconds with no model call.
     #
-    # Deliberately NOT ``dspy.configure_cache(...)``, which is the global store. On dspy 3.4.0 the
-    # per-LM flag GATES access to that store (`clients/execution.py`: ``use_cache`` is false unless
-    # ``managed``), so switching either off prevents the replay, and the per-LM one is the narrower
-    # change. It reaches only the LMs ``configure()`` BUILDS: an injected ``main_lm``/``sub_lm`` is
-    # used verbatim, as every other injected-LM rule here says, so pass ``dspy.LM(…, cache=False)``
-    # yourself if you build one. ``ClaudeAgentLM`` also needs nothing, but for a different reason
-    # since 1.17.0: it is engine-backed and therefore MANAGED, so it defaults ``cache=False`` in its
-    # own constructor rather than being inert. Before that it carried no ``_engine_spec`` and dspy
-    # skipped the cache for it whatever the flag said.
+    # Deliberately NOT ``dspy.configure_cache(...)``, which is the global store. dspy consults that
+    # store only when the LM's own flag is on (``clients/execution.py``), so switching either off
+    # prevents the replay, and the per-LM one is the narrower change. It reaches only the LMs
+    # ``configure()`` BUILDS: an injected ``main_lm``/``sub_lm`` is used verbatim, as every other
+    # injected-LM rule here says, so pass ``dspy.LM(…, cache=False)`` yourself if you build one.
+    # ``ClaudeAgentLM`` and ``AntigravityLM`` need nothing: each defaults ``cache=False`` in its own
+    # constructor.
     disable_history: bool = True
     lm_cache: bool = False
 

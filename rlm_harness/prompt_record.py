@@ -284,7 +284,7 @@ def rebuild_signature(spec: Mapping[str, Any], custom_types: Mapping[str, Any] |
     for f in spec.get("fields") or []:
         annotation = _rebuild_type(f, custom_types)
         maker = dspy.InputField if f.get("io") == "input" else dspy.OutputField
-        # `prefix` stays in the record but is not passed back: dspy 3.4 deprecates it as having no
+        # `prefix` stays in the record but is not passed back: dspy deprecates it as having no
         # effect and warns on every field. If it ever affects formatting again, `verified` shows it.
         extra = {k: v for k, v in dict(f.get("extra") or {}).items() if k != "prefix"}
         # dspy's own markers (the planner's `__dspy_reasoning_field`) are set the way dspy sets them,

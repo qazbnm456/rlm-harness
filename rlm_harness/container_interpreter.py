@@ -228,8 +228,8 @@ class ContainerInterpreter:
     ):
         self._config = config or ContainerConfig()
         self.tools: dict[str, Callable[..., Any]] = dict(tools) if tools else {}  # RLM mutates in place
-        self.output_fields: list[dict] | None = None                            # RLM sets per forward()
-        self._tools_registered = False                                             # RLM resets per forward()
+        self.output_fields: list[dict] | None = None                            # RLM sets per forward pass
+        self._tools_registered = False                                             # RLM resets per forward pass
         self._spawn = spawn
         self._sandbox: _Sandbox | None = None
         self._request_id = 0
@@ -445,7 +445,7 @@ class ContainerInterpreter:
                      "error": {"code": -32007, "message": str(exc), "data": {"type": type(exc).__name__}}}
         # Sending the reply is separate: a send failure means the sandbox died (e.g. a watchdog kill
         # raced this callback), which must surface as the interpreter error dspy CATCHES: not a
-        # bare BrokenPipeError it does not. Which class that is moved in dspy 3.3.0, so resolve it
+        # bare BrokenPipeError it does not. dspy has moved which class that is before, so resolve it
         # rather than hardcode (see `_dspy_compat.recoverable_interpreter_error`).
         from ._dspy_compat import recoverable_interpreter_error
 
@@ -528,7 +528,7 @@ class ContainerInterpreter:
         # Two DIFFERENT error classes on purpose, and the split is load-bearing:
         #   Recoverable → dspy's RLM loop catches it and hands the model another turn.
         #   CodeInterpreterError → terminal; it ends the run.
-        # dspy 3.3.0 split them and made the base TERMINAL, so raising the base everywhere
+        # The base is TERMINAL, so raising it everywhere
         # would end the whole run the first time the model's own code threw an exception in
         # the sandbox: the single most ordinary thing that happens in a REPL loop.
         # Setup/protocol failures below deliberately keep the base class.

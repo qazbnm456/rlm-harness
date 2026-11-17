@@ -515,7 +515,7 @@ def test_the_budget_is_recorded_and_reported_but_not_refused(tmp_path):
     path = _compile_like_an_optimizer(tmp_path, lambda s: WHOLESALE)
     budget = json.loads(path.read_text())[optimize.FINGERPRINT_KEY]["budget"]
     # The KIT's names, not the ones the installed dspy accepts: `_dspy_compat.rlm_budget_kwargs`
-    # resolves each cap onto the current spelling, and 3.3.x renamed one. Recording the resolved
+    # resolves each cap onto the current spelling, and dspy has renamed one before. Recording the resolved
     # names would read as a changed budget across such a rename with all three numbers identical.
     # No dspy inside the declared bound renames one, so this assertion is red only on the day the
     # distinction starts to matter, which is the day someone moves the bound.

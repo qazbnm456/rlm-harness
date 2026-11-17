@@ -8,8 +8,7 @@ process when built, because Google has not explicitly allowed this use. It goes 
 same public seam as `ClaudeAgentLM`, `configure(main_lm=..., sub_lm=...)`, or through
 `configure()`'s routing of an `"agy/<model id>"` model string by its `community.ROUTES` entry,
 and it is built the same way: an ENGINE (`complete(Request) -> Response`, passed as
-`dspy.LM(engine=...)`), never a `forward()` subclass, because dspy 3.4 deprecated that interface
-and schedules its removal for 3.5.
+`dspy.LM(engine=...)`), because an engine is the only way dspy calls a custom LM.
 
 Each LM call is one `agy` process in print mode, with no tools and none of the user's settings:
 

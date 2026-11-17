@@ -170,13 +170,12 @@ def intercept_sub_lm(
             NOT `dspy.LM.copy`. This class skips `super().__init__()` on purpose, so `history`,
             `cache` and `callbacks` keep DELEGATING to the base rather than being shadowed by
             empty copies of their own. That makes every inherited `dspy.LM` method which reads
-            state `LM.__init__` sets a landmine, and dspy 3.4.0 armed one: its new `LM.copy` reads
-            `self._engine_spec`, which falls through to `__getattr__` and raises for any base that
-            is not itself a `dspy.LM`: every duck-typed double, and `ClaudeAgentLM` too until
-            1.17.0 made it one. Do not answer that by giving the wrapper an `_engine_spec`; see
-            `_dspy_compat.copy_lm` for why stamping one on a legacy LM reroutes it.
+            state `LM.__init__` sets a landmine: `LM.copy` reads `self._engine_spec`, which falls
+            through to `__getattr__` and raises for any base that is not itself a `dspy.LM`, such
+            as every duck-typed double. Do not answer that by giving the wrapper an `_engine_spec`;
+            see `_dspy_compat.copy_lm`.
 
-            It also repairs what the inherited version got wrong on EVERY version:
+            It also repairs what the inherited version would get wrong:
             `copy(rollout_id=1)` updated the WRAPPER's decorative `kwargs` while `_base`, the
             object that actually makes the request, was shared by reference and never saw it.
             """
@@ -339,10 +338,9 @@ def model_as_tool(name: str, lm: Any, *, description: str = "") -> Callable[[str
         # it is also the one whose duration the kit can supply without the consumer doing it.
         t0 = time.perf_counter()
         outputs = lm(prompt=prompt)
-        # Read through the shim, never by indexing: dspy's LMs can return a typed response on the
-        # experimental path and the legacy list otherwise, and `outputs[0]` on the former yielded
-        # `str(response)`: the whole repr, handed to the model AND written to the trace as the
-        # tool's result. Same defect the sub-LM path carried; fixed in the same place, once.
+        # Read through the shim, never by indexing: an LM can return a typed response or a list,
+        # and `outputs[0]` on the former yields `str(response)`: the whole repr, handed to the
+        # model AND written to the trace as the tool's result.
         text = _dspy_compat.sub_lm_response_text(outputs)
         if text is None:
             text = str(outputs)

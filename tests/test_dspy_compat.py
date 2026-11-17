@@ -1,24 +1,22 @@
-"""``_dspy_compat``: the cross-dspy-version shims.
+"""``_dspy_compat``: the shims that hold every dspy fact the kit depends on.
 
-WHY THIS FILE EXISTS. dspy 3.3.0 renamed three things at once and every one of them
-failed in a way the previous suite could not see:
+WHY THIS FILE EXISTS. A dspy minor once renamed three things at once and every one of them failed
+in a way the previous suite could not see:
 
-1. ``RLM(interpreter=…)`` moved to ``forward()``'s first positional arg → a HARD
+1. The caller-owned interpreter moved to a positional argument of ``forward()`` → a HARD
    ``TypeError`` on every run, including the default pyodide path. Loud, at least.
-2. ``max_iterations`` → ``max_iters`` → the old all-or-nothing ``try`` around the
-   budget kwargs swallowed it and dropped ALL THREE caps to dspy's defaults. Silent.
-3. ``CodeInterpreterError`` stopped being the recoverable interpreter error (the new
-   ``CodeExecutionError`` subclass took that role) → a per-turn sandbox timeout, and
-   any exception the model's own code raised in the container, went from "retry next
-   turn" to "kill the run". Silent, and only visible under load.
+2. ``max_iterations`` → ``max_iters`` → the old all-or-nothing ``try`` around the budget kwargs
+   swallowed it and dropped ALL THREE caps to dspy's defaults. Silent.
+3. ``CodeInterpreterError`` stopped being the recoverable interpreter error (the
+   ``CodeExecutionError`` subclass took that role) → a per-turn sandbox timeout, and any exception
+   the model's own code raised in the container, went from "retry next turn" to "kill the run".
+   Silent, and only visible under load.
 
-The kit declares a floor AND (since 1.14.0) a cap on dspy while consumers pin the KIT. The cap
-stops a fresh install silently resolving the NEXT breaking dspy, which had happened twice; within
-the allowed range these shims are still the only thing standing between a rename and a consumer's
-rollout, and none of them can be expected to notice any of the above. These tests assert the shim's CONTRACT against the installed dspy, so the next rename
-lands here as a red test instead of in someone's rollout. That is why they survived the 1.2.0
-floor bump: the shims now resolve a single answer each, but these are what make the NEXT
-rename loud.
+The kit supports one dspy minor (``>=3.5.0,<3.6.0``) while consumers pin the KIT. The cap stops a
+fresh install silently resolving the NEXT breaking dspy; within the allowed range these shims are
+still the only thing standing between a rename and a consumer's rollout. These tests assert each
+shim's CONTRACT against the installed dspy, so the next rename lands here as a red test instead of
+in someone's rollout.
 """
 
 from __future__ import annotations
@@ -48,8 +46,6 @@ def _clear_caches():
         _dspy_compat.recoverable_interpreter_error,
         _dspy_compat.terminal_interpreter_error,
         _dspy_compat._lm_error_classes,
-        _dspy_compat._dspy_reads_execution_instructions,
-        _dspy_compat._lm_response_cls,
         _dspy_compat.python_fence_langs,
         _dspy_compat.forced_final_marker,
     ):
@@ -65,7 +61,6 @@ def _clear_caches():
         _dspy_compat.recoverable_interpreter_error,
         _dspy_compat.terminal_interpreter_error,
         _dspy_compat._lm_error_classes,
-        _dspy_compat._dspy_reads_execution_instructions,
     ):
         fn.cache_clear()
 
@@ -139,11 +134,10 @@ def test_budget_prefers_the_newest_alias(monkeypatch):
 
 
 def test_the_interpreter_seam_still_exists_on_this_dspy():
-    """THE tripwire for the seam, and it has moved twice now.
+    """THE tripwire for the seam, which dspy has moved before.
 
-    3.3.0 made a caller-owned interpreter the first POSITIONAL argument of `forward`/`aforward`;
-    3.4.0 deleted that parameter, made both keyword-only, and left `interpreter_factory=` as the
-    only way in. This asserts the CURRENT seam unconditionally: making it mirror the shim would
+    `interpreter_factory=` on the constructor is the only way in: `forward`/`aforward` take no
+    interpreter. This asserts the CURRENT seam unconditionally: making it mirror the shim would
     make it a tautology and the seam would be untestable by construction.
     """
     name = _dspy_compat._interpreter_factory_param()
@@ -161,10 +155,10 @@ def test_the_interpreter_seam_still_exists_on_this_dspy():
 def test_dspy_ACTUALLY_INVOKES_the_factory_it_is_given():
     """The assertion the previous design lacked, which is why its break was silent.
 
-    Until 1.14.0 the kit passed an `interpreter_factory` purely as a metadata carrier that raised
-    if called, on the premise that dspy never would. dspy 3.4.0 calls it unconditionally, and
-    nothing here asserted the premise, so the guard fired in production instead of in CI. Now the
-    factory really supplies the interpreter, so "dspy calls it" is the contract, not a hazard.
+    An earlier design passed an `interpreter_factory` purely as a metadata carrier that raised if
+    called, on the premise that dspy never would. dspy calls it unconditionally, and nothing
+    asserted the premise, so the guard fired in production instead of in CI. The factory really
+    supplies the interpreter, so "dspy calls it" is the contract, not a hazard.
     """
     calls = []
 
@@ -237,9 +231,9 @@ def test_sandbox_cancelled_is_never_caught_as_an_interpreter_error():
     assert not issubclass(SandboxCancelled, CodeInterpreterError)
     assert not issubclass(SandboxCancelled, _dspy_compat.recoverable_interpreter_error())
     assert not issubclass(SandboxCancelled, _dspy_compat.terminal_interpreter_error())
-    # dspy 3.3.1 re-parented CodeInterpreterError under DSPyError. `SandboxCancelled` stands
-    # OUTSIDE dspy's hierarchy entirely, and that is what makes it non-recoverable on every
-    # version, so pin the new root too, not just the leaf that moved.
+    # CodeInterpreterError sits under DSPyError. `SandboxCancelled` stands OUTSIDE dspy's hierarchy
+    # entirely, and that is what makes it non-recoverable whatever dspy catches, so pin the root
+    # too, not just the leaf.
     assert not issubclass(SandboxCancelled, dspy.DSPyError)
 
 
@@ -332,15 +326,6 @@ def test_every_interpreter_the_kit_ships_describes_itself():
         # ...and the shim actually carries it, rather than the attribute being decorative.
         factory = next(iter(_kwargs_for(interp).values()))
         assert factory.execution_instructions == text
-
-
-def test_no_text_is_stamped_when_dspy_does_not_render_it(monkeypatch):
-    """A dspy that never renders the text gets no stamp: the shim resolves that by introspection
-    rather than by version, so a dspy without the feature is simply not given a string it would
-    ignore. The factory itself still goes, because it is the only way to supply the interpreter."""
-    monkeypatch.setattr(_dspy_compat, "_dspy_reads_execution_instructions", lambda: False)
-    factory = next(iter(_kwargs_for(_Descriptive()).values()))
-    assert not getattr(factory, "execution_instructions", "")
 
 
 # ---- fast-failing non-retryable LM errors -----------------------------------------
@@ -459,10 +444,9 @@ def test_var_keyword_signature_falls_back_to_the_current_names(monkeypatch):
     """A dspy whose ``RLM.__init__`` is ``(*args, **kwargs)`` tells us nothing: probing names
     proves nothing, so send the names this kit currently targets and let the constructor judge.
 
-    This branch is STILL LIVE after the 3.3.0 floor (`_rlm_init_takes_var_keyword` has a real
-    caller), and it reads `candidates[-1]`. Shrinking `_BUDGET_ALIASES` therefore CHANGED what
-    it sends. This test is the only coverage of that, which is why it was updated rather than
-    deleted with the other two-version cases."""
+    This branch is live (`_rlm_init_takes_var_keyword` has a real caller), and it reads
+    `candidates[-1]`, so changing `_BUDGET_ALIASES` changes what it sends. This test is the only
+    coverage of that."""
 
     def _opaque(self, *args, **kwargs):
         ...
@@ -497,23 +481,17 @@ def test_copy_lm_asks_the_TYPE_not_the_instance():
 
 
 def test_copy_lm_delegates_to_dspys_own_copy_for_a_real_LM():
-    """A real `dspy.LM` knows how to copy itself, including the private state 3.4.0's `LM.copy`
-    reads; the shim must defer to it rather than shallow-copying around it."""
+    """A real `dspy.LM` knows how to copy itself, including the private state `LM.copy` reads; the shim must defer to it rather than shallow-copying around it."""
     lm = dspy.LM("openai/gpt-4o-mini", api_key="x")
     assert _dspy_compat.copy_lm(lm, rollout_id=7).kwargs["rollout_id"] == 7
     assert lm.kwargs.get("rollout_id") is None, "the original was mutated"
 
 
 def test_a_copied_subscription_lm_still_routes_through_its_own_engine():
-    """`copy_lm` must not quietly hand a subscription variant to litellm.
+    """`copy_lm` must not quietly lose a subscription LM's engine.
 
-    This replaces a pin whose premise 1.17.0 inverted. Until then `ClaudeAgentLM` was a legacy
-    `BaseLM` and the pin was that it took `BaseLM.copy` rather than `LM.copy`, because `LM.copy`
-    reads `self._engine_spec` and stamping one on to satisfy it would have rerouted every
-    subscription call through litellm. The class is now an engine-backed `dspy.LM`, so there is
-    nothing to stamp, and the risk moved rather than vanished: `copy_lm` is used for a
-    `rollout_id` variant, and a copy that lost its engine is exactly the silent reroute the old
-    test was built against. `_dspy_compat.copy_lm`'s docstring carries the history.
+    `copy_lm` is used for a `rollout_id` variant, and a copy that lost its engine would send every
+    later call somewhere else, silently.
     """
     import os
     import types
@@ -557,67 +535,29 @@ def test_copy_lm_merges_updates_into_kwargs_when_the_base_has_no_copy():
     assert base.kwargs == {"temperature": 0}, "the original was mutated"
 
 
-def test_copy_with_probes_the_protocol_rather_than_calling_model_copy():
-    """3.4's lm15 types are FROZEN DATACLASSES (`dataclasses.replace`); 3.3's were pydantic
-    (`model_copy(update=...)`). Both shapes go through one call site, so neither is written down."""
-    import dataclasses
-
-    @dataclasses.dataclass(frozen=True)
-    class _Frozen:
-        text: str
-
-    class _Pydanticish:
-        def __init__(self, text):
-            self.text = text
-
-        def model_copy(self, update):
-            return _Pydanticish(update["text"])
-
-    assert _dspy_compat._copy_with(_Frozen("a"), text="b").text == "b"
-    assert _dspy_compat._copy_with(_Pydanticish("a"), text="b").text == "b"
-
-
 def _typed_response(*texts):
-    """dspy's typed sub-LM response carrying `texts` as separate text parts, on either layout.
+    """dspy's typed sub-LM response carrying `texts` as separate text parts, built from dspy's own
+    types rather than a stub, because the point is to pin the shim against the real shape."""
+    from dspy.lm15 import Message, Response, TextPart, Usage
 
-    3.4.0 replaced `dspy.LMResponse` (a LIST of `.outputs`) with `dspy.lm15.Response` (one
-    `.message`), so this builds whichever the installed dspy has. Built from dspy's own types
-    rather than a stub, because the point is to pin the shim against the real shape.
-    """
-    if getattr(dspy, "lm15", None) is not None:
-        from dspy.lm15 import Message, Response, TextPart, Usage
-
-        return Response(id=None, model="m", finish_reason="stop", usage=Usage(),
-                        message=Message(role="assistant",
-                                        parts=tuple(TextPart(text=t) for t in texts)))
-    from dspy.clients.base_lm import LMResponse
-    from dspy.core.types import LMOutput, LMTextPart
-
-    return LMResponse(model="m", outputs=[LMOutput(parts=[LMTextPart(text=t) for t in texts])])
+    return Response(id=None, model="m", finish_reason="stop", usage=Usage(),
+                    message=Message(role="assistant", parts=tuple(TextPart(text=t) for t in texts)))
 
 
 # ---- the sub-LM response contract --------------------------------------------------------------
 
 
 def test_sub_lm_response_shims_round_trip_both_shapes_dspy_accepts():
-    """`RLM._query_lm` accepts a typed `LMResponse` OR the legacy `list[str | dict]`. Both shims
-    must read and rebuild each without changing the type or touching the original.
-
-    Pinned HERE because `sub_lm.py` used to encode this convention at the call site: it collapsed
-    anything non-list into `[outputs]`, so an `LMResponse` became `[LMResponse]` and dspy raised.
-    That break was invisible on the default path, fired only under `experimental=True`, and dspy's
-    own docs date the legacy shape: "In DSPy 3.3 and 3.4, ordinary calls preserve the legacy
-    public return value". A version that changes the contract goes red here rather than silently
-    in every consumer."""
-    typed_cls = _dspy_compat._lm_response_cls()
-    assert typed_cls is not None, "this dspy exposes no typed response; the branch is unreachable"
+    """`RLM._query_lm` accepts an lm15 `Response` OR the `list[str | dict]` a string call returns.
+    Both shims must read and rebuild each without changing the type or touching the original.
+    Wrapping a typed response in a list makes dspy raise, so the shape is pinned here."""
     typed = _typed_response("hello")
     for original, expected in ((typed, "hello"), (["hello"], "hello"), ([{"text": "hello"}], "hello")):
         assert _dspy_compat.sub_lm_response_text(original) == expected
         rebuilt = _dspy_compat.sub_lm_response_with_text(original, "REPLACED")
         assert _dspy_compat.sub_lm_response_text(rebuilt) == "REPLACED"
         assert _dspy_compat.sub_lm_response_text(original) == expected, "the original was mutated"
-    assert type(_dspy_compat.sub_lm_response_with_text(typed, "R")) is typed_cls
+    assert type(_dspy_compat.sub_lm_response_with_text(typed, "R")) is dspy.lm15.Response
 
 
 def test_a_typed_responses_text_JOINS_its_text_parts():
@@ -626,8 +566,8 @@ def test_a_typed_responses_text_JOINS_its_text_parts():
     it return only the FIRST part, dropping the later ones would become wrong and this is where
     that surfaces. The alternative is a silently truncated sub-LM answer.
 
-    The SEPARATOR is not asserted, only the joining: 3.3 used "" and 3.4 uses "\n", and the shim
-    is correct either way. What must stay true is that more than one part contributes."""
+    The SEPARATOR is not asserted, only the joining: the shim is correct for any separator. What
+    must stay true is that more than one part contributes."""
     joined = _typed_response("A", "B").text
     assert "A" in joined and "B" in joined
     assert joined != "A", "only the first text part reached `.text`; the shim now truncates"
@@ -908,25 +848,22 @@ def test_the_aggregator_survives_a_nested_value_on_this_dspy():
 
     `get_total_tokens()` merges a model's entries, and dspy calls it ITSELF from `Module.__call__`
     whenever `dspy.configure(track_usage=True)` is set, so whatever it does with a value that is
-    not a count happens inside a caller who never wrote `get_total_tokens`. WHAT it does is
-    dspy-VERSION-DEPENDENT and is deliberately NOT asserted here: 3.3.1 added same-named values
-    blind (`(current or 0) + (v or 0)`, which concatenated two lists and raised
-    `TypeError: int + list` on the mixed case), while 3.4.0 gates addition behind `_is_summable`
-    and otherwise keeps the FIRST value, dropping later ones silently. Pinning either arithmetic
-    asserts something the kit does not depend on, and reddens on the next upstream tidy-up, which
-    is exactly what 3.4.0 did with no defect behind it.
+    not a count happens inside a caller who never wrote `get_total_tokens`. WHAT it does with a bare
+    list has changed between dspy versions (one raised `TypeError: int + list`, one keeps the FIRST
+    value and drops later ones silently) and is deliberately NOT asserted here: pinning either
+    arithmetic asserts something the kit does not depend on, and reddens on the next upstream
+    tidy-up.
 
     **A merged entry CAN reach the trace, so "the kit never reads a merge" would be too strong.**
-    The kit reads `tracker.usage_data` per call, but since 3.4.0 dspy merges for it in one place:
+    The kit reads `tracker.usage_data` per call, but dspy merges for it in one place:
     `call_result.combine()` folds usage when a single LM call yields several results, and
     `finalize` records the MERGED dict. Nesting is what keeps such an entry readable rather than
     arithmetic, and the trace format freezes the shape regardless: see
     `claude_agent_lm._api_rounds`.
 
-    The kit's contract is therefore narrow and holds on both versions: a dict-nested value REACHES
-    the merged result, in either call order, and the merge does not raise. A BARE list is what has
-    no defined outcome across versions (a crash on 3.3.1, silent truncation on 3.4.0), which is
-    the whole reason the payload nests.
+    The kit's contract is therefore narrow: a dict-nested value REACHES the merged result, in
+    either call order, and the merge does not raise. A BARE list is what has no defined outcome
+    across versions, which is the whole reason the payload nests.
     """
     from dspy.utils.usage_tracker import track_usage
 
@@ -938,7 +875,7 @@ def test_the_aggregator_survives_a_nested_value_on_this_dspy():
 
     nested = {"x": {"rounds": [{"a": 1}]}}
     for merged in (
-        totals(nested, {}),                              # WITH then WITHOUT: the 3.3.1 raiser
+        totals(nested, {}),                              # WITH then WITHOUT: the order that raised
         totals({}, nested),
         totals(nested, {"x": {"rounds": [{"a": 2}]}}),    # both carry one
     ):
@@ -947,14 +884,10 @@ def test_the_aggregator_survives_a_nested_value_on_this_dspy():
         assert isinstance(rounds, list) and {"a": 1} in rounds, "the nested value was dropped"
 
     # THE NEGATIVE HALF, which is the entire reason `_api_rounds` nests rather than a nicety. A
-    # BARE list survives intact on NEITHER version, and the two fail differently, which is why the
-    # assertion is written as "does not survive" rather than naming an outcome. Measured, both:
-    #   3.3.1, both entries carry a list -> concatenates in REVERSED order, `[{a:2},{a:1}]`
-    #   3.3.1, only one carries one      -> `TypeError: int + list`
-    #   3.4.0, either                    -> keeps the FIRST and silently drops the rest
-    # So for the both-carry input below it is the REVERSAL that fails the equality on 3.3.1, not a
-    # raise; the `except` covers the mixed shape rather than this one. That reversal fact was in a
-    # comment 1.14.0 deleted, which is why it is written down again here.
+    # BARE list does not survive intact, and dspy versions have failed it differently (a reversed
+    # concatenation, a `TypeError` on the mixed shape, or keeping only the FIRST), which is why the
+    # assertion is written as "does not survive" rather than naming an outcome; the `except` covers
+    # the version that raised.
     bare_survived = False
     try:
         flat = totals({"x": [{"a": 1}]}, {"x": [{"a": 2}]})
@@ -1272,9 +1205,9 @@ def test_the_interpreter_factory_the_kit_supplies_is_the_one_it_can_read_back():
 
 def test_configure_reaches_litellm_after_dspy_with_numpy_loaded():
     """`configure` sets litellm's transport inside a try that swallows every failure, so only a test
-    of the outcome would notice the import breaking. It broke on dspy 3.4.0, whose lazy proxy for
-    openai made `import litellm` after `import dspy` fail when numpy was installed; the floor is
-    3.4.1 for that reason. litellm's default is False, so True here means `configure` set it."""
+    of the outcome would notice the import breaking. It has broken before: a dspy whose lazy proxy for
+    openai made `import litellm` after `import dspy` fail when numpy was installed. litellm's default
+    is False, so True here means `configure` set it."""
     code = (
         "import numpy, dspy\n"
         "from dspy.utils.dummies import DummyLM\n"

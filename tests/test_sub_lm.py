@@ -126,22 +126,15 @@ def test_bind_recorder_to_sub_lm_is_a_noop_without_a_recorder():
 # raised "Sub-LM response must contain text": invisible on the default path and fatal under
 # `dspy.context(experimental=True)`.
 #
-# The typed CLASS and its LAYOUT both moved in dspy 3.4.0: `dspy.LMResponse` with a LIST of
-# `.outputs` became `dspy.lm15.Response` with a single `.message`. These helpers resolve it the
-# way the shim does, off the installed dspy, so the test exercises the real class dspy branches on
-# rather than a shape this file invented.
+# The typed class is `dspy.lm15.Response`, with a single `.message`. These helpers build it from
+# dspy's own types, so the test exercises the real class dspy branches on rather than a shape this
+# file invented.
 
 _TYPED_CLS = dspy.lm15.Response
 
 
 def _typed(*texts, extra_parts=()):
-    """dspy's typed response carrying `texts` as separate text parts.
-
-    Single-version on purpose: the kit's floor is dspy >= 3.4.1, so there is no 3.3 layout to
-    build. A dual-version helper here would be dead code claiming support the CHANGELOG declines,
-    and the one that briefly existed was itself broken (3.3.1's thinking part takes `text`, not
-    `thinking`), which is what dead branches do.
-    """
+    """dspy's typed response carrying `texts` as separate text parts."""
     from dspy.lm15 import Message, Response, TextPart, Usage
 
     parts = tuple(TextPart(text=t) for t in texts) + tuple(extra_parts)
@@ -168,7 +161,7 @@ def _as_dspy_reads_it(response):
         first = response[0]
         text = first.get("text") if isinstance(first, dict) else first
     else:
-        raise TypeError(f"Sub-LM must return LMResponse or a non-empty list, got {type(response).__name__}.")
+        raise TypeError(f"Sub-LM must return a Response or a non-empty list, got {type(response).__name__}.")
     if not isinstance(text, str):
         raise TypeError(f"Sub-LM response must contain text, got {type(text).__name__}.")
     return text
@@ -187,7 +180,7 @@ class ShapedLM:
 
 
 def test_a_typed_response_survives_dspys_own_return_handling():
-    """THE regression. Red before with `TypeError: ... got LMResponse`."""
+    """THE regression: a typed response wrapped in a list made dspy raise."""
     wrapped = intercept_sub_lm(ShapedLM(_typed("hi there")))
     assert _as_dspy_reads_it(wrapped(prompt="q")) == "hi there"
 
@@ -223,12 +216,11 @@ def test_substitution_replaces_ALL_text_of_a_multi_part_response():
     The postprocessor has to CHANGE the text, and that is the whole reason this reads `str.lower`
     rather than `str.upper`. With `str.upper` over parts "A" and "B" the pipeline is a no-op, the
     shim correctly returns dspy's own object by identity, no rebuild happens at all, and the
-    assertion passes without ever exercising the substitution it is named for. It was written that
-    way and passed for that reason on both dspy versions.
+    assertion passes without ever exercising the substitution it is named for.
 
-    The JOINER is read off dspy rather than written down: 3.3 joined with "" and 3.4 with "\n", and
-    hardcoding either would assert the kit against one dspy instead of against the property that
-    matters, which is that no un-substituted tail survives."""
+    The JOINER is read off dspy rather than written down: hardcoding it would assert the kit against
+    one dspy instead of against the property that matters, which is that no un-substituted tail
+    survives."""
     joined = _typed("A", "B").text
     assert joined.lower() != joined, "the postprocessor must change the text or this proves nothing"
     base = ShapedLM(_typed("A", "B"))
@@ -238,11 +230,8 @@ def test_substitution_replaces_ALL_text_of_a_multi_part_response():
 
 
 def _parts_of(response):
-    """The parts of a typed response, on either layout (3.4 `.message`, 3.3 `.outputs[0]`)."""
-    container = getattr(response, "message", None)
-    if container is None:
-        container = response.outputs[0]
-    return list(container.parts)
+    """The parts of a typed response's message."""
+    return list(response.message.parts)
 
 
 def test_substitution_leaves_non_text_parts_and_sibling_fields_alone():
@@ -255,8 +244,8 @@ def test_substitution_leaves_non_text_parts_and_sibling_fields_alone():
 
 
 def test_model_as_tool_reads_a_typed_response_too():
-    """The same defect lived 60 lines away: `outputs[0]` on an `LMResponse` handed the model
-    `str(LMResponse)`, the whole repr, and wrote it to the trace as the tool's result."""
+    """`outputs[0]` on a typed response would hand the model `str(response)`, the whole repr, and
+    write it to the trace as the tool's result."""
     tool = model_as_tool("l", ShapedLM(_typed("THE ANSWER")))
     assert getattr(tool, "func", tool)(prompt="q") == "THE ANSWER"
 
@@ -383,13 +372,9 @@ def test_delegation_reaches_the_base_lms_own_attributes():
 def test_the_typed_shape_the_kit_supports_is_the_one_dspys_OWN_SOURCE_branches_on():
     """`_as_dspy_reads_it` above is a MIRROR of `RLM._query_lm`, and a mirror can drift.
 
-    This pins the mirror against dspy's real source instead of against a shape this file invented.
-    It replaces a test that drove dspy into producing a typed response under
-    `dspy.context(experimental=True)`: on 3.4.0 an ordinary `lm(prompt=...)` returns the LEGACY
-    list on every path (its engine answers through `complete_legacy`), so dspy no longer
-    manufactures the typed shape here and that test could only have been made green by asserting
-    less. dspy still ACCEPTS it, which is the property the kit's typed branch exists for, so that
-    is what gets pinned: the class the kit resolves is the class dspy's own `isinstance` names.
+    This pins the mirror against dspy's real source instead of against a shape this file invented:
+    the class the kit's shims read is the class dspy's own `isinstance` names, and a string call's
+    list is the other shape it accepts.
     """
     import inspect
 
@@ -399,9 +384,9 @@ def test_the_typed_shape_the_kit_supports_is_the_one_dspys_OWN_SOURCE_branches_o
     assert "def _query_lm" in source
     body = source[source.index("def _query_lm"):]
     body = body[:body.index("if not isinstance(text, str)")]
-    assert "lm15.Response" in body or "LMResponse" in body, (
-        "dspy's _query_lm no longer branches on a typed response; re-point "
-        "`_dspy_compat._lm_response_cls` and this mirror at whatever it accepts now."
+    assert "lm15.Response" in body, (
+        "dspy's _query_lm no longer branches on lm15.Response; re-point "
+        "`_dspy_compat.sub_lm_response_text` and this mirror at whatever it accepts now."
     )
     assert _TYPED_CLS is not None, "the kit resolved no typed class from this dspy"
     assert _TYPED_CLS.__name__ in body, (

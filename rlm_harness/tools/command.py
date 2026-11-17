@@ -88,11 +88,9 @@ def make_command_tool(
     """Wrap an ISOLATED, caller-supplied (SYNC) ``runner`` into a sync ``run_command``
     tool for ``RLMTask(tools=…)``.
 
-    SYNC because dspy.RLM's interpreter invokes tools with a plain call. On dspy 3.4.0 a
-    coroutine return is then handed to ``_await_in_sync``, which calls ``run_until_complete`` on
-    the loop ``RLMTask.arun`` is already running, so an ``async def`` tool raises
-    ``RuntimeError: This event loop is already running`` (before 3.4.0 it silently returned an
-    un-awaited coroutine instead). Broken either way, so ``runner`` must be sync too.
+    SYNC, like every tool the kit hands dspy.RLM (see ``docs/INVARIANTS.md``): the kit's tool seams
+    (timing, the recorder, ``run_isolated``) are built for a plain call, so ``runner`` must be sync
+    too.
 
     The wrapper runs the optional ``guard`` first (a refusal short-circuits BEFORE the
     runner), turns a runner exception into a short string (rather than raising) so the RLM

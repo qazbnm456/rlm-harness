@@ -4,7 +4,7 @@ Two sources must be merged to get a complete picture of an RLM-as-harness run:
 
 1. The main LM's REPL trajectory, which ``dspy.RLM`` already returns on the
    ``Prediction`` object as ``trajectory`` (a list of ``{reasoning, code,
-   output}`` dicts, verified against dspy 3.3.0) plus ``final_reasoning``.
+   output}`` dicts) plus ``final_reasoning``.
 2. The intercepted sub-LM pipeline and any LM-decided tool calls, which live
    *inside* the intercepted ``sub_lm`` / tool wrappers and are therefore invisible
    to the RLM trajectory. These are exactly the steps most valuable for Agentic RL.
@@ -66,8 +66,7 @@ EVENT_RUN_END = "run_end"
 #: It carries what `run_end.payload.usage[...]["api_rounds"]` carried until 1.16.0, and the move was
 #: forced rather than chosen: an engine-based LM's usage reaches dspy's tracker through
 #: `dspy.clients.call_result.usage_dict`, which REBUILDS a fixed key set off the typed `lm15.Usage`
-#: and passes nothing else through, so the breakdown could not ride along any more (measured on
-#: dspy 3.4.1: present on the legacy `forward()` path, absent on the engine path). Nor could the kit
+#: and passes nothing else through, so the breakdown cannot ride along. Nor could the kit
 #: put it back beside the right entry afterwards: a tracker entry carries no per-call identity, so
 #: only position could match it, and position is unsound once dspy owns retries and
 #: `llm_query_batched` fans calls across threads. As its own event it needs no correlation, and
@@ -153,7 +152,7 @@ def _ensure_tool_timing(tool: Any) -> Any:
       ``typing.get_type_hints``; both follow ``__wrapped__``, the latter to reach the original
       module's globals, which matters because every ``tools/*.py`` uses
       ``from __future__ import annotations``, so the annotations ``wraps`` copies are STRINGS that
-      only resolve there. Verified against dspy 3.3.1 on the 3.11 floor.
+      only resolve there.
 
     One capability this costs, latent rather than observed: a wrapped module-level tool stops being
     PICKLABLE. ``wraps`` copies ``__qualname__``, so ``pickle``'s ``save_global`` identity check
@@ -249,7 +248,7 @@ def recorder_scope(recorder: TraceRecorder | None) -> Iterator[None]:
 
     A ``ContextVar`` is NOT inherited by a thread a ``ThreadPoolExecutor`` spawns unless the caller
     copies the context across, and re-establishing the recorder per call inside the worker is what
-    makes the binding independent of whether it does. **dspy 3.4.0 does copy it**:
+    makes the binding independent of whether it does. **dspy does copy it**:
     ``llm_query_batched`` submits with ``contextvars.copy_context().run``, so its workers DO see the
     recorder today, which is why a batched escalation's usage reaches the trace (CHANGELOG 1.13.0).
     What this still buys is the case with no copying at all: ``tools/_async.py``'s ``run_isolated``

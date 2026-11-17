@@ -416,7 +416,7 @@ def test_the_kit_turns_off_dspy_history_and_the_lm_cache_by_default():
 
     `disable_history` is a dspy SETTINGS key with no per-LM equivalent, so `configure()` sets it
     globally. `cache` is a `dspy.LM` kwarg, and the per-LM flag is deliberately the whole mechanism:
-    on dspy 3.4.0 it GATES access to the global store, so `dspy.configure_cache` would be surface
+    dspy consults the global store only when it is on, so `dspy.configure_cache` would be surface
     covering only an injected LM, which this kit uses verbatim by invariant.
     """
     dspy = pytest.importorskip("dspy")
