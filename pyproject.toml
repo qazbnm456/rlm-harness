@@ -29,52 +29,21 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # FLOOR 3.4.1 since rlm-harness 1.21.0 (3.4.0 since 1.14.0, 3.3.1 since 1.5.0, 3.3.0 since
-    # 1.2.0). 3.4.1 rather than 3.4.0 because 3.4.0 registers its lazy-import proxy for openai in
-    # `sys.modules`, and importing a submodule under it re-enters the proxy: with numpy installed,
-    # `import dspy; import litellm` raised a circular ImportError, which `configure` swallowed,
-    # silently skipping litellm's transport setting. 3.4.1 keeps its proxies out of `sys.modules`.
-    # The kit already ran on 3.4.1 (supported since 1.16.0, below), so raising the floor retired a
-    # workaround rather than adding one. The 3.4.0 floor itself was required, not
-    # preferred: 3.4.0 DELETED the positional interpreter argument of `RLM.forward`/`aforward`, so
-    # on it `interpreter_factory=` is the only way the kit can supply its own sandbox, and it
-    # deleted `dspy.LMResponse` in favour of the differently-shaped `dspy.lm15.Response`. The kit
-    # could have carried both, and it is one branch in one shim, but the tripwire that CAUGHT this
-    # break (`test_the_interpreter_seam_still_exists_on_this_dspy`) can then no longer make a
-    # single unconditional assertion, and trading the detector away to keep a dspy whose APIs are
-    # gone is the wrong side of that bargain.
-    #
-    # AND AN UPPER BOUND, reversing the policy this comment used to state. "No cap, the
-    # dspy-latest workflow is the defence instead" was tested twice and broke a consumer both
-    # times: 3.3.0 renamed three things (CHANGELOG 1.0.1) and 3.4.0 removed the interpreter seam,
-    # and in each case a fresh install of the CURRENT release silently resolved the breaking dspy.
-    # The detector worked; it cannot protect an install that happens before anyone reads it.
-    #
-    # `<3.5.0` rather than `==3.4.0`: dspy has announced the next break AND its number, since
-    # several 3.4.0 deprecations say "removal in 3.5", so the cap is upstream's own boundary
-    # rather than a guess, and 3.4.x patches still reach consumers. An exact pin would also block
-    # any consumer whose other dependencies resolve dspy differently.
-    #
-    # Measured, because the obvious objection is that a cap makes `dspy-latest.yml` decorative:
-    # it does not. `uv run --with "dspy==<newer>"` OVERRIDES this bound, so that workflow still
-    # installs and tests the newest dspy and still goes red the day 3.5.0 ships, which is exactly
-    # when the next floor bump is due.
-    #
-    # 1.15.2 tightened this to `<3.4.1` and 1.16.0 lifts it back, having met the two conditions
-    # that comment set. 3.4.1 is a patch release that changes what a run does: it installs a
-    # sandbox "dspy facade" with an extra `execute` before the first turn, appends a sub-agent
-    # paragraph to every RLM prompt, and charges sub-agent LM calls to `max_llm_calls`. Both
-    # blockers are handled and pinned by tests that go red without the fix: the extra `execute`
-    # no longer consumes a `ScriptedInterpreter` step, and a turn-timeout restart replays the
-    # facade install (measured: `import dspy` in model code failed after a restart before this,
-    # while the prompt still offered sub-agents). `RLMConfig.sandbox_sub_agents` turns the
-    # capability off for a consumer who wants the sandbox boundary unchanged.
-    "dspy>=3.4.1,<3.5.0",
-    # 2.11 is dspy 3.4.1's own floor (and 3.4.0's). Declaring less would be a floor the kit cannot run on.
+    # dspy 3.5.x only. The cap is the next minor: each dspy minor so far has renamed or removed an API
+    # the kit uses, and a fresh install must never resolve one the kit was not tested on.
+    # `uv run --with "dspy==<newer>"` overrides the bound, which is how `dspy-latest.yml` still tests
+    # the newest release. litellm is not a dependency: see the `litellm` extra.
+    "dspy>=3.5.0,<3.6.0",
+    # dspy 3.5.0's own floor. Declaring less would be a floor the kit cannot run on.
     "pydantic>=2.11.0",
 ]
 
 [project.optional-dependencies]
+# dspy's litellm engine, for a model string dspy's native engine cannot route (`configure()` names
+# this extra when one needs it) and for `engine="litellm"` in a role's kwargs.
+litellm = [
+    "dspy[litellm]",
+]
 # Observability is opt-in: the scaffold runs without it.
 observe = [
     "langfuse>=4.6.1",
@@ -159,6 +128,8 @@ dev = [
     # The comparison half of the memory-vectors extra, so CI runs the real similarity code; the
     # model runtime (onnxruntime, tokenizers) is faked in the tests and never installed there.
     "numpy>=2",
+    # The litellm engine route is tested end to end, so the suite installs what the `litellm` extra does.
+    "dspy[litellm]",
 ]
 
 [tool.pytest.ini_options]
