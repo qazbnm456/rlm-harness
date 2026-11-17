@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -365,6 +366,31 @@ def test_the_prompt_travels_on_stdin_and_never_in_argv(agy):
     assert _stdin_event(call) == {"event": "user", "message": {"role": "user", "content": prompt}}
     # Either end, so a TRUNCATED copy in argv (which would dodge E2BIG and still be wrong) is caught.
     assert not any("QUOKKA" in arg for arg in call["argv"])
+
+
+def test_the_kill_guard_starts_while_the_prompt_file_is_still_open(agy, monkeypatch):
+    """Nothing may run between starting `agy` and the `try` that kills it on any exception, as in
+    `subprocess.run`. Closing the prompt file in between was such a step: an exception there
+    left `agy` running. So the file is still open when the wait starts."""
+    opened = []
+    real = tempfile.TemporaryFile
+
+    def recording(*args, **kwargs):
+        opened.append(real(*args, **kwargs))
+        return opened[-1]
+
+    seen = []
+    real_wait = antigravity_lm._AgyCall._wait
+
+    def wait(self, proc, deadline, cancelled):
+        seen.append([f.closed for f in opened])
+        return real_wait(self, proc, deadline, cancelled)
+
+    monkeypatch.setattr(antigravity_lm.tempfile, "TemporaryFile", recording)
+    monkeypatch.setattr(antigravity_lm._AgyCall, "_wait", wait)
+    _complete(agy.lm())
+    assert seen == [[False]], "the prompt file was closed before the kill guard started"
+    assert all(f.closed for f in opened), "the prompt file outlived the call"
 
 
 def test_a_long_prompt_reaches_an_agy_that_is_slow_to_read_it(agy):

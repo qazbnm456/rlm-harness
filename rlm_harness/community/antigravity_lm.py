@@ -45,7 +45,12 @@ described with each claim so the next version can be checked the same way.
   144,610-byte prompt sent as a stream-json user event arrived whole: the model answered with a
   word stated only on its last line. That was measured with stdin as a pipe. Stdin is now a
   `tempfile.TemporaryFile` holding the same event (`_AgyCall._run` says why), and on `agy` 1.5.9
-  on 2026-11-15 a 147,449-byte prompt sent that way was answered the same.
+  on 2026-11-15 a 147,449-byte prompt sent that way was answered the same. So every call writes
+  its prompt to disk while it runs: the file is created in `tempfile.gettempdir()` (`TMPDIR`,
+  `TEMP` or `TMP` when set) with the same rules as `mkstemp()`, and is deleted when the call ends.
+  In Python's words, under Unix its directory entry "is either not created at all or is removed
+  immediately after the file is created"; on other platforms, Windows included, it has a visible
+  name in that directory until then.
 - **Failure is `status != "SUCCESS"`, a `finished_reason`, or a non-zero exit.** A bad model id
   exits 1 with `status: "ERROR"` and an `error` string naming the models the account can use.
   `finished_reason` is set only when a turn ended early (`print_timeout`, `interrupted`,
@@ -474,6 +479,11 @@ class _AgyCall:
         # pipe was cut off there and `agy` waited for the rest until the deadline: with a pipe
         # here, `test_a_long_prompt_reaches_an_agy_that_is_slow_to_read_it` fails on 3.11.17 and
         # 3.12.15 and passes on 3.13.17.
+        #
+        # The `try` sits inside the `with`, directly after `Popen`, as in `subprocess.run`: closing
+        # the file first would put a step between starting `agy` and the code that kills it, and
+        # an exception there (Ctrl-C, a failed close) would leave `agy` running. The file stays
+        # open until `agy` is done, which costs nothing, since `agy` holds its own copy of it.
         with tempfile.TemporaryFile() as prompt_file:
             prompt_file.write((event + "\n").encode("utf-8"))
             prompt_file.seek(0)
@@ -486,16 +496,16 @@ class _AgyCall:
                 env=self._env(),
                 **_start_options(),
             )
-        try:
-            out, err = self._wait(proc, deadline, cancelled)
-        except BaseException:
-            # The deadline, a cancelled awaiting task, Ctrl-C on this thread, anything else: on
-            # POSIX `agy` is in its own session, so nothing but this would stop it. No other
-            # thread collects `proc`, so one still uncollected here still owns its pid.
-            if proc.returncode is None:
-                _kill(proc)
-            _reap(proc)
-            raise
+            try:
+                out, err = self._wait(proc, deadline, cancelled)
+            except BaseException:
+                # The deadline, a cancelled awaiting task, Ctrl-C on this thread, anything else:
+                # on POSIX `agy` is in its own session, so nothing but this would stop it. No
+                # other thread collects `proc`, so one still uncollected here still owns its pid.
+                if proc.returncode is None:
+                    _kill(proc)
+                _reap(proc)
+                raise
         return self._response(
             proc.returncode,
             out.decode("utf-8", errors="replace"),

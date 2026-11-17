@@ -1617,6 +1617,8 @@ without a structured object, comes back as an empty completion with a warning na
 conversation. On the planner seat the adapter's parse then fails and the task retries it within
 `max_retries`, as it would for any LM; on the sub-LM seat the code receives `""`.
 
+**What it writes to disk.** Each call writes its prompt to a temporary file, because `agy` reads it from stdin as a file (the module docstring says why). The file is a `tempfile.TemporaryFile`: Python creates it in `tempfile.gettempdir()`, which is `TMPDIR`, `TEMP` or `TMP` when set and the platform's temporary directory otherwise, with the same rules as `mkstemp()`, and deletes it when the call ends. On Linux and macOS it has no visible name in that directory; on Windows it has one while the call runs. Set `TMPDIR` at startup to move it, rather than assigning `tempfile.tempdir` mid-run, for the reason the `LargeText` section gives. The generated agent files sit in the adapter's own private directory, and `agy` keeps its own copy of every call, as the next list says.
+
 What it does not control:
 
 - **Every call is saved as an Antigravity conversation** under `~/.gemini/antigravity-cli`, about
