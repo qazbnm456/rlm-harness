@@ -816,10 +816,12 @@ def applied_lm_budget(lm: Any) -> dict[str, Any] | None:
 # is the nested Anthropic shape.
 #
 # **This table is on the READ path ONLY, and that asymmetry is the whole design.** The kit sends
-# whatever the caller wrote (``RLMConfig.main_lm_kwargs``) and owns no vocabulary on the wire, so a
-# name missing from this list still REACHES the server unchanged -- it just is not annotated in the
-# trace. A stale write-path table would cost a broken request; a stale read-path table costs one
-# optional trace field. Absent therefore means NOT RECOGNISED HERE, never "no budget was set".
+# whatever the caller wrote (``RLMConfig.main_lm_kwargs``) and owns no vocabulary on the wire. These
+# names are server-specific, so they travel on dspy's litellm engine (``configure()`` refuses them on
+# the native one), and a name missing from this list still REACHES the server unchanged -- it just
+# is not annotated in the trace. A stale write-path table would cost a broken request; a stale
+# read-path table costs one optional trace field. Absent therefore means NOT RECOGNISED HERE, never
+# "no budget was set".
 _THINKING_BUDGET_KEYS = (
     "thinking_token_budget",      # vLLM -- the one measured to work on qwen3-class models
     "max_thinking_tokens",
@@ -894,7 +896,8 @@ _LM_SETTING_KEYS = frozenset({
     "reasoning_effort", "reasoning", "thinking",
     *_THINKING_BUDGET_KEYS,
 })
-#: Read inside ``extra_body`` only: server-side knobs vLLM and similar servers take there.
+#: Read inside ``extra_body`` only: server-side knobs vLLM and similar servers take there, sent raw in
+#: the request body by dspy's litellm engine.
 _LM_EXTRA_BODY_KEYS = _LM_SETTING_KEYS | {"chat_template_kwargs", "enable_thinking",
                                           "include_reasoning"}
 #: The allowlist applies at every depth. An allowlisted key whose value is a mapping keeps only these
@@ -954,6 +957,10 @@ def lm_settings(lm: Any) -> dict[str, Any] | None:
     ``"extra_body.foo"`` or ``"thinking.foo"``, so a reader can tell "not recorded" from "not set".
     The ``model`` string is recorded as given, as ``sub_call.model`` already is. ``None`` when
     ``lm`` is ``None``.
+
+    ``engine``, ``api_family`` and ``dialect`` are the route :func:`lm_route` works out for the LM. A
+    setting the native engine leaves out of the request is moved from ``kwargs`` to ``dropped_keys``,
+    so ``kwargs`` holds only what the request carried.
     """
     if lm is None:
         return None
@@ -984,40 +991,196 @@ def lm_settings(lm: Any) -> dict[str, Any] | None:
         else:
             unrecorded.append(key)
     model = getattr(lm, "model", None)
-    return {
-        "model": None if model is None else str(model),
-        "kwargs": json.loads(json.dumps(kept, ensure_ascii=False, default=str)),
-        "unrecorded_keys": sorted(unrecorded),
-    }
+    out: dict[str, Any] = {"model": None if model is None else str(model)}
+    try:
+        route = lm_route(lm)
+    except Exception:
+        route = None
+    if route is not None:
+        out.update(engine=route.engine, api_family=route.api_family, dialect=route.dialect)
+        # The request leaves these out, so recording them would claim a setting the call never had.
+        for key in route.dropped:
+            if kept.pop(key, None) is not None:
+                out.setdefault("dropped_keys", []).append(key)
+    out["kwargs"] = json.loads(json.dumps(kept, ensure_ascii=False, default=str))
+    out["unrecorded_keys"] = sorted(unrecorded)
+    return out
 
 
 def lm_cache_is_live(lm: Any) -> bool:
-    """Is dspy's response cache actually reachable for ``lm``? A dspy fact, so it lives here.
+    """Is dspy's response cache reachable for ``lm``? A dspy fact, so it lives here.
 
-    ``lm.cache`` alone is the wrong reader and misreads in the direction that matters. A legacy
-    ``forward``/``aforward`` LM carries ``cache=True`` inherited from ``dspy.BaseLM`` while never
-    consulting the cache at all, so a trace field built on the raw attribute reports a live cache
-    for an LM that structurally cannot have one. ``ClaudeAgentLM`` was that LM when 1.15.1 measured
-    this; since 1.17.0 it is engine-backed and managed, and it answers ``False`` here for the
-    ordinary reason instead (``__init__`` defaults ``cache=False``). A consumer's own duck-typed or
-    legacy LM is still the live case, which is why the gate stays.
-
-    dspy 3.4.0 gates it in ``clients/execution.py``:
-    ``use_cache = kwargs.get("cache", lm.cache) if managed and getattr(lm, "_cache_responses", True)
-    else False``, where ``managed`` starts as ``hasattr(lm, "_engine_spec")``: how dspy recognises a
-    legacy LM, and why one must never simply be given the attribute (see :func:`copy_lm`).
-
-    **The answer is asymmetric and callers must treat it that way.** ``False`` is definitive: an
-    unmanaged LM, or one with ``cache=False``, cannot be served from cache. ``True`` means "not ruled
-    out", because dspy narrows ``managed`` twice more, on whether ``forward``/``aforward`` is
-    overridden, and reproducing that derivation here would be a second copy of upstream logic, which
-    is what this module exists to prevent.
+    dspy 3.5 gates it in ``clients/execution.py`` as ``lm.cache and getattr(lm, "_cache_responses",
+    True)``: the LM's own flag, and the attribute a test double such as ``DummyLM`` sets to opt out.
+    An LM without an engine cannot be called at all on 3.5, so there is no unmanaged case left to
+    rule out.
     """
-    if not hasattr(lm, "_engine_spec"):
-        return False
     if not getattr(lm, "_cache_responses", True):
         return False
     return bool(getattr(lm, "cache", False))
+
+
+def adapter_native_response_types(native_reasoning: bool) -> list[Any]:
+    """The ``native_response_types`` the kit sets on every adapter it builds.
+
+    dspy's defaults include ``dspy.Reasoning``, which on a model its catalog marks as reasoning-capable
+    removes the planner's reasoning field from the prompt and sends a reasoning effort instead. With
+    ``native_reasoning`` off the kit drops that one type, so every model gets the same explicit field.
+    The list must stay non-empty: dspy reads an empty one as "use the defaults".
+    """
+    import dspy
+    from dspy.adapters import base
+
+    defaults = list(base._DEFAULT_NATIVE_RESPONSE_TYPES)
+    if native_reasoning:
+        return defaults
+    kept = [t for t in defaults if t is not dspy.Reasoning]
+    if not kept:
+        raise RuntimeError("dspy's default native response types are only dspy.Reasoning; the kit "
+                           "has no non-empty list to set that leaves it out")
+    return kept
+
+
+def adapter_uses_native_reasoning(adapter: Any) -> bool:
+    """Does ``adapter`` let dspy handle ``dspy.Reasoning`` fields natively? ``None`` is dspy's default."""
+    import dspy
+    from dspy.adapters import base
+
+    types = getattr(adapter, "native_response_types", None) if adapter is not None else None
+    return dspy.Reasoning in (types or base._DEFAULT_NATIVE_RESPONSE_TYPES)
+
+
+def default_adapter() -> Any:
+    """A new instance of the adapter dspy uses when none is configured."""
+    from dspy.adapters.xml_adapter import XMLAdapter
+
+    return XMLAdapter(use_native_function_calling=True)
+
+
+def structured_output_format(signature: Any, use_native_function_calling: bool) -> dict[str, Any]:
+    """The ``json_schema`` response format dspy's ``JSONAdapter`` builds for ``signature``."""
+    from dspy.adapters.json_adapter import _get_structured_outputs_response_format
+
+    return _get_structured_outputs_response_format(signature, use_native_function_calling)
+
+
+# ---- The LM boundary: how the kit builds an LM and what dspy's engines carry ---------------------
+
+#: ``RLMConfig.endpoint_dialect`` -> the model-string prefix that selects that server's preset in
+#: dspy's native engine. ``openai`` is the plain Chat Completions wire; the others are lm15's own
+#: server presets, which differ from it in details such as the token-cap field. A test resolves each
+#: prefix against the installed dspy, so a renamed preset goes red there.
+ENDPOINT_DIALECT_PREFIXES: dict[str, str] = {
+    "openai": "openai/",
+    "vllm": "hosted_vllm/",
+    "ollama": "ollama_chat/",
+    "openrouter": "openrouter/",
+    "groq": "groq/",
+    "together_ai": "together_ai/",
+}
+
+#: The prefix a configured model may carry that ``endpoint_model`` removes once.
+_OPENAI_PREFIX = "openai/"
+
+
+def endpoint_model(dialect: str, model: str) -> str:
+    """The ``dspy.LM`` model string for ``model`` served at a ``base_url`` that speaks ``dialect``.
+
+    One leading ``openai/`` is removed and the dialect's prefix is added, so ``qwen/qwen3-next``,
+    ``openai/qwen/qwen3-next`` and a bare name all reach the server as the id written after it. A
+    served name that itself starts with ``openai/`` is therefore written with the prefix twice.
+    """
+    served = model.removeprefix(_OPENAI_PREFIX)
+    return ENDPOINT_DIALECT_PREFIXES[dialect] + served
+
+
+def endpoint_lm_kwargs() -> dict[str, Any]:
+    """The ``dspy.LM`` kwargs the kit sets on every LM it builds for a ``base_url``.
+
+    ``model_type="chat"``: an OpenAI-compatible server or recording proxy serves Chat Completions, and
+    dspy's ``auto`` would pick the Responses API for an ``openai/`` model. ``engine="lm15"``: an
+    option the native engine cannot carry raises instead of moving the call to another engine.
+    """
+    return {"model_type": "chat", "engine": "lm15"}
+
+
+def litellm_installed() -> bool:
+    """Is the optional ``litellm`` package importable? Checked without importing it."""
+    import importlib.util
+
+    return importlib.util.find_spec("litellm") is not None
+
+
+@dataclasses.dataclass(frozen=True)
+class LMRoute:
+    """What dspy would do with a call to one LM, worked out offline (no network, no credential).
+
+    ``engine`` is ``"lm15"``, ``"litellm"`` or ``"custom"``; ``api_family`` the API dspy selects
+    (``"chat"``, ``"responses"``, ``"text"``); ``dialect`` the native provider id the model string
+    resolves to (``"openai-chat"``, ``"vllm"``, ...), ``None`` where none resolves. ``refused`` holds
+    dspy's reason when its native engine would raise for the LM's options, and ``dropped`` the
+    options it would leave out of the request with only a note (an lm15 ``Adaptation``).
+    """
+
+    engine: str
+    api_family: str | None = None
+    dialect: str | None = None
+    refused: str | None = None
+    dropped: tuple[str, ...] = ()
+
+
+def _unsupported_errors() -> tuple[type[Exception], ...]:
+    from dspy.lm15 import UnknownModelError, UnsupportedFeatureError
+    from dspy.utils.exceptions import LMUnsupportedFeatureError
+
+    return (UnsupportedFeatureError, UnknownModelError, LMUnsupportedFeatureError)
+
+
+def lm_route(lm: Any) -> LMRoute:
+    """The route dspy picks for ``lm``'s calls, and what its native engine would refuse or drop.
+
+    Mirrors ``dspy.clients.execution._select_engine`` with the same offline pieces dspy uses there:
+    ``build_request`` with the LM's own options, ``select_backend``, and the native engine's ``plan``,
+    which reports every option the wire would not carry as asked. A custom engine owns its own
+    protocol and is reported as ``"custom"`` with nothing refused.
+    """
+    spec = getattr(lm, "engine", None)
+    if not isinstance(spec, str):
+        return LMRoute(engine="custom")
+    from dspy.clients.backend_selection import select_backend
+    from dspy.clients.engines.lm15_engine import LM15Engine
+    from dspy.clients.requests import build_request
+    from dspy.lm15 import RouterConfig, _definitions
+
+    errors = _unsupported_errors()
+    family = getattr(lm, "model_type", None)
+    try:
+        request = build_request(lm, "x", None)
+        selection = select_backend(lm, None, request=request)
+    except errors as exc:
+        if spec == "litellm":
+            return LMRoute(engine="litellm", api_family=family)
+        return LMRoute(engine="lm15", api_family=family, refused=str(exc))
+    resolution = selection.resolution
+    dialect = getattr(resolution, "provider", None)
+    if not selection.native:
+        return LMRoute(engine="litellm", api_family=selection.model_type, dialect=dialect)
+    engine = LM15Engine(RouterConfig(env={}, providers=_definitions(getattr(lm, "_providers", ()))),
+                        model_type=lm.model_type)
+    try:
+        plan = engine.plan(request)
+    except errors as exc:
+        if spec == "auto":
+            return LMRoute(engine="litellm", api_family=selection.model_type, dialect=dialect)
+        return LMRoute(engine="lm15", api_family=selection.model_type, dialect=dialect,
+                       refused=str(exc))
+    finally:
+        engine.close()
+    dropped = tuple(sorted({
+        a.field.removeprefix("config.").split(".", 1)[0]
+        for a in getattr(plan, "adaptations", plan) or () if getattr(a, "action", None) == "dropped"
+    }))
+    return LMRoute(engine="lm15", api_family=selection.model_type, dialect=dialect, dropped=dropped)
 
 
 def current_usage_tracker() -> Any:

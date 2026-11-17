@@ -328,8 +328,12 @@ def _compose_capture(
     first_values = first_fmt[3] if first_fmt else {}
     first_history = first_values.get("repl_history")
     budgets = _dspy_compat.rlm_budget_values(rlm)
+    adapter = first_fmt[0] if first_fmt else dspy.settings.adapter
     setup: dict[str, Any] = {
-        **adapter_identity(first_fmt[0] if first_fmt else dspy.settings.adapter),
+        **adapter_identity(adapter),
+        # Whether dspy handled the planner's reasoning field natively (`RLMConfig.native_reasoning`):
+        # the two modes send different requests, so a dataset filters on this to keep one.
+        "native_reasoning": _dspy_compat.adapter_uses_native_reasoning(adapter),
         "dspy": getattr(dspy, "__version__", None),
         "max_iterations": budgets.get("max_iterations"),
         "max_llm_calls": budgets.get("max_llm_calls"),

@@ -25,6 +25,8 @@ ENV_VARS = [
     "RLM_REQUEST_TIMEOUT",
     "RLM_MAX_RETRIES",
     "RLM_OBSERVE",
+    "RLM_ENDPOINT_DIALECT",
+    "RLM_NATIVE_REASONING",
 ]
 
 
@@ -166,6 +168,23 @@ def test_sandbox_turn_timeout_malformed_value_raises(monkeypatch):
 def test_unknown_adapter_rejected():
     with pytest.raises(ValueError):
         RLMConfig(main_model="m", sub_model="m", adapter="bogus")
+
+
+def test_endpoint_dialect_defaults_to_openai_and_reads_its_env_var(monkeypatch):
+    assert RLMConfig(main_model="m", sub_model="m").endpoint_dialect == "openai"
+    monkeypatch.setenv("RLM_ENDPOINT_DIALECT", "vllm")
+    assert RLMConfig.from_env().endpoint_dialect == "vllm"
+
+
+def test_unknown_endpoint_dialect_rejected():
+    with pytest.raises(ValueError, match="endpoint_dialect"):
+        RLMConfig(main_model="m", sub_model="m", endpoint_dialect="hosted_vllm")
+
+
+def test_native_reasoning_defaults_off_and_reads_its_env_var(monkeypatch):
+    assert RLMConfig(main_model="m", sub_model="m").native_reasoning is False
+    monkeypatch.setenv("RLM_NATIVE_REASONING", "1")
+    assert RLMConfig.from_env().native_reasoning is True
 
 
 def test_unknown_interpreter_rejected():

@@ -449,7 +449,24 @@ async def test_context_window_exceeded_still_retries_end_to_end():
 
 def test_build_adapter_json_and_default():
     assert isinstance(rt._build_adapter("json"), dspy.JSONAdapter)
-    assert rt._build_adapter("default") is None  # leave dspy's stock adapter in place
+    default = rt._build_adapter("default")
+    assert type(default) is type(_dspy_compat.default_adapter())
+    assert default.use_native_function_calling is True
+    # Its JSON fallback would send the bare json_object a schema-guided server rejects.
+    assert default.use_json_adapter_fallback is False
+
+
+@pytest.mark.parametrize("name", ["json", "chat", "default"])
+def test_every_adapter_keeps_the_plan_field_unless_native_reasoning_is_on(name):
+    """Decision: one planner shape on every model. dspy's default list makes `dspy.Reasoning` native,
+    which drops `plan` for a catalog reasoning model; the kit's list leaves it out, and is non-empty
+    because dspy reads `[]` as its defaults."""
+    explicit = rt._build_adapter(name)
+    assert explicit.native_response_types and dspy.Reasoning not in explicit.native_response_types
+    assert not _dspy_compat.adapter_uses_native_reasoning(explicit)
+    native = rt._build_adapter(name, native_reasoning=True)
+    assert dspy.Reasoning in native.native_response_types
+    assert _dspy_compat.adapter_uses_native_reasoning(native)
 
 
 def test_configure_chat_mode_disables_json_fallback():
@@ -490,23 +507,44 @@ def test_the_brace_wrap_reports_itself_only_when_it_parsed_the_reply():
     assert a.parse(sig, '"reasoning": "r", "code": "c"') == {"reasoning": "r", "code": "c"}
 
 
+def _reply(text=None, thinking=None):
+    """An lm15 `Response` as dspy's engines return it: a thinking part and/or a text part."""
+    from dspy.lm15 import Message, Response, TextPart, ThinkingPart, Usage
+
+    parts = tuple([ThinkingPart(thinking)] if thinking else []) + tuple(
+        [TextPart(text)] if text else [])
+    return Response(id="r", model="m", message=Message(role="assistant", parts=parts),
+                    finish_reason="stop", usage=Usage())
+
+
 def test_lenient_adapter_promotes_reasoning_content_when_content_empty():
     """A REASONING root (qwen3 / deepseek / gpt-oss) sometimes emits the whole structured turn into
-    `reasoning_content` and returns `content` (text) null. The adapter promotes it so the turn
-    parses instead of dying on dspy's "empty or null response" check. This is what lets a reasoning
-    model be the RLM root. Guarded: a normal output (text present) is NOT overridden, so a
-    well-behaved model's native thinking stays discarded."""
+    its reasoning channel and returns no content, which dspy's engines hand over as a reply with a
+    thinking part and no text part. The adapter promotes the thinking so the turn parses instead of
+    dying on dspy's "empty or null response" check. Guarded: a reply that has text is NOT
+    overridden, so a well-behaved model's thinking stays out of the answer."""
     sig = dspy.Signature("q: str -> reasoning: str, code: str")
     a = rt._LenientJSONAdapter()
-    # content empty + structured answer stuck in reasoning_content → recovered & parsed
-    out = [{"text": None, "reasoning_content": '{"reasoning": "r", "code": "c"}'}]
-    vals = a._call_postprocess(sig, sig, out, lm=None, lm_kwargs={})
+    vals = a._call_postprocess(sig, sig, [_reply(thinking='{"reasoning": "r", "code": "c"}')])
     assert vals[0]["reasoning"] == "r" and vals[0]["code"] == "c"
-    # a normal output (text present) wins. Reasoning_content is ignored, native thinking discarded
-    out2 = [{"text": '{"reasoning": "real", "code": "x"}',
-             "reasoning_content": '{"reasoning": "IGNORED", "code": "y"}'}]
-    vals2 = a._call_postprocess(sig, sig, out2, lm=None, lm_kwargs={})
+    vals2 = a._call_postprocess(sig, sig, [_reply(text='{"reasoning": "real", "code": "x"}',
+                                                  thinking='{"reasoning": "IGNORED", "code": "y"}')])
     assert vals2[0]["reasoning"] == "real" and vals2[0]["code"] == "x"
+
+
+def test_the_promotion_rebuilds_the_reply_and_keeps_its_thinking():
+    """The promoted reply is a copy with a text part added: the original is not mutated, and the
+    thinking part stays, so a reader of the response still sees where the text came from."""
+    from dspy.lm15 import TextPart, ThinkingPart
+
+    original = _reply(thinking="T")
+    promoted, text = rt._promote_reasoning(original)
+    assert text == "T"
+    assert [type(p) for p in promoted.message.parts] == [ThinkingPart, TextPart]
+    assert promoted.message.parts[-1].text == "T"
+    assert [type(p) for p in original.message.parts] == [ThinkingPart]
+    for untouched in (_reply(text="A", thinking="T"), _reply(text="A")):
+        assert rt._promote_reasoning(untouched) == (untouched, None)
 
 
 def test_lenient_json_adapter_skips_wrap_for_braced_completion(monkeypatch):
@@ -594,8 +632,8 @@ def test_lenient_json_adapter_never_falls_back_to_bare_json_object():
             super().__init__("openai/x")
             self.seen = []
 
-        async def acall(self, messages=None, **kw):
-            self.seen.append(kw.get("response_format"))
+        async def acall(self, request=None, **kw):
+            self.seen.append(request.config.response_format)
             raise ConnectionError("simulated upstream 502")
 
     sig = dspy.Signature("q: str -> reasoning: str, code: str")
@@ -603,9 +641,9 @@ def test_lenient_json_adapter_never_falls_back_to_bare_json_object():
     with pytest.raises(Exception):
         asyncio.run(rt._LenientJSONAdapter().acall(lm, {}, sig, [], {"q": "hi"}))
     assert lm.seen, "the adapter must attempt the json_schema call"
-    assert all(
-        not (isinstance(rf, dict) and rf.get("type") == "json_object") for rf in lm.seen
-    ), "json mode must never degrade to bare json_object (vLLM/NIM reject it)"
+    assert all(rf is not None and rf.get("type") == "json_schema" for rf in lm.seen), (
+        "json mode must always send the schema, never bare json_object (vLLM/NIM reject it)", lm.seen)
+    assert list(lm.seen[0]["schema"]["properties"]) == ["reasoning", "code"]
 
 
 def test_configure_defaults_to_json_mode():
@@ -656,20 +694,32 @@ def test_configure_sends_no_timeout_when_unset():
     assert "timeout" not in dspy.settings.lm.kwargs
 
 
-def test_configure_pins_openai_provider_when_base_url_set():
-    """With a base_url (a custom OpenAI-compatible endpoint), the LM pins
-    custom_llm_provider="openai" so a BARE model id ("qwen/qwen3-next") routes to base_url:
-    litellm would otherwise read "qwen" as the provider and fail. No "openai/" prefix needed."""
-    rt.configure(RLMConfig(main_model="qwen/qwen3-next", sub_model="qwen/qwen3-next",
-                           interpreter="mock", base_url="https://endpoint.example/v1"))
-    assert dspy.settings.lm.kwargs.get("custom_llm_provider") == "openai"
+@pytest.mark.parametrize(("configured", "dialect", "built"), [
+    ("qwen/qwen3-next", "openai", "openai/qwen/qwen3-next"),
+    ("openai/qwen/qwen3-next", "openai", "openai/qwen/qwen3-next"),
+    ("served-name", "openai", "openai/served-name"),
+    ("qwen/qwen3-next", "vllm", "hosted_vllm/qwen/qwen3-next"),
+    ("openai/qwen/qwen3-next", "vllm", "hosted_vllm/qwen/qwen3-next"),
+])
+def test_configure_builds_a_base_url_lm_on_the_native_chat_route(configured, dialect, built):
+    """With a base_url the model string is the dialect's prefix plus the served id (one leading
+    `openai/` removed), on dspy's native engine and the Chat Completions API, so a recording proxy
+    that handles only `POST .../chat/completions` keeps working."""
+    rt.configure(RLMConfig(main_model=configured, sub_model=configured, interpreter="mock",
+                           base_url="https://endpoint.example/v1", endpoint_dialect=dialect))
+    lm = dspy.settings.lm
+    assert lm.model == built
+    assert lm.model_type == "chat" and lm.engine == "lm15"
+    assert "custom_llm_provider" not in lm.kwargs
 
 
-def test_configure_no_provider_pin_without_base_url():
-    """Without a base_url (a direct provider, e.g. anthropic/claude), do NOT force the openai
-    provider: let litellm parse the model's own provider prefix."""
+def test_configure_leaves_the_model_string_alone_without_base_url():
+    """Without a base_url the model string's own prefix selects the provider, with dspy's defaults."""
     rt.configure(RLMConfig(main_model="openai/gpt-4o", sub_model="openai/gpt-4o", interpreter="mock"))
-    assert "custom_llm_provider" not in dspy.settings.lm.kwargs
+    lm = dspy.settings.lm
+    assert lm.model == "openai/gpt-4o"
+    assert lm.model_type == "auto" and lm.engine == "auto"
+    assert "base_url" not in lm.kwargs and "custom_llm_provider" not in lm.kwargs
 
 
 # ---- the parse callback must stage ONE stamp per root turn -------------------------------------
@@ -1083,7 +1133,7 @@ def test_a_failed_brace_wrap_reports_the_reply_as_the_model_wrote_it():
 def test_a_promoted_reasoning_that_fails_to_parse_says_the_reply_had_no_content():
     """"Thinking only" and "malformed answer" are different events and must not read alike.
 
-    When `content` is empty the adapter promotes `reasoning_content` so the turn can parse at all.
+    When a reply has no text the adapter promotes its reasoning channel so the turn can parse at all.
     If that free-form text then fails, the turn produced NO answer, which is not what a malformed
     answer means, and a consumer could not tell them apart from the error.
     """
@@ -1091,9 +1141,8 @@ def test_a_promoted_reasoning_that_fails_to_parse_says_the_reply_had_no_content(
 
     sig = dspy.Signature("q: str -> reasoning: str, code: str")
     a = rt._LenientJSONAdapter()
-    out = [{"text": None, "reasoning_content": "We need answer with JSON. Need produce code"}]
     with pytest.raises(AdapterParseError) as got:
-        a._call_postprocess(sig, sig, out, lm=None, lm_kwargs={})
+        a._call_postprocess(sig, sig, [_reply(thinking="We need answer with JSON. Need produce code")])
     msg = str(got.value)
     assert "carried no content" in msg, msg
     assert "reasoning channel" in msg
@@ -1102,24 +1151,22 @@ def test_a_promoted_reasoning_that_fails_to_parse_says_the_reply_had_no_content(
 
 
 def test_the_promotion_marker_survives_the_hop_into_parse():
-    """The marker is a `str` subclass because the adapter instance is shared across calls.
-
-    dspy's base `_call_postprocess` passes `output["text"]` to `parse` untouched; if that ever
-    changes, the message above silently degrades to the generic one, so pin the hop itself.
-    """
+    """`parse` is handed the text and nothing else, and one adapter instance serves concurrent
+    calls, so the mark travels in a context variable set around dspy's parse of one call's replies.
+    Pin the hop itself: if dspy stopped parsing inside `_call_postprocess`, the message above would
+    silently degrade to the generic one."""
     sig = dspy.Signature("q: str -> reasoning: str, code: str")
     seen = []
 
     class Probe(rt._LenientJSONAdapter):
         def parse(self, signature, completion):
-            seen.append(type(completion))
+            seen.append(completion in rt._PROMOTED_REASONING.get())
             return {"reasoning": "r", "code": "c"}
 
-    out = [{"text": None, "reasoning_content": '{"reasoning": "r", "code": "c"}'}]
-    Probe()._call_postprocess(sig, sig, out, lm=None, lm_kwargs={})
-    assert seen == [rt._PromotedReasoning], seen
-    # and a normal reply is NOT marked, so the message stays accurate
+    Probe()._call_postprocess(sig, sig, [_reply(thinking='{"reasoning": "r", "code": "c"}')])
+    assert seen == [True], seen
+    # and a normal reply is NOT marked, so the message stays accurate, nor is the mark left behind
     seen.clear()
-    Probe()._call_postprocess(sig, sig, [{"text": '{"reasoning": "r", "code": "c"}'}],
-                              lm=None, lm_kwargs={})
-    assert seen == [str], seen
+    Probe()._call_postprocess(sig, sig, [_reply(text='{"reasoning": "r", "code": "c"}')])
+    assert seen == [False], seen
+    assert rt._PROMOTED_REASONING.get() == frozenset()

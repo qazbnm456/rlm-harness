@@ -41,65 +41,67 @@ _PARSE_WRAPPED: contextvars.ContextVar[list[bool] | None] = contextvars.ContextV
 )
 
 
-class _PromotedReasoning(str):
-    """A completion that came from ``reasoning_content`` because ``content`` was empty.
+#: The texts of this call's replies that came from the reasoning channel because the reply had no
+#: text. ``_LenientJSONAdapter._call_postprocess`` sets it around dspy's parse of one call's replies
+#: and ``parse``, which is handed the text and nothing else, reads it to say so when such a text does
+#: not parse. A context variable rather than adapter state, because one adapter instance serves
+#: concurrent calls (``configure`` builds it once and puts it in ``dspy.settings``).
+_PROMOTED_REASONING: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
+    "rlm_harness_promoted_reasoning", default=frozenset()
+)
 
-    Carried as a ``str`` SUBCLASS rather than as adapter state, because one adapter instance serves
-    concurrent calls (``configure`` builds it once and puts it in ``dspy.settings``), so an
-    attribute set in ``_call_postprocess`` would be read by a different call's ``parse``. dspy's
-    base ``_call_postprocess`` hands ``output["text"]`` to ``parse`` untouched, so the marker
-    survives that hop; a consumer measured this failure in the other direction, as an error that
-    read like a malformed JSON reply when the turn had in fact produced no answer at all.
+
+def _promote_reasoning(response: Any) -> tuple[Any, str | None]:
+    """``response`` with its thinking added as its text when it carried no text and no tool call.
+
+    A reasoning model served over an OpenAI-compatible API sometimes puts the whole structured turn in
+    its reasoning channel and returns no content, and dspy then stops the turn with "The LM returned an
+    empty or null response" although the answer is there. Returns the rebuilt response and the
+    promoted text, or ``response`` unchanged and ``None``. The thinking part stays, so a reader of the
+    response still sees where the text came from.
     """
+    import dataclasses
 
-    __slots__ = ()
+    from dspy.lm15 import TextPart, ThinkingPart
+
+    message = getattr(response, "message", None)
+    parts = tuple(getattr(message, "parts", None) or ())
+    if not parts or getattr(response, "tool_calls", None):
+        return response, None
+    if any(isinstance(part, TextPart) and part.text for part in parts):
+        return response, None
+    thinking = "".join(part.text for part in parts if isinstance(part, ThinkingPart) and part.text)
+    if not thinking:
+        return response, None
+    rebuilt = dataclasses.replace(message, parts=(*parts, TextPart(thinking)))
+    return dataclasses.replace(response, message=rebuilt), thinking
 
 
 class _LenientJSONAdapter(dspy.JSONAdapter):
-    """``JSONAdapter`` for schema-guided servers, with stock dspy's ``json_object`` fallback
-    REMOVED and a brace-tolerant parse added.
+    """``JSONAdapter`` for schema-guided servers: always a ``json_schema`` response format, a
+    brace-tolerant parse, and a reply from the reasoning channel promoted to its text.
 
-    Two deviations from stock ``JSONAdapter``, both because a schema-guided server
-    (vLLM / NVIDIA NIM) rejects bare ``response_format={"type":"json_object"}`` outright
-    (*"'json_object' requires a JSON schema"*):
-
-    1. **No `json_object` fallback** (``__call__`` / ``acall``). Stock ``JSONAdapter``, when its
-       ``json_schema`` attempt raises for ANY reason, including a transient upstream 502, falls
-       back to bare ``json_object`` and re-calls. On vLLM/NIM that fallback is dead-on-arrival
-       (guaranteed 400), it masks the real error, and it wastes the retry on a format the server
-       always rejects. We instead always send ``json_schema`` and let a failure propagate, so the
-       task-level retry re-tries the format the server actually accepts. (We drive
-       ``ChatAdapter``'s call path directly: for a ``JSONAdapter`` instance it raises rather than
-       falling back, see dspy ``chat_adapter`` ``isinstance(self, JSONAdapter)``.)
-    2. **Brace-tolerant `parse`.** Schema-guided decoding intermittently drops the outer
+    1. **Always ``json_schema``** (``_prepare_response_format``). Stock ``JSONAdapter`` sends bare
+       ``json_object``, or nothing, when dspy's catalog does not list structured-output support for
+       the model, which is the usual case for a self-hosted model id. A schema-guided server (vLLM /
+       NVIDIA NIM) rejects ``json_object`` outright (*"'json_object' requires a JSON schema"*), and a
+       server given no format has nothing to guide its decoder. So the kit always sends the schema of
+       the signature the prompt is rendered from: for the planner, ``plan`` and ``code``. dspy's
+       ``ChatAdapter`` never falls back from a ``JSONAdapter``, so a failed call propagates and the
+       task-level retry re-sends the format the server accepts.
+    2. **Brace-tolerant ``parse``.** Schema-guided decoding intermittently drops the outer
        ``{`` ``}`` and returns just ``"a": 1, "b": 2``; stock parse then can't recover a dict.
        We retry once with the body wrapped in braces, unless it is empty, whitespace-only, or
        already starts with a brace; a genuinely non-JSON response still raises. A reply the retry
        parsed is reported through ``_PARSE_WRAPPED``, and the trace marks its call
        ``parse_wrapped: true``.
+    3. **Reasoning-channel promotion** (``_call_postprocess``), so a reasoning model can be the RLM
+       root; see :func:`_promote_reasoning`.
+    """
 
-    (A future, NIM-specific alternative is to drive ``nvext.guided_json`` directly instead of
-    relying on ``response_format``: deliberately deferred; this keeps the path provider-agnostic.)"""
-
-    def _schema_kwargs(self, signature, lm_kwargs):
-        from dspy.adapters.json_adapter import _get_structured_outputs_response_format
-
-        # Always the schema-bearing json_schema form: never bare json_object.
-        return {
-            **lm_kwargs,
-            "response_format": _get_structured_outputs_response_format(
-                signature, self.use_native_function_calling
-            ),
-        }
-
-    def __call__(self, lm, lm_kwargs, signature, demos, inputs):
-        return dspy.ChatAdapter.__call__(
-            self, lm, self._schema_kwargs(signature, lm_kwargs), signature, demos, inputs
-        )
-
-    async def acall(self, lm, lm_kwargs, signature, demos, inputs):
-        return await dspy.ChatAdapter.acall(
-            self, lm, self._schema_kwargs(signature, lm_kwargs), signature, demos, inputs
+    def _prepare_response_format(self, lm, lm_kwargs, signature):
+        lm_kwargs["response_format"] = _dspy_compat.structured_output_format(
+            signature, self.use_native_function_calling
         )
 
     def parse(self, signature, completion):
@@ -117,10 +119,8 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
             # An EMPTY or whitespace-only completion is excluded for a different reason: wrapping
             # nothing yields "{}", and dspy's `apply_output_field_defaults` supplies a value for an
             # output field left unset, from a default, a default factory, or an annotation that
-            # admits None, in that order. So the wrap ANSWERED a reply that said nothing (measured
-            # on dspy 3.4.0 and on 3.4.1: a field annotated `str | None`, which carries NO default,
-            # came back None with no exception raised and nothing recorded). Wrapping an empty body
-            # is never a recovery, only an invention.
+            # admits None, in that order. So the wrap would ANSWER a reply that said nothing.
+            # Wrapping an empty body is never a recovery, only an invention.
             if not body or body.startswith("{"):
                 raise
             try:
@@ -135,7 +135,7 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
                 # unparseable turn (stanfordnlp/dspy#10676) the turn's error goes into the REPL
                 # history and the planner sees it. So it names what to do differently and carries no
                 # number, per `docs/PROMPT.md`.
-                if isinstance(completion, _PromotedReasoning):
+                if completion in _PROMOTED_REASONING.get():
                     note = (
                         "This reply carried no content. The text below is its reasoning channel, "
                         "promoted so it could be parsed, and it did not parse as the output fields "
@@ -159,32 +159,26 @@ class _LenientJSONAdapter(dspy.JSONAdapter):
                 sink.append(True)
             return parsed
 
-    def _call_postprocess(self, processed_signature, original_signature, outputs, lm, lm_kwargs):
-        """Promote ``reasoning_content`` to the answer when a reasoning root left ``content`` empty.
+    def _call_postprocess(self, processed_signature, original_signature, responses):
+        """Promote a reasoning-channel-only reply to its text, then parse as dspy does.
 
-        A REASONING model (qwen3 / deepseek / glm / gpt-oss) served over an OpenAI-compatible API
-        sometimes emits the WHOLE structured turn into the ``reasoning_content`` channel and returns
-        ``content`` (the dict's ``text``) null. dspy's base ``_call_postprocess`` then sees an empty
-        ``text`` and raises *"The LM returned an empty or null response"*: killing the turn before
-        it can be parsed, even though the answer is sitting in ``reasoning_content``. We promote it so
-        the normal text path runs. This is what lets a reasoning model be the RLM ROOT at all.
-
-        GUARDED on ``not text``: a well-behaved model (answer in ``content``, chain-of-thought in
-        ``reasoning_content``) is untouched, so its native thinking stays discarded as before: we
-        only reach for ``reasoning_content`` when there is otherwise nothing to parse.
-
-        The promoted text is marked ``_PromotedReasoning`` so that ``parse``, which is handed the
-        text and nothing else, can SAY SO when it fails. Free-form thinking promoted into the
-        answer slot and then failing to parse is a different event from a malformed answer, and
-        until now both surfaced identically."""
-        patched = [
-            ({**o, "text": _PromotedReasoning(o["reasoning_content"])}
-             if isinstance(o, dict) and not o.get("text") and o.get("reasoning_content") else o)
-            for o in outputs
-        ]
-        return super()._call_postprocess(
-            processed_signature, original_signature, patched, lm, lm_kwargs
-        )
+        Guarded on a reply with no text and no tool call: a well-behaved model (answer in the text,
+        chain-of-thought in the reasoning channel) is untouched. A promoted text is listed in
+        ``_PROMOTED_REASONING`` for the duration of dspy's parse, so ``parse`` can say so when that
+        free-form thinking does not parse: a different event from a malformed answer.
+        """
+        promoted: set[str] = set()
+        rebuilt = []
+        for response in responses:
+            response, text = _promote_reasoning(response)
+            rebuilt.append(response)
+            if text is not None:
+                promoted.add(text)
+        token = _PROMOTED_REASONING.set(frozenset(promoted))
+        try:
+            return super()._call_postprocess(processed_signature, original_signature, rebuilt)
+        finally:
+            _PROMOTED_REASONING.reset(token)
 
 
 def _maybe_subscription_lm(model: str) -> tuple[dspy.LM, Route] | None:
@@ -236,6 +230,41 @@ def _warn_if_thinking_budget_cannot_act(role: str, lm: Any) -> None:
             "raise the generation cap above it.",
             role, thinking["value"], thinking["key"], cap["cap"], cap["key"],
         )
+
+
+def _model_string(cfg: RLMConfig, model: str) -> str:
+    """The ``dspy.LM`` model string for a configured model: rewritten for a ``base_url``, else as given."""
+    return _dspy_compat.endpoint_model(cfg.endpoint_dialect, model) if cfg.base_url else model
+
+
+def _check_lm_route(role: str, lm: Any) -> None:
+    """Refuse an LM ``configure()`` built whose calls would not carry what its config asks for.
+
+    Two ways a role's settings can fail to reach the model: the model string or an option needs
+    dspy's litellm engine and litellm is not installed, or dspy's native engine refuses an option or
+    leaves it out of the request (it records an ``Adaptation`` and sends the rest). Both raise here,
+    before any call, naming what carries the setting.
+    """
+    route = _dspy_compat.lm_route(lm)
+    if route.engine == "litellm" and not _dspy_compat.litellm_installed():
+        raise ImportError(
+            f"The {role} LM {lm.model!r} needs dspy's litellm engine, and litellm is not installed. "
+            f"Install it with: pip install 'rlm-harness[litellm]'"
+        )
+    if route.refused:
+        problem = f"dspy's native engine refuses its request ({route.refused})"
+    elif route.dropped:
+        problem = (f"dspy's native engine would leave {list(route.dropped)} out of its request, "
+                   f"since this route has no field for them")
+    else:
+        return
+    # Measured on dspy 3.5.0: no server preset carries an option the plain OpenAI wire refuses or
+    # drops (`top_k`, `extra_body`, `chat_template_kwargs`, a thinking-token budget, `min_p`,
+    # `repetition_penalty`), so the litellm engine is the one route that sends them as written.
+    raise ValueError(
+        f"The {role} LM {lm.model!r}: {problem}. To send it as written, install "
+        f"rlm-harness[litellm] and add \"engine\": \"litellm\" to {role}_lm_kwargs."
+    )
 
 
 def configure(
@@ -300,39 +329,43 @@ def configure(
         if routed is not None:
             sub_lm, auto_routed["sub_lm"] = routed[0], routed[1].attr
 
-    # litellm (dspy.LM's backend) defaults to an aiohttp transport whose pooled ClientSession is bound to
-    # the current asyncio loop. A driver that runs each task in its own short-lived `asyncio.run` loop
-    # (e.g. a server handling per-request runs) then leaves a dangling session when that loop closes, and
-    # aiohttp logs a noisy "Unclosed connector". Force litellm onto httpx: no aiohttp session is created,
-    # so nothing dangles. Set before the LMs are built (→ before the first LM call); best-effort.
-    try:
-        import litellm
-        litellm.disable_aiohttp_transport = True
-    except Exception:
-        pass
+    # litellm defaults to an aiohttp transport whose pooled ClientSession is bound to the current
+    # asyncio loop. A driver that runs each task in its own short-lived `asyncio.run` loop (e.g. a
+    # server handling per-request runs) then leaves a dangling session when that loop closes, and
+    # aiohttp logs a noisy "Unclosed connector". Force litellm onto httpx when it is installed, before
+    # the first LM call: an LM on dspy's litellm engine then creates no aiohttp session.
+    if _dspy_compat.litellm_installed():
+        with contextlib.suppress(Exception):
+            import litellm
 
-    # `cache` goes in unconditionally, unlike `timeout` above, because sending it explicitly IS the
+            litellm.disable_aiohttp_transport = True
+
+    # `cache` goes in unconditionally, unlike `timeout` below, because sending it explicitly IS the
     # change: dspy.LM's own default is True and the RLM workload wants False. It sits in the shared
     # dict rather than being forced after the merge, so `main_lm_kwargs={"cache": true}` still wins
     # for a consumer who wants dspy's behaviour on one role. See `RLMConfig.lm_cache` for why the
     # per-LM flag rather than `dspy.configure_cache`, and for which injected LMs it cannot reach.
-    lm_kwargs = {"api_key": cfg.api_key, "base_url": cfg.base_url, "cache": cfg.lm_cache}
+    lm_kwargs: dict[str, Any] = {"cache": cfg.lm_cache}
+    if cfg.api_key is not None:
+        lm_kwargs["api_key"] = cfg.api_key
     if cfg.max_tokens is not None:
         lm_kwargs["max_tokens"] = cfg.max_tokens
     if cfg.base_url:
-        # A base_url means a custom OpenAI-compatible endpoint. dspy.LM's backend is litellm,
-        # which routes by parsing a provider out of the model string ("provider/model"); a bare
-        # id like "qwen/qwen3-next" then reads "qwen" as the provider and fails ("LLM Provider
-        # NOT provided"). Pinning custom_llm_provider="openai" routes via the OpenAI wire
-        # protocol to base_url and sends the model name verbatim, so the user writes the plain
-        # id their endpoint serves (matching the generator's bare-name convention), with no ugly
-        # "openai/" prefix. A still-prefixed "openai/..." name keeps working (litellm strips it).
-        lm_kwargs["custom_llm_provider"] = "openai"
+        # A base_url is an OpenAI-compatible server. The model string becomes the dialect's prefix
+        # plus the id the server serves, on dspy's native engine and the Chat Completions API; see
+        # `_dspy_compat.endpoint_model` and `endpoint_lm_kwargs`.
+        lm_kwargs["base_url"] = cfg.base_url
+        lm_kwargs.update(_dspy_compat.endpoint_lm_kwargs())
+    elif cfg.endpoint_dialect != "openai":
+        logger.warning(
+            "endpoint_dialect=%r is ignored: it selects the wire a base_url endpoint speaks, and no "
+            "base_url is set. Without one the model string's own prefix selects the provider.",
+            cfg.endpoint_dialect,
+        )
     if cfg.request_timeout_s is not None:
-        # Handed straight through: dspy.LM keeps kwargs it does not recognise and merges them into
-        # the litellm call, and `litellm.completion` takes `timeout`. Set ONLY when the consumer
-        # asked for one: sending `timeout=None` explicitly is not the same as sending nothing on
-        # every client, and the default must stay "behave exactly as before".
+        # A client setting every dspy engine takes: the native engine bounds each wait for the
+        # reply with it. Set ONLY when the consumer asked for one: sending `timeout=None`
+        # explicitly is not the same as sending nothing, and the default must stay dspy's.
         lm_kwargs["timeout"] = cfg.request_timeout_s
         if auto_routed:
             # It reaches `dspy.LM` and nothing else, so on a subscription-routed role it is a
@@ -345,7 +378,7 @@ def configure(
             # generous per request would make queued sub-LM calls time out from waiting alone.
             routed = ", ".join(f"{role} to {attr}" for role, attr in auto_routed.items())
             logger.warning(
-                "request_timeout_s=%s bounds litellm-backed model requests only, and does not "
+                "request_timeout_s=%s bounds the model requests of an LM configure() builds, and does not "
                 "reach the auto-routed %s (%s). Each of those is bounded by its adapter's own "
                 "end-to-end per-call deadline, a DIFFERENT quantity, which is why this knob does "
                 "not drive it. To choose that number, build the LM yourself and pass it in, "
@@ -355,7 +388,7 @@ def configure(
                 routed,
             )
     # Both LMs are plain dspy.LM. In "json" mode it's _LenientJSONAdapter (not the LM) that
-    # forces the json_schema response_format, so the LM needs no special capability flag.
+    # sets the json_schema response_format, so the LM needs no special capability flag.
     # An injected main_lm/sub_lm (explicit, or resolved above via subscription auto-routing) is
     # used verbatim: we build a plain dspy.LM from config ONLY for a role that is still None here.
     #
@@ -366,8 +399,9 @@ def configure(
     # nested kwarg) ITSELF, this silently clobbers the caller's value**: at that moment this has
     # to become a deliberate deep merge with a stated conflict rule, not something discovered
     # from a request that quietly lost a key. `config._LM_KWARGS_REFUSED` keeps the FLAT keys the
-    # kit owns out of here, so `max_tokens` is the only key a role can legitimately override:
-    # and that one is read back off the LM into the trace, which is why it is allowed.
+    # kit owns out of here. The kit-set keys a role may override (`max_tokens`, `engine`,
+    # `model_type`, `cache`) are each read back off the LM into the trace, which is why they are
+    # allowed.
     main_kwargs = {**lm_kwargs, **(cfg.main_lm_kwargs or {})}
     sub_kwargs = {**lm_kwargs, **(cfg.sub_lm_kwargs or {})}
     for role, role_kwargs in (("main", cfg.main_lm_kwargs), ("sub", cfg.sub_lm_kwargs)):
@@ -382,10 +416,13 @@ def configure(
                 f"auto-routed to {auto_routed[f'{role}_lm']}"
                 if f"{role}_lm" in auto_routed else "supplied explicitly",
             )
+    built: dict[str, Any] = {}
     if main_lm is None:
-        main_lm = dspy.LM(cfg.main_model, **main_kwargs)
+        main_lm = built["main"] = dspy.LM(_model_string(cfg, cfg.main_model), **main_kwargs)
     if sub_lm is None:
-        sub_lm = dspy.LM(cfg.sub_model, **sub_kwargs)
+        sub_lm = built["sub"] = dspy.LM(_model_string(cfg, cfg.sub_model), **sub_kwargs)
+    for role, lm in built.items():
+        _check_lm_route(role, lm)
     for role, lm in (("main", main_lm), ("sub", sub_lm)):
         _warn_if_thinking_budget_cannot_act(role, lm)
     # Pass the adapter explicitly (None == dspy's stock default) so a re-configure
@@ -406,7 +443,7 @@ def configure(
         # worse than one that was never offered.
         dspy.configure(
             lm=main_lm,
-            adapter=_build_adapter(cfg.adapter),
+            adapter=_build_adapter(cfg.adapter, native_reasoning=cfg.native_reasoning),
             disable_history=cfg.disable_history,
         )
     except RuntimeError as exc:
@@ -433,24 +470,25 @@ def configure(
     return cfg
 
 
-def _build_adapter(name: str) -> dspy.Adapter | None:
-    """Map the configured adapter name to a dspy adapter instance (or None).
+def _build_adapter(name: str, *, native_reasoning: bool = False) -> dspy.Adapter:
+    """The adapter instance for the configured adapter name.
 
-    ``"chat"`` builds a ``ChatAdapter`` with ``use_json_adapter_fallback=False``: the
-    fallback would, on a parse error, silently retry through ``JSONAdapter`` and emit
-    ``response_format={"type":"json_object"}``, which endpoints like vLLM reject
-    (they require a schema). Turning it off keeps the task portable: ChatAdapter alone
-    never sends ``response_format``. ``"json"`` drives schema-guided structured output (the
-    ``_LenientJSONAdapter`` below forces the json_schema form);
-    ``"default"`` (→ ``None``) leaves dspy's own default in place.
+    ``"json"`` is ``_LenientJSONAdapter``, which always sends the ``json_schema`` response format.
+    ``"chat"`` is a ``ChatAdapter`` and ``"default"`` dspy's default ``XMLAdapter``, each with
+    ``use_json_adapter_fallback=False``: the fallback would, on a parse error, retry through
+    ``JSONAdapter`` with ``response_format={"type":"json_object"}``, which endpoints like vLLM reject
+    (they require a schema). Every adapter gets the kit's ``native_response_types``, so the planner
+    keeps its explicit ``plan`` field unless ``native_reasoning`` is on.
     """
     if name == "json":
-        # Brace-tolerant JSONAdapter that forces the json_schema form schema-guided servers
-        # (vLLM / NIM) accept: never the bare json_object they reject.
-        return _LenientJSONAdapter()
-    if name == "chat":
-        return dspy.ChatAdapter(use_json_adapter_fallback=False)
-    return None
+        adapter: dspy.Adapter = _LenientJSONAdapter()
+    elif name == "chat":
+        adapter = dspy.ChatAdapter(use_json_adapter_fallback=False)
+    else:
+        adapter = _dspy_compat.default_adapter()
+        adapter.use_json_adapter_fallback = False
+    adapter.native_response_types = _dspy_compat.adapter_native_response_types(native_reasoning)
+    return adapter
 
 
 def _try_instrument() -> None:

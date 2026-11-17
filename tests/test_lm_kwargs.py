@@ -101,6 +101,21 @@ def test_a_provider_credential_or_region_kwarg_is_refused_by_prefix(key):
     assert "provider credential or region" in str(exc.value)
 
 
+def test_an_engine_name_is_allowed_and_an_engine_object_is_refused():
+    """`engine="litellm"` is how a role reaches the options dspy's native engine refuses, and the
+    trace records which engine ran. A custom engine OBJECT owns its own connection, so it is a
+    connection-identity change like a base URL: inject that LM instead."""
+    assert _cfg(main_lm_kwargs={"engine": "litellm"}).main_lm_kwargs == {"engine": "litellm"}
+    for key in ("engine", "async_engine"):
+        with pytest.raises(ValueError, match=key):
+            _cfg(main_lm_kwargs={key: object()})
+
+
+def test_custom_llm_provider_is_refused_with_the_setting_that_replaces_it():
+    with pytest.raises(ValueError, match="endpoint_dialect"):
+        _cfg(main_lm_kwargs={"custom_llm_provider": "openai"})
+
+
 def test_mock_response_is_refused_because_no_model_would_be_called():
     with pytest.raises(ValueError, match="mock_response"):
         _cfg(main_lm_kwargs={"mock_response": "FAKE"})

@@ -42,6 +42,12 @@ KNOWN_INTERPRETERS = frozenset({"pyodide", "deno", "mock", "container", "local"}
 #               but that fallback is rejected by vLLM/NIM.
 KNOWN_ADAPTERS = frozenset({"chat", "json", "default"})
 
+# The server presets a ``base_url`` endpoint can be built with (``RLMConfig.endpoint_dialect``).
+# ``openai`` is the plain OpenAI Chat Completions wire; the others select dspy's native preset for
+# that server. ``_dspy_compat.ENDPOINT_DIALECT_PREFIXES`` maps each to its model prefix, and a test
+# keeps the two in step.
+KNOWN_ENDPOINT_DIALECTS = frozenset({"openai", "vllm", "ollama", "openrouter", "groq", "together_ai"})
+
 # Default per-call generation cap. Generous on purpose so a reasoning model's
 # chain-of-thought + answer both fit, rather than relying on a server's small default
 # cap (which truncates reasoning before the answer → empty content). See max_tokens.
@@ -87,7 +93,8 @@ _LM_KWARGS_REFUSED = {
     "api_key": f"set api_key (RLM_API_KEY); {_PER_ROLE_ENDPOINT}",
     "base_url": f"set base_url (RLM_BASE_URL); {_PER_ROLE_ENDPOINT}",
     "api_base": f"litellm's alias for base_url; set base_url (RLM_BASE_URL); {_PER_ROLE_ENDPOINT}",
-    "custom_llm_provider": "configure() derives it from base_url",
+    "custom_llm_provider": "a litellm routing setting; choose the server's wire with endpoint_dialect "
+                           "(RLM_ENDPOINT_DIALECT)",
     "timeout": "set request_timeout_s (RLM_REQUEST_TIMEOUT)",
     "headers": f"connection headers can change the caller or the route; {_PER_ROLE_ENDPOINT}",
     "extra_headers": f"connection headers can change the caller or the route; {_PER_ROLE_ENDPOINT}",
@@ -99,19 +106,25 @@ _LM_KWARGS_REFUSED = {
     "deployment_id": _PER_ROLE_CLIENT,
     "model_list": _PER_ROLE_CLIENT,
     "mock_response": "litellm answers it locally, so the run never reaches a model",
-    "engine": "a custom engine owns its own connection; inject the LM with configure(main_lm=…)",
+    "async_engine": "a custom engine owns its own connection; inject the LM with configure(main_lm=…)",
 }
+#: ``engine`` names one of dspy's engines (``"lm15"``, ``"litellm"``, ``"auto"``) or is a custom engine
+#: object. A name is allowed and recorded as ``rlm_setup.lm.engine``; an object is refused for this reason.
+_LM_KWARGS_CUSTOM_ENGINE = "a custom engine owns its own connection; inject the LM with configure(main_lm=…)"
 _LM_KWARGS_REFUSED_PREFIXES = ("aws_", "azure_", "vertex_")
 
 
 def _refused_lm_kwargs(kwargs: dict[str, Any]) -> dict[str, str]:
     """The keys in ``kwargs`` a per-role passthrough may not set, each mapped to the reason."""
     provider = f"a provider credential or region setting; {_PER_ROLE_ENDPOINT}"
-    return {
+    refused = {
         k: _LM_KWARGS_REFUSED.get(k, provider)
         for k in sorted(kwargs)
         if k in _LM_KWARGS_REFUSED or k.startswith(_LM_KWARGS_REFUSED_PREFIXES)
     }
+    if "engine" in kwargs and not isinstance(kwargs["engine"], str):
+        refused["engine"] = _LM_KWARGS_CUSTOM_ENGINE
+    return dict(sorted(refused.items()))
 
 
 def _env_lm_kwargs(name: str) -> dict[str, Any] | None:
@@ -131,7 +144,7 @@ def _env_lm_kwargs(name: str) -> dict[str, Any] | None:
     except json.JSONDecodeError as exc:
         raise ValueError(
             f"{name} is not valid JSON ({exc}). It must be a JSON OBJECT, e.g. "
-            f'{name}=\'{{"extra_body": {{"thinking_token_budget": 16384}}}}\' -- mind the quoting '
+            f'{name}=\'{{"temperature": 0.6}}\' -- mind the quoting '
             f"layer you are setting it through; see the guide's "
             f'"Per-role LM request parameters" section.'
         ) from exc
@@ -236,6 +249,12 @@ class RLMConfig:
     api_key: str | None = None
     base_url: str | None = None
 
+    # The wire a ``base_url`` endpoint speaks (see ``KNOWN_ENDPOINT_DIALECTS``). ``openai`` sends plain
+    # Chat Completions; a server's own preset (``vllm``, ``ollama``, ...) follows that server's details,
+    # such as sending ``max_tokens`` where the OpenAI wire sends ``max_completion_tokens``. Read only when
+    # ``base_url`` is set.
+    endpoint_dialect: str = "openai"
+
     # Sandbox / interpreter selection. Defaults to the secure WASM sandbox.
     interpreter: str = "pyodide"
     allow_insecure_sandbox: bool = False
@@ -311,6 +330,13 @@ class RLMConfig:
     # (measured). When a child's trajectory is the point, `make_harness_tool` is the seam that
     # keeps it: the child owns its own rollout and the parent records a pointer to it.
     sandbox_sub_agents: bool = True
+
+    # Let dspy handle the planner's reasoning field natively. Off by default, so every model gets the
+    # same planner request: an explicit ``plan`` output field and no reasoning effort the kit did not set.
+    # On, a model dspy's catalog marks as reasoning-capable gets no ``plan`` field and a reasoning effort
+    # instead, and its thinking becomes the step's reasoning. ``rlm_setup`` records which, so a dataset
+    # can keep one mode.
+    native_reasoning: bool = False
 
     # Wall-clock cap on ONE model HTTP request ATTEMPT, passed to ``dspy.LM(timeout=...)``.
     # ``None`` (the default) sends nothing, which is NOT the same as no cap: the provider SDK
@@ -389,14 +415,17 @@ class RLMConfig:
     # included; the guide's "Per-role LM request parameters" section has the numbers. So the kit
     # ships the MECHANISM and no vocabulary: what you write is what reaches the server.
     #
-    # Two LEVELS, and the difference is where the silent no-ops above come from. A TOP-LEVEL key is
-    # a litellm parameter and goes through litellm's own per-provider handling (``reasoning_effort``
-    # is one of these). A key inside ``extra_body`` is passed RAW into the request body with no
-    # mapping at all -- which is what a server-specific name like ``thinking_token_budget`` needs:
+    # A key is a generation option in dspy's OpenAI vocabulary (``temperature``, ``reasoning_effort``,
+    # ...). dspy's native engine carries the options it has a mapping for and refuses or leaves out the
+    # rest, so ``configure()`` refuses every option the role's route would not send as written
+    # (``top_k``, ``extra_body``, ``chat_template_kwargs``, a thinking-token budget), naming the route
+    # that carries it: ``rlm-harness[litellm]`` with ``"engine": "litellm"``, which sends ``extra_body``
+    # keys raw in the request body:
     #
-    #     RLMConfig(main_lm_kwargs={"extra_body": {"thinking_token_budget": 16384}})
+    #     RLMConfig(main_lm_kwargs={"engine": "litellm",
+    #                               "extra_body": {"thinking_token_budget": 16384}})
     #
-    # **A passthrough cannot tell you the server ignored your key.** Nothing here can: an ignored
+    # **A request parameter cannot tell you the server ignored it.** Nothing here can: an ignored
     # key and an honoured one look identical on the wire. The check is after the fact, in the trace
     # -- ``run_end.payload.budgets.thinking`` records what the LM carried and
     # ``run_end.payload.usage`` carries the provider's own ``reasoning_tokens``, so a run that was
@@ -429,6 +458,11 @@ class RLMConfig:
             raise ValueError(
                 f"Unknown adapter {self.adapter!r}; "
                 f"expected one of {sorted(KNOWN_ADAPTERS)}"
+            )
+        if self.endpoint_dialect not in KNOWN_ENDPOINT_DIALECTS:
+            raise ValueError(
+                f"Unknown endpoint_dialect {self.endpoint_dialect!r}; "
+                f"expected one of {sorted(KNOWN_ENDPOINT_DIALECTS)}"
             )
         if self.max_retries < 1:
             raise ValueError("max_retries must be >= 1")
@@ -475,11 +509,14 @@ class RLMConfig:
         - ``RLM_API_KEY`` / ``AI_API_KEY``: API key (the second is a fallback so
           this scaffold can drop into projects that already use ``AI_API_KEY``).
         - ``RLM_BASE_URL`` / ``AI_BASE_URL``: optional custom OpenAI-compatible endpoint.
-          When set, ``configure`` pins ``custom_llm_provider="openai"`` so the model names
-          above can be the PLAIN id the endpoint serves (e.g. ``qwen/qwen3-next``): no
-          ``openai/`` (or other litellm provider) prefix needed; a prefixed name still works.
-          With no base_url, write the model's own provider prefix (``openai/gpt-4o``,
-          ``anthropic/claude-...``) as litellm expects.
+          When set, the model names above are the id the endpoint serves (e.g.
+          ``qwen/qwen3-next``); one leading ``openai/`` is removed, so a prefixed name still
+          works. With no base_url, write the model's own provider prefix (``openai/gpt-4o``,
+          ``anthropic/claude-...``) as dspy expects.
+        - ``RLM_ENDPOINT_DIALECT`` (default ``openai``): the wire the ``base_url`` endpoint
+          speaks; see ``KNOWN_ENDPOINT_DIALECTS`` and ``RLMConfig.endpoint_dialect``.
+        - ``RLM_NATIVE_REASONING`` (default ``0``): let dspy handle the planner's reasoning
+          field natively; see ``RLMConfig.native_reasoning``.
         - ``RLM_INTERPRETER`` (default ``pyodide``).
         - ``RLM_ADAPTER`` (default ``json``): ``chat`` | ``json`` | ``default``;
           see ``KNOWN_ADAPTERS``. ``json`` (schema-guided) works on any endpoint that
@@ -506,9 +543,9 @@ class RLMConfig:
         - ``RLM_MAIN_LM_KWARGS`` / ``RLM_SUB_LM_KWARGS`` (default: unset), a JSON OBJECT of
           extra ``dspy.LM`` kwargs for that ROLE only, merged over what ``configure()`` builds.
           The kit ships the mechanism and no vocabulary, because the key that bounds a model's
-          thinking is server-specific: ``{"extra_body": {"thinking_token_budget": 16384}}`` on
-          vLLM. A top-level key is a litellm parameter (mapped per provider); a key under
-          ``extra_body`` goes RAW into the request body. Malformed JSON, a non-object, or a
+          thinking is server-specific: ``{"engine": "litellm", "extra_body":
+          {"thinking_token_budget": 16384}}`` on vLLM. ``configure()`` refuses an option the
+          role's route would not send as written. Malformed JSON, a non-object, or a
           ``configure()``-owned key (see ``_LM_KWARGS_REFUSED``) raises here rather than being
           silently dropped. See ``RLMConfig.main_lm_kwargs``.
         - ``RLM_SANDBOX_TURN_TIMEOUT`` (default: unset, i.e. disabled), a per-``execute()``
@@ -534,12 +571,14 @@ class RLMConfig:
             sub_model=sub_model,
             api_key=os.getenv("RLM_API_KEY") or os.getenv("AI_API_KEY"),
             base_url=os.getenv("RLM_BASE_URL") or os.getenv("AI_BASE_URL"),
+            endpoint_dialect=os.getenv("RLM_ENDPOINT_DIALECT", "openai"),
             interpreter=os.getenv("RLM_INTERPRETER", "pyodide"),
             container=ContainerConfig.from_env(),
             adapter=os.getenv("RLM_ADAPTER", "json"),
             max_tokens=int(_mt) if _mt and _mt.strip() else _DEFAULT_MAX_TOKENS,
             allow_insecure_sandbox=_env_bool("RLM_ALLOW_INSECURE_SANDBOX", False),
             sandbox_sub_agents=_env_bool("RLM_SANDBOX_SUB_AGENTS", True),
+            native_reasoning=_env_bool("RLM_NATIVE_REASONING", False),
             max_iterations=_env_int("RLM_MAX_ITERATIONS", 10),
             max_llm_calls=_env_int("RLM_MAX_LLM_CALLS", 30),
             max_output_chars=_env_int("RLM_MAX_OUTPUT_CHARS", 10_000),

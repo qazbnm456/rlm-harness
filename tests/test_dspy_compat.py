@@ -969,33 +969,17 @@ def test_the_aggregator_survives_a_nested_value_on_this_dspy():
 
 
 
-def test_lm_cache_is_live_rules_OUT_an_unmanaged_lm_that_reads_cache_True():
-    """`lm.cache` is the wrong reader, and it misreads in the direction that matters.
-
-    An LM that carries no `_engine_spec` inherits `cache=True` from `dspy.BaseLM` while dspy
-    treats it as unmanaged and never consults the cache, so a trace field built on the raw
-    attribute reported a LIVE cache for an LM that structurally cannot have one: what 1.15.0
-    shipped and 1.15.1 fixes. `ClaudeAgentLM` was the motivating case and stopped being one in
-    1.17.0, when it became engine-backed; the body below is generic for that reason.
-
-    Asserted against the REAL classes, and asymmetrically, because that is the contract: False is
-    definitive, True only means dspy's further narrowing has not been reproduced here.
-    """
+def test_lm_cache_is_live_reads_the_flag_dspy_gates_the_cache_on():
+    """dspy 3.5 consults its response cache when `lm.cache` is true and the LM has not opted out
+    through `_cache_responses` (what `DummyLM` sets). Asserted against the real classes."""
     dspy = pytest.importorskip("dspy")
+    from dspy.utils.dummies import DummyLM
 
-    class _Unmanaged(dspy.BaseLM):
-        def forward(self, prompt=None, messages=None, **kwargs):  # pragma: no cover
-            raise AssertionError("never called")
-
-    unmanaged = _Unmanaged(model="x")
-    assert unmanaged.cache is True, "the premise: BaseLM hands it a truthy cache"
-    assert not hasattr(unmanaged, "_engine_spec"), "the premise: no engine spec"
-    assert _dspy_compat.lm_cache_is_live(unmanaged) is False
-
-    managed = dspy.LM("openai/gpt-4o", api_key="k")
-    assert hasattr(managed, "_engine_spec")
-    assert _dspy_compat.lm_cache_is_live(managed) is True
+    assert _dspy_compat.lm_cache_is_live(dspy.LM("openai/gpt-4o", api_key="k")) is True
     assert _dspy_compat.lm_cache_is_live(dspy.LM("openai/gpt-4o", api_key="k", cache=False)) is False
+    dummy = DummyLM([{"answer": "x"}])
+    assert dummy.cache is True, "the premise: a DummyLM keeps dspy's default flag"
+    assert _dspy_compat.lm_cache_is_live(dummy) is False
 
 
 # ---- runner.js error-args patch, and the interpreter session reset ---------------------------
@@ -1105,49 +1089,34 @@ def test_a_mixed_args_error_keeps_its_readable_arguments_unquoted():
     assert json.loads(ns["last_exception_args"]()) == ["bad key", "slice(1, 2, None)"]
 
 
-def test_the_kits_own_LMs_are_off_the_interface_dspy_removes_in_3_5(tmp_path, monkeypatch):
-    """The instrument for `docs/INVARIANTS.md`'s "stay free of that DeprecationWarning".
+def test_an_engine_less_LM_is_refused_and_the_kits_own_LMs_are_engines(tmp_path, monkeypatch):
+    """dspy 3.5 calls an LM only through an engine (`complete(Request) -> Response`): a custom LM that
+    implements `forward()`/`aforward()` instead is refused on every call. So the kit's own LMs must be
+    engines, and this drives each of them in BOTH directions, because the planner takes the async
+    route and the sub-LM the sync one.
 
-    dspy 3.4 deprecates implementing a custom LM through `forward()`/`aforward()` and schedules
-    removal for 3.5. Until 1.17.0 `ClaudeAgentLM` was on that interface, on an exemption the
-    warning itself dated; the migration resolved it, and this is what keeps it resolved. A future
-    edit reintroducing `forward()` would otherwise pass CI green, because nothing runs the suite
-    under `-W error::DeprecationWarning`.
-
-    **The control is the first half, and without it this test is worthless.** A filter that caught
-    nothing, or an upstream that stopped warning, would make the second half pass for an LM that
-    IS on the dead interface. So a `forward()`-style subclass is driven first and must raise.
-
-    **Both DIRECTIONS are driven, because dspy decides "legacy" per direction.**
-    `dspy/clients/execution.py` computes `method = "aforward" if asynchronous else "forward"` and
-    then asks whether the LM overrides THAT one. A version of this test that drove only `__call__`
-    stayed green while `aforward` was added back to `ClaudeAgentLM` and dspy warned: it guarded
-    the sub-LM seat and missed the planner seat, which is the primary RLM route. Each arm gets
-    both.
+    **The control is the first half, and without it this test is worthless.** If dspy stopped
+    refusing an engine-less LM, the second half would prove nothing about the kit's LMs. And the
+    `DeprecationWarning` filter stays, so an LM that slid back onto a deprecated interface still
+    goes red here rather than only warning.
     """
     import asyncio
     import warnings
 
-    import litellm
+    from dspy.utils.exceptions import LMUnsupportedFeatureError
 
     class _Legacy(dspy.BaseLM):
-        def forward(self, prompt=None, messages=None, **kwargs):
-            return litellm.ModelResponse(
-                model=self.model,
-                choices=[{"message": {"role": "assistant", "content": "x"}}],
-            )
+        def forward(self, prompt=None, messages=None, **kwargs):  # pragma: no cover
+            raise AssertionError("dspy must refuse before calling forward()")
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
-        with pytest.raises(DeprecationWarning, match="forward"):
+        with pytest.raises(LMUnsupportedFeatureError, match="engine"):
             _Legacy(model="legacy/x")("hi")
-        # ...and the same control on the ASYNC route, which is the one the planner takes. Without
-        # it the async half below passes for an upstream that only warns synchronously.
-        with pytest.raises(DeprecationWarning, match="forward"):
+        with pytest.raises(LMUnsupportedFeatureError, match="engine"):
             asyncio.run(_Legacy(model="legacy/x").acall("hi"))
 
-        # `intercept_sub_lm`'s wrapper: NOT on the interface (it overrides `__call__`), which is
-        # why 1.17.0 migrated only the subscription LM.
+        # `intercept_sub_lm`'s wrapper overrides `__call__` and hands the call to its base.
         from dspy.utils.dummies import DummyLM
 
         from rlm_harness import intercept_sub_lm
@@ -1155,7 +1124,7 @@ def test_the_kits_own_LMs_are_off_the_interface_dspy_removes_in_3_5(tmp_path, mo
         wrapped = intercept_sub_lm(DummyLM([{"answer": "hi"}], adapter=dspy.JSONAdapter()))
         wrapped("hi")
 
-        # `ClaudeAgentLM`, through a fake SDK: an engine, so nothing to warn about.
+        # `ClaudeAgentLM`, through a fake SDK: an engine.
         import os
         import sys
         import types
@@ -1182,8 +1151,8 @@ def test_the_kits_own_LMs_are_off_the_interface_dspy_removes_in_3_5(tmp_path, mo
             import rlm_harness
 
             lm = rlm_harness.ClaudeAgentLM("sonnet")
-            lm("hi")                              # the sub-LM seat: dspy reads `forward`
-            asyncio.run(lm.acall(prompt="hi"))    # the planner seat: dspy reads `aforward`
+            lm("hi")                              # the sub-LM seat: the sync engine
+            asyncio.run(lm.acall(prompt="hi"))    # the planner seat: the async engine
         finally:
             sys.modules.pop("claude_agent_sdk", None)
             if had_key is not None:
@@ -1355,3 +1324,90 @@ def test_rlm_user_tools_is_the_documented_set_without_dspys_own():
     tools = _dspy_compat.rlm_user_tools(_built_rlm())
     assert list(tools) == ["lookup"]
     assert "Look a key up." in tools["lookup"].desc
+
+
+# ---- the LM boundary: dialects, routes, and what dspy's engines carry ---------------------------
+
+
+#: Each dialect's native provider id on dspy 3.5, the preset whose details (such as the token-cap
+#: field) the dialect exists to select.
+_DIALECT_PROVIDERS = {"openai": "openai-chat", "vllm": "vllm", "ollama": "ollama",
+                      "openrouter": "openrouter", "groq": "groq", "together_ai": "together"}
+
+
+def test_every_endpoint_dialect_resolves_to_its_native_preset():
+    import dspy
+
+    from rlm_harness.config import KNOWN_ENDPOINT_DIALECTS
+
+    assert set(_dspy_compat.ENDPOINT_DIALECT_PREFIXES) == KNOWN_ENDPOINT_DIALECTS == set(
+        _DIALECT_PROVIDERS)
+    for dialect, provider in _DIALECT_PROVIDERS.items():
+        lm = dspy.LM(_dspy_compat.endpoint_model(dialect, "openai/q/x"), base_url="http://h/v1",
+                     api_key="k", **_dspy_compat.endpoint_lm_kwargs())
+        route = _dspy_compat.lm_route(lm)
+        assert (route.engine, route.api_family, route.dialect) == ("lm15", "chat", provider), dialect
+
+
+@pytest.mark.parametrize("model", ["vllm/m", "sglang/m", "lmstudio/m", "nvidia_nim/meta/m"])
+def test_a_model_string_dspys_native_engine_cannot_route_goes_to_litellm(model):
+    """Asked of dspy's own offline selection, so the kit holds no list of such prefixes."""
+    import dspy
+
+    assert _dspy_compat.lm_route(dspy.LM(model)).engine == "litellm"
+
+
+def test_lm_route_reports_what_the_native_engine_drops_or_refuses():
+    import dspy
+
+    native = {"base_url": "http://h/v1", "api_key": "k", **_dspy_compat.endpoint_lm_kwargs()}
+    assert _dspy_compat.lm_route(dspy.LM("openai/x", top_k=4, **native)).dropped == ("top_k",)
+    refused = _dspy_compat.lm_route(dspy.LM("openai/x", extra_body={"a": 1}, **native))
+    assert refused.engine == "lm15" and "extra_body" in refused.refused
+    # dspy's own default engine moves an unmapped option to litellm instead of refusing it.
+    assert _dspy_compat.lm_route(dspy.LM("openai/gpt-4o", extra_body={"a": 1})).engine == "litellm"
+    clean = _dspy_compat.lm_route(dspy.LM("openai/x", temperature=0.2, **native))
+    assert clean.refused is None and clean.dropped == ()
+
+
+def test_a_custom_engine_is_its_own_route():
+    import dspy
+
+    class _Engine:
+        def complete(self, request):  # pragma: no cover
+            raise AssertionError("never called")
+
+    assert _dspy_compat.lm_route(dspy.LM("custom/x", engine=_Engine())).engine == "custom"
+
+
+def test_lm_settings_never_records_an_option_the_request_left_out():
+    """An injected LM is used as given, so the kit cannot refuse its options; it can still keep the
+    trace from claiming the request carried one it did not."""
+    import dspy
+
+    lm = dspy.LM("hosted_vllm/x", base_url="http://h/v1", top_k=4, temperature=0.2,
+                 **_dspy_compat.endpoint_lm_kwargs())
+    got = _dspy_compat.lm_settings(lm)
+    assert got["kwargs"] == {"temperature": 0.2}
+    assert got["dropped_keys"] == ["top_k"]
+    assert (got["engine"], got["api_family"], got["dialect"]) == ("lm15", "chat", "vllm")
+
+
+def test_the_kits_native_response_types_leave_out_only_reasoning():
+    import dspy
+    from dspy.adapters import base
+
+    explicit = _dspy_compat.adapter_native_response_types(False)
+    assert explicit and dspy.Reasoning not in explicit
+    assert set(explicit) == set(base._DEFAULT_NATIVE_RESPONSE_TYPES) - {dspy.Reasoning}
+    assert _dspy_compat.adapter_native_response_types(True) == list(base._DEFAULT_NATIVE_RESPONSE_TYPES)
+    assert _dspy_compat.adapter_uses_native_reasoning(None) is True
+
+
+def test_the_default_adapter_is_the_one_dspy_falls_back_to():
+    import dspy
+    from dspy.adapters.utils import _get_adapter
+
+    with dspy.context(adapter=None):
+        assert type(_get_adapter()) is type(_dspy_compat.default_adapter())
+
