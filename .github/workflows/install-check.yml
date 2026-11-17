@@ -201,7 +201,8 @@ jobs:
               output_field = "a"
 
           configure(RLMConfig(main_model="d/m", sub_model="d/s"),
-                    main_lm=scripted_lm([{"reasoning": "r", "code": "SUBMIT(a='ok')"}]))
+                    main_lm=scripted_lm([{"reasoning": "r", "code": "SUBMIT(a='ok')"}]),
+                    sub_lm=scripted_lm([]))
           out = T(interpreter=ScriptedInterpreter([submit({"a": "ok"})])).run(q="hi")
           assert out == "ok", out
           print("published-install task run:", out)

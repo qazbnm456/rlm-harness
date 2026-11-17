@@ -173,3 +173,32 @@ def test_the_floor_check_sees_this_repo_s_own_floors():
     # Named rather than counted: a count passes while silently reading one table.
     for name in ("dspy", "pydantic", "mcp", "jsonschema", "claude-agent-sdk", "pytest"):
         assert name in floors, f"{name} has a >= floor in pyproject.toml but the check misses it"
+
+
+def _smoke_body(workflow: str) -> str:
+    """The Python the packaging smoke runs from a fresh install, read out of the workflow."""
+    text = (_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+    start = text.index("<<'PY'\n") + len("<<'PY'\n")
+    body = text[start:text.index("\n          PY\n", start)]
+    return "\n".join(line.removeprefix("          ") for line in body.splitlines()) + "\n"
+
+
+def test_the_two_packaging_smokes_are_the_same_body():
+    """`ci.yml` and `install-check.yml` run the same task; only the final print's wording differs."""
+    ci, published = _smoke_body("ci.yml"), _smoke_body("install-check.yml")
+    assert ci.replace("fresh-install", "X") == published.replace("published-install", "X")
+
+
+def test_the_packaging_smoke_runs_on_a_plain_install_without_litellm():
+    """A plain `pip install rlm-harness` has no litellm. The smoke must pass there, so it is run here
+    with the kit told litellm is absent: a role it leaves to `configure()` with a model string only
+    litellm routes would raise the install hint instead of running the task."""
+    import subprocess
+    import sys
+
+    prelude = ("import rlm_harness._dspy_compat as compat\n"
+               "compat.litellm_installed = lambda: False\n")
+    done = subprocess.run([sys.executable, "-c", prelude + _smoke_body("ci.yml")],
+                          capture_output=True, text=True, timeout=300, cwd=_ROOT)
+    assert done.returncode == 0, done.stderr[-2000:]
+    assert "fresh-install task run: ok" in done.stdout
