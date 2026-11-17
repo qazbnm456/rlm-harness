@@ -14,7 +14,7 @@ from rlm_harness import RLMConfig
 def test_configure_without_observe_skips_instrumentation(monkeypatch):
     called = {"instr": False}
     monkeypatch.setattr(rt, "_try_instrument", lambda: called.__setitem__("instr", True))
-    rt.configure(RLMConfig(main_model="x", sub_model="x", observe=False))
+    rt.configure(RLMConfig(main_model="openai/x", sub_model="openai/x", observe=False))
     assert called["instr"] is False
     assert rt.get_config().observe is False
 
@@ -22,7 +22,7 @@ def test_configure_without_observe_skips_instrumentation(monkeypatch):
 def test_configure_with_observe_calls_instrument(monkeypatch):
     called = {"instr": False}
     monkeypatch.setattr(rt, "_try_instrument", lambda: called.__setitem__("instr", True))
-    rt.configure(RLMConfig(main_model="x", sub_model="x", observe=True))
+    rt.configure(RLMConfig(main_model="openai/x", sub_model="openai/x", observe=True))
     assert called["instr"] is True
 
 
@@ -33,7 +33,7 @@ def test_configure_accepts_injected_lms():
 
     d_main, d_sub = DummyLM([{"a": "1"}]), DummyLM([{"b": "2"}])
     rt.configure(
-        RLMConfig(main_model="x", sub_model="x", observe=False), main_lm=d_main, sub_lm=d_sub
+        RLMConfig(main_model="openai/x", sub_model="openai/x", observe=False), main_lm=d_main, sub_lm=d_sub
     )
     assert rt.get_sub_lm() is d_sub     # injected sub stored + handed back by the public accessor
     assert dspy.settings.lm is d_main   # injected main became the dspy global
@@ -46,13 +46,13 @@ def test_configure_tolerates_a_second_thread(monkeypatch):
     import threading
 
     monkeypatch.setattr(rt, "_try_instrument", lambda: None)
-    rt.configure(RLMConfig(main_model="x", sub_model="x", observe=False))  # owner = this (main) thread
+    rt.configure(RLMConfig(main_model="openai/x", sub_model="openai/x", observe=False))  # owner = this (main) thread
 
     err = {}
 
     def worker():
         try:
-            rt.configure(RLMConfig(main_model="x", sub_model="x", observe=False))  # a DIFFERENT thread
+            rt.configure(RLMConfig(main_model="openai/x", sub_model="openai/x", observe=False))  # a DIFFERENT thread
         except Exception as exc:
             err["exc"] = exc
 
@@ -102,7 +102,7 @@ def _stub_claude_agent_lm(monkeypatch):
 def test_configure_routes_a_subscription_prefixed_main_model(monkeypatch):
     monkeypatch.setattr(rt, "_try_instrument", lambda: None)
     stub = _stub_claude_agent_lm(monkeypatch)
-    rt.configure(RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="x", observe=False))
+    rt.configure(RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="openai/x", observe=False))
     assert stub.calls == [("sonnet", {})]
     assert dspy.settings.lm.model == "claude-agent-sdk/sonnet"
 
@@ -110,9 +110,9 @@ def test_configure_routes_a_subscription_prefixed_main_model(monkeypatch):
 def test_configure_routes_only_the_prefixed_role_when_mixed(monkeypatch):
     monkeypatch.setattr(rt, "_try_instrument", lambda: None)
     stub = _stub_claude_agent_lm(monkeypatch)
-    rt.configure(RLMConfig(main_model="x", sub_model="claude-agent-sdk/haiku", observe=False))
+    rt.configure(RLMConfig(main_model="openai/x", sub_model="claude-agent-sdk/haiku", observe=False))
     assert stub.calls == [("haiku", {})]         # only the sub role routed
-    assert dspy.settings.lm.model == "x"          # the main role built a plain dspy.LM as always
+    assert dspy.settings.lm.model == "openai/x"        # the main role built a plain dspy.LM as always
     assert rt.get_sub_lm().model == "claude-agent-sdk/haiku"
 
 
@@ -125,7 +125,7 @@ def test_configure_explicit_main_lm_override_wins_over_a_prefixed_model_string(m
     stub = _stub_claude_agent_lm(monkeypatch)
     d_main = DummyLM([{"a": "1"}])
     rt.configure(
-        RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="x", observe=False),
+        RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="openai/x", observe=False),
         main_lm=d_main,
     )
     assert stub.calls == []                       # routing never attempted for the overridden role
@@ -143,7 +143,7 @@ def test_configure_lm_kwargs_never_forwarded_into_the_subscription_lm(monkeypatc
     stub = _stub_claude_agent_lm(monkeypatch)
     rt.configure(
         RLMConfig(
-            main_model="claude-agent-sdk/sonnet", sub_model="x",
+            main_model="claude-agent-sdk/sonnet", sub_model="openai/x",
             api_key="sk-should-not-leak", base_url="https://should-not-leak.example",
             observe=False,
         )
@@ -161,7 +161,7 @@ def test_request_timeout_is_not_forwarded_into_the_subscription_lm(monkeypatch):
     monkeypatch.setattr(rt, "_try_instrument", lambda: None)
     stub = _stub_claude_agent_lm(monkeypatch)
     rt.configure(
-        RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="x", observe=False,
+        RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="openai/x", observe=False,
                   request_timeout_s=45.0)
     )
     assert stub.calls[0][1] == {}                          # not forwarded...
@@ -175,7 +175,7 @@ def test_configure_warns_when_a_timeout_cannot_reach_an_auto_routed_role(monkeyp
     _stub_claude_agent_lm(monkeypatch)
     with caplog.at_level("WARNING", logger="rlm_harness.runtime"):
         rt.configure(
-            RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="x", observe=False,
+            RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="openai/x", observe=False,
                       request_timeout_s=45.0)
         )
     msg = "\n".join(r.getMessage() for r in caplog.records)
@@ -204,7 +204,7 @@ def test_per_role_kwargs_on_an_auto_routed_role_warn_naming_its_class(monkeypatc
     monkeypatch.setattr(rt, "_try_instrument", lambda: None)
     _stub_claude_agent_lm(monkeypatch)
     with caplog.at_level("WARNING", logger="rlm_harness.runtime"):
-        rt.configure(RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="x", observe=False,
+        rt.configure(RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="openai/x", observe=False,
                                main_lm_kwargs={"temperature": 0.1}))
     msg = "\n".join(r.getMessage() for r in caplog.records if "main_lm_kwargs" in r.getMessage())
     assert "auto-routed to ClaudeAgentLM" in msg and "temperature" in msg
@@ -239,7 +239,7 @@ def test_configure_bare_subscription_prefix_raises_value_error_not_system_exit(m
     monkeypatch.setattr(rt, "_try_instrument", lambda: None)
     _stub_claude_agent_lm(monkeypatch)
     with pytest.raises(ValueError) as exc:
-        rt.configure(RLMConfig(main_model="claude-agent-sdk/", sub_model="x", observe=False))
+        rt.configure(RLMConfig(main_model="claude-agent-sdk/", sub_model="openai/x", observe=False))
     assert str(exc.value) == (
         "'claude-agent-sdk/' names no model: expected claude-agent-sdk/<id>, "
         "e.g. claude-agent-sdk/claude-sonnet-5."
@@ -251,9 +251,9 @@ def test_configure_plain_model_never_routes(monkeypatch):
     # change. The routing branch is a pure addition to the `is None` path.
     monkeypatch.setattr(rt, "_try_instrument", lambda: None)
     stub = _stub_claude_agent_lm(monkeypatch)
-    rt.configure(RLMConfig(main_model="x", sub_model="y", observe=False))
+    rt.configure(RLMConfig(main_model="openai/x", sub_model="openai/y", observe=False))
     assert stub.calls == []
-    assert dspy.settings.lm.model == "x"
+    assert dspy.settings.lm.model == "openai/x"
 
 
 def test_configure_stale_anthropic_api_key_raises_runtime_error_uncollided(monkeypatch):
@@ -269,4 +269,4 @@ def test_configure_stale_anthropic_api_key_raises_runtime_error_uncollided(monke
     monkeypatch.setattr(cal, "_require_claude_agent_sdk", lambda: None)  # bypass the SDK-install check
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-stale-key")
     with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
-        rt.configure(RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="x", observe=False))
+        rt.configure(RLMConfig(main_model="claude-agent-sdk/sonnet", sub_model="openai/x", observe=False))

@@ -15,6 +15,7 @@ that can never act) exists because silence is the failure mode this knob is most
 
 import asyncio
 import contextlib
+import importlib.util
 import json
 import os
 import tempfile
@@ -29,9 +30,15 @@ dspy = pytest.importorskip("dspy")
 
 VLLM = {"extra_body": {"thinking_token_budget": 16384}}
 
+#: A role that carries `extra_body` (or a thinking-token budget) runs on dspy's litellm engine,
+#: which `configure()` requires to be installed: the `litellm` extra.
+_needs_litellm = pytest.mark.skipif(
+    importlib.util.find_spec("litellm") is None,
+    reason="extra_body is sent only by dspy's litellm engine (the litellm extra)")
+
 
 def _cfg(**kw):
-    return RLMConfig(main_model="main-model", sub_model="sub-model", **kw)
+    return RLMConfig(main_model="openai/main-model", sub_model="openai/sub-model", **kw)
 
 
 # --- parsing, and every way it is allowed to fail LOUDLY ------------------------------------
@@ -254,6 +261,7 @@ def test_importing_the_package_still_does_not_import_dspy():
     assert out.stdout.strip() == "False", out.stdout
 
 
+@_needs_litellm
 def test_the_readers_agree_with_what_the_trace_records(tmp_path):
     """The point of making them public is that a consumer's OWN record cannot drift from the
     kit's. Same LMs, same numbers, whichever side reads them."""
@@ -273,6 +281,7 @@ def _configure(cfg, **kw):
     return dspy.settings.lm, get_sub_lm()
 
 
+@_needs_litellm
 def test_a_main_passthrough_does_not_reach_the_sub_LM():
     main, sub = _configure(_cfg(main_lm_kwargs=VLLM))
     assert compat.applied_thinking_budget(main) == {"value": 16384,
@@ -280,6 +289,7 @@ def test_a_main_passthrough_does_not_reach_the_sub_LM():
     assert compat.applied_thinking_budget(sub) is None, "the sub role must be untouched"
 
 
+@_needs_litellm
 def test_a_sub_passthrough_does_not_reach_the_main_LM():
     main, sub = _configure(_cfg(sub_lm_kwargs={"extra_body": {"thinking_token_budget": 512}}))
     assert compat.applied_thinking_budget(sub) == {"value": 512,
@@ -314,12 +324,14 @@ def test_a_passthrough_on_an_INJECTED_role_warns_that_it_did_nothing(caplog):
     assert "main_lm_kwargs" in caplog.text and "supplied explicitly" in caplog.text
 
 
+@_needs_litellm
 def test_no_warning_when_the_role_was_built_here(caplog):
     with caplog.at_level("WARNING", logger="rlm_harness.runtime"):
         _configure(_cfg(main_lm_kwargs=VLLM))
     assert "is ignored" not in caplog.text
 
 
+@_needs_litellm
 def test_a_thinking_budget_at_or_above_the_cap_warns(caplog):
     """Requirement 5. A warning, never an error: the combination is INERT, generation stops at the
     smaller number either way, so refusing it would be the kit overreaching."""
@@ -328,6 +340,7 @@ def test_a_thinking_budget_at_or_above_the_cap_warns(caplog):
     assert "can never act" in caplog.text
 
 
+@_needs_litellm
 def test_a_thinking_budget_below_the_cap_is_silent(caplog):
     """The shape that works: 16384 against a 32768 cap, measured to leave every capped call usable."""
     with caplog.at_level("WARNING", logger="rlm_harness.runtime"):
@@ -379,6 +392,7 @@ def _run_end(tmp_path, cfg, **configure_kw):
     return next(e["payload"] for e in events if e["type"] == "run_end")
 
 
+@_needs_litellm
 def test_the_thinking_budget_reaches_the_trace_per_role(tmp_path):
     """Requirement 4. Without it a corpus cannot tell the populations apart, which is the whole
     reason the runaway was diagnosable in the first place."""
@@ -398,6 +412,7 @@ def test_thinking_is_ABSENT_from_budgets_when_no_role_carries_one(tmp_path):
     assert "thinking" not in budgets
 
 
+@_needs_litellm
 def test_the_established_main_and_sub_shapes_are_UNCHANGED(tmp_path):
     """Why `thinking` is its own key. `budgets.main`'s PRESENCE means "this role carried a token
     cap" and the guide says so, so a `main` holding only a thinking budget would change what an

@@ -342,7 +342,7 @@ def test_an_endpoint_error_that_STRINGIFIED_TO_NOTHING_is_still_an_endpoint_fail
     """
     import http.client
 
-    import httpx
+    httpx = pytest.importorskip("httpx")
 
     for exc in (
         httpx.ConnectTimeout(""), httpx.ReadTimeout(""), httpx.ConnectError(""),

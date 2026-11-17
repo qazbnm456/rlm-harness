@@ -439,7 +439,7 @@ def test_task_level_reads_the_INSTANCE_tools_not_the_class():
     from rlm_harness import RLMTask, configure
     from rlm_harness.testing import ScriptedInterpreter, scripted_lm
 
-    configure(RLMConfig(main_model="d/m", sub_model="d/s"),
+    configure(RLMConfig(main_model="openai/m", sub_model="openai/s"),
               main_lm=scripted_lm([{"reasoning": "x", "code": "y"}]))
 
     class T(RLMTask):

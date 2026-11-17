@@ -199,6 +199,6 @@ def test_the_packaging_smoke_runs_on_a_plain_install_without_litellm():
     prelude = ("import rlm_harness._dspy_compat as compat\n"
                "compat.litellm_installed = lambda: False\n")
     done = subprocess.run([sys.executable, "-c", prelude + _smoke_body("ci.yml")],
-                          capture_output=True, text=True, timeout=300, cwd=_ROOT)
+                          check=False, capture_output=True, text=True, timeout=300, cwd=_ROOT)
     assert done.returncode == 0, done.stderr[-2000:]
     assert "fresh-install task run: ok" in done.stdout

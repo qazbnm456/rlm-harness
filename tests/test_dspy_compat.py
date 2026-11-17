@@ -1203,6 +1203,8 @@ def test_the_interpreter_factory_the_kit_supplies_is_the_one_it_can_read_back():
     )
 
 
+@pytest.mark.skipif(__import__("importlib.util").util.find_spec("litellm") is None,
+                    reason="configure sets litellm's transport only when the litellm extra is installed")
 def test_configure_reaches_litellm_after_dspy_with_numpy_loaded():
     """`configure` sets litellm's transport inside a try that swallows every failure, so only a test
     of the outcome would notice the import breaking. It has broken before: a dspy whose lazy proxy for

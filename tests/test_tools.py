@@ -784,7 +784,7 @@ def test_an_endpoint_failure_whose_str_is_EMPTY_records_the_exception_TYPE():
     """
     import http.client
 
-    import httpx
+    httpx = pytest.importorskip("httpx")
 
     for exc in (
         httpx.ConnectTimeout(""), httpx.ReadTimeout(""), httpx.ConnectError(""),

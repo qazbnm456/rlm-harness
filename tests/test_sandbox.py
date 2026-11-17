@@ -305,7 +305,7 @@ def test_mock_interpreter_runs_a_task_end_to_end():
         signature = "q: str -> a: str"
         output_field = "a"
 
-    configure(RLMConfig(main_model="d/m", sub_model="d/s", interpreter="mock",
+    configure(RLMConfig(main_model="openai/m", sub_model="openai/s", interpreter="mock",
                         max_iterations=1),
               main_lm=scripted_lm([{"reasoning": "r", "code": "pass"}]))
     # A mock interpreter never SUBMITs, so the run exhausts its budget and fails on the

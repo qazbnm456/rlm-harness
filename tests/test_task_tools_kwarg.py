@@ -22,7 +22,7 @@ from rlm_harness.testing import ScriptedInterpreter, scripted_lm
 
 @pytest.fixture(autouse=True)
 def _configured():
-    configure(RLMConfig(main_model="d/m", sub_model="d/s"),
+    configure(RLMConfig(main_model="openai/m", sub_model="openai/s"),
               main_lm=scripted_lm([{"reasoning": "x", "code": "y"}]))
 
 

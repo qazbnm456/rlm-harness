@@ -236,7 +236,7 @@ def test_recorder_for_gives_each_item_its_own_run(store, tmp_path):
 # ---- the real steps, offline --------------------------------------------------------------------
 
 def _configure(lm):
-    rt.configure(RLMConfig(main_model="x", sub_model="x", interpreter="mock", observe=False),
+    rt.configure(RLMConfig(main_model="openai/x", sub_model="openai/x", interpreter="mock", observe=False),
                  main_lm=lm, sub_lm=lm)
 
 
