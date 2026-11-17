@@ -503,3 +503,43 @@ def test_task_level_accepts_a_bare_CLASS():
 
     with pytest.raises(AssertionError, match="duplicate REPL tool name"):
         assert_task_repl_safe(Dup)
+
+
+def _rlm_refuses(signature: str) -> bool:
+    dspy = pytest.importorskip("dspy")
+    try:
+        dspy.RLM(signature)
+    except ValueError:
+        return True
+    return False
+
+
+def _dspy_names(reader):
+    pytest.importorskip("dspy")
+    from rlm_harness import _dspy_compat
+
+    return sorted(n for n in getattr(_dspy_compat, reader)() if n.isidentifier())
+
+
+@pytest.mark.parametrize("field", ["interpreter_factory", "history_processor"])
+def test_input_field_named_like_a_runtime_option_rejected_as_dspy_does(field):
+    """Read off dspy, and asserted against dspy: the helper refuses exactly what `RLM(...)` refuses."""
+    assert field in _dspy_names("runtime_option_names")
+    with pytest.raises(AssertionError, match="runtime options"):
+        assert_task_repl_safe(_task(f"{field}: str -> a: str"))
+    assert _rlm_refuses(f"{field}: str -> a: str")
+
+
+@pytest.mark.parametrize("field", ["history", "variables_info", "iteration"])
+def test_input_field_named_like_a_history_event_key_rejected_as_dspy_does(field):
+    assert field in _dspy_names("reserved_input_names")
+    with pytest.raises(AssertionError, match="history event"):
+        assert_task_repl_safe(_task(f"{field}: str -> a: str"))
+    assert _rlm_refuses(f"{field}: str -> a: str")
+
+
+@pytest.mark.parametrize("field", ["history", "iteration"])
+def test_output_field_dspy_now_reserves_rejected_as_dspy_does(field):
+    with pytest.raises(AssertionError, match="dspy's own RLM Prediction"):
+        assert_task_repl_safe(_task(f"q: str -> {field}: str"))
+    assert _rlm_refuses(f"q: str -> {field}: str")

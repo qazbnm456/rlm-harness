@@ -937,10 +937,9 @@ class RLMTask:
         Both of the last two are reported into the trace instead of refusing, because the one
         thing that must not happen is a difference nobody can see.
 
-        **One owner of the string is in neither list**: dspy's own fixed protocol text, which is
-        identical across every dspy the declared bound allows, and the event records the dspy
-        version that compiled the artifact so a reader can check that premise rather than assume
-        it.
+        **One owner of the string is in neither list**: dspy's own fixed protocol text. It changes
+        between dspy minors, so an artifact compiled under another minor is refused on load from
+        the dspy version dspy's own ``save`` records, and the event records that version too.
         """
         # Imported here, not at module scope: `__version__` lives in the package `__init__`,
         # which imports this module lazily to keep `import rlm_harness` dspy-free.
@@ -1032,6 +1031,7 @@ class RLMTask:
             return rlm
 
         state = self._read_compiled_state(path)
+        self._check_compiled_dspy(path, state)
         mine = self._check_compiled_fingerprint(path, state, rlm)
 
         predictors = dict(rlm.named_predictors())
@@ -1165,6 +1165,26 @@ class RLMTask:
                 "object. It should be the path `rlm_harness.optimize.save_program` wrote."
             )
         return state
+
+    @staticmethod
+    def _check_compiled_dspy(path: str, state: dict) -> None:
+        """Refuse an artifact compiled under another dspy minor.
+
+        An optimizer's text replaces the planner's whole instruction, and that instruction carries
+        dspy's own fixed protocol text, which changes between minors (3.5 rewrote it). Loading it
+        under another minor would splice that minor's template into this one's prompt. There is no
+        override: recompiling is the only way to get text that describes this dspy.
+        """
+        compiled = _dig(state, "metadata", "dependency_versions", "dspy")
+        theirs, ours = _dspy_compat.dspy_minor(compiled), _dspy_compat.dspy_minor()
+        if theirs is None or ours is None or theirs == ours:
+            return
+        raise ValueError(
+            f"{path!r} was compiled under dspy {compiled}, and this run uses dspy "
+            f"{ours[0]}.{ours[1]}. Its text replaces the planner's whole instruction, including the "
+            "protocol text dspy writes into it, which differs between dspy minors, so loading it "
+            "would describe the other version's protocol to the model. Recompile it under this dspy."
+        )
 
     def _check_compiled_fingerprint(self, path: str, state: dict, program: Any) -> dict[str, Any]:
         """Refuse an artifact compiled against anything the model would be told differently.

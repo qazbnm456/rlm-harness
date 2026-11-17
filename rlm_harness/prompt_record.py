@@ -176,12 +176,15 @@ def adapter_identity(adapter: Any) -> dict[str, str]:
 
     The short name is the family whose ``format`` produced the messages. The kit's lenient JSON adapter
     changes only how a call is sent and parsed, so it is ``json`` here and re-renders through
-    ``dspy.JSONAdapter``. ``None`` means dspy's default, a ``ChatAdapter``.
+    ``dspy.JSONAdapter``. ``None`` means dspy's default, which is identified as the adapter dspy
+    builds for it (an ``XMLAdapter`` on 3.5).
     """
     import dspy
 
+    from . import _dspy_compat
+
     if adapter is None:
-        return {"adapter": "chat", "adapter_class": "dspy.adapters.chat_adapter.ChatAdapter"}
+        adapter = _dspy_compat.default_adapter()
     cls = type(adapter)
     dotted = f"{cls.__module__}.{cls.__qualname__}"
     for short, base in (("json", "JSONAdapter"), ("xml", "XMLAdapter"), ("chat", "ChatAdapter")):

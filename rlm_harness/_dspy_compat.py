@@ -378,6 +378,33 @@ def reserved_result_names() -> frozenset[str]:
 
 
 @lru_cache(maxsize=1)
+def reserved_input_names() -> frozenset[str]:
+    """Input-field names dspy's RLM refuses because it writes them onto each history event.
+
+    ``history``, ``variables_info``, ``iteration`` and the event's REPL-entry key on 3.5. Read off
+    ``dspy.RLM`` rather than written down; empty when the installed dspy declares none.
+    """
+    try:
+        import dspy
+
+        return frozenset(str(n) for n in getattr(dspy.RLM, "_RESERVED_INPUT_NAMES", ()) or ())
+    except Exception:  # pragma: no cover - defensive: never let this raise
+        return frozenset()
+
+
+@lru_cache(maxsize=1)
+def runtime_option_names() -> frozenset[str]:
+    """The keyword options ``RLM.forward``/``aforward`` take beside the inputs, which no input may
+    be named: ``interpreter_factory`` and ``history_processor`` on 3.5. Read off ``dspy.RLM``."""
+    try:
+        import dspy
+
+        return frozenset(str(n) for n in getattr(dspy.RLM, "_RUNTIME_OPTION_NAMES", ()) or ())
+    except Exception:  # pragma: no cover - defensive: never let this raise
+        return frozenset()
+
+
+@lru_cache(maxsize=1)
 def recoverable_interpreter_error() -> type[Exception]:
     """The interpreter-error class dspy's RLM loop CATCHES and feeds back to the model.
 
@@ -1590,3 +1617,21 @@ def strip_rebind_prelude(code: Any) -> Any:
     if not prelude or not isinstance(code, str) or prelude not in code:
         return code
     return code.replace(prelude, "", 1)
+
+
+def dspy_minor(version: Any = None) -> tuple[int, int] | None:
+    """``(major, minor)`` of ``version``, or of the installed dspy when ``version`` is ``None``.
+
+    ``None`` when the string has no readable major and minor.
+    """
+    if version is None:
+        import dspy
+
+        version = getattr(dspy, "__version__", None)
+    if not isinstance(version, str):
+        return None
+    parts = version.split(".")
+    try:
+        return int(parts[0]), int(parts[1])
+    except (IndexError, ValueError):
+        return None

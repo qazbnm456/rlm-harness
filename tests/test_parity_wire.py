@@ -207,7 +207,7 @@ def test_a_history_processor_never_reaches_the_rlm_through_the_kit(fake_openai):
 
 def test_dspy_takes_history_processor_per_call():
     """The refusal above is for an option dspy really takes per call, so it has to be kept out."""
-    assert set(_dspy_compat.RLM_RUNTIME_OPTIONS_REFUSED) <= set(dspy.RLM._RUNTIME_OPTION_NAMES)
+    assert set(_dspy_compat.RLM_RUNTIME_OPTIONS_REFUSED) <= _dspy_compat.runtime_option_names()
 
 
 # ---- the fields and keys a consumer reads ----------------------------------------------------------

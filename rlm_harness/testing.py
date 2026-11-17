@@ -30,8 +30,10 @@ from typing import Any
 
 from ._dspy_compat import (
     is_reserved_tool_name,
+    reserved_input_names,
     reserved_result_names,
     reserved_tool_names,
+    runtime_option_names,
     setup_execution,
     strip_rebind_prelude,
 )
@@ -178,15 +180,19 @@ def _signature_field_names(signature: str) -> tuple[list[str], list[str]]:
 def assert_task_repl_safe(task: Any) -> None:
     """Assert a WHOLE ``RLMTask`` is safe to construct: the checks no per-tool test can make.
 
-    :func:`assert_repl_safe` validates one tool's shape and name. FOUR of dspy's
+    :func:`assert_repl_safe` validates one tool's shape and name. SIX of dspy's
     construction-time rules are properties of the whole task, and each aborts registration for
     EVERY tool:
 
     * duplicate tool names: dspy keys its tool dict by name;
-    * a signature INPUT field colliding with a tool name;
+    * a signature INPUT field named like one of ``RLM.forward``'s runtime options
+      (``interpreter_factory``, ``history_processor``), which could never be passed;
     * a signature INPUT field colliding with a reserved sandbox name;
-    * a signature OUTPUT field dspy's own Prediction already owns (``trajectory`` /
-      ``final_reasoning``).
+    * a signature INPUT field named like a key dspy writes onto each history event
+      (``history``, ``variables_info``, ``iteration``, ...);
+    * a signature INPUT field colliding with a tool name;
+    * a signature OUTPUT field dspy's own Prediction already owns (``trajectory``,
+      ``final_reasoning``, ``history``, ...).
 
     Accepts a task INSTANCE or a subclass. Prefer an instance: tools assembled at runtime (the MCP
     case, and anything set in ``__init__`` or passed as ``tools=``) exist only there, and those are
@@ -196,7 +202,7 @@ def assert_task_repl_safe(task: Any) -> None:
     means either a prior ``configure(...)`` or passing BOTH ``config=`` and ``sub_lm=``.
 
     This is a TEST-time helper, deliberately NOT wired into ``RLMTask.__init__``: dspy enforces
-    all four at construction, and duplicating an upstream check in the hot path invites the two
+    all six at construction, and duplicating an upstream check in the hot path invites the two
     to drift.
 
     **What it is still FOR, now that dspy enforces them too.** It moves the failure from run time
@@ -242,13 +248,23 @@ def assert_task_repl_safe(task: Any) -> None:
         return
     inputs, outputs = _signature_field_names(signature)
 
+    if bad := sorted(set(inputs) & runtime_option_names()):
+        raise AssertionError(
+            f"signature input field(s) {bad} are named like dspy.RLM's runtime options "
+            f"({sorted(runtime_option_names())}), so a value for them could never be passed."
+        )
     # dspy's own `_validate_namespace` applies the SAME predicate to input fields as to tool
-    # names (3.4.1 widened both at once), so this must ask the predicate rather than intersect
-    # the listable set, or an input field named `dspy` passes here and dies at `RLM(...)`.
+    # names, so this must ask the predicate rather than intersect the listable set, or an input
+    # field named `dspy` passes here and dies at `RLM(...)`.
     if bad := sorted(name for name in inputs if is_reserved_tool_name(name)):
         raise AssertionError(
             f"signature input field(s) {bad} collide with dspy's built-in sandbox functions "
             f"({sorted(reserved_tool_names())}, plus `dspy` and any `_dspy`/`__dspy` prefix)."
+        )
+    if bad := sorted(set(inputs) & reserved_input_names()):
+        raise AssertionError(
+            f"signature input field(s) {bad} collide with the keys dspy's RLM writes onto each "
+            f"history event ({sorted(reserved_input_names())})."
         )
     if bad := sorted(set(inputs) & set(names)):
         raise AssertionError(

@@ -697,3 +697,27 @@ def test_a_budget_record_of_the_wrong_shape_answers_unknown_not_unchanged(tmp_pa
                    if e["type"] == EVENT_COMPILED_INSTRUCTIONS)["payload"]
     assert payload["budget_changed"] is None, "an uncomparable budget read as nothing moved"
     assert payload["budget_unrecorded"] is None
+
+
+@pytest.mark.parametrize("compiled_with", ["3.4.1", "3.6.0"])
+def test_a_state_compiled_under_another_dspy_minor_is_refused(tmp_path, compiled_with):
+    """The text replaces the planner's whole instruction, dspy's protocol text included, and that
+    text differs between dspy minors. There is no override: recompiling is the answer."""
+    path = _compile_like_an_optimizer(tmp_path, lambda s: WHOLESALE)
+    state = json.loads(path.read_text())
+    state["metadata"]["dependency_versions"]["dspy"] = compiled_with
+    path.write_text(json.dumps(state))
+    with pytest.raises(ValueError, match=rf"compiled under dspy {compiled_with}.*Recompile"):
+        _task(tmp_path, compiled_instructions=str(path))._build_rlm()
+
+
+def test_a_state_compiled_under_another_patch_of_this_minor_loads(tmp_path):
+    import dspy
+
+    major, minor = (int(p) for p in dspy.__version__.split(".")[:2])
+    path = _compile_like_an_optimizer(tmp_path, lambda s: WHOLESALE)
+    state = json.loads(path.read_text())
+    state["metadata"]["dependency_versions"]["dspy"] = f"{major}.{minor}.99"
+    path.write_text(json.dumps(state))
+    rlm = _task(tmp_path, compiled_instructions=str(path))._build_rlm()
+    assert rlm.generate_action.signature.instructions == WHOLESALE

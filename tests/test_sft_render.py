@@ -714,3 +714,18 @@ def test_the_planner_input_and_reasoning_types_round_trip():
     assert rebuilt.fields["history"].annotation is dspy.History
     assert rebuilt.fields["plan"].annotation is dspy.Reasoning
     assert rebuilt.fields["plan"].json_schema_extra["__dspy_reasoning_field"] == "reasoning"
+
+
+def test_no_configured_adapter_is_recorded_as_the_one_dspy_uses():
+    """With no adapter configured dspy formats with its default, an `XMLAdapter`; the record names
+    that family, and the render rebuilds it, so it formats the same messages."""
+    from dspy.adapters.utils import _get_adapter
+
+    from rlm_harness.prompt_record import adapter_identity, build_adapter
+
+    identity = adapter_identity(None)
+    assert identity == {"adapter": "xml", "adapter_class": "dspy.adapters.xml_adapter.XMLAdapter"}
+    sig = dspy.Signature("q: str -> a: str", "x")
+    with dspy.context(adapter=None):
+        default = _get_adapter()
+    assert build_adapter(identity).format(sig, [], {"q": "hi"}) == default.format(sig, [], {"q": "hi"})
