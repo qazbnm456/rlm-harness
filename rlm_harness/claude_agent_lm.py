@@ -1,4 +1,4 @@
-"""Alias of :mod:`rlm_harness.community.claude_agent_lm`, kept until the next MAJOR release.
+"""Alias of :mod:`rlm_harness.community.claude_agent_lm`, kept for the whole 2.x series.
 
 Importing this path returns the moved module itself (it replaces this entry in ``sys.modules``), so
 attribute access, ``monkeypatch`` and ``mock.patch`` through the old path reach the real module.
