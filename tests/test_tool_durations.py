@@ -552,7 +552,11 @@ def test_the_fill_keeps_sub_millisecond_resolution(tmp_path):
         return "x"
 
     calls = _run_with_tool(tmp_path, instant)
-    assert 0.0 < calls[0]["duration_s"] < 0.001
+    duration = calls[0]["duration_s"]
+    # The claim is resolution, not speed: a slow runner can take over a millisecond for this
+    # work, so the check is that the value carries digits below the millisecond.
+    assert 0.0 < duration < 0.05
+    assert duration != round(duration, 3), duration
 
 
 def test_the_name_match_compares_by_value_not_identity(tmp_path):
