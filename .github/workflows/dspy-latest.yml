@@ -74,9 +74,9 @@ jobs:
       - name: Resolve the newest published dspy
         id: dspy
         # Ask PyPI rather than hardcoding a floor. A hardcoded `--with "dspy>=X.Y"` goes stale the
-        # moment the next minor ships, and the obvious guard "fail if resolved == locked" has a built-in false
-        # alarm: right after any `uv lock` bump the two ARE equal, so the job would sit red until
-        # some new dspy happens to ship: indistinguishable from "dspy broke the kit".
+        # moment the next minor ships, and the obvious guard "fail if resolved == locked" has a
+        # built-in false alarm: right after any `uv lock` bump the two ARE equal, so the job would
+        # sit red until some new dspy happens to ship: indistinguishable from "dspy broke the kit".
         #
         # RETRIES on the curl: with `set -e` a transient DNS/5xx would fail the step and redden a
         # scheduled run for a non-reason: reintroducing, through a different door, exactly the
