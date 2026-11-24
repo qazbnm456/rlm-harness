@@ -22,6 +22,8 @@ when actually called.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ._dspy_compat import applied_lm_budget, applied_thinking_budget
 from ._retry import RLMTaskError, short_error
 from ._toolname import (
@@ -263,6 +265,44 @@ __all__ = [
 ]
 
 __version__ = "2.0.0"
+
+if TYPE_CHECKING:
+    # The lazy names below, as type checkers and IDEs should see them. Never executed, so
+    # `import rlm_harness` stays dspy-free. Without this block, pyright types every lazy name as
+    # one union of everything `__getattr__` returns, with `Any` as just one member, so a consumer's
+    # `class T(RLMTask)` fails with "Argument to class must be a base class".
+    # Keep it in step with `__getattr__`.
+    from .community.claude_agent_lm import SUBSCRIPTION_PREFIX, ClaudeAgentLM
+    from .mcp import McpCatalog, McpConnection, mcp_tools, result_text
+    from .memory_tasks import (
+        AlignEntities,
+        AlignReport,
+        ConsolidateReport,
+        ConsolidateRun,
+        DistillLongItem,
+        DistillReport,
+        EntityMention,
+        EntityMerge,
+        EntityMerges,
+        LongLabels,
+        MemoryProposal,
+        MemoryProposals,
+        OrganiseBatch,
+        OrganisePlan,
+        OrganizeReport,
+        ShortLabels,
+        StepNotCounted,
+        SummariseShort,
+        align_pending,
+        arun_step,
+        consolidate_run,
+        distill_pending,
+        organize_pending,
+        run_step,
+        subprocess_step_runner,
+    )
+    from .runtime import configure, get_config, get_sub_lm
+    from .task import RLMTask
 
 
 def __getattr__(name: str):  # PEP 562 lazy re-export to defer dspy import

@@ -131,7 +131,13 @@ reason is in the rule.
   every call is saved as an Antigravity conversation (about 400 KB each, prompt included), and
   the adapter does not delete another program's private state.
 - **`import rlm_harness` must not import dspy.** `RLMTask` and `configure` are lazy
-  re-exports in `__init__.py` (PEP 562). Don't make them eager.
+  re-exports in `__init__.py` (PEP 562). Don't make them eager. Every lazy name is ALSO imported
+  under the `if TYPE_CHECKING:` block beside `__getattr__`. Without it, pyright (1.1.414, on the
+  installed 2.0.0 wheel) types every lazy name as one union of everything `__getattr__` returns,
+  with `Any` as just one member, so a consumer's `class T(RLMTask)` fails with "Argument to class
+  must be a base class" (the package ships `py.typed`) and an IDE cannot jump to `RLMTask`. The
+  block never runs, so it costs the invariant nothing; `tests/test_dspy_compat.py` pins it to the
+  lazy set, and `docs/VERIFY.md` has the command that re-measures the pyright half.
 - **Resolve custom output types via `output_model`.** `RLMTask._build_rlm` passes
   the output model through dspy's `custom_types=`. dspy otherwise resolves a type
   *name* by walking the call stack's globals/locals, which works only while a
