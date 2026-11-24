@@ -437,6 +437,48 @@ def test_importing_the_package_still_does_not_import_dspy():
     assert proc.stdout.strip() == "ok"
 
 
+def test_every_lazy_name_is_declared_for_type_checkers():
+    """The lazy re-exports reach a type checker as their real types only through the
+    `if TYPE_CHECKING:` block in `__init__.py`. Without it, pyright types every lazy name as one
+    union of everything `__getattr__` returns, with `Any` as just one member, so a consumer's
+    `class T(RLMTask)` fails with "Argument to class must be a base class" (the package ships
+    `py.typed`) and an IDE cannot jump to the definition. Nothing at runtime reads that block, so a
+    name added to `__getattr__` alone passes every other test: this pins the two lists together.
+    The lazy set is read from a fresh interpreter, where nothing has been bound onto the module yet."""
+    import ast
+    import json
+
+    import rlm_harness
+
+    code = (
+        "import json, rlm_harness; "
+        "print(json.dumps([n for n in rlm_harness.__all__ if n not in vars(rlm_harness)]))"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False
+    )
+    assert proc.returncode == 0, proc.stderr
+    lazy = set(json.loads(proc.stdout))
+    assert {"RLMTask", "configure"} <= lazy  # the probe sees the lazy names at all
+
+    tree = ast.parse(inspect.getsource(rlm_harness))
+    blocks = [
+        node for node in tree.body
+        if isinstance(node, ast.If) and isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING"
+    ]
+    assert len(blocks) == 1, "expected one top-level `if TYPE_CHECKING:` block in rlm_harness/__init__.py"
+    declared = {
+        alias.asname or alias.name
+        for stmt in blocks[0].body if isinstance(stmt, ast.ImportFrom)
+        for alias in stmt.names
+    }
+    assert declared == lazy, (
+        f"lazy but not declared: {sorted(lazy - declared)}; declared but not lazy: {sorted(declared - lazy)}"
+    )
+    for name in sorted(lazy):  # and each one still resolves through `__getattr__`
+        getattr(rlm_harness, name)
+
+
 # ---- degraded introspection ------------------------------------------------------
 
 

@@ -181,7 +181,7 @@ cannot see.
   action's SHA-to-tag mapping, a behaviour of `os.kill` on Windows, a module missing from mcp 1.0.0.
   Auditable, but not by a local sweep, since it needs network, another platform or an uncached wheel.
   **Write the command or the page that would settle it next to the claim**, or it lands in the bucket
-  below by default and gets treated as permanently on trust when it is one `curl` away. The five
+  below by default and gets treated as permanently on trust when it is one `curl` away. The six
   in this repo today, each with the command that settles it, so nobody has to re-derive it:
 
   - `@runtime_checkable` on `CodeInterpreter` (CHANGELOG 1.6.0), `True` on 3.5.0:
@@ -204,6 +204,18 @@ cannot see.
     prints BANANA on 1.5.0, which is why only `GEMINI_API_KEY` and `AGY_ADC_AUTH` are removed from a
     call's environment; a variable that starts failing that probe belongs in `_BILLING_ENV`. The
     module docstring of `rlm_harness/community/antigravity_lm.py` lists each probe and its control.
+  - what pyright makes of the lazy re-exports WITHOUT the `if TYPE_CHECKING:` block
+    (`docs/INVARIANTS.md`, "`import rlm_harness` must not import dspy"), measured on pyright 1.1.414
+    against the installed 2.0.0 wheel: every lazy name is one union of everything `__getattr__`
+    returns, with `Any` as just one member, and `class T(RLMTask)` fails with "Argument to class
+    must be a base class". The command builds the wheel from the tag, installs it with
+    `dspy==3.5.0`, writes the `consumer.py` this was measured with (it subclasses `RLMTask` and calls
+    `reveal_type` on five lazy names), and runs pyright from `<dir>`, not the repo root: from the
+    root pyright reads the working tree's `rlm_harness/` instead of the wheel (measured, it printed
+    `type[RLMTask]` there):
+    `mkdir -p <dir>/src && printf 'import rlm_harness\nfrom rlm_harness import RLMTask, configure, distill_pending, mcp_tools\n\n\nclass T(RLMTask):\n    signature = "question -> answer"\n    output_field = "answer"\n\n\nreveal_type(RLMTask)\nreveal_type(configure)\nreveal_type(distill_pending)\nreveal_type(mcp_tools)\nreveal_type(rlm_harness.get_config)\n' > <dir>/consumer.py && git archive v2.0.0 | tar -x -C <dir>/src && uv build --wheel -o <dir>/dist <dir>/src && uv venv --python 3.13 <dir>/venv && VIRTUAL_ENV=<dir>/venv uv pip install <dir>/dist/*.whl "dspy==3.5.0" && cd <dir> && uvx pyright==1.1.414 --pythonpath venv/bin/python consumer.py`
+    Where the Node that `uvx pyright` downloads cannot load `libatomic.so.1`,
+    `uvx 'pyright[nodejs]==1.1.414'` runs the same pyright on a Node from a wheel.
 
   A **corpus-attributed** claim ("385 runs", "141 traces", "57% of tool wall-clock") can be audited
   exactly ONCE, at the moment it is written, and never again by anyone. No review of this repo can
